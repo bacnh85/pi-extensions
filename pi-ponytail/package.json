@@ -1,0 +1,29 @@
+{
+  "name": "@bacnh85/pi-ponytail",
+  "version": "0.1.0",
+  "description": "Pi-ponytail — lazy senior dev mode for your Pi agent. Forked from DietrichGebert/ponytail.",
+  "keywords": ["pi-package", "pi", "ponytail", "skills"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git"
+  },
+  "files": [
+    "AGENTS.md",
+    "hooks/",
+    "skills/",
+    "extensions/",
+    "UPSTREAM",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test extensions/test/*.test.js"
+  },
+  "pi": {
+    "extensions": ["./extensions/index.js"],
+    "skills": ["./skills"]
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

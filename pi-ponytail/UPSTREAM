@@ -1,0 +1,15 @@
+upstream-url: https://github.com/DietrichGebert/ponytail.git
+upstream-version: 4.8.4
+upstream-commit: 40e50d9e03242aa5dd53ac771950f9127362b25f
+upstream-date: 2026-07-02T01:30:30+02:00
+fork-date: 2026-07-02
+fork-commit: (initial import of pi-ponytail)
+
+# To diff against upstream:
+#   git remote add upstream https://github.com/DietrichGebert/ponytail.git
+#   git fetch upstream
+#   git diff upstream/main -- pi-ponytail/
+#
+# To cherry-pick a specific upstream commit into pi-ponytail's files:
+#   git fetch upstream
+#   git cherry-pick -X subtree=pi-ponytail <commit>
