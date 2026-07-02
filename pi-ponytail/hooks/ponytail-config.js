@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // ponytail — shared configuration resolver
 //
 // Resolution order for default mode:
@@ -11,23 +10,12 @@ const path = require('path');
 const os = require('os');
 
 const DEFAULT_MODE = 'full';
-const VALID_MODES = ['off', 'lite', 'full', 'ultra', 'review'];
 const RUNTIME_MODES = ['off', 'lite', 'full', 'ultra'];
 
 function normalizeMode(mode) {
   if (typeof mode !== 'string') return null;
   const normalized = mode.trim().toLowerCase();
   return RUNTIME_MODES.includes(normalized) ? normalized : null;
-}
-
-function normalizeConfigMode(mode) {
-  if (typeof mode !== 'string') return null;
-  const normalized = mode.trim().toLowerCase();
-  return VALID_MODES.includes(normalized) ? normalized : null;
-}
-
-function normalizePersistedMode(mode) {
-  return normalizeMode(mode) || normalizeConfigMode(mode);
 }
 
 // "stop ponytail" / "normal mode" turn ponytail off, but only as a standalone
@@ -59,7 +47,7 @@ function getConfigPath() {
 function getDefaultMode() {
   // 1. Environment variable (highest priority)
   const envMode = process.env.PONYTAIL_DEFAULT_MODE;
-  if (envMode && VALID_MODES.includes(envMode.toLowerCase())) {
+  if (envMode && RUNTIME_MODES.includes(envMode.toLowerCase())) {
     return envMode.toLowerCase();
   }
 
@@ -67,7 +55,7 @@ function getDefaultMode() {
   try {
     const configPath = getConfigPath();
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8').replace(/^\uFEFF/, ''));
-    if (config.defaultMode && VALID_MODES.includes(config.defaultMode.toLowerCase())) {
+    if (config.defaultMode && RUNTIME_MODES.includes(config.defaultMode.toLowerCase())) {
       return config.defaultMode.toLowerCase();
     }
   } catch (e) {
@@ -79,7 +67,7 @@ function getDefaultMode() {
 }
 
 function writeDefaultMode(mode) {
-  const normalized = normalizeConfigMode(mode);
+  const normalized = normalizeMode(mode);
   if (!normalized) return null;
 
   const configPath = getConfigPath();
@@ -92,8 +80,6 @@ module.exports = {
   DEFAULT_MODE,
   getDefaultMode,
   normalizeMode,
-  normalizeConfigMode,
-  normalizePersistedMode,
   isDeactivationCommand,
   writeDefaultMode,
 };

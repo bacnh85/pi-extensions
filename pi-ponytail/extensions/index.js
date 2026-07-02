@@ -5,8 +5,6 @@ const {
   DEFAULT_MODE,
   getDefaultMode,
   normalizeMode,
-  normalizeConfigMode,
-  normalizePersistedMode,
   isDeactivationCommand,
   writeDefaultMode,
 } = require("../hooks/ponytail-config.js");
@@ -16,14 +14,14 @@ export { filterSkillBodyForMode };
 export const readDefaultMode = getDefaultMode;
 
 export function resolveSessionMode(entries, fallbackMode = DEFAULT_MODE) {
-  const fallback = normalizePersistedMode(fallbackMode) || DEFAULT_MODE;
+  const fallback = normalizeMode(fallbackMode) || DEFAULT_MODE;
   if (!Array.isArray(entries)) return fallback;
 
   for (let i = entries.length - 1; i >= 0; i -= 1) {
     const entry = entries[i];
     if (entry?.type !== "custom" || entry?.customType !== "ponytail-mode") continue;
 
-    const mode = normalizePersistedMode(entry?.data?.mode);
+    const mode = normalizeMode(entry?.data?.mode);
     if (mode) return mode;
   }
 
@@ -31,7 +29,7 @@ export function resolveSessionMode(entries, fallbackMode = DEFAULT_MODE) {
 }
 
 export function parsePonytailCommand(text, defaultMode = DEFAULT_MODE) {
-  const fallback = normalizePersistedMode(defaultMode) || DEFAULT_MODE;
+  const fallback = normalizeMode(defaultMode) || DEFAULT_MODE;
   const normalizedText = String(text || "").trim().toLowerCase();
 
   if (!normalizedText) {
@@ -43,7 +41,7 @@ export function parsePonytailCommand(text, defaultMode = DEFAULT_MODE) {
   if (primary === "status") return { type: "status" };
 
   if (primary === "default") {
-    const mode = normalizeConfigMode(secondary);
+    const mode = normalizeMode(secondary);
     return mode ? { type: "set-default", mode } : { type: "invalid", reason: "invalid-default-mode" };
   }
 
@@ -60,22 +58,21 @@ export default function ponytailExtension(pi) {
 
   // -- Status bar --
   function syncStatus(ctx) {
-    const c = ctx;
-    if (!c?.ui?.setStatus || !c.ui.theme?.fg) return;
-    const theme = c.ui.theme;
+    if (!ctx?.ui?.setStatus || !ctx.ui.theme?.fg) return;
+    const theme = ctx.ui.theme;
     if (currentMode === "off") {
-      c.ui.setStatus("ponytail", "");
+      ctx.ui.setStatus("ponytail", "");
       return;
     }
     const levelIcons = { lite: "🌿", full: "⚡", ultra: "🔥" };
     const icon = levelIcons[currentMode] || "";
     const label = currentMode.toUpperCase();
     const indicator = isActive ? theme.fg("accent", "●") : theme.fg("dim", "○");
-    c.ui.setStatus("ponytail", indicator + " 🐴 " + theme.fg("muted", "ponytail: ") + theme.fg("text", icon + " " + label));
+    ctx.ui.setStatus("ponytail", indicator + " 🐴 " + theme.fg("muted", "ponytail: ") + theme.fg("text", icon + " " + label));
   }
 
   const setMode = (mode, ctx) => {
-    const normalized = normalizePersistedMode(mode);
+    const normalized = normalizeMode(mode);
     if (!normalized) return;
 
     currentMode = normalized;
@@ -122,29 +119,11 @@ export default function ponytailExtension(pi) {
     },
   });
 
-  pi.registerCommand("ponytail-review", {
-    description: "Run /skill:ponytail-review",
-    handler: (_args, ctx) => sendAlias("/skill:ponytail-review", "", ctx),
-  });
-
-  pi.registerCommand("ponytail-audit", {
-    description: "Run /skill:ponytail-audit",
-    handler: (_args, ctx) => sendAlias("/skill:ponytail-audit", "", ctx),
-  });
-
-  pi.registerCommand("ponytail-gain", {
-    description: "Run /skill:ponytail-gain",
-    handler: (_args, ctx) => sendAlias("/skill:ponytail-gain", "", ctx),
-  });
-
-  pi.registerCommand("ponytail-debt", {
-    description: "Run /skill:ponytail-debt",
-    handler: (_args, ctx) => sendAlias("/skill:ponytail-debt", "", ctx),
-  });
-
-  pi.registerCommand("ponytail-help", {
-    description: "Run /skill:ponytail-help",
-    handler: (_args, ctx) => sendAlias("/skill:ponytail-help", "", ctx),
+  ["ponytail-review", "ponytail-audit", "ponytail-gain", "ponytail-debt", "ponytail-help"].forEach((name) => {
+    pi.registerCommand(name, {
+      description: `Run /skill:${name}`,
+      handler: (_args, ctx) => sendAlias(`/skill:${name}`, "", ctx),
+    });
   });
 
   pi.on("input", async (event) => {
