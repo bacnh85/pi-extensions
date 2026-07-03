@@ -1,0 +1,255 @@
+/**
+ * Unit tests for SerenaWorkerClient protocol parsing and lifecycle.
+ * Uses mocked child_process to avoid actual Python dependency.
+ */
+
+import { EventEmitter } from "node:events";
+import { expect } from "chai";
+import { SerenaWorkerClient } from "./worker";
+
+function createMockProcess(onWrite?: (data: string) => void): any {
+	const mockStdout = new EventEmitter() as any;
+	const mockStderr = new EventEmitter() as any;
+	const mockStdin = {
+		write: (data: string) => {
+			onWrite?.(String(data));
+			// Auto-respond to shutdown requests so stop() doesn't hang
+			let parsed: any;
+			try {
+				parsed = JSON.parse(String(data));
+			} catch {
+				return true;
+			}
+			if (parsed.action === "shutdown") {
+				setTimeout(() => {
+					mockStdout.emit("data", JSON.stringify({ id: String(parsed.id), ok: true, shutdown: true }) + "\n");
+				}, 1);
+			}
+			return true;
+		},
+	} as any;
+	const proc: any = {
+		stdout: mockStdout,
+		stderr: mockStderr,
+		stdin: mockStdin,
+		killed: false,
+		pid: 99999,
+		kill: () => {
+			proc.killed = true;
+		},
+		on: (event: string, handler: (...args: any[]) => void) => {
+			if (event === "exit") proc._exitHandler = handler;
+		},
+		_exitHandler: null as ((code: number | null, signal: string | null) => void) | null,
+	};
+	return proc;
+}
+
+/**
+ * Create a worker whose internal process is set to a mock.
+ * The onStdout and exit handlers are manually attached because
+ * ensureStarted() is bypassed (process already exists).
+ */
+function createMockedWorker(): {
+	worker: SerenaWorkerClient;
+	mockStdout: EventEmitter;
+	mockStdin: { write: (...args: any[]) => boolean };
+	mockProcess: any;
+} {
+	const worker = new SerenaWorkerClient();
+
+	function installMockProcess(): any {
+		const proc = createMockProcess();
+		(worker as any).process = proc;
+		const onStdout = (worker as any).onStdout.bind(worker);
+		proc.stdout.on("data", (chunk: string) => onStdout(chunk));
+		proc.on("exit", (code: number | null, signal: string | null) => {
+			if ((worker as any).process === proc) {
+				(worker as any).process = undefined;
+			}
+			(worker as any).failAll(new Error(`Serena worker exited code=${code} signal=${signal}`));
+		});
+		return proc;
+	}
+
+	const mockProcess = installMockProcess();
+	(worker as any).ensureStarted = () => {
+		if (!(worker as any).process || (worker as any).process.killed) installMockProcess();
+	};
+
+	(worker as any).buffer = "";
+	(worker as any).nextId = 1;
+	(worker as any).pending = new Map();
+	(worker as any).generation = 0;
+
+	return { worker, mockStdout: mockProcess.stdout, mockStdin: mockProcess.stdin, mockProcess };
+}
+
+describe("SerenaWorkerClient", () => {
+	describe("request/response protocol", () => {
+		it("resolves a successful response", async () => {
+			const { worker, mockStdout } = createMockedWorker();
+			const resultPromise = worker.request({ action: "test" });
+			mockStdout.emit("data", JSON.stringify({ id: "1", ok: true, result: "hello" }) + "\n");
+			const result = await resultPromise;
+			expect(result.ok).to.be.true;
+			expect(result.result).to.equal("hello");
+		});
+
+		it("handles error responses", async () => {
+			const { worker, mockStdout } = createMockedWorker();
+			const resultPromise = worker.request({ action: "test" });
+			mockStdout.emit("data", JSON.stringify({ id: "1", ok: false, error: "something went wrong", errorType: "serena_error" }) + "\n");
+			const result = await resultPromise;
+			expect(result.ok).to.be.false;
+			expect(result.error).to.equal("something went wrong");
+			expect(result.errorType).to.equal("serena_error");
+		});
+
+		it("handles chunked stdout data", async () => {
+			const { worker, mockStdout } = createMockedWorker();
+			const resultPromise = worker.request({ action: "test" });
+			mockStdout.emit("data", '{"id":"1","ok":true,');
+			mockStdout.emit("data", '"result":"chunked"}\n');
+			const result = await resultPromise;
+			expect(result.ok).to.be.true;
+			expect(result.result).to.equal("chunked");
+		});
+
+		it("queues multiple requests and resolves them sequentially", async () => {
+			const { worker, mockStdout } = createMockedWorker();
+			const p1 = worker.request({ action: "first" });
+			const p2 = worker.request({ action: "second" });
+			expect((worker as any).queue.length).to.equal(1);
+			mockStdout.emit("data", JSON.stringify({ id: "1", ok: true, result: "first" }) + "\n");
+			const r1 = await p1;
+			mockStdout.emit("data", JSON.stringify({ id: "2", ok: true, result: "second" }) + "\n");
+			const r2 = await p2;
+			expect(r1.result).to.equal("first");
+			expect(r2.result).to.equal("second");
+		});
+
+		it("ignores JSON lines with unknown ids", async () => {
+			const { worker, mockStdout } = createMockedWorker();
+			const resultPromise = worker.request({ action: "test" });
+			mockStdout.emit("data", JSON.stringify({ id: "unknown", ok: true, result: "ignored" }) + "\n");
+			mockStdout.emit("data", JSON.stringify({ id: "1", ok: true, result: "real" }) + "\n");
+			const result = await resultPromise;
+			expect(result.result).to.equal("real");
+		});
+
+		it("ignores non-JSON stdout lines", async () => {
+			const { worker, mockStdout } = createMockedWorker();
+			const resultPromise = worker.request({ action: "test" });
+			mockStdout.emit("data", "not json\n");
+			mockStdout.emit("data", JSON.stringify({ id: "1", ok: true, result: "after noise" }) + "\n");
+			const result = await resultPromise;
+			expect(result.result).to.equal("after noise");
+		});
+
+		it("handles responses with no 'id' field", async () => {
+			const { worker, mockStdout } = createMockedWorker();
+			const resultPromise = worker.request({ action: "test" });
+			mockStdout.emit("data", JSON.stringify({ ok: true, result: "no id" }) + "\n");
+			mockStdout.emit("data", JSON.stringify({ id: "1", ok: true, result: "with id" }) + "\n");
+			const result = await resultPromise;
+			expect(result.result).to.equal("with id");
+		});
+
+		it("handles empty lines between responses", async () => {
+			const { worker, mockStdout } = createMockedWorker();
+			const resultPromise = worker.request({ action: "test" });
+			mockStdout.emit("data", "\n\n");
+			mockStdout.emit("data", JSON.stringify({ id: "1", ok: true, result: "after blanks" }) + "\n");
+			const result = await resultPromise;
+			expect(result.result).to.equal("after blanks");
+		});
+	});
+
+	describe("timeout handling", () => {
+		it("rejects and resets on timeout", async () => {
+			const { worker } = createMockedWorker();
+			const start = Date.now();
+			try {
+				await worker.request({ action: "test" }, 20);
+				expect.fail("Should have thrown on timeout");
+			} catch (err: any) {
+				expect(err.message).to.include("timed out");
+				expect(err.message).to.include("test");
+			}
+			// Worker should be reset after timeout
+			expect((worker as any).process).to.be.undefined;
+			expect(Date.now() - start).to.be.at.least(15);
+		});
+
+		it("does not reject later queued requests when the current request times out", async () => {
+			const { worker } = createMockedWorker();
+			const p1 = worker.request({ action: "first" }, 20);
+			const p2 = worker.request({ action: "second" }, 100);
+			try {
+				await p1;
+				expect.fail("Should have thrown");
+			} catch (err: any) {
+				expect(err.message).to.include("timed out");
+			}
+			setTimeout(() => {
+				const proc = (worker as any).process;
+				proc.stdout.emit("data", JSON.stringify({ id: "2", ok: true, result: "second" }) + "\n");
+			}, 1);
+			const result = await p2;
+			expect(result.result).to.equal("second");
+			expect((worker as any).pending.size).to.equal(0);
+		});
+	});
+
+	describe("lifecycle", () => {
+		it("stop() kills the process and clears state", async () => {
+			const { worker, mockProcess } = createMockedWorker();
+			// stop() calls request() internally to send "shutdown".
+			// After the request times out (caught by .catch(() => undefined)),
+			// it kills the process in the finally block.
+			await worker.stop();
+			expect((worker as any).process).to.be.undefined;
+			expect(mockProcess.killed).to.be.true;
+		});
+
+		it("restart() destroys pending and starts fresh", () => {
+			const { worker, mockProcess } = createMockedWorker();
+			expect(mockProcess.killed).to.be.false;
+
+			// restart() kills the current process and calls ensureStarted().
+			// ensureStarted() may find Python and spawn a real process if Serena
+			// is installed. We handle both cases.
+			try {
+				worker.restart();
+			} catch {
+				// No Python found — expected in isolated environments
+			}
+
+			expect(mockProcess.killed).to.be.true;
+			expect((worker as any).pending.size).to.equal(0);
+		});
+
+		it("exit handler triggers failAll", (done) => {
+			const { worker, mockProcess } = createMockedWorker();
+			// Set up a pending request
+			(worker as any).pending.set("1", {
+				resolve: () => done(new Error("Should not resolve")),
+				reject: (err: Error) => {
+					try {
+						expect(err.message).to.include("exited");
+						done();
+					} catch (assertErr) {
+						done(assertErr);
+					}
+				},
+				timer: setTimeout(() => {}, 100_000),
+			});
+
+			// Simulate process exit — the exit handler is in ensureStarted() which
+			// was never called (we injected process directly). Fire the handler manually.
+			mockProcess._exitHandler?.(1, null);
+			expect((worker as any).pending.size).to.equal(0);
+		});
+	});
+});

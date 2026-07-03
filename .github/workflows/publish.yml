@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        package: [pi-ponytail, pi-web]
+        package: [pi-ponytail, pi-serena, pi-web]
     defaults:
       run:
         working-directory: ./${{ matrix.package }}

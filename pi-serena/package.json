@@ -1,0 +1,46 @@
+{
+  "name": "@bacnh85/pi-serena",
+  "version": "0.7.0",
+  "description": "Pi extension that provides Serena semantic code tools through a persistent worker.",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git",
+    "directory": "pi-serena"
+  },
+  "bugs": {
+    "url": "https://github.com/bacnh85/pi-extensions/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "serena",
+    "semantic-code"
+  ],
+  "files": [
+    "README.md",
+    "extensions/"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "chai": "^4.5.0",
+    "mocha": "^10.8.2",
+    "tsx": "^4.22.4"
+  },
+  "scripts": {
+    "test": "cd extensions && mocha"
+  }
+}
