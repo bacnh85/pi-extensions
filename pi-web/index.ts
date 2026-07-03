@@ -396,6 +396,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
 			"The output shows which backends are configured; if a backend is missing, configure its env vars.",
 			"Never print API key values; this tool reports only presence and source.",
 			"Shows Crawl4AI server health, version, and auth status when the server is reachable.",
+			"For Firecrawl, `apiKeyFound: false` is normal for self-hosted instances without auth. Use the `ready` field to check whether Firecrawl is actually usable.",
 		],
 		parameters: Type.Object({}),
 		async execute(_id: string, _params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
@@ -410,15 +411,19 @@ export default function piWebExtension(pi: ExtensionAPI) {
 			const c4aiUrl = findEnvValue("CRAWL4AI_API_URL", cwd, trusted);
 			const c4aiToken = findEnvValue("CRAWL4AI_API_TOKEN", cwd, trusted);
 
+			const fcBaseUrl = normalizeFirecrawlBaseUrl(fireUrl.value);
+			const fcHosted = !fireUrl.value || fcBaseUrl.startsWith(HOSTED_FIRECRAWL_BASE_URL);
+
 			const status: Record<string, unknown> = {
 				brave: { apiKeyFound: Boolean(braveKey.value), apiKeySource: braveKey.value ? braveKey.source : "not set" },
 				searxng: { baseUrl: normalizeSearxngBaseUrl(searxngUrl.value), baseUrlSource: searxngUrl.source || "default local" },
 				firecrawl: {
-					baseUrl: normalizeFirecrawlBaseUrl(fireUrl.value),
+					baseUrl: fcBaseUrl,
 					apiUrlSource: fireUrl.source || "default hosted",
 					apiKeyFound: Boolean(fireKey.value),
 					apiKeySource: fireKey.value ? fireKey.source : "not set",
-					hostedMode: !fireUrl.value || normalizeFirecrawlBaseUrl(fireUrl.value).startsWith(HOSTED_FIRECRAWL_BASE_URL),
+					hostedMode: fcHosted,
+					ready: fcHosted ? Boolean(fireKey.value) : Boolean(fireUrl.value?.trim()),
 				},
 				crawl4ai: {
 					baseUrl: normalizeCrawl4aiApiUrl(c4aiUrl.value),

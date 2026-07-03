@@ -144,7 +144,7 @@ async function searchBrave(params: SearchParams, backends: BackendConfig): Promi
 
 async function searchFirecrawl(params: SearchParams, backends: BackendConfig): Promise<SearchResult[]> {
 	if (!backends.firecrawl.configured || !backends.firecrawl.config) {
-		throw new Error("Firecrawl not configured (no FIRECRAWL_API_KEY/FIRECRAWL_API_URL)");
+		throw new Error("Firecrawl not configured (no FIRECRAWL_API_URL)");
 	}
 	const body: Record<string, unknown> = {
 		query: params.query,

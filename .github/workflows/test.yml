@@ -15,7 +15,7 @@ jobs:
           - package: pi-ponytail
             test-command: node --test extensions/test/*.test.js
           - package: pi-web
-            test-command: npm test
+            test-command: npm ci && npm test
     defaults:
       run:
         working-directory: ./${{ matrix.package }}
