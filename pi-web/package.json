@@ -1,0 +1,60 @@
+{
+  "name": "@bacnh85/pi-web",
+  "version": "0.4.1",
+  "description": "Pi extension for web search, page extraction, Firecrawl scraping/crawling, and Crawl4AI headless browser crawling.",
+  "type": "module",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git",
+    "directory": "pi-web"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "web-search",
+    "brave-search",
+    "firecrawl",
+    "crawl4ai",
+    "scraping",
+    "crawling"
+  ],
+  "scripts": {
+    "test": "npx mocha"
+  },
+  "files": [
+    "README.md",
+    "index.ts",
+    "types.d.ts",
+    "lib/"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "jsdom": "^27.0.1",
+    "turndown": "^7.2.2",
+    "turndown-plugin-gfm": "^1.0.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/chai": "^5.2.3",
+    "@types/jsdom": "^28.0.3",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^26.0.1",
+    "@types/turndown": "^5.0.6",
+    "chai": "^6.2.2",
+    "mocha": "^11.7.6",
+    "tsx": "^4.22.4"
+  }
+}

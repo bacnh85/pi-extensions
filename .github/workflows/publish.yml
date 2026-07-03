@@ -8,16 +8,23 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - package: pi-ponytail
+            test-command: node --test extensions/test/*.test.js
+          - package: pi-web
+            test-command: npm test
     defaults:
       run:
-        working-directory: ./pi-ponytail
+        working-directory: ./${{ matrix.package }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
-      - run: node --test extensions/test/*.test.js
+      - run: ${{ matrix.test-command }}
       - run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
