@@ -50,6 +50,7 @@ except Exception:
     serena_version = lambda: "unknown"  # type: ignore
 
 agents: dict[str, SerenaAgent] = {}
+dashboard_opened: bool = False
 
 def env_flag(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
@@ -140,7 +141,14 @@ def handle(req: dict[str, Any]) -> dict[str, Any]:
         project = str(req.get("project") or os.getcwd())
         context = str(req.get("context") or "ide")
         agent = get_agent(project, context)
-        opened = bool(req.get("open")) and agent.open_dashboard()
+        global dashboard_opened
+        opened = False
+        if req.get("open"):
+            if not dashboard_opened:
+                opened = agent.open_dashboard()
+                dashboard_opened = opened
+            else:
+                opened = True
         return {"id": req_id, "ok": True, "opened": opened, "dashboardUrl": agent.get_dashboard_url()}
 
     if action == "config":
