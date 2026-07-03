@@ -3,7 +3,7 @@
 // Endpoints: /crawl, /crawl/stream, /md, /screenshot, /pdf, /health
 
 import type { Crawl4aiConfig } from "./config";
-import { signalWithTimeout, withRetry } from "./retry";
+import { signalWithTimeout } from "./retry";
 
 // ---------------------------------------------------------------------------
 // Error
@@ -52,9 +52,15 @@ export async function crawl4aiRequest(
 	body?: unknown,
 	signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
-	return withRetry(async () => {
-		return await crawl4aiRequestJson(config, method, endpoint, body, signal);
-	}, { maxRetries: 2, retryableErrors: ["timeout", "econn", "etimedout", "network", "socket"] });
+	for (let attempt = 0; attempt < 3; attempt++) {
+		try {
+			return await crawl4aiRequestJson(config, method, endpoint, body, signal);
+		} catch (e) {
+			if (attempt === 2) throw e;
+			await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
+		}
+	}
+	throw new Error("unreachable");
 }
 
 // ---------------------------------------------------------------------------
@@ -176,17 +182,7 @@ export async function fetchCrawl4aiHealth(
 	config: Crawl4aiConfig,
 	signal?: AbortSignal,
 ): Promise<{ status?: string; version?: string; timestamp?: number }> {
-	const headers: Record<string, string> = { Accept: "application/json" };
-	if (config.apiToken) headers.Authorization = `Bearer ${config.apiToken}`;
-	const timeoutMs = Math.min(config.timeoutMs, 10000);
-	const response = await fetch(`${config.baseUrl}/health`, {
-		method: "GET",
-		headers,
-		signal: signalWithTimeout(timeoutMs, signal),
-	});
-	const text = await response.text();
-	if (!response.ok) throw new Crawl4aiHttpError(response.status, response.statusText, text);
-	const data = text ? JSON.parse(text) : {};
+	const data = await crawl4aiRequest({ ...config, timeoutMs: Math.min(config.timeoutMs, 10000) }, "GET", "/health", undefined, signal);
 	return {
 		status: data.status as string | undefined,
 		version: data.version as string | undefined,

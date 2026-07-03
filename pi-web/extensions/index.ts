@@ -81,7 +81,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
 		name: "web_search",
 		label: "Web Search",
 		description:
-			"Search the web with adaptive backend selection. Uses SearXNG (self-hosted) for broad discovery, Brave (hosted API) for precision-sensitive queries and include_content, and Firecrawl as a last resort. Use backend to force a provider.",
+			"Search the web. Auto-selects backends adaptively: SearXNG, Brave, Firecrawl.",
 		promptSnippet: "Search current web results",
 		promptGuidelines: [
 			"Use web_search for source discovery, documentation lookup, current facts, and general web search.",
@@ -132,7 +132,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
 		name: "web_extract",
 		label: "Web Content Extraction",
 		description:
-			"Extract readable content from a URL with automatic backend selection. Tries static extraction (JSDOM+Readability, no API key) first, then dynamic extraction (Firecrawl Scrape, JS rendering), then full browser extraction (Crawl4AI, headless browser). Use the mode parameter for explicit control. If all modes fail, try web_screenshot for a visual snapshot.",
+			"Extract readable content from a URL. Auto backend: static \u2192 dynamic \u2192 full.",
 		promptSnippet: "Extract readable webpage content as markdown",
 		promptGuidelines: [
 			"Use web_extract to get clean markdown content from a known URL.",
@@ -183,7 +183,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
 		name: "web_map",
 		label: "Site URL Discovery",
 		description:
-			"Discover URLs from a site using Firecrawl Map. Best for finding candidate pages from a site or docs section before targeted extraction. Works best on base domains; may return empty results on sub-paths.",
+			"Discover URLs from a site using Firecrawl Map.",
 		promptSnippet: "Map site URLs",
 		promptGuidelines: [
 			"Use web_map to discover URLs from a site before crawling or targeted extraction.",
@@ -213,7 +213,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
 			if (params.use_index !== undefined) body.useIndex = params.use_index;
 			if (params.ignore_cache !== undefined) body.ignoreCache = params.ignore_cache;
 			const config = loadFirecrawlConfig(params as Record<string, unknown>, cwdFromContext(ctx), includeProjectEnv(ctx));
-			const result = await firecrawlRequest(config, "POST", "/map", body, true, signal);
+			const result = await firecrawlRequest(config, "POST", "/map", body, signal);
 			const urls = result.data || result.links || result.urls || [];
 			const text = Array.isArray(urls) && urls.length > 0
 				? (urls as Array<Record<string, unknown> | string>).map((u: any) => u.url || u).join("\n")
@@ -227,7 +227,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
 		name: "web_crawl",
 		label: "Site Crawl",
 		description:
-			"Crawl one or more pages from a site. Uses Firecrawl Crawl in 'light' mode (conservative, doc-focused) or Crawl4AI in 'full' mode (headless browser, rendered data, media, links). Accepts a single URL for Firecrawl-style crawling or multiple URLs for Crawl4AI-style crawling.",
+			"Crawl site pages. Firecrawl 'light' or Crawl4AI 'full' headless mode.",
 		promptSnippet: "Crawl a small site section",
 		promptGuidelines: [
 			"Use web_crawl only when multiple pages from a site are truly needed; prefer web_map + web_extract for small numbers of pages.",
@@ -288,14 +288,13 @@ export default function piWebExtension(pi: ExtensionAPI) {
 						: [],
 					scrapeOptions: { formats: ["markdown"], onlyMainContent: true },
 				},
-				true,
 				signal,
 			);
 			const id = result.id || (result.data as Record<string, unknown> | undefined)?.id;
 			if (params.poll && id && !Array.isArray(result.data)) {
 				const { abortableSleep } = await import("./lib/retry");
 				for (let i = 0; i < 60; i++) {
-					result = await firecrawlRequest(fcConfig, "GET", `/crawl/${id}`, undefined, true, signal);
+					result = await firecrawlRequest(fcConfig, "GET", `/crawl/${id}`, undefined, signal);
 					if (["completed", "failed", "cancelled"].includes(
 						String(result.status || (result.data as Record<string, unknown> | undefined)?.status || ""),
 					)) break;
@@ -319,7 +318,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
 		name: "web_screenshot",
 		label: "Web Page Screenshot",
 		description:
-			"Capture a full-page PNG screenshot of a URL using Crawl4AI's headless browser. Returns a base64-encoded PNG image suitable for visual inspection.",
+			"Capture a full-page PNG screenshot via Crawl4AI headless browser.",
 		promptSnippet: "Screenshot a webpage",
 		promptGuidelines: [
 			"Use web_screenshot when a visual snapshot of a rendered page is needed, or when web_extract fails on a heavily JS-dependent or bot-protected page.",
@@ -360,7 +359,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
 		name: "web_pdf",
 		label: "Web Page PDF",
 		description:
-			"Generate a PDF document of a URL using Crawl4AI's headless browser. Returns a base64-encoded PDF suitable for saving or archiving.",
+			"Generate a PDF document via Crawl4AI headless browser.",
 		promptSnippet: "PDF a webpage",
 		promptGuidelines: [
 			"Use web_pdf when a printable or archivable snapshot of a page is needed.",
@@ -389,7 +388,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
 		name: "web_status",
 		label: "Web Provider Status",
 		description:
-			"Show all web provider configuration status (Brave, SearXNG, Firecrawl, Crawl4AI) without printing secrets. Includes Crawl4AI server health check. Use when web tools fail due to missing credentials or configuration issues.",
+			"Show web provider configuration status without printing secrets.",
 		promptSnippet: "Check web provider configuration and server status",
 		promptGuidelines: [
 			"Use web_status when web tools fail due to missing credentials/config or to verify which backends are available.",

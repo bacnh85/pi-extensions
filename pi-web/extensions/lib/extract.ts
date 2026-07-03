@@ -111,7 +111,7 @@ async function extractDynamic(params: ExtractParams, ctx?: Record<string, unknow
 		...(params.wait_for ? { waitFor: params.wait_for } : {}),
 		...(params.mobile ? { mobile: true } : {}),
 	};
-	const result = await firecrawlRequest(fcConfig, "POST", "/scrape", body, true, params.signal) as FirecrawlResult;
+	const result = await firecrawlRequest(fcConfig, "POST", "/scrape", body, params.signal) as FirecrawlResult;
 	const structured = findStructuredPayload(result);
 	const raw = `${formatFirecrawlScrape(result as Record<string, unknown>, params.content_chars ?? 20000)}${structuredSection(structured)}`;
 	const titleMatch = raw.match(/^# (.+)$/m);
@@ -183,7 +183,3 @@ export async function extractWithDiagnostics(params: ExtractParams): Promise<Ext
 	);
 }
 
-/** Compatibility wrapper returning only the selected extraction result. */
-export async function universalExtract(params: ExtractParams): Promise<ExtractResult> {
-	return (await extractWithDiagnostics(params)).result;
-}

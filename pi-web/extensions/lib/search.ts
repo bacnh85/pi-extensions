@@ -152,7 +152,7 @@ async function searchFirecrawl(params: SearchParams, backends: BackendConfig): P
 		sources: [{ type: "web" }],
 		...(params.country ? { country: String(params.country).toUpperCase() } : {}),
 	};
-	const result = await firecrawlRequest(backends.firecrawl.config, "POST", "/search", body, true, params.signal) as FirecrawlResult;
+	const result = await firecrawlRequest(backends.firecrawl.config, "POST", "/search", body, params.signal) as FirecrawlResult;
 	const rootData = result.data as Record<string, unknown> | undefined;
 	const web = (rootData?.web as unknown[]) || [];
 	const news = (rootData?.news as unknown[]) || [];
@@ -238,7 +238,3 @@ export async function searchWithDiagnostics(params: SearchParams): Promise<Searc
 	);
 }
 
-/** Compatibility wrapper returning only results. */
-export async function universalSearch(params: SearchParams): Promise<SearchResult[]> {
-	return (await searchWithDiagnostics(params)).results;
-}

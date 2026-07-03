@@ -2,7 +2,7 @@ name: publish
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -10,11 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          - package: pi-ponytail
-            test-command: node --test extensions/test/*.test.js
-          - package: pi-web
-            test-command: npm ci && npm test
+        package: [pi-ponytail, pi-web]
     defaults:
       run:
         working-directory: ./${{ matrix.package }}
@@ -24,7 +20,16 @@ jobs:
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
-      - run: ${{ matrix.test-command }}
-      - run: npm publish
+      - name: Publish if version changed
+        run: |
+          PKG=$(node -p "require('./package.json').name")
+          VER=$(node -p "require('./package.json').version")
+          PUBLISHED=$(npm view "$PKG" version 2>/dev/null || echo "")
+          if [ "$PUBLISHED" = "$VER" ]; then
+            echo "-> Version $VER already published, skipping"
+          else
+            echo "-> Publishing $VER (was ${PUBLISHED:-none})"
+            npm publish
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

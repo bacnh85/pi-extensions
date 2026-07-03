@@ -3,7 +3,6 @@ import { expect } from "chai";
 import {
 	searchWithDiagnostics,
 	selectSearchBackendOrder,
-	universalSearch,
 	type SearchParams,
 	type SearchResult,
 } from "../../lib/search";
@@ -145,14 +144,4 @@ describe("searchWithDiagnostics", () => {
 		}
 	});
 
-	it("universalSearch remains a compatibility wrapper", async () => {
-		installMockFetch((url) => {
-			if (url.startsWith("http://searxng.test/search")) return jsonResponse({ results: [{ title: "S", url: "https://example.com", content: "Snippet" }] });
-			throw new Error(`unexpected fetch ${url}`);
-		});
-
-		const results = await universalSearch({ query: "homelab ansible ideas" });
-		expect(results).to.have.length(1);
-		expect(results[0].backend).to.equal("searxng");
-	});
 });

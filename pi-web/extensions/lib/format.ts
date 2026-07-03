@@ -1,6 +1,7 @@
 // Text formatting and result formatting helpers for pi-web.
 
-import { OUTPUT_MAX_BYTES, OUTPUT_MAX_LINES } from "./config";
+const OUTPUT_MAX_BYTES = 50 * 1024;
+const OUTPUT_MAX_LINES = 2_000;
 
 // ---------------------------------------------------------------------------
 // Search result item types
@@ -45,28 +46,6 @@ export function truncateText(text: string): string {
 		output += `\n\n[Web output truncated to ${OUTPUT_MAX_LINES} lines / ${OUTPUT_MAX_BYTES} bytes.]`;
 	}
 	return output;
-}
-
-// ---------------------------------------------------------------------------
-// Search result formatting
-// ---------------------------------------------------------------------------
-
-export function formatSearchResults(results: SearchResultItem[]): string {
-	if (!results.length) return "No results found.";
-	return results
-		.map((r, i) =>
-			[
-				`--- Result ${i + 1} ---`,
-				`Title: ${r.title || ""}`,
-				`Link: ${r.url || ""}`,
-				r.age ? `Age: ${r.age}` : "",
-				r.snippet || r.description ? `Snippet: ${r.snippet || r.description}` : "",
-				r.content || r.markdown ? `Content:\n${r.content || r.markdown}` : "",
-			]
-				.filter(Boolean)
-				.join("\n"),
-		)
-		.join("\n\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -175,32 +154,3 @@ export function formatCrawl4aiResult(data: Record<string, unknown>, maxChars = 2
 		.join("\n\n---\n\n") || "(No data)";
 }
 
-export function formatFirecrawlSearch(data: Record<string, unknown>, maxChars = 5000): string {
-	const rootData = data.data as Record<string, unknown> | undefined;
-	const web = (rootData?.web as unknown[]) || [];
-	const news = (rootData?.news as unknown[]) || [];
-	const images = (rootData?.images as unknown[]) || [];
-	const results: SearchResultItem[] = [...web, ...news].map((r: any) => ({
-		title: r.title || r.metadata?.title || "",
-		url: r.url || r.metadata?.sourceURL || "",
-		snippet: r.description || r.snippet || "",
-		markdown: r.markdown ? String(r.markdown).slice(0, maxChars) : "",
-	}));
-	let text = formatSearchResults(results);
-	if (images.length) {
-		text +=
-			"\n\n" +
-			images
-				.map((img: any, i: number) =>
-					[
-						`--- Image ${i + 1} ---`,
-						`Title: ${img.title || ""}`,
-						`Image: ${img.imageUrl || ""}`,
-						`Page: ${img.url || ""}`,
-					].join("\n"),
-				)
-				.join("\n\n");
-	}
-	if (data.warning) text += `\n\nWarning: ${data.warning}`;
-	return text;
-}

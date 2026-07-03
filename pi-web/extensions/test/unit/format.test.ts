@@ -6,13 +6,13 @@ import { expect } from "chai";
 import {
 	sanitizeSnippet,
 	truncateText,
-	formatSearchResults,
 	formatFirecrawlScrape,
-	formatFirecrawlSearch,
 	formatCrawl4aiResult,
 	type SearchResultItem,
 } from "../../lib/format";
-import { OUTPUT_MAX_BYTES, OUTPUT_MAX_LINES } from "../../lib/config";
+
+const OUTPUT_MAX_BYTES = 50 * 1024;
+const OUTPUT_MAX_LINES = 2_000;
 
 describe("sanitizeSnippet", () => {
 	it("returns empty string for empty input", () => {
@@ -64,51 +64,6 @@ describe("truncateText", () => {
 
 	it("handles empty string", () => {
 		expect(truncateText("")).to.equal("");
-	});
-});
-
-describe("formatSearchResults", () => {
-	it('returns "No results found." for empty array', () => {
-		expect(formatSearchResults([])).to.equal("No results found.");
-	});
-
-	it("formats a single result", () => {
-		const results: SearchResultItem[] = [
-			{ title: "Test Title", url: "https://example.com", snippet: "A test snippet" },
-		];
-		const output = formatSearchResults(results);
-		expect(output).to.include("--- Result 1 ---");
-		expect(output).to.include("Title: Test Title");
-		expect(output).to.include("Link: https://example.com");
-		expect(output).to.include("Snippet: A test snippet");
-	});
-
-	it("formats multiple results", () => {
-		const results: SearchResultItem[] = [
-			{ title: "First", url: "https://a.com" },
-			{ title: "Second", url: "https://b.com" },
-		];
-		const output = formatSearchResults(results);
-		expect(output).to.include("--- Result 1 ---");
-		expect(output).to.include("--- Result 2 ---");
-		expect(output).to.include("Title: First");
-		expect(output).to.include("Title: Second");
-	});
-
-	it("includes age when present", () => {
-		const results: SearchResultItem[] = [
-			{ title: "T", url: "https://x.com", age: "2 days ago" },
-		];
-		const output = formatSearchResults(results);
-		expect(output).to.include("Age: 2 days ago");
-	});
-
-	it("includes content when present", () => {
-		const results: SearchResultItem[] = [
-			{ title: "T", url: "https://x.com", content: "Full content here" },
-		];
-		const output = formatSearchResults(results);
-		expect(output).to.include("Content:\nFull content here");
 	});
 });
 
@@ -164,53 +119,6 @@ describe("formatFirecrawlScrape", () => {
 		const data = { foo: "bar" };
 		const output = formatFirecrawlScrape(data);
 		expect(output).to.include("foo");
-	});
-});
-
-describe("formatFirecrawlSearch", () => {
-	it("formats web results", () => {
-		const data = {
-			data: {
-				web: [
-					{ title: "Result A", url: "https://a.com", description: "Desc A" },
-					{ title: "Result B", url: "https://b.com", description: "Desc B" },
-				],
-			},
-		};
-		const output = formatFirecrawlSearch(data);
-		expect(output).to.include("--- Result 1 ---");
-		expect(output).to.include("Result A");
-		expect(output).to.include("Result B");
-	});
-
-	it("formats news results combined with web results", () => {
-		const data = {
-			data: {
-				web: [{ title: "Web", url: "https://w.com", description: "W" }],
-				news: [{ title: "News", url: "https://n.com", description: "N" }],
-			},
-		};
-		const output = formatFirecrawlSearch(data);
-		expect(output).to.include("--- Result 1 ---");
-		expect(output).to.include("--- Result 2 ---");
-	});
-
-	it("includes images section", () => {
-		const data = {
-			data: {
-				images: [{ title: "Pic", imageUrl: "https://img.com/pic.png", url: "https://page.com" }],
-			},
-		};
-		const output = formatFirecrawlSearch(data);
-		expect(output).to.include("--- Image 1 ---");
-		expect(output).to.include("Pic");
-		expect(output).to.include("https://img.com/pic.png");
-	});
-
-	it("includes top-level warning", () => {
-		const data = { data: {}, warning: "Partial results" };
-		const output = formatFirecrawlSearch(data);
-		expect(output).to.include("Warning: Partial results");
 	});
 });
 

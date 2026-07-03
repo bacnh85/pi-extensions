@@ -17,8 +17,6 @@ import {
 	DEFAULT_SEARXNG_BASE_URL,
 	DEFAULT_CRAWL4AI_API_URL,
 	HOSTED_FIRECRAWL_BASE_URL,
-	OUTPUT_MAX_BYTES,
-	OUTPUT_MAX_LINES,
 } from "../../lib/config";
 
 describe("stripInlineComment", () => {

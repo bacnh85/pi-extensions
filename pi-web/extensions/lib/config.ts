@@ -8,8 +8,6 @@ import path from "node:path";
 // Constants
 // ---------------------------------------------------------------------------
 
-export const OUTPUT_MAX_BYTES = 50 * 1024;
-export const OUTPUT_MAX_LINES = 2_000;
 export const HOSTED_FIRECRAWL_BASE_URL = "https://api.firecrawl.dev/v2";
 export const DEFAULT_SEARXNG_BASE_URL = "http://172.30.55.22:8888";
 export const DEFAULT_CRAWL4AI_API_URL = "http://172.30.55.22:11235";

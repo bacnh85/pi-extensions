@@ -2,7 +2,6 @@ import { expect } from "chai";
 
 import {
 	extractWithDiagnostics,
-	universalExtract,
 	type ExtractMode,
 	type ExtractParams,
 	type ExtractResult,
@@ -132,15 +131,4 @@ describe("extractWithDiagnostics", () => {
 		expect(diagnostics.result.markdown).to.include("Crawl4AI");
 	});
 
-	it("universalExtract remains a compatibility wrapper", async () => {
-		installMockFetch((url) => {
-			if (url === "https://example.com/static") {
-				return htmlResponse("<html><head><title>Static</title></head><body><main><p>This article has enough content for the compatibility wrapper to return a result directly from static extraction.</p><p>Extra text keeps it over the useful threshold.</p></main></body></html>");
-			}
-			throw new Error(`unexpected fetch ${url}`);
-		});
-
-		const result = await universalExtract({ url: "https://example.com/static" });
-		expect(result.backend).to.equal("static");
-	});
 });

@@ -1,7 +1,7 @@
 // Firecrawl API client (search, scrape, map, crawl).
 
 import type { FirecrawlConfig } from "./config";
-import { signalWithTimeout, withRetry } from "./retry";
+import { signalWithTimeout } from "./retry";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,34 +53,22 @@ async function firecrawlRequestJson(
 }
 
 /**
- * Firecrawl API request with optional v2→v1 fallback on 404.
- * Returns the response data and optionally logs fallback via console.warn.
+ * Firecrawl API request with retry.
  */
 export async function firecrawlRequest(
 	config: FirecrawlConfig,
 	method: string,
 	endpoint: string,
 	body?: unknown,
-	allowFallback = true,
 	signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
-	return withRetry(async () => {
+	for (let attempt = 0; attempt < 3; attempt++) {
 		try {
 			return await firecrawlRequestJson(config, method, endpoint, body, signal);
 		} catch (e) {
-			if (
-				!allowFallback ||
-				config.isHosted ||
-				!config.baseUrl.endsWith("/v2") ||
-				!(e instanceof FirecrawlHttpError) ||
-				e.status !== 404
-			)
-				throw e;
-			const v1Config = { ...config, baseUrl: config.baseUrl.replace(/\/v2$/, "/v1") };
-			console.warn(
-				`[pi-web] Firecrawl v2 endpoint returned 404, falling back to v1 at ${v1Config.baseUrl}`,
-			);
-			return await firecrawlRequestJson(v1Config, method, endpoint, body, signal);
+			if (attempt === 2) throw e;
+			await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
 		}
-	}, { maxRetries: 2, retryableErrors: ["timeout", "econn", "etimedout", "network", "socket"] });
+	}
+	throw new Error("unreachable");
 }
