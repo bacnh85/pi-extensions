@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-web",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Pi extension for web search, page extraction, Firecrawl scraping/crawling, and Crawl4AI headless browser crawling.",
   "type": "module",
   "license": "MIT",
@@ -30,11 +30,15 @@
     "README.md",
     "index.ts",
     "types.d.ts",
-    "lib/"
+    "lib/",
+    "skills/"
   ],
   "pi": {
     "extensions": [
       "./index.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   },
   "dependencies": {
