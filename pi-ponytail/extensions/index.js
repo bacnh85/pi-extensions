@@ -81,13 +81,6 @@ export default function ponytailExtension(pi) {
     ctx?.ui?.notify?.(`Ponytail mode set to ${normalized}.`, "info");
   };
 
-  const sendAlias = (skillName, args, ctx) => {
-    const message = String(args || "").trim()
-      ? `${skillName} ${String(args).trim()}`
-      : skillName;
-    pi.sendUserMessage(message);
-  };
-
   pi.registerCommand("ponytail", {
     description: "Set or report Ponytail mode",
     handler: async (args, ctx) => {
@@ -117,13 +110,6 @@ export default function ponytailExtension(pi) {
 
       ctx?.ui?.notify?.("Unknown or unsupported /ponytail mode.", "warning");
     },
-  });
-
-  ["ponytail-review", "ponytail-audit", "ponytail-gain", "ponytail-debt", "ponytail-help"].forEach((name) => {
-    pi.registerCommand(name, {
-      description: `Run /skill:${name}`,
-      handler: (_args, ctx) => sendAlias(`/skill:${name}`, "", ctx),
-    });
   });
 
   pi.on("input", async (event) => {

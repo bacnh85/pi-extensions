@@ -49,6 +49,7 @@ const crawl4aiControlSchema = {
 	timeout_ms: Type.Optional(Type.Number({ description: "Request timeout in milliseconds." })),
 };
 
+
 // ---------------------------------------------------------------------------
 // Helper: format unified search results for text output
 // ---------------------------------------------------------------------------
@@ -446,29 +447,4 @@ export default function piWebExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// ── /web-status command ──────────────────────────────────────────────
-	pi.registerCommand("web-status", {
-		description: "Show web provider configuration status",
-		handler: async (_args: string, ctx: any) => {
-			const cwd = cwdFromContext(ctx);
-			const trusted = includeProjectEnv(ctx);
-			const braveKey = findEnvValue("BRAVE_API_KEY", cwd, trusted);
-			const searxngUrl = findEnvValue("SEARXNG_BASE_URL", cwd, trusted);
-			const fireKey = findEnvValue("FIRECRAWL_API_KEY", cwd, trusted);
-			const fireUrl = findEnvValue("FIRECRAWL_API_URL", cwd, trusted);
-			const c4aiUrl = findEnvValue("CRAWL4AI_API_URL", cwd, trusted);
-			const c4aiToken = findEnvValue("CRAWL4AI_API_TOKEN", cwd, trusted);
-			ctx.ui.notify(
-				[
-					`Brave API key: ${braveKey.value ? `found (${braveKey.source})` : "not set"}`,
-					`SearXNG base URL: ${normalizeSearxngBaseUrl(searxngUrl.value)} (${searxngUrl.source || "default local"})`,
-					`Firecrawl base URL: ${normalizeFirecrawlBaseUrl(fireUrl.value)}`,
-					`Firecrawl API key: ${fireKey.value ? `found (${fireKey.source})` : "not set"}`,
-					`Crawl4AI API URL: ${normalizeCrawl4aiApiUrl(c4aiUrl.value)} (${c4aiUrl.source || "default"})`,
-					`Crawl4AI API token: ${c4aiToken.value ? `found (${c4aiToken.source})` : "not set"}`,
-				].join("\n"),
-				"info",
-			);
-		},
-	});
 }

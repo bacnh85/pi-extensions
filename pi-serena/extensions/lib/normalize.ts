@@ -20,5 +20,3 @@ export function stripControlParams(params: Record<string, unknown>): { project: 
 	const { project, context, timeout_ms, ...toolParams } = params;
 	return { project: normalizeProject(project), context: normalizeContext(context), timeoutMs: normalizeTimeoutMs(timeout_ms), params: toolParams };
 }
-
-// ponytail: normalizeSearchPatternParams, normalizeFindReferencesParams, normalizeReplaceContentParams, validateReplaceContentParams — inlined into tool handlers

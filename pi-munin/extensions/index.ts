@@ -427,32 +427,6 @@ export default function muninExtension(pi: ExtensionAPI) {
 	// Event hooks
 	// ====================================================================
 
-	pi.on("before_agent_start", async (event) => {
-		const prompt = event.prompt.toLowerCase();
-		if (
-			/\b(search my memory|recall|remember|what did we|past work|previously|last time)\b/.test(
-				prompt,
-			)
-		) {
-			return {
-				systemPrompt:
-					event.systemPrompt +
-					"\n\nMunin long-term memory tools are available as Pi-native tools. Before non-trivial work, or when the user references past work, memory, or history, use munin_search to retrieve relevant context from the project's long-term memory. Always verify memories against current repository evidence before relying on them.",
-			};
-		}
-		if (
-			/\b(store this|remember this|save this to memory|capture this|document this)\b/.test(
-				prompt,
-			)
-		) {
-			return {
-				systemPrompt:
-					event.systemPrompt +
-					"\n\nMunin long-term memory tools are available as Pi-native tools. When the user asks to save, store, or remember verified project knowledge, use munin_store. Ensure tags include at least one type: AND one domain: tag.",
-			};
-		}
-	});
-
 	pi.on("tool_result", async (event) => {
 		if (!event.toolName.startsWith("munin_") || !event.isError) return;
 		const text = event.content.map((part: any) => part?.text ?? "").join("\n");

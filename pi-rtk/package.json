@@ -1,7 +1,7 @@
 {
-  "name": "@bacnh85/pi-serena",
-  "version": "0.8.1",
-  "description": "Pi extension that provides Serena semantic code tools through a persistent worker.",
+  "name": "@bacnh85/pi-rtk",
+  "version": "0.1.5",
+  "description": "Pi extension that routes shell commands through RTK for token savings.",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
@@ -10,7 +10,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bacnh85/pi-extensions.git",
-    "directory": "pi-serena"
+    "directory": "pi-rtk"
   },
   "bugs": {
     "url": "https://github.com/bacnh85/pi-extensions/issues"
@@ -18,8 +18,8 @@
   "keywords": [
     "pi-package",
     "pi-extension",
-    "serena",
-    "semantic-code"
+    "rtk",
+    "token-optimization"
   ],
   "files": [
     "README.md",
@@ -31,16 +31,6 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
-  },
-  "devDependencies": {
-    "@types/node": "^20.19.43",
-    "chai": "^4.5.0",
-    "mocha": "^10.8.2",
-    "tsx": "^4.22.4"
-  },
-  "scripts": {
-    "test": "cd extensions && mocha"
+    "@earendil-works/pi-coding-agent": "*"
   }
 }

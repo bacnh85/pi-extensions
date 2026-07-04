@@ -117,7 +117,6 @@ The Pi bridge also implements `serena_get_current_config` and `serena_restart_la
 
 ## Commands
 
-- `/serena-status [project]`
 - `/serena-dashboard [project]`
 - `/serena-restart`
 

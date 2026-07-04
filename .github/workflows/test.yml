@@ -20,6 +20,8 @@ jobs:
             test-command: npm ci && npm test
           - package: pi-munin
             test-command: npm ci && npm test
+          - package: pi-rtk
+            test-command: npm pack --dry-run
     defaults:
       run:
         working-directory: ./${{ matrix.package }}

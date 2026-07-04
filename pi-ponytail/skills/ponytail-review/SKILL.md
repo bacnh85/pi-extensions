@@ -6,7 +6,7 @@ description: >
   dead flexibility. One line per finding: location, what to cut, what replaces
   it. Use when the user says "review for over-engineering", "what can we
   delete", "is this over-engineered", "simplify review", or invokes
-  /ponytail-review. Complements correctness-focused review, this one only
+  /skill:ponytail-review. Complements correctness-focused review, this one only
   hunts complexity.
 ---
 

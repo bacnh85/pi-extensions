@@ -5,7 +5,7 @@ import path from "node:path";
 import { SerenaWorkerClient, type SerenaWorkerResponse } from "./worker";
 import { SEMANTIC_MISS_THRESHOLD } from "./lib/detect";
 import { SERENA_FIRST_GUIDANCE, SERENA_MISS_GUIDANCE, shouldBlockSemanticMiss } from "./lib/guidance";
-import { normalizeProject, normalizeContext, normalizeTimeoutMs, stripControlParams, normalizeSearchPatternParams, normalizeFindReferencesParams, normalizeReplaceContentParams, validateReplaceContentParams } from "./lib/normalize";
+import { normalizeProject, normalizeContext, normalizeTimeoutMs, stripControlParams } from "./lib/normalize";
 
 const DEFAULT_CONTEXT = "ide";
 
@@ -179,22 +179,13 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 			try {
 				const response = await getWorker(ctx).request(payload, timeoutMs);
 				const errorType = response.errorType as string | undefined;
-				if (!response.ok && (errorType === "timeout" || errorType === "language_server_error")) {
-					return getWorker(ctx).request(payload, timeoutMs);
-				}
-				return response;
+				return !response.ok && (errorType === "timeout" || errorType === "language_server_error")
+					? getWorker(ctx).request(payload, timeoutMs)
+					: response;
 			} catch (error) {
 				const msg = error instanceof Error ? error.message : String(error);
-				const isTransient = /Serena worker request timed out|Serena worker killed due to timeout, restarted|Serena worker exited/.test(msg);
-				if (!isTransient) throw error;
-				try {
-					return await getWorker(ctx).request(payload, timeoutMs);
-				} catch (retryError) {
-					if (retryError instanceof Error) {
-						retryError.message = `${retryError.message} Retry with a larger timeout_ms if this operation is expected to take longer.`;
-					}
-					throw retryError;
-				}
+				if (!/Serena worker request timed out|Serena worker killed due to timeout, restarted|Serena worker exited/.test(msg)) throw error;
+				return getWorker(ctx).request(payload, timeoutMs);
 			}
 		};
 		const run = async (): Promise<{ content: { type: "text"; text: string }[]; details: SerenaWorkerResponse }> => {
@@ -472,15 +463,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 		parameters: diagnosticsSchema,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return callWorkerAction(ctx, "get_diagnostics_for_file", params);
-		},
-	});
-
-	pi.registerCommand("serena-status", {
-		description: "Show Serena worker status",
-		handler: async (args, ctx) => {
-			const project = args?.trim() || process.cwd();
-			const response = await getWorker(ctx).request({ action: "status", project, context: DEFAULT_CONTEXT, includeAgent: true });
-			ctx.ui.notify(JSON.stringify(response, null, 2), response.ok ? "info" : "error");
 		},
 	});
 

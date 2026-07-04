@@ -34,11 +34,11 @@ pi install npm:@bacnh85/pi-ponytail
 | `/ponytail lite\|full\|ultra\|off` | Set session intensity |
 | `/ponytail status` | Show current and default mode |
 | `/ponytail default lite\|full\|ultra\|off` | Persist the default across sessions |
-| `/ponytail-review` | Over-engineering review on the current diff |
-| `/ponytail-audit` | Whole-repo over-engineering audit |
-| `/ponytail-debt` | Harvest `ponytail:` shortcut markers into a ledger |
-| `/ponytail-gain` | Show measured-impact scoreboard (benchmark medians) |
-| `/ponytail-help` | Quick reference |
+| `/skill:ponytail-review` | Over-engineering review on the current diff |
+| `/skill:ponytail-audit` | Whole-repo over-engineering audit |
+| `/skill:ponytail-debt` | Harvest `ponytail:` shortcut markers into a ledger |
+| `/skill:ponytail-gain` | Show measured-impact scoreboard (benchmark medians) |
+| `/skill:ponytail-help` | Quick reference |
 
 Deactivate: `stop ponytail` or `normal mode`. Resume with `/ponytail`.
 

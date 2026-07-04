@@ -10,7 +10,6 @@ function createPiHarness() {
   const events = new Map();
   const commands = new Map();
   const appendedEntries = [];
-  const sentUserMessages = [];
 
   const pi = {
     on(eventName, handler) {
@@ -22,13 +21,10 @@ function createPiHarness() {
     appendEntry(customType, data) {
       appendedEntries.push({ customType, data });
     },
-    sendUserMessage(text, options) {
-      sentUserMessages.push({ text, options });
-    },
   };
 
   ponytailExtension(pi);
-  return { events, commands, appendedEntries, sentUserMessages };
+  return { events, commands, appendedEntries };
 }
 
 function createCommandContext(overrides = {}) {
@@ -54,10 +50,10 @@ function withTempConfig(fn) {
     });
 }
 
-test("extension registers Ponytail commands", () => {
+test("extension registers Ponytail mode command", () => {
   const { commands } = createPiHarness();
 
-  assert.deepEqual([...commands.keys()].sort(), ["ponytail", "ponytail-audit", "ponytail-debt", "ponytail-gain", "ponytail-help", "ponytail-review"]);
+  assert.deepEqual([...commands.keys()], ["ponytail"]);
 });
 
 test("/ponytail updates session mode and injects instructions", async () => withTempConfig(async () => {
@@ -92,25 +88,6 @@ test("session_start restores latest persisted mode", async () => withTempConfig(
 
   assert.ok(result.systemPrompt.includes("lite"));
 }));
-
-test("skill alias commands delegate to Pi skill commands", async () => {
-  const { commands, sentUserMessages } = createPiHarness();
-  const ctx = createCommandContext();
-
-  await commands.get("ponytail-review").handler("", ctx);
-  await commands.get("ponytail-audit").handler("", ctx);
-  await commands.get("ponytail-debt").handler("", ctx);
-  await commands.get("ponytail-gain").handler("", ctx);
-  await commands.get("ponytail-help").handler("", ctx);
-
-  assert.deepEqual(sentUserMessages.map((entry) => entry.text), [
-    "/skill:ponytail-review",
-    "/skill:ponytail-audit",
-    "/skill:ponytail-debt",
-    "/skill:ponytail-gain",
-    "/skill:ponytail-help",
-  ]);
-});
 
 test("normal mode disables persistent instructions", async () => withTempConfig(async () => {
   const { commands, events } = createPiHarness();

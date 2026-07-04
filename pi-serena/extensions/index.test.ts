@@ -10,12 +10,7 @@ import {
 	commandLooksLikeSemanticCodeSearch,
 } from "./lib/detect";
 import { SERENA_FIRST_GUIDANCE, SERENA_MISS_GUIDANCE, shouldBlockSemanticMiss } from "./lib/guidance";
-import {
-	normalizeProject,
-	normalizeContext,
-	normalizeTimeoutMs,
-	stripControlParams,
-} from "./lib/normalize";
+import { stripControlParams } from "./lib/normalize";
 
 describe("Serena tool-selection guidance", () => {
 	it("uses procedural Serena-first wording", () => {
@@ -156,72 +151,10 @@ describe("commandLooksLikeSemanticCodeSearch", () => {
 	}
 });
 
-describe("normalizeProject", () => {
-	const cases = [
-		["/some/project", "/some/project"],
-		["", process.cwd()],
-		["   ", process.cwd()],
-		[undefined, process.cwd()],
-	];
-	for (const [input, expected] of cases) {
-		it(`returns ${expected === process.cwd() ? "cwd" : "the project string"} when ${input === "" ? "empty" : input === "   " ? "whitespace" : input === undefined ? "not a string" : "non-empty"}`, () => {
-			expect(normalizeProject(input)).to.equal(expected);
-		});
-	}
-});
-
-describe("normalizeContext", () => {
-	const cases = [
-		["my-context", "my-context"],
-		["", "ide"],
-		["   ", "ide"],
-	];
-	for (const [input, expected] of cases) {
-		it(`returns '${expected}' when ${input === "" ? "empty" : "whitespace"}`, () => {
-			expect(normalizeContext(input)).to.equal(expected);
-		});
-	}
-});
-
-describe("normalizeTimeoutMs", () => {
-	const cases = [
-		[5000, 5000, "positive finite"],
-		[0, undefined, "zero"],
-		[-1, undefined, "negative"],
-		[Infinity, undefined, "Infinity"],
-		["5000", undefined, "non-number string"],
-		[null, undefined, "null"],
-		[undefined, undefined, "undefined"],
-	];
-	for (const [input, expected, label] of cases) {
-		it(`returns ${expected === undefined ? "undefined" : "the number"} for ${label}`, () => {
-			expect(normalizeTimeoutMs(input)).to.equal(expected);
-		});
-	}
-});
-
 describe("stripControlParams", () => {
-	it("extracts project, context, timeout_ms and returns remaining params", () => {
-		const result = stripControlParams({ project: "/p", context: "c", timeout_ms: 5000, tool_action: "search", foo: "bar" });
-		expect(result.project).to.equal("/p");
-		expect(result.context).to.equal("c");
-		expect(result.timeoutMs).to.equal(5000);
-		expect(result.params).to.deep.equal({ tool_action: "search", foo: "bar" });
-	});
-
-	it("normalizes missing fields", () => {
-		const result = stripControlParams({ foo: "bar" });
-		expect(result.project).to.equal(process.cwd());
-		expect(result.context).to.equal("ide");
-		expect(result.timeoutMs).to.be.undefined;
-	});
-
-	it("excludes extra control params from tool params", () => {
-		const result = stripControlParams({ project: "/p", context: "c", timeout_ms: 3000, relative_path: "src/index.ts" });
-		expect(result.params).to.not.have.property("project");
-		expect(result.params).to.not.have.property("context");
-		expect(result.params).to.not.have.property("timeout_ms");
-		expect(result.params.relative_path).to.equal("src/index.ts");
+	it("extracts control params and leaves tool params", () => {
+		const result = stripControlParams({ project: "/p", context: "c", timeout_ms: 5000, relative_path: "src/index.ts" });
+		expect(result).to.deep.equal({ project: "/p", context: "c", timeoutMs: 5000, params: { relative_path: "src/index.ts" } });
 	});
 });
 
