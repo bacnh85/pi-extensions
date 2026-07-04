@@ -1,0 +1,120 @@
+# pi-sub
+
+Pi extension that shows subscription usage for the currently selected supported model provider.
+
+Supports OpenAI Codex (`openai-codex`) with live usage windows from ChatGPT's usage endpoint, OpenCode Go (`opencode-go`) with session cost tracking, and Z.ai (`zai`) with GLM Coding Plan quota monitoring. Displays a subscription footer status after Pi's built-in status/token usage line.
+
+## Install
+
+From npm after the package is published:
+
+```bash
+pi install npm:@bacnh85/pi-sub
+```
+
+From this repository checkout:
+
+```bash
+pi install ./pi-sub
+# or test directly
+pi -e ./pi-sub
+```
+
+## What it shows
+
+### OpenAI Codex
+
+The footer status appears after Pi's built-in status/token usage line and includes:
+
+- active account email/account label;
+- subscription plan, such as `Plus` in `/sub` details;
+- 5-hour remaining quota and reset countdown;
+- weekly remaining quota and reset countdown.
+
+Example subscription line:
+
+```text
+(user@example.com) R:15%/2H W:20%/3D
+```
+
+### OpenCode Go
+
+OpenCode Go does not expose a public usage-window API, so the footer shows the active account/key label and accumulated session cost:
+
+```text
+OpenCode Go (OpenCode Go key#1a2b3c4d) $0.23
+```
+
+### Z.ai
+
+Z.ai (GLM Coding Plan) shows the active account/key label plus 5-hour rolling and weekly remaining quota with reset countdowns:
+
+```text
+(Z.ai key#1a2b3c4d) R:55%/2H W:80%/3D
+```
+
+When the current model provider is not supported, `pi-sub` clears its subscription line and does not refresh subscription data.
+
+## Commands
+
+| Command | Description |
+| --- | --- |
+| `/sub` | Show detailed subscription usage for the current supported provider. |
+| `/sub status` | Same as `/sub`. |
+| `/sub refresh` | Force a usage refresh, then show details. |
+
+When Pi OpenAI Codex auth is available, `/sub` shows the active account usage:
+
+```text
+ACCOUNT                 PLAN  ROLLING  WEEKLY  LAST ACTIVITY
+* user@example.com     Plus  15%/2H   20%/3D  Now
+```
+
+For OpenCode Go, `/sub` shows the provider/model, active account/key label, and session cost:
+
+```text
+Provider: OpenCode Go · Model: kimi-k2.6 · Fetched: 14:23
+Session cost: $0.23
+
+  ACCOUNT                         PLAN  LAST ACTIVITY
+------------------------------------------------------
+* OpenCode Go key#1a2b3c4d        Go    Now
+
+OpenCode Go does not expose usage windows.
+```
+
+For Z.ai, `/sub` shows the rolling and weekly quota windows:
+
+```text
+Provider: Z.ai · Model: glm-5.2 · Fetched: 14:23
+
+  ACCOUNT             PLAN  ROLLING        WEEKLY             LAST ACTIVITY
+  ------------------------------------------------------------------------
+* Z.ai key#1a2b3c4d  Pro   55%/2H        80%/3D            Now
+```
+
+## Refresh behavior
+
+`pi-sub` refreshes usage data:
+
+- when a session starts on a supported provider;
+- when switching into a supported provider;
+- after provider responses, debounced;
+- periodically while a supported provider remains active;
+- when `/sub refresh` is run.
+
+`pi-sub` reads the `openai-codex` OAuth entry from Pi's auth file and refreshes live usage directly against ChatGPT's usage endpoint. It does not execute the `codex-auth` CLI and does not assume a separate Codex CLI installation exists.
+
+Refreshes are cached briefly to avoid excessive usage endpoint calls.
+
+## Requirements and troubleshooting
+
+- **OpenAI Codex**: Pi auth must contain an `openai-codex` OAuth entry in `~/.pi/agent/auth.json` or `$PI_CODING_AGENT_DIR/auth.json`. The entry must include `access` and `accountId` fields.
+- **OpenCode Go**: Pi auth must contain an `opencode-go` API key entry (via `/login` or env var). The entry must have a `key` field or an `accountId` field. OpenCode Go/Zen usage windows and Zen balance are not shown because no public API is currently documented for those values.
+- **Z.ai**: Pi auth must contain a `zai` entry in `auth.json` with a `key` field (the same API key used for Z.ai model access via `@czottmann/pi-zai-api`). The Z.ai provider must be registered (e.g., `pi install npm:@czottmann/pi-zai-api`).
+- For API-key-only providers, account labels come from stored auth metadata (`email`, `label`, `name`, or `accountId`) when available; otherwise `pi-sub` displays a non-secret SHA-256 key fingerprint such as `Z.ai key#1a2b3c4d`.
+- `pi-sub` redacts auth/token-related errors and never prints credentials.
+
+## Design notes
+
+The extension is named `pi-sub` rather than `pi-codex-usage` so future subscription providers can be added as separate adapters. Supports OpenAI Codex (live usage API) and OpenCode Go (session cost only).

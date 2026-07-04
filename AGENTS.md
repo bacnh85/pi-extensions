@@ -9,9 +9,10 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 |---------|---------|-------------|
 | **pi-ponytail** | 0.1.2 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
 | **pi-serena** | 0.8.1 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
-| **pi-web** | 0.4.4 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
+| **pi-web** | 0.4.5 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
 | **pi-munin** | 0.4.1 | Munin long-term memory as native Pi tools (search, store, recall, capture, summarize, share, export, E2EE). |
 | **pi-rtk** | 0.1.5 | Bash command token rewriting through RTK. |
+| **pi-sub** | 0.1.10 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 
 ## Repository Structure
 
@@ -22,6 +23,7 @@ pi-extensions/
   pi-web/               # TS extension + 9 lib modules + skill
   pi-munin/             # TS extension + lib/helpers + skill + references
   pi-rtk/               # TS extension for RTK bash command rewriting
+  pi-sub/               # TS extension for subscription usage footer
   .github/workflows/    # publish.yml + test.yml (matrix across packages)
   .agents/skills/       # shared skills (skill-creator)
   .env.local            # shared dev credentials (gitignored)
@@ -84,6 +86,7 @@ cd pi-<name> && npm test
 # pi-web:      cd extensions && mocha                  (mocha + tsx, ESM)
 # pi-munin:    npx mocha                               (mocha + tsx)
 # pi-rtk:      npm pack --dry-run                      (packaging check)
+# pi-sub:      npm pack --dry-run                      (packaging check)
 ```
 
 Test files use unit-test style (no fixture frameworks, consistent with ponytail
@@ -94,8 +97,8 @@ spec). pi-ponytail uses `node --test` with no mocha or tsx dependency at all.
 
 Two GitHub Actions workflows in `.github/workflows/`:
 
-- **test.yml** — runs on push to main and PRs. Matrix across all 5 packages.
-  pi-ponytail uses `node --test` directly, pi-rtk uses `npm pack --dry-run`, others use `npm ci && npm test`.
+- **test.yml** — runs on push to main and PRs. Matrix across all 6 packages.
+  pi-ponytail uses `node --test` directly, pi-rtk and pi-sub use `npm pack --dry-run`, others use `npm ci && npm test`.
 - **publish.yml** — runs on push to main. Checks each package's `package.json`
   version against the npm registry and publishes if different.
 

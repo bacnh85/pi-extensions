@@ -1,7 +1,7 @@
 // Firecrawl API client (search, scrape, map, crawl).
 
 import type { FirecrawlConfig } from "./config";
-import { signalWithTimeout } from "./retry";
+import { signalWithTimeout, withRetry } from "./retry";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -62,13 +62,5 @@ export async function firecrawlRequest(
 	body?: unknown,
 	signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
-	for (let attempt = 0; attempt < 3; attempt++) {
-		try {
-			return await firecrawlRequestJson(config, method, endpoint, body, signal);
-		} catch (e) {
-			if (attempt === 2) throw e;
-			await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
-		}
-	}
-	throw new Error("unreachable");
+	return withRetry(() => firecrawlRequestJson(config, method, endpoint, body, signal));
 }

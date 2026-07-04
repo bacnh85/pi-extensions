@@ -1,5 +1,18 @@
 // Retry utility: signal/timeout helpers.
 
+export async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+	let last: unknown;
+	for (let attempt = 0; attempt < attempts; attempt++) {
+		try { return await fn(); }
+		catch (error) {
+			last = error;
+			if (attempt === attempts - 1) break;
+			await abortableSleep(1000 * 2 ** attempt);
+		}
+	}
+	throw last ?? new Error("retry failed");
+}
+
 /**
  * Combine a timeout signal with an optional external signal.
  */

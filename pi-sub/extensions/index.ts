@@ -1,0 +1,707 @@
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, Text } from "@earendil-works/pi-tui";
+import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+const STATUS_KEY = "pi-sub";
+const MESSAGE_TYPE = "pi-sub-status";
+const USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
+const REFRESH_INTERVAL_MS = 60_000;
+const REFRESH_TTL_MS = 30_000;
+const REFRESH_DEBOUNCE_MS = 2_000;
+const CODEX_PROVIDER = "openai-codex";
+const OPC_PROVIDER = "opencode-go";
+const ZAI_PROVIDER = "zai";
+const ZAI_USAGE_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
+
+type ModelLike = { provider?: string; id?: string } | undefined;
+
+type UsageApiWindow = {
+	used_percent?: number;
+	reset_at?: number;
+};
+
+type UsageApiSnapshot = {
+	primary?: UsageApiWindow;
+	secondary?: UsageApiWindow;
+	plan_type?: string;
+};
+
+type PiAuthFile = Record<string, PiAuthEntry | undefined>;
+
+type PiAuthEntry = {
+	type?: string;
+	access?: string;
+	refresh?: string;
+	expires?: number;
+	accountId?: string;
+	key?: string;
+	email?: string;
+	label?: string;
+	name?: string;
+	env?: Record<string, string>;
+};
+
+interface UsageWindow {
+	percent?: number;
+	remaining?: number;
+	remainingLabel?: string;
+	resetLabel?: string;
+}
+
+interface SubscriptionAccountSnapshot {
+	id?: string;
+	isActive?: boolean;
+	accountLabel?: string;
+	plan?: string;
+	fiveHour?: UsageWindow;
+	weekly?: UsageWindow;
+	lastActivity?: string;
+}
+
+interface SubscriptionUsageSnapshot {
+	providerDisplayName: string;
+	accounts: SubscriptionAccountSnapshot[];
+	activeAccount?: SubscriptionAccountSnapshot;
+	fetchedAt: number;
+	error?: string;
+	cost?: number;
+}
+
+type SubscriptionProviderAdapter = {
+	id: string;
+	displayName: string;
+	fetchUsage(signal?: AbortSignal): Promise<SubscriptionUsageSnapshot>;
+};
+
+interface State {
+	model?: ModelLike;
+	adapter?: SubscriptionProviderAdapter;
+	adapterId?: string;
+	snapshot?: SubscriptionUsageSnapshot;
+	lastRefreshAt: number;
+	refreshGeneration: number;
+	inFlight?: Promise<SubscriptionUsageSnapshot>;
+	refreshTimer?: NodeJS.Timeout;
+	debounceTimer?: NodeJS.Timeout;
+}
+
+function isCodexModel(model: ModelLike): boolean {
+	const provider = model?.provider?.toLowerCase() ?? "";
+	return provider === CODEX_PROVIDER || provider.includes(CODEX_PROVIDER);
+}
+
+function isOpenCodeGoModel(model: ModelLike): boolean {
+	return (model?.provider?.toLowerCase() ?? "") === OPC_PROVIDER;
+}
+
+function isZaiModel(model: ModelLike): boolean {
+	return (model?.provider?.toLowerCase() ?? "") === ZAI_PROVIDER;
+}
+
+function piAuthPath(): string {
+	const configDir = process.env.PI_CODING_AGENT_DIR?.trim() || path.join(os.homedir(), ".pi", "agent");
+	return path.join(configDir, "auth.json");
+}
+
+async function readJsonFile<T>(file: string): Promise<T> {
+	return JSON.parse(await fs.readFile(file, "utf8")) as T;
+}
+
+function decodeJwtPayload(token: string | undefined): Record<string, any> | undefined {
+	if (!token) return undefined;
+	const parts = token.split(".");
+	if (parts.length < 2) return undefined;
+	try {
+		return JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as Record<string, any>;
+	} catch {
+		return undefined;
+	}
+}
+
+function accountFromPiAuth(entry: PiAuthEntry): SubscriptionAccountSnapshot {
+	const claims = decodeJwtPayload(entry.access);
+	const profile = claims?.["https://api.openai.com/profile"];
+	const auth = claims?.["https://api.openai.com/auth"];
+	const email = typeof profile?.email === "string" ? profile.email : undefined;
+	const plan = typeof auth?.chatgpt_plan_type === "string" ? planLabel(auth.chatgpt_plan_type) : undefined;
+	const accountId = typeof entry.accountId === "string" ? entry.accountId : typeof auth?.chatgpt_account_id === "string" ? auth.chatgpt_account_id : undefined;
+	return {
+		id: accountId,
+		isActive: true,
+		accountLabel: email ?? accountId ?? "openai-codex account",
+		plan,
+		lastActivity: "Now",
+	};
+}
+
+function firstString(...values: unknown[]): string | undefined {
+	for (const value of values) {
+		if (typeof value !== "string") continue;
+		const trimmed = value.trim();
+		if (trimmed.length > 0) return trimmed;
+	}
+	return undefined;
+}
+
+function authEntryLabel(entry: PiAuthEntry | undefined): string | undefined {
+	return firstString(entry?.email, entry?.label, entry?.name, entry?.accountId);
+}
+
+function keyFingerprint(key: string | undefined): string | undefined {
+	if (!key) return undefined;
+	return createHash("sha256").update(key).digest("hex").slice(0, 8);
+}
+
+function authAccountLabel(providerLabel: string, entry: PiAuthEntry | undefined): string {
+	const label = authEntryLabel(entry);
+	if (label) return label;
+	const fingerprint = keyFingerprint(entry?.key);
+	return fingerprint ? `${providerLabel} key#${fingerprint}` : `${providerLabel} account`;
+}
+
+function authAccountSnapshot(providerLabel: string, entry: PiAuthEntry | undefined, defaults: Partial<SubscriptionAccountSnapshot> = {}): SubscriptionAccountSnapshot {
+	return {
+		id: firstString(entry?.accountId),
+		isActive: true,
+		accountLabel: authAccountLabel(providerLabel, entry),
+		lastActivity: "Now",
+		...defaults,
+	};
+}
+
+function formatFooterAccount(account: SubscriptionAccountSnapshot | undefined): string | undefined {
+	const label = firstString(account?.accountLabel);
+	return label ? `(${label})` : undefined;
+}
+
+function getCodexAccountId(entry: PiAuthEntry | undefined): string | undefined {
+	if (!entry) return undefined;
+	if (typeof entry.accountId === "string" && entry.accountId.length > 0) return entry.accountId;
+	const claims = decodeJwtPayload(entry.access);
+	const auth = claims?.["https://api.openai.com/auth"];
+	return typeof auth?.chatgpt_account_id === "string" ? auth.chatgpt_account_id : undefined;
+}
+
+function planLabel(plan: string | undefined): string | undefined {
+	if (!plan) return undefined;
+	const normalized = plan.toLowerCase().replace(/[_-]+/g, " ");
+	const labels: Record<string, string> = {
+		free: "Free",
+		plus: "Plus",
+		prolite: "Pro Lite",
+		"pro lite": "Pro Lite",
+		pro: "Pro",
+		team: "Business",
+		business: "Business",
+		enterprise: "Enterprise",
+		edu: "Edu",
+		unknown: "Unknown",
+	};
+	return labels[normalized] ?? plan;
+}
+
+function formatRemainingTime(resetAtSec: number | undefined): string | undefined {
+	if (!resetAtSec) return undefined;
+	const nowSec = Date.now() / 1000;
+	const remainingSec = resetAtSec - nowSec;
+	if (remainingSec <= 0) return "0M";
+	const remainingMin = Math.ceil(remainingSec / 60);
+	if (remainingMin < 60) return `${remainingMin}M`;
+	const remainingH = Math.ceil(remainingMin / 60);
+	if (remainingH < 24) return `${remainingH}H`;
+	const remainingD = Math.ceil(remainingH / 24);
+	return `${remainingD}D`;
+}
+
+function formatReset(timestampSeconds: number | undefined): string | undefined {
+	if (!timestampSeconds) return undefined;
+	const date = new Date(timestampSeconds * 1000);
+	const now = new Date();
+	const time = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+	if (date.toDateString() === now.toDateString()) return time;
+	const day = date.toLocaleDateString(undefined, { day: "numeric" });
+	const month = date.toLocaleDateString(undefined, { month: "short" });
+	return `${time} on ${day} ${month}`;
+}
+
+function usageWindowFromApi(window: UsageApiWindow | undefined): UsageWindow | undefined {
+	if (!window || typeof window.used_percent !== "number") return undefined;
+	const percent = Math.round(window.used_percent);
+	const remaining = Math.max(0, 100 - percent);
+	const resetLabel = formatReset(window.reset_at);
+	const remainingLabel = formatRemainingTime(window.reset_at);
+	return {
+		percent,
+		remaining,
+		remainingLabel,
+		resetLabel,
+	};
+}
+
+function mergeUsageIntoAccount(account: SubscriptionAccountSnapshot, usage: UsageApiSnapshot | undefined): SubscriptionAccountSnapshot {
+	if (!usage) return account;
+	return {
+		...account,
+		plan: planLabel(usage.plan_type) ?? account.plan,
+		fiveHour: usageWindowFromApi(usage.primary) ?? account.fiveHour,
+		weekly: usageWindowFromApi(usage.secondary) ?? account.weekly,
+	};
+}
+
+function parseUsageResponse(body: unknown): UsageApiSnapshot | undefined {
+	if (!body || typeof body !== "object") return undefined;
+	const root = body as any;
+	const rateLimit = root.rate_limit;
+	if (!rateLimit || typeof rateLimit !== "object") return undefined;
+	const parseWindow = (window: any): UsageApiWindow | undefined => {
+		if (!window || typeof window !== "object" || typeof window.used_percent !== "number") return undefined;
+		return {
+			used_percent: window.used_percent,
+			reset_at: typeof window.reset_at === "number" ? window.reset_at : undefined,
+		};
+	};
+	return {
+		primary: parseWindow(rateLimit.primary_window),
+		secondary: parseWindow(rateLimit.secondary_window),
+		plan_type: typeof root.plan_type === "string" ? root.plan_type : undefined,
+	};
+}
+
+async function readPiCodexAuth(): Promise<PiAuthEntry & { accountId: string }> {
+	const auth = await readJsonFile<PiAuthFile>(piAuthPath());
+	const entry = auth[CODEX_PROVIDER];
+	const accountId = getCodexAccountId(entry!);
+	if (!entry?.access || !accountId) throw new Error("Missing openai-codex OAuth entry in Pi auth");
+	return { ...entry, accountId };
+}
+
+async function readOpenCodeGoAuth(): Promise<SubscriptionAccountSnapshot> {
+	const auth = await readJsonFile<PiAuthFile>(piAuthPath());
+	const entry = auth[OPC_PROVIDER];
+	if (!entry?.key && !entry?.accountId) throw new Error("Missing opencode-go API key or accountId in Pi auth");
+	return authAccountSnapshot("OpenCode Go", entry, { plan: "Go" });
+}
+
+async function readZaiAuth(): Promise<{ key: string; account: SubscriptionAccountSnapshot }> {
+	const auth = await readJsonFile<PiAuthFile>(piAuthPath());
+	const entry = auth[ZAI_PROVIDER];
+	if (!entry?.key) throw new Error("Missing zai API key in Pi auth");
+	return { key: entry.key, account: authAccountSnapshot("Z.ai", entry) };
+}
+
+async function fetchUsageFromPiAuth(entry: PiAuthEntry, signal?: AbortSignal): Promise<UsageApiSnapshot | undefined> {
+	const accountId = getCodexAccountId(entry) ?? entry.accountId;
+	if (!accountId) throw new Error("Missing openai-codex OAuth entry in Pi auth");
+	const timeoutSignal = AbortSignal.timeout(7_000);
+	const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+	const response = await fetch(USAGE_ENDPOINT, {
+		headers: {
+			Accept: "application/json",
+			Authorization: `Bearer ${entry.access}`,
+			"ChatGPT-Account-Id": accountId,
+			"User-Agent": "pi-sub/0.1.0",
+		},
+		signal: combinedSignal,
+	});
+	if (!response.ok) throw new Error(`usage request failed with HTTP ${response.status}`);
+	return parseUsageResponse(await response.json());
+}
+
+function redactedError(error: unknown, provider = "Codex"): string {
+	const message = error instanceof Error ? error.message : String(error || "Unknown error");
+	if (/ENOENT|no such file/i.test(message)) return "Pi auth not found";
+	if (/missing openai-codex/i.test(message)) return "openai-codex auth not found";
+	if (/missing opencode-go/i.test(message)) return "opencode-go auth not found";
+	if (/missing zai/i.test(message)) return "zai auth not found";
+	if (/timed out|timeout|aborted/i.test(message)) return `${provider} usage refresh timed out`;
+	if (/401|403|auth|token|unauthorized|forbidden/i.test(message)) return `${provider} auth unavailable`;
+	return `${provider} usage unavailable`;
+}
+
+async function fetchCodexUsage(signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> {
+	try {
+		const entry = await readPiCodexAuth();
+		let activeAccount = accountFromPiAuth(entry);
+		const usage = await fetchUsageFromPiAuth(entry, signal);
+		activeAccount = mergeUsageIntoAccount(activeAccount, usage);
+		return {
+			providerDisplayName: "Codex",
+			accounts: [activeAccount],
+			activeAccount,
+			fetchedAt: Date.now(),
+		};
+	} catch (error) {
+		return {
+			providerDisplayName: "Codex",
+			accounts: [],
+			fetchedAt: Date.now(),
+			error: redactedError(error),
+		};
+	}
+}
+
+async function fetchOpenCodeGoUsage(_signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> {
+	try {
+		const account = await readOpenCodeGoAuth();
+		return {
+			providerDisplayName: "OpenCode Go",
+			accounts: [account],
+			activeAccount: account,
+			fetchedAt: Date.now(),
+		};
+	} catch (error) {
+		return {
+			providerDisplayName: "OpenCode Go",
+			accounts: [],
+			fetchedAt: Date.now(),
+			error: redactedError(error, "OpenCode Go"),
+		};
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Z.ai adapter
+// ---------------------------------------------------------------------------
+
+interface ZaiLimitEntry {
+	type: string;
+	percentage: number;
+	nextResetTime?: number;
+}
+
+interface ZaiUsageApiResponse {
+	data?: {
+		limits?: ZaiLimitEntry[];
+		planName?: string;
+		plan?: string;
+		plan_type?: string;
+		packageName?: string;
+	};
+}
+
+interface ZaiUsageApiError {
+	code: number;
+	msg: string;
+	success: boolean;
+}
+
+function zaiLimitToUsageWindow(limit: ZaiLimitEntry): UsageWindow | undefined {
+	if (typeof limit.percentage !== "number") return undefined;
+	const percent = Math.round(limit.percentage);
+	const remaining = Math.max(0, 100 - percent);
+	// Z.ai returns nextResetTime in epoch milliseconds; format helpers expect seconds.
+	const resetAtSec = limit.nextResetTime ? limit.nextResetTime / 1000 : undefined;
+	const resetLabel = formatReset(resetAtSec);
+	const remainingLabel = formatRemainingTime(resetAtSec);
+	return {
+		percent,
+		remaining,
+		remainingLabel,
+		resetLabel,
+	};
+}
+
+function zaiPlanLabel(response: ZaiUsageApiResponse): string | undefined {
+	const data = response.data;
+	return planLabel(firstString(data?.planName, data?.plan, data?.plan_type, data?.packageName));
+}
+
+async function fetchZaiUsage(signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> {
+	try {
+		const { key: apiKey, account: authAccount } = await readZaiAuth();
+		const timeoutSignal = AbortSignal.timeout(7_000);
+		const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+
+		const response = await fetch(ZAI_USAGE_URL, {
+			headers: {
+				Accept: "application/json",
+				Authorization: `Bearer ${apiKey}`,
+				"User-Agent": "pi-sub/0.1.0",
+			},
+			signal: combinedSignal,
+		});
+
+		const body = await response.json();
+
+		// Z.ai returns HTTP 200 even on auth errors: {"code":401,"msg":"...","success":false}
+		const apiError = body as ZaiUsageApiError;
+		if (typeof apiError.success === "boolean" && !apiError.success && apiError.msg) {
+			throw new Error(`Z.ai API error: ${apiError.msg}`);
+		}
+
+		const parsed = body as ZaiUsageApiResponse;
+		const tokenLimits = (parsed.data?.limits ?? [])
+			.filter((l) => l.type === "TOKENS_LIMIT")
+			.sort((a, b) => (a.nextResetTime ?? 0) - (b.nextResetTime ?? 0));
+
+		if (tokenLimits.length === 0) {
+			throw new Error("No TOKENS_LIMIT entries in Z.ai usage response");
+		}
+
+		// The limit with the nearest reset is the 5-hour rolling window;
+		// the next one (if present) is the weekly window.
+		const fiveHour = zaiLimitToUsageWindow(tokenLimits[0]);
+		const weekly = tokenLimits.length >= 2 ? zaiLimitToUsageWindow(tokenLimits[1]) : undefined;
+
+		const account: SubscriptionAccountSnapshot = {
+			...authAccount,
+			plan: zaiPlanLabel(parsed) ?? authAccount.plan,
+			fiveHour,
+			weekly,
+		};
+
+		return {
+			providerDisplayName: "Z.ai",
+			accounts: [account],
+			activeAccount: account,
+			fetchedAt: Date.now(),
+		};
+	} catch (error) {
+		return {
+			providerDisplayName: "Z.ai",
+			accounts: [],
+			fetchedAt: Date.now(),
+			error: redactedError(error, "Z.ai"),
+		};
+	}
+}
+
+function supportedAdapter(model: ModelLike): SubscriptionProviderAdapter | undefined {
+	if (isCodexModel(model)) return { id: CODEX_PROVIDER, displayName: "Codex", fetchUsage: fetchCodexUsage };
+	if (isOpenCodeGoModel(model)) return { id: OPC_PROVIDER, displayName: "OpenCode Go", fetchUsage: fetchOpenCodeGoUsage };
+	if (isZaiModel(model)) return { id: ZAI_PROVIDER, displayName: "Z.ai", fetchUsage: fetchZaiUsage };
+	return undefined;
+}
+
+function formatRemaining(window: UsageWindow | undefined): string {
+	if (!window) return "?";
+	if (window.remaining !== undefined && window.remainingLabel) return `${window.remaining}%/${window.remainingLabel}`;
+	if (window.remaining !== undefined) return `${window.remaining}%`;
+	if (window.percent !== undefined && window.remainingLabel) return `${Math.max(0, 100 - window.percent)}%/${window.remainingLabel}`;
+	return "?";
+}
+
+function minRemaining(account: SubscriptionAccountSnapshot | undefined): number {
+	const values: number[] = [];
+	if (account?.fiveHour?.remaining !== undefined) values.push(account.fiveHour.remaining);
+	if (account?.weekly?.remaining !== undefined) values.push(account.weekly.remaining);
+	if (values.length === 0) return 100;
+	return Math.min(...values);
+}
+
+function windowSegments(account: SubscriptionAccountSnapshot | undefined): string[] {
+	if (!account) return [];
+	const segments: string[] = [];
+	if (account.fiveHour) segments.push(`R:${formatRemaining(account.fiveHour)}`);
+	if (account.weekly) segments.push(`W:${formatRemaining(account.weekly)}`);
+	return segments;
+}
+
+function aggregateSessionCost(ctx: ExtensionContext): number {
+	let total = 0;
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (entry.type === "message" && entry.message.role === "assistant") {
+			total += (entry.message.usage as any)?.cost?.total ?? 0;
+		}
+	}
+	return total;
+}
+
+function renderSubscriptionLine(ctx: ExtensionContext, state: State): void {
+	if (!state.adapter) {
+		ctx.ui.setStatus(STATUS_KEY, undefined);
+		return;
+	}
+	const theme = ctx.ui.theme;
+	const snapshot = state.snapshot;
+	let line: string;
+	let color: "dim" | "warning" | "error" = "dim";
+	if (!snapshot) {
+		line = `Sub ${state.adapter.displayName} loading`;
+	} else if (snapshot.error) {
+		line = `Sub ${snapshot.error}`;
+		color = "warning";
+	} else {
+		const account = snapshot.activeAccount;
+		const windowParts = windowSegments(account);
+		const accountPart = formatFooterAccount(account);
+		const segments = accountPart ? [accountPart, ...windowParts] : [...windowParts];
+		const cost = snapshot.cost;
+		const hasWindows = windowParts.length > 0;
+		if (cost !== undefined && cost > 0) segments.push(`$${cost.toFixed(2)}`);
+		if (segments.length === 0) {
+			line = `Sub ${state.adapter.displayName}`;
+		} else if (!hasWindows) {
+			line = `${state.adapter.displayName} ${segments.join(" ")}`;
+		} else {
+			line = segments.join(" ");
+		}
+		const remaining = minRemaining(account);
+		color = remaining <= 10 ? "error" : remaining <= 20 ? "warning" : "dim";
+	}
+	ctx.ui.setStatus(STATUS_KEY, theme.fg(color, line));
+}
+
+function startTimer(ctx: ExtensionContext, state: State): void {
+	if (state.refreshTimer || !state.adapter) return;
+	state.refreshTimer = setInterval(() => {
+		void refreshUsage(ctx, state, false);
+	}, REFRESH_INTERVAL_MS);
+}
+
+function stopTimer(state: State): void {
+	if (state.refreshTimer) clearInterval(state.refreshTimer);
+	if (state.debounceTimer) clearTimeout(state.debounceTimer);
+	state.refreshTimer = undefined;
+	state.debounceTimer = undefined;
+}
+
+function updateActiveAdapter(ctx: ExtensionContext, state: State, model: ModelLike): void {
+	const nextAdapter = supportedAdapter(model);
+	const adapterChanged = state.adapterId !== nextAdapter?.id;
+
+	state.model = model;
+	state.adapter = nextAdapter;
+	state.adapterId = nextAdapter?.id;
+
+	if (adapterChanged) {
+		state.snapshot = undefined;
+		state.lastRefreshAt = 0;
+		state.inFlight = undefined;
+		state.refreshGeneration++;
+	}
+
+	if (!state.adapter) {
+		stopTimer(state);
+	}
+	renderSubscriptionLine(ctx, state);
+	if (state.adapter) startTimer(ctx, state);
+}
+
+async function refreshUsage(ctx: ExtensionContext, state: State, force: boolean): Promise<SubscriptionUsageSnapshot | undefined> {
+	const adapter = state.adapter;
+	if (!adapter) {
+		renderSubscriptionLine(ctx, state);
+		return undefined;
+	}
+	if (!force && state.snapshot && Date.now() - state.lastRefreshAt < REFRESH_TTL_MS) return state.snapshot;
+	if (state.inFlight) return state.inFlight;
+	const generation = state.refreshGeneration;
+	renderSubscriptionLine(ctx, state);
+	state.inFlight = adapter.fetchUsage(ctx.signal).then((snapshot) => {
+		if (state.refreshGeneration !== generation) return snapshot;
+		snapshot.cost = aggregateSessionCost(ctx);
+		state.snapshot = snapshot;
+		state.lastRefreshAt = Date.now();
+		renderSubscriptionLine(ctx, state);
+		return snapshot;
+	}).finally(() => {
+		if (state.refreshGeneration === generation) {
+			state.inFlight = undefined;
+		}
+	});
+	return state.inFlight;
+}
+
+function scheduleRefresh(ctx: ExtensionContext, state: State): void {
+	if (!state.adapter) return;
+	if (state.debounceTimer) clearTimeout(state.debounceTimer);
+	state.debounceTimer = setTimeout(() => {
+		state.debounceTimer = undefined;
+		void refreshUsage(ctx, state, true);
+	}, REFRESH_DEBOUNCE_MS);
+}
+
+function pad(value: string, width: number): string {
+	return value.length >= width ? value : value + " ".repeat(width - value.length);
+}
+
+function buildDetails(snapshot: SubscriptionUsageSnapshot | undefined, state: State): string {
+	if (!state.adapter) return `Subscription tracking inactive for current model provider (${state.model?.provider ?? "unknown"}).`;
+	if (!snapshot) return "Subscription usage has not been loaded yet.";
+	if (snapshot.error) return `${snapshot.providerDisplayName}: ${snapshot.error}`;
+	if (snapshot.accounts.length === 0) {
+		const costLine = snapshot.cost !== undefined && snapshot.cost > 0 ? `\nSession cost: $${snapshot.cost.toFixed(2)}` : "";
+		const modelInfo = state.model?.id ? ` · Model: ${state.model.id}` : "";
+		return `Provider: ${snapshot.providerDisplayName}${modelInfo} · Fetched: ${new Date(snapshot.fetchedAt).toLocaleTimeString()}\n${snapshot.providerDisplayName} does not expose usage windows.${costLine}`;
+	}
+
+	const columns: { key: string; label: string; get: (a: SubscriptionAccountSnapshot) => string }[] = [
+		{ key: "account", label: "ACCOUNT", get: (a) => a.accountLabel ?? "unknown" },
+		{ key: "plan", label: "PLAN", get: (a) => a.plan ?? "?" },
+	];
+
+	const hasFiveHour = snapshot.accounts.some((a) => a.fiveHour);
+	const hasWeekly = snapshot.accounts.some((a) => a.weekly);
+	if (hasFiveHour) columns.push({ key: "five", label: "ROLLING", get: (a) => formatRemaining(a.fiveHour) });
+	if (hasWeekly) columns.push({ key: "weekly", label: "WEEKLY", get: (a) => formatRemaining(a.weekly) });
+	const rows = snapshot.accounts.map((account) => ({
+		active: account.isActive ? "*" : " ",
+		snapshot: account,
+	}));
+
+	const widths: Record<string, number> = {};
+	for (const col of columns) {
+		widths[col.key] = Math.max(col.label.length, ...snapshot.accounts.map((a) => col.get(a).length));
+	}
+
+	const headerCols = columns.map((c) => pad(c.label, widths[c.key]));
+	const header = `  ${headerCols.join("  ")}  LAST ACTIVITY`;
+	const sep = "-".repeat(header.length);
+	const body = rows.map((row) => {
+		const cols = columns.map((c) => pad(c.get(row.snapshot), widths[c.key]));
+		return `${row.active} ${cols.join("  ")}  ${row.snapshot.lastActivity ?? ""}`;
+	});
+
+	const costLine = snapshot.cost !== undefined ? `\nSession cost: $${snapshot.cost.toFixed(2)}` : "";
+	const lines = [`Provider: ${snapshot.providerDisplayName} · Model: ${state.model?.id ?? "unknown-model"} · Fetched: ${new Date(snapshot.fetchedAt).toLocaleTimeString()}${costLine}`, "", header, sep, ...body];
+	if (!hasFiveHour && !hasWeekly) {
+		lines.push("", `${snapshot.providerDisplayName} does not expose usage windows.`);
+	}
+	return lines.join("\n");
+}
+
+export default function (pi: ExtensionAPI) {
+	const state: State = { lastRefreshAt: 0, refreshGeneration: 0 };
+
+	pi.registerMessageRenderer(MESSAGE_TYPE, (message, _options, theme) => {
+		const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+		box.addChild(new Text(String(message.content ?? ""), 0, 0));
+		return box;
+	});
+
+	pi.on("session_start", async (_event, ctx) => {
+		updateActiveAdapter(ctx, state, ctx.model);
+		if (state.adapter) void refreshUsage(ctx, state, true);
+	});
+
+	pi.on("model_select", async (event, ctx) => {
+		updateActiveAdapter(ctx, state, event.model);
+		if (state.adapter) void refreshUsage(ctx, state, true);
+	});
+
+	pi.on("after_provider_response", async (_event, ctx) => {
+		if (state.adapter) scheduleRefresh(ctx, state);
+	});
+
+	pi.on("session_shutdown", async (_event, ctx) => {
+		stopTimer(state);
+		ctx.ui.setStatus(STATUS_KEY, undefined);
+	});
+
+	pi.registerCommand("sub", {
+		description: "Show subscription usage for the current supported model provider (use /sub refresh to force refresh).",
+		handler: async (args, ctx) => {
+			updateActiveAdapter(ctx, state, ctx.model);
+			const command = args.trim().toLowerCase();
+			const force = command === "refresh";
+			const snapshot = state.adapter ? await refreshUsage(ctx, state, force || !state.snapshot) : undefined;
+			const details = buildDetails(snapshot ?? state.snapshot, state);
+			pi.sendMessage({ customType: MESSAGE_TYPE, content: details, display: true });
+			if (force) ctx.ui.notify("Subscription usage refreshed", "info");
+		},
+	});
+}

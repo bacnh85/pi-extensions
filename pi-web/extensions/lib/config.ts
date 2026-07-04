@@ -88,6 +88,20 @@ export function includeProjectEnv(ctx: Record<string, unknown>): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// URL helpers
+// ---------------------------------------------------------------------------
+
+function normalizeHttpUrl(raw: string | undefined, fallback: string): string {
+	let value = (raw || fallback).trim();
+	if (!/^https?:\/\//i.test(value)) {
+		value = /^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/i.test(value)
+			? `http://${value}`
+			: `https://${value}`;
+	}
+	return value.replace(/\/+$/, "");
+}
+
+// ---------------------------------------------------------------------------
 // SearXNG config
 // ---------------------------------------------------------------------------
 
@@ -97,13 +111,7 @@ export interface SearxngConfig {
 }
 
 export function normalizeSearxngBaseUrl(raw?: string): string {
-	let value = (raw || DEFAULT_SEARXNG_BASE_URL).trim();
-	if (!/^https?:\/\//i.test(value)) {
-		value = /^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/i.test(value)
-			? `http://${value}`
-			: `https://${value}`;
-	}
-	return value.replace(/\/+$/, "");
+	return normalizeHttpUrl(raw, DEFAULT_SEARXNG_BASE_URL);
 }
 
 export function loadSearxngConfig(params: Record<string, unknown> = {}, cwd = process.cwd(), includeCwdEnv = false): SearxngConfig {
@@ -125,13 +133,7 @@ export interface Crawl4aiConfig {
 }
 
 export function normalizeCrawl4aiApiUrl(raw?: string): string {
-	let value = (raw || DEFAULT_CRAWL4AI_API_URL).trim();
-	if (!/^https?:\/\//i.test(value)) {
-		value = /^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/i.test(value)
-			? `http://${value}`
-			: `https://${value}`;
-	}
-	return value.replace(/\/+$/, "");
+	return normalizeHttpUrl(raw, DEFAULT_CRAWL4AI_API_URL);
 }
 
 export function loadCrawl4aiConfig(params: Record<string, unknown> = {}, cwd = process.cwd(), includeCwdEnv = false): Crawl4aiConfig {
@@ -159,13 +161,7 @@ export interface FirecrawlConfig {
 }
 
 export function normalizeFirecrawlBaseUrl(raw?: string): string {
-	let value = (raw || HOSTED_FIRECRAWL_BASE_URL).trim();
-	if (!/^https?:\/\//i.test(value)) {
-		value = /^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/i.test(value)
-			? `http://${value}`
-			: `https://${value}`;
-	}
-	value = value.replace(/\/+$/, "");
+	let value = normalizeHttpUrl(raw, HOSTED_FIRECRAWL_BASE_URL);
 	if (!/\/v\d+$/i.test(value)) value += "/v2";
 	return value;
 }
