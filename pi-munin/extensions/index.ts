@@ -4,7 +4,6 @@ import { Type } from "typebox";
 import {
 	formatCapabilities,
 	toTextResult,
-	parseTags,
 	validateMemoryTags,
 	validateMemoryKey,
 	validateSearchQuery,
@@ -75,7 +74,8 @@ async function callMunin(
 
 	try {
 		return await withRetry(async () => {
-			if (typeof client[directAction] === "function") {
+			// ponytail: share() has different signature — skip direct call, use invoke
+			if (typeof client[directAction] === "function" && directAction !== "share") {
 				return client[directAction](projectId, payload);
 			}
 			if (typeof client.invoke === "function") {
@@ -349,8 +349,6 @@ export default function muninExtension(pi: ExtensionAPI) {
 		},
 	});
 
-
-
 	pi.registerTool({
 		name: "munin_capabilities",
 		label: "Munin Capabilities",
@@ -373,7 +371,33 @@ export default function muninExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// ponytail: acknowledge_setup, encrypt, decrypt, export — speculative server features, cut until needed
+	pi.registerTool({
+		name: "munin_share",
+		label: "Munin Share Memory",
+		description: "Share memories across projects.",
+		promptSnippet: "Share memories between projects",
+		promptGuidelines: [
+			"Use munin_share to share memories from one project to another.",
+			"Both source and target projects must be accessible with the configured API key.",
+		],
+		parameters: Type.Object({
+			...controlSchema,
+			memory_ids: Type.Array(Type.String(), { description: "Array of memory IDs to share." }),
+			target_project_ids: Type.Array(Type.String(), { description: "Array of target project IDs." }),
+		}),
+		async execute(_id, params, _signal, _onUpdate, _ctx) {
+			const { memory_ids, target_project_ids } = params as any;
+			const result = await withMuninClient(params, async (client, projectId) => {
+				return callMunin(client, projectId, "share", { memoryIds: memory_ids, targetProjectIds: target_project_ids });
+			});
+			return {
+				content: [{ type: "text" as const, text: toTextResult(result) }],
+				details: result,
+			};
+		},
+	});
+
+	// ponytail: acknowledge_setup, encrypt, decrypt, versions, diff, rollback — speculative server features, cut until needed
 	// ponytail: recall, capture, summarize — composite tools the agent can do with 1-2 primitive calls
 
 	// ====================================================================
@@ -393,25 +417,6 @@ export default function muninExtension(pi: ExtensionAPI) {
 			} catch (err) {
 				ctx.ui.notify(
 					`Munin Status: ${sanitizeErrorMessage(err instanceof Error ? err : new Error(String(err)))}`,
-					"error",
-				);
-			}
-		},
-	});
-
-	pi.registerCommand("munin-recent", {
-		description: "Show recent memories for the configured project",
-		handler: async (args, ctx) => {
-			try {
-				const limit = parseInt(args?.trim() || "10", 10);
-				const { apiKey, projectId, baseUrl } = getMuninConfig({});
-				const client = new MuninClientClass({ apiKey, baseUrl });
-				const result = await callMunin(client, projectId, "recent", { limit });
-				const text = toTextResult(result);
-				ctx.ui.notify(text, "info");
-			} catch (err) {
-				ctx.ui.notify(
-					`Error: ${sanitizeErrorMessage(err instanceof Error ? err : new Error(String(err)))}`,
 					"error",
 				);
 			}

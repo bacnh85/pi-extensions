@@ -400,22 +400,11 @@ describe("formatMemories", () => {
 });
 
 describe("normalizeMemory", () => {
-	it("unwraps { memory: { ... }, score } pattern", () => {
-		const result = normalizeMemory({
-			memory: { key: "k", content: "c" },
-			score: 0.95,
-		});
-		expect(result.key).to.equal("k");
-		expect(result.content).to.equal("c");
-		expect(result.score).to.equal(0.95);
-	});
-
-	it("passes through normal memory objects", () => {
-		const result = normalizeMemory({ key: "k" });
-		expect(result.key).to.equal("k");
-	});
-
-	it("returns empty object for falsy input", () => {
+	it("unwraps { memory } wrapper or passes through plain objects", () => {
+		const wrapped = normalizeMemory({ memory: { key: "k", content: "c" }, score: 0.95 });
+		expect(wrapped.key).to.equal("k");
+		expect(wrapped.score).to.equal(0.95);
+		expect(normalizeMemory({ key: "k" }).key).to.equal("k");
 		expect(normalizeMemory(null)).to.deep.equal({});
 		expect(normalizeMemory(undefined)).to.deep.equal({});
 	});

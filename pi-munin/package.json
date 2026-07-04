@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-munin",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Pi extension that provides native Munin long-term memory tools through direct SDK integration.",
   "license": "MIT",
   "publishConfig": {
@@ -40,7 +40,7 @@
     ]
   },
   "dependencies": {
-    "@kalera/munin-sdk": "^1.4.4"
+    "@kalera/munin-sdk": "^1.5.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

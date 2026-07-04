@@ -120,24 +120,7 @@ export function normalizeMemory(item: unknown): Record<string, unknown> {
 	return (item as Record<string, unknown>) || {};
 }
 
-export interface Memory {
-	key?: string;
-	id?: string;
-	title?: string;
-	content?: string;
-	text?: string;
-	body?: string;
-	value?: string;
-	tags?: unknown;
-	updatedAt?: string;
-	updated?: string;
-	createdAt?: string;
-	created?: string;
-	score?: unknown;
-	[key: string]: unknown;
-}
-
-export function formatMemory(memory: Memory): string {
+export function formatMemory(memory: Record<string, unknown>): string {
 	const parts: string[] = [];
 	if (memory.key) parts.push(`Key: ${memory.key}`);
 	if (memory.id && memory.id !== memory.key) parts.push(`ID: ${memory.id}`);
@@ -187,24 +170,15 @@ export function toTextResult(result: unknown): string {
  * Capabilities are not memory objects, so they need dedicated formatting.
  */
 export function formatCapabilities(caps: Record<string, unknown>): string {
-	const lines: string[] = ["--- Munin Server Capabilities ---"];
+	const lines = ["--- Munin Server Capabilities ---"];
+	const meta = caps.metadata as Record<string, unknown> | undefined;
 	if (caps.specVersion) lines.push(`Spec Version: ${caps.specVersion}`);
-	if (caps.metadata) {
-		const meta = caps.metadata as Record<string, unknown>;
-		if (meta.serverVersion) lines.push(`Server Version: ${meta.serverVersion}`);
-	}
+	if (meta?.serverVersion) lines.push(`Server Version: ${meta.serverVersion}`);
 	const actions = caps.actions as Record<string, string[]> | undefined;
-	if (actions) {
-		if (actions.core?.length) lines.push(`Core Actions: ${actions.core.join(", ")}`);
-		if (actions.optional?.length) lines.push(`Optional Actions: ${actions.optional.join(", ")}`);
-	}
-	const features = caps.features as Record<string, { supported: boolean }> | undefined;
-	if (features) {
-		const featureList = Object.entries(features)
-			.map(([name, info]) => `${name} ${info?.supported ? "✓" : "✗"}`)
-			.join(", ");
-		if (featureList) lines.push(`Features: ${featureList}`);
-	}
+	if (actions?.core?.length) lines.push(`Core Actions: ${actions.core.join(", ")}`);
+	if (actions?.optional?.length) lines.push(`Optional Actions: ${actions.optional.join(", ")}`);
+	const features = Object.entries(caps.features as Record<string, { supported: boolean }> || {});
+	if (features.length) lines.push(`Features: ${features.map(([n, i]) => `${n} ${i?.supported ? "✓" : "✗"}`).join(", ")}`);
 	return lines.join("\n");
 }
 
