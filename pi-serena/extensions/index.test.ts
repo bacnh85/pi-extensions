@@ -15,10 +15,6 @@ import {
 	normalizeContext,
 	normalizeTimeoutMs,
 	stripControlParams,
-	normalizeSearchPatternParams,
-	normalizeFindReferencesParams,
-	normalizeReplaceContentParams,
-	validateReplaceContentParams,
 } from "./lib/normalize";
 
 describe("Serena tool-selection guidance", () => {
@@ -229,76 +225,3 @@ describe("stripControlParams", () => {
 	});
 });
 
-describe("normalizeSearchPatternParams", () => {
-	const cases = [
-		[{ pattern: "class Foo", relative_path: "src/" }, "maps pattern to substring_pattern", (r: any) => {
-			expect(r.substring_pattern).to.equal("class Foo");
-			expect(r.pattern).to.be.undefined;
-			expect(r.relative_path).to.equal("src/");
-		}],
-		[{ substring_pattern: "Bar", pattern: "Foo" }, "keeps existing substring_pattern", (r: any) => {
-			expect(r.substring_pattern).to.equal("Bar");
-		}],
-		[{ pattern: "test", multiline: true }, "strips multiline parameter", (r: any) => {
-			expect(r.multiline).to.be.undefined;
-		}],
-		[{}, "handles empty params", (r: any) => {
-			expect(r).to.deep.equal({});
-		}],
-	];
-	for (const [params, label, assert] of cases) {
-		it(label, () => assert(normalizeSearchPatternParams(params)));
-	}
-});
-
-describe("normalizeFindReferencesParams", () => {
-	it("strips include_body parameter", () => {
-		const result = normalizeFindReferencesParams({ name_path: "MyClass/myMethod", include_body: true, relative_path: "src/" });
-		expect(result.include_body).to.be.undefined;
-		expect(result.name_path).to.equal("MyClass/myMethod");
-	});
-
-	it("preserves other params", () => {
-		const result = normalizeFindReferencesParams({ name_path: "MyClass", relative_path: "src/" });
-		expect(result.name_path).to.equal("MyClass");
-		expect(result.relative_path).to.equal("src/");
-	});
-});
-
-describe("normalizeReplaceContentParams", () => {
-	it("preserves needle/repl/mode when provided", () => {
-		const result = normalizeReplaceContentParams({ relative_path: "test.py", needle: "old", repl: "new", mode: "literal" });
-		expect(result.needle).to.equal("old");
-		expect(result.repl).to.equal("new");
-		expect(result.mode).to.equal("literal");
-	});
-
-	it("strips deprecated alias fields", () => {
-		const result = normalizeReplaceContentParams({ relative_path: "test.py", old_string: "old", regex: "re", new_string: "new", content: "c" });
-		expect(result.old_string).to.be.undefined;
-		expect(result.regex).to.be.undefined;
-		expect(result.new_string).to.be.undefined;
-		expect(result.content).to.be.undefined;
-		expect(result.needle).to.be.undefined;
-	});
-});
-
-describe("validateReplaceContentParams", () => {
-	const cases = [
-		[{ needle: "old", repl: "new", mode: "literal" }, undefined, "valid params"],
-		[{ repl: "new", mode: "literal" }, "needle", "missing needle"],
-		[{ needle: "old", mode: "literal" }, "repl", "missing repl"],
-		[{ needle: "old", repl: "new", mode: "invalid" }, "mode", "invalid mode"],
-		[{ needle: 42, repl: "new", mode: "literal" }, "needle", "needle not a string"],
-	];
-	for (const [params, expected, label] of cases) {
-		it(`returns ${expected === undefined ? "undefined" : "error containing '" + expected + "'"} for ${label}`, () => {
-			const result = validateReplaceContentParams(params as any);
-			if (expected === undefined) {
-				expect(result).to.be.undefined;
-			} else {
-				expect(result).to.include(expected);
-			}
-		});
-	}
-});

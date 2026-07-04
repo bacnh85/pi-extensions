@@ -18,6 +18,8 @@ jobs:
             test-command: npm ci && npm test
           - package: pi-web
             test-command: npm ci && npm test
+          - package: pi-munin
+            test-command: npm ci && npm test
     defaults:
       run:
         working-directory: ./${{ matrix.package }}

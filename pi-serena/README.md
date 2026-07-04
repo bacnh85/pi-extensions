@@ -51,12 +51,8 @@ After install or update, restart Pi or run `/reload` in an existing Pi session.
 - `serena_get_diagnostics_for_file`
 - `serena_check_onboarding_performed`
 - `serena_onboarding`
-- `serena_list_memories`
-- `serena_read_memory`
-- `serena_write_memory`
-- `serena_edit_memory`
-- `serena_rename_memory`
-- `serena_delete_memory`
+
+> Memory tools removed — use `munin_*` tools (`munin_search`, `munin_store`, `munin_get`) for all memory operations. 
 
 All tool outputs are truncated to 50KB / 2000 lines to match Pi-friendly output limits. Most tools accept optional `timeout_ms`.
 

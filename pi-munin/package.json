@@ -1,0 +1,55 @@
+{
+  "name": "@bacnh85/pi-munin",
+  "version": "0.3.0",
+  "description": "Pi extension that provides native Munin long-term memory tools through direct SDK integration.",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git",
+    "directory": "pi-munin"
+  },
+  "bugs": {
+    "url": "https://github.com/bacnh85/pi-extensions/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "munin",
+    "memory",
+    "long-term-memory"
+  ],
+  "scripts": {
+    "test": "cd extensions && mocha",
+    "test:unit": "cd extensions && mocha --spec 'test/unit/**/*.test.ts'"
+  },
+  "files": [
+    "README.md",
+    "extensions/",
+    "skills/"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "dependencies": {
+    "@kalera/munin-sdk": "^1.4.4"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "mocha": "^10.0.0",
+    "chai": "^4.3.0",
+    "tsx": "^4.0.0",
+    "@types/node": "^20.0.0"
+  }
+}

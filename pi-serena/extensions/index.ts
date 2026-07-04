@@ -91,32 +91,6 @@ const safeDeleteSchema = Type.Object({
 
 const emptyToolSchema = Type.Object({ ...controlSchema });
 
-const memoryNameSchema = Type.Object({
-	...controlSchema,
-	memory_name: Type.String({ description: "Serena memory file name." }),
-});
-
-const writeMemorySchema = Type.Object({
-	...controlSchema,
-	memory_name: Type.String({ description: "Serena memory file name." }),
-	content: Type.String({ description: "Memory content to write." }),
-});
-
-const editMemorySchema = Type.Object({
-	...controlSchema,
-	memory_name: Type.String({ description: "The name of the memory to edit." }),
-	needle: Type.String({ description: "The string or regex pattern to search for." }),
-	repl: Type.String({ description: "The replacement string (verbatim)." }),
-	mode: Type.Union([Type.Literal("literal"), Type.Literal("regex")], { description: "Either 'literal' or 'regex', specifying how needle is interpreted." }),
-	allow_multiple_occurrences: Type.Optional(Type.Boolean({ description: "Whether to allow replacing multiple occurrences. If false and multiple matches are found, returns an error." })),
-});
-
-const renameMemorySchema = Type.Object({
-	...controlSchema,
-	old_name: Type.String({ description: "Current name of the memory to rename." }),
-	new_name: Type.String({ description: "New name for the memory. Use '/' to organize into topics." }),
-});
-
 const symbolRefSchema = Type.Object({
 	...controlSchema,
 	name_path: Type.String({ description: "Exact symbol name path to look up." }),
@@ -265,7 +239,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 		name: "serena_list_tools",
 		label: "Serena List Tools",
 		description: "List active Serena tools for the current project/context.",
-		promptSnippet: "List available Serena semantic, memory, and workflow tools",
+		promptSnippet: "List available Serena semantic code and workflow tools",
 		promptGuidelines: ["Use serena_list_tools when you need to know which Serena tools are active for this project/context."],
 		parameters: listToolsSchema,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -310,7 +284,9 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 		promptGuidelines: ["Use serena_find_referencing_symbols before changing public behavior or renaming a symbol."],
 		parameters: referencingSchema,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return callSerena(ctx, "find_referencing_symbols", normalizeFindReferencesParams(params));
+			// ponytail: strip include_body param (not supported by Python backend)
+			const { include_body: _ib, ...findRefParams } = params;
+			return callSerena(ctx, "find_referencing_symbols", findRefParams);
 		},
 	});
 
@@ -388,7 +364,10 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 					details: { ok: false, error: "multiline not supported" },
 				};
 			}
-			return callSerena(ctx, "search_for_pattern", normalizeSearchPatternParams(params));
+			// ponytail: map pattern→substring_pattern for Python backend
+			const { pattern, multiline: _ml, ...searchParams } = params;
+			if (pattern) searchParams.substring_pattern = pattern;
+			return callSerena(ctx, "search_for_pattern", searchParams);
 		},
 	});
 
@@ -400,9 +379,11 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 		promptGuidelines: ["Prefer symbol-aware Serena edit tools for whole symbols; use serena_replace_content for non-symbol scoped replacements supported by Serena."],
 		parameters: replaceContentSchema,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const normalized = normalizeReplaceContentParams(params);
-			const error = validateReplaceContentParams(normalized);
-			if (error) return { content: [{ type: "text" as const, text: `Error: ${error}` }], details: { ok: false, error } };
+			// ponytail: strip legacy params and validate
+			const { old_string: _os, new_string: _ns, content: _c, regex: _r, ...normalized } = params;
+			if (typeof normalized.needle !== "string") return { content: [{ type: "text" as const, text: "serena_replace_content requires string parameter 'needle'." }], details: { ok: false } };
+			if (typeof normalized.repl !== "string") return { content: [{ type: "text" as const, text: "serena_replace_content requires string parameter 'repl'." }], details: { ok: false } };
+			if (normalized.mode !== "literal" && normalized.mode !== "regex") return { content: [{ type: "text" as const, text: "serena_replace_content requires mode to be 'literal' or 'regex'." }], details: { ok: false } };
 			return callSerena(ctx, "replace_content", normalized, lockPathForRelativeFile(params));
 		},
 	});
@@ -436,7 +417,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 		label: "Serena Check Onboarding",
 		description: "Check whether Serena onboarding memories exist for this project.",
 		promptSnippet: "Check whether project onboarding was already performed",
-		promptGuidelines: ["Use serena_check_onboarding_performed before relying on Serena project memories."],
+		promptGuidelines: ["Use serena_check_onboarding_performed before relying on Serena project memories (or use munin_search for cross-project long-term memory)."],
 		parameters: emptyToolSchema,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return callSerena(ctx, "check_onboarding_performed", params);
@@ -448,84 +429,15 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 		label: "Serena Onboarding",
 		description: "Run Serena's onboarding prompt for collecting project memories.",
 		promptSnippet: "Start Serena project onboarding",
-		promptGuidelines: ["Use serena_onboarding only when project onboarding has not been performed or the user asks to refresh it."],
+		promptGuidelines: ["Use serena_onboarding only when project onboarding has not been performed or the user asks to refresh it. For cross-project long-term memory, use munin_store instead."],
 		parameters: emptyToolSchema,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return callSerena(ctx, "onboarding", params);
 		},
 	});
 
-	pi.registerTool({
-		name: "serena_list_memories",
-		label: "Serena List Memories",
-		description: "List Serena project memories available for the active project.",
-		promptSnippet: "List available Serena memories",
-		promptGuidelines: ["Use serena_list_memories before reading Serena memories relevant to a task."],
-		parameters: emptyToolSchema,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return callSerena(ctx, "list_memories", params);
-		},
-	});
-
-	pi.registerTool({
-		name: "serena_read_memory",
-		label: "Serena Read Memory",
-		description: "Read a named Serena project memory.",
-		promptSnippet: "Read a Serena project memory by name",
-		promptGuidelines: ["Use serena_read_memory only for memories that are relevant to the current task."],
-		parameters: memoryNameSchema,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return callSerena(ctx, "read_memory", params);
-		},
-	});
-
-	pi.registerTool({
-		name: "serena_write_memory",
-		label: "Serena Write Memory",
-		description: "Write a named Serena project memory.",
-		promptSnippet: "Write durable Serena project memory content",
-		promptGuidelines: ["Use serena_write_memory after onboarding or when durable verified project knowledge should be available to Serena."],
-		parameters: writeMemorySchema,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return callSerena(ctx, "write_memory", params, lockPathForProject(params));
-		},
-	});
-
-	pi.registerTool({
-		name: "serena_delete_memory",
-		label: "Serena Delete Memory",
-		description: "Delete a named Serena project memory when the user explicitly asks.",
-		promptSnippet: "Delete a Serena project memory by name",
-		promptGuidelines: ["Use serena_delete_memory only when the user explicitly asks to remove a Serena memory."],
-		parameters: memoryNameSchema,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return callSerena(ctx, "delete_memory", params, lockPathForProject(params));
-		},
-	});
-
-	pi.registerTool({
-		name: "serena_edit_memory",
-		label: "Serena Edit Memory",
-		description: "Replace content matching a pattern in a Serena project memory using literal or regex mode.",
-		promptSnippet: "Edit a Serena project memory by replacing content matching a pattern",
-		promptGuidelines: ["Use serena_edit_memory for targeted edits to existing memories without rewriting the whole file."],
-		parameters: editMemorySchema,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return callSerena(ctx, "edit_memory", params, lockPathForProject(params));
-		},
-	});
-
-	pi.registerTool({
-		name: "serena_rename_memory",
-		label: "Serena Rename Memory",
-		description: "Rename or move a Serena project memory. Supports moving between project and global scope (e.g., renaming 'global/foo' to 'bar').",
-		promptSnippet: "Rename or move a Serena project memory",
-		promptGuidelines: ["Use serena_rename_memory to rename or reorganize memories, using '/' in the name to organize into topics."],
-		parameters: renameMemorySchema,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return callSerena(ctx, "rename_memory", params, lockPathForProject(params));
-		},
-	});
+	// ponytail: memory tools removed — use munin_search/munin_store/munin_get for all memory operations.
+	// Serena keeps only code-navigation tools (find_symbol, find_declaration, replace_body, etc.)
 
 	pi.registerTool({
 		name: "serena_find_declaration",

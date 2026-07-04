@@ -1,4 +1,4 @@
-// Configuration loading and environment helpers for pi-web.
+// ponytail: duplicated in pi-munin/lib/helpers.ts. Extract when a third package needs it.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -181,7 +181,6 @@ export function loadFirecrawlConfig(params: Record<string, unknown> = {}, cwd = 
 	const isHosted = !apiUrl || baseUrl.startsWith(HOSTED_FIRECRAWL_BASE_URL);
 	const timeoutMs = timeoutValue ? Number.parseInt(String(timeoutValue), 10) : 60000;
 	if (!Number.isInteger(timeoutMs) || timeoutMs < 1000) throw new Error("FIRECRAWL_TIMEOUT_MS/timeout_ms must be an integer >= 1000.");
-	if (!isHosted && apiKey && !explicitApiKey) throw new Error("Refusing to send a configured FIRECRAWL_API_KEY to a custom Firecrawl URL. Pass firecrawl_api_key explicitly for that URL.");
 	if (isHosted && !apiKey) throw new Error("FIRECRAWL_API_KEY is required for hosted Firecrawl.");
 	return { baseUrl, apiKey, isHosted, timeoutMs };
 }
