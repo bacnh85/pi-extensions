@@ -1,0 +1,46 @@
+{
+  "name": "@bacnh85/pi-deepseek-tools",
+  "version": "0.3.1",
+  "description": "Pi extension that improves OpenCode Go DeepSeek V4 Flash tool selection and tool input repair.",
+  "type": "module",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git",
+    "directory": "pi-deepseek-tools"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "deepseek",
+    "tool-calling",
+    "opencode-go",
+    "deepseek-v4-flash"
+  ],
+  "scripts": {
+    "test": "cd extensions && mocha"
+  },
+  "files": [
+    "README.md",
+    "extensions/"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.19.43",
+    "mocha": "^10.8.2",
+    "tsx": "^4.22.4"
+  }
+}
