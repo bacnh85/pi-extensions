@@ -1,5 +1,4 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, Text } from "@earendil-works/pi-tui";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -666,12 +665,6 @@ function buildDetails(snapshot: SubscriptionUsageSnapshot | undefined, state: St
 
 export default function (pi: ExtensionAPI) {
 	const state: State = { lastRefreshAt: 0, refreshGeneration: 0 };
-
-	pi.registerMessageRenderer(MESSAGE_TYPE, (message, _options, theme) => {
-		const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-		box.addChild(new Text(String(message.content ?? ""), 0, 0));
-		return box;
-	});
 
 	pi.on("session_start", async (_event, ctx) => {
 		updateActiveAdapter(ctx, state, ctx.model);
