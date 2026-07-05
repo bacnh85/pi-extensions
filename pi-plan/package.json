@@ -1,0 +1,47 @@
+{
+  "name": "@bacnh85/pi-plan",
+  "version": "0.4.1",
+  "description": "Pi extension that adds a plan mode with workspace markdown plans and thinking-level presets.",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git",
+    "directory": "pi-plan"
+  },
+  "bugs": {
+    "url": "https://github.com/bacnh85/pi-extensions/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "plan-mode",
+    "planning",
+    "reasoning"
+  ],
+  "files": [
+    "README.md",
+    "extensions/"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "cd extensions && mocha"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "chai": "^4.5.0",
+    "mocha": "^10.8.2",
+    "tsx": "^4.22.4"
+  }
+}
