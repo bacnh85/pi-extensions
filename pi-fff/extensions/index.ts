@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type {
   GrepCursor,
+  GrepMatch,
   GrepMode,
   GrepResult,
   MixedItem,
@@ -29,50 +30,33 @@ import { buildQuery } from "./lib/query";
 const DEFAULT_GREP_LIMIT = 20;
 const DEFAULT_FIND_LIMIT = 30;
 const GREP_MAX_LINE_LENGTH = 500;
-const MENTION_MAX_RESULTS = 20;
 
-type FffMode = "tools-and-ui" | "tools-only" | "override";
-
-const VALID_MODES: FffMode[] = ["tools-and-ui", "tools-only", "override"];
-
-interface ToolNames {
-  grep: string;
-  find: string;
-}
-
-const FFF_TOOL_NAMES: ToolNames = {
-  grep: "ffgrep",
-  find: "fffind",
-};
-const OVERRIDE_TOOL_NAMES: ToolNames = {
-  grep: "grep",
-  find: "find",
-};
-
-function resolveToolNames(mode: FffMode): ToolNames {
-  return mode === "override" ? OVERRIDE_TOOL_NAMES : FFF_TOOL_NAMES;
-}
+const VALID_MODES = ["tools-and-ui", "tools-only", "override"] as const;
+type FffMode = (typeof VALID_MODES)[number];
 
 // ---------------------------------------------------------------------------
 // Cursor store — simple bounded Map for pagination cursors
 // ---------------------------------------------------------------------------
 
-const cursorCache = new Map<string, GrepCursor>();
-let cursorCounter = 0;
-
-function storeCursor(cursor: GrepCursor): string {
-  const id = `fff_c${++cursorCounter}`;
-  cursorCache.set(id, cursor);
-  if (cursorCache.size > 200) {
-    const first = cursorCache.keys().next().value;
-    if (first) cursorCache.delete(first);
+class BoundedMap<V> {
+  private map = new Map<string, V>();
+  private counter = 0;
+  constructor(private maxSize: number) {}
+  store(value: V): string {
+    const id = `${++this.counter}`;
+    this.map.set(id, value);
+    if (this.map.size > this.maxSize) {
+      const first = this.map.keys().next().value;
+      if (first) this.map.delete(first);
+    }
+    return id;
   }
-  return id;
+  get(id: string): V | undefined {
+    return this.map.get(id);
+  }
 }
 
-function getCursor(id: string): GrepCursor | undefined {
-  return cursorCache.get(id);
-}
+const cursorStore = new BoundedMap<GrepCursor>(200);
 
 // Find pagination uses a page-index cursor: native `fileSearch` takes
 // pageIndex/pageSize, so the cursor is just the next page index paired with
@@ -84,22 +68,7 @@ interface FindCursor {
   nextPageIndex: number;
 }
 
-const findCursorCache = new Map<string, FindCursor>();
-let findCursorCounter = 0;
-
-function storeFindCursor(cursor: FindCursor): string {
-  const id = `${++findCursorCounter}`;
-  findCursorCache.set(id, cursor);
-  if (findCursorCache.size > 200) {
-    const first = findCursorCache.keys().next().value;
-    if (first) findCursorCache.delete(first);
-  }
-  return id;
-}
-
-function getFindCursor(id: string): FindCursor | undefined {
-  return findCursorCache.get(id);
-}
+const findCursorStore = new BoundedMap<FindCursor>(200);
 
 // ---------------------------------------------------------------------------
 // Output formatting helpers
@@ -118,7 +87,7 @@ const WARM_FRECENCY = 20;
 // git-dirty (most actionable — file is changing right now) beats frecency
 // (historically often-touched). Keeping one function ensures the two tools
 // never drift in how they surface git/frecency signal.
-export function fffFileAnnotation(item: {
+function fffFileAnnotation(item: {
   gitStatus?: string;
   totalFrecencyScore?: number;
   accessFrecencyScore?: number;
@@ -145,13 +114,44 @@ export function fffFileAnnotation(item: {
 // provided — inside a file we keep matches in source-line order because the
 // engine emits them that way.
 
-function formatGrepOutput(result: GrepResult): string {
+function formatGrepOutput(
+  result: GrepResult,
+  options?: { outputMode?: GrepOutputMode; explicitContext?: number; limit?: number },
+): string {
   if (result.items.length === 0) return "No matches found";
+  const outputMode = options?.outputMode ?? "content";
 
-  // Build file-grouped output in the order files first appear in the result.
-  // This preserves native frecency ordering across files without re-sorting.
+  // count mode: file: count per file
+  if (outputMode === "count") {
+    const counts = new Map<string, number>();
+    const order: string[] = [];
+    for (const item of result.items) {
+      if (!counts.has(item.relativePath)) order.push(item.relativePath);
+      counts.set(item.relativePath, (counts.get(item.relativePath) ?? 0) + 1);
+    }
+    return order.map((p) => `${p}: ${counts.get(p)}`).join("\n");
+  }
+
+  // files_with_matches mode: one preview per file, with definition auto-expand
+  if (outputMode === "files_with_matches") {
+    const seen = new Set<string>();
+    const lines: string[] = [];
+    for (const match of result.items) {
+      if (!seen.has(match.relativePath)) {
+        seen.add(match.relativePath);
+        lines.push(`${match.relativePath}${fffFileAnnotation(match)}`);
+        lines.push(` ${match.lineNumber}: ${truncateLine(match.lineContent)}`);
+        appendDefContext(lines, match, "|");
+    }
+    return lines.join("\n");
+  }
+  }
+
+  // content mode (default) — with definition auto-expand
+  const explicitContext = (options?.explicitContext ?? 0) > 0;
   const lines: string[] = [];
   let currentFile = "";
+
   for (const match of result.items) {
     if (match.relativePath !== currentFile) {
       if (lines.length > 0) lines.push("");
@@ -166,10 +166,12 @@ function formatGrepOutput(result: GrepResult): string {
 
     lines.push(` ${match.lineNumber}: ${truncateLine(match.lineContent)}`);
 
-    match.contextAfter?.forEach((line: string, i: number) => {
-      const lineNum = match.lineNumber + 1 + i;
-      lines.push(` ${lineNum}- ${truncateLine(line)}`);
-    });
+    if (explicitContext) {
+      match.contextAfter?.forEach((line: string, i: number) => {
+        const lineNum = match.lineNumber + 1 + i;
+        lines.push(` ${lineNum}- ${truncateLine(line)}`);
+      });
+    } else appendDefContext(lines, match, "-");
   }
 
   return lines.join("\n");
@@ -181,10 +183,44 @@ function formatGrepOutput(result: GrepResult): string {
 // When the top score is weak, trim output to a small sample instead of dumping
 // the full limit worth of noise into the agent's context.
 const FIND_WEAK_SAMPLE_SIZE = 5;
+const DEFAULT_RESOLVE_LIMIT = 8;
 
 function weakScoreThreshold(pattern: string): number {
   const perfect = pattern.length * 12;
   return Math.floor((perfect * 50) / 100);
+}
+
+type GrepOutputMode = "content" | "files_with_matches" | "count";
+
+function appendDefContext(lines: string[], match: GrepMatch, prefix: string): void {
+  if (!match.isDefinition) return;
+  const after = match.contextAfter?.slice(0, 3) ?? [];
+  for (let i = 0; i < after.length; i++) {
+    if (after[i].trim()) lines.push(` ${match.lineNumber + 1 + i}${prefix} ${truncateLine(after[i])}`);
+  }
+}
+
+function scoreDominates(top?: { matchType?: string; exactMatch?: boolean; total?: number } | null, second?: { total?: number } | null): boolean {
+  if (!top) return false;
+  return top.matchType === "exact" || top.exactMatch === true || !second || (top.total ?? 0) > (second.total ?? 0) * 2;
+}
+
+type GrepResultFormat = { content: { type: "text"; text: string }[]; details: { totalMatched: number; totalFiles: number } };
+
+function formatGrepResult(
+  result: GrepResult,
+  outputMode: GrepOutputMode | undefined,
+  explicitContext: number,
+  effectiveLimit: number,
+  extras?: { regexFallbackError?: string; fuzzyNotice?: string | null },
+): GrepResultFormat {
+  let output = formatGrepOutput(result, { outputMode, explicitContext, limit: effectiveLimit });
+  const notices: string[] = [];
+  if (extras?.regexFallbackError) notices.push(`Invalid regex: ${extras.regexFallbackError}, used literal match`);
+  if (result.nextCursor) notices.push(`Continue with cursor="${cursorStore.store(result.nextCursor)}"`);
+  if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
+  if (extras?.fuzzyNotice) output = `[${extras.fuzzyNotice}]\n${output}`;
+  return { content: [{ type: "text", text: output }], details: { totalMatched: result.totalMatched, totalFiles: result.totalFiles } };
 }
 
 interface FormattedFind {
@@ -197,6 +233,7 @@ function formatFindOutput(
   result: SearchResult,
   limit: number,
   pattern: string,
+  pageIndex = 0,
 ): FormattedFind {
   if (result.items.length === 0) {
     return {
@@ -213,8 +250,18 @@ function formatFindOutput(
   const effective = weak ? Math.min(FIND_WEAK_SAMPLE_SIZE, limit) : limit;
   const shown = result.items.slice(0, effective);
 
+  const items: string[] = [];
+
+  // On first page, add a "→ Read" hint when the top candidate strongly dominates
+  if (pageIndex === 0 && shown.length > 0 && scoreDominates(result.scores[0], result.scores[1])) {
+    const label = result.scores[0]?.matchType === "exact" || result.scores[0]?.exactMatch ? "exact match!" : "best match";
+    items.push(`→ Read ${shown[0].relativePath} (${label})`);
+  }
+
+  items.push(...shown.map((item) => `${item.relativePath}${fffFileAnnotation(item)}`));
+
   return {
-    output: shown.map((item) => `${item.relativePath}${fffFileAnnotation(item)}`).join("\n"),
+    output: items.join("\n"),
     weak,
     shownCount: shown.length,
   };
@@ -281,7 +328,8 @@ export default function fffExtension(pi: ExtensionAPI) {
     (process.env.PI_FFF_MODE as FffMode) ??
     "tools-and-ui";
 
-  const toolNames = resolveToolNames(currentMode);
+  const grepName = currentMode === "override" ? "grep" : "ffgrep";
+  const findName = currentMode === "override" ? "find" : "fffind";
 
   // DB path resolution: flag > env > undefined (use fff-node defaults)
   const frecencyDbPath =
@@ -303,18 +351,6 @@ export default function fffExtension(pi: ExtensionAPI) {
     rootScanFlag === "true" ||
     rootScanFlag === "1" ||
     (rootScanFlag == null && (rootScanEnv === "1" || rootScanEnv === "true"));
-
-  function getMode(): FffMode {
-    return currentMode;
-  }
-
-  function setMode(mode: FffMode): void {
-    currentMode = mode;
-  }
-
-  function shouldEnableMentions(): boolean {
-    return currentMode !== "tools-only";
-  }
 
   function ensureFinder(cwd: string): Promise<FileFinder> {
     if (finder && !finder.isDestroyed && finderCwd === cwd)
@@ -367,10 +403,10 @@ export default function fffExtension(pi: ExtensionAPI) {
     const f = await ensureFinder(activeCwd);
     if (signal.aborted) return [];
 
-    const result = f.mixedSearch(query, { pageSize: MENTION_MAX_RESULTS });
+    const result = f.mixedSearch(query, { pageSize: 20 });
     if (!result.ok) return [];
 
-    return result.value.items.slice(0, MENTION_MAX_RESULTS).map((mixed: MixedItem) => {
+    return result.value.items.slice(0, 20).map((mixed: MixedItem) => {
       if (mixed.type === "directory") {
         return {
           value: buildAtCompletionValue(mixed.item.relativePath),
@@ -398,7 +434,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 
       return {
         async getSuggestions(lines, cursorLine, cursorCol, options) {
-          if (shouldEnableMentions()) {
+          if (currentMode !== "tools-only") {
             try {
               const mentionResult = await mentionProvider.getSuggestions(
                 lines,
@@ -551,14 +587,19 @@ export default function fffExtension(pi: ExtensionAPI) {
         description: `Max matches (default ${DEFAULT_GREP_LIMIT})`,
       }),
     ),
+    outputMode: Type.Optional(
+      Type.String({
+        description: "Output format: 'content' (default), 'files_with_matches' (one preview per file), or 'count' (file match counts)",
+      }),
+    ),
     cursor: Type.Optional(
       Type.String({ description: "Pagination cursor from previous result" }),
     ),
   });
 
   pi.registerTool({
-    name: toolNames.grep,
-    label: toolNames.grep,
+    name: grepName,
+    label: grepName,
     description: `Grep file contents. Smart-case, auto-detects regex vs literal, git-aware. Results are ranked by frecency (most-accessed files first); matches within a file stay in source order. Default limit ${DEFAULT_GREP_LIMIT}.`,
     promptSnippet: "Grep contents",
     promptGuidelines: [
@@ -614,14 +655,16 @@ export default function fffExtension(pi: ExtensionAPI) {
       // caseSensitive override flips smartCase off; omitting it keeps smart-case
       // (case-insensitive when pattern is all lowercase).
       const smartCase = params.caseSensitive !== true;
+      const explicitContext = params.context ?? 0;
 
+      // Always request a little context so definition auto-expand can work.
       const grepResult = f.grep(query, {
         mode,
         smartCase,
         maxMatchesPerFile: Math.min(effectiveLimit, 50),
-        cursor: (params.cursor ? getCursor(params.cursor) : null) ?? null,
-        beforeContext: params.context ?? 0,
-        afterContext: params.context ?? 0,
+        cursor: (params.cursor ? cursorStore.get(params.cursor) : null) ?? null,
+        beforeContext: explicitContext,
+        afterContext: Math.max(explicitContext, 3),
         classifyDefinitions: true,
       });
 
@@ -648,25 +691,8 @@ export default function fffExtension(pi: ExtensionAPI) {
         }
       }
 
-      let output = formatGrepOutput(result);
-      const notices: string[] = [];
-      if (result.regexFallbackError) {
-        notices.push(`Invalid regex: ${result.regexFallbackError}, used literal match`);
-      }
-      if (result.nextCursor) {
-        notices.push(`Continue with cursor="${storeCursor(result.nextCursor)}"`);
-      }
-
-      if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
-      if (fuzzyNotice) output = `[${fuzzyNotice}]\n${output}`;
-
-      return {
-        content: [{ type: "text", text: output }],
-        details: {
-          totalMatched: result.totalMatched,
-          totalFiles: result.totalFiles,
-        },
-      };
+      const outputMode = params.outputMode as GrepOutputMode | undefined;
+      return formatGrepResult(result, outputMode, explicitContext, effectiveLimit, { regexFallbackError: result.regexFallbackError, fuzzyNotice });
     },
 
     renderCall(args, theme, context) {
@@ -674,7 +700,7 @@ export default function fffExtension(pi: ExtensionAPI) {
       const pattern = args?.pattern ?? "";
       const path = args?.path ?? ".";
       let content =
-        theme.fg("toolTitle", theme.bold(toolNames.grep)) +
+        theme.fg("toolTitle", theme.bold(grepName)) +
         " " +
         theme.fg("accent", `/${pattern}/`) +
         theme.fg("toolOutput", ` in ${path}`);
@@ -720,8 +746,8 @@ export default function fffExtension(pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: toolNames.find,
-    label: toolNames.find,
+    name: findName,
+    label: findName,
     description: `Fuzzy path search and glob search. Matches against the whole repo-relative path, not just the filename. Frecency-ranked, git-aware. Multi-word = narrower (AND). Default limit ${DEFAULT_FIND_LIMIT}.`,
     promptSnippet: "Find files by path or glob",
     promptGuidelines: [
@@ -741,7 +767,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 
       // Resume from a prior cursor if supplied — cursor owns query+pageSize so
       // the agent can't accidentally mix patterns across pages.
-      const resumed = params.cursor ? getFindCursor(params.cursor) : undefined;
+      const resumed = params.cursor ? findCursorStore.get(params.cursor) : undefined;
       const effectiveLimit = resumed
         ? resumed.pageSize
         : Math.max(1, params.limit ?? DEFAULT_FIND_LIMIT);
@@ -758,7 +784,7 @@ export default function fffExtension(pi: ExtensionAPI) {
       if (!searchResult.ok) throw new Error(searchResult.error);
 
       const result = searchResult.value;
-      const formatted = formatFindOutput(result, effectiveLimit, pattern);
+      const formatted = formatFindOutput(result, effectiveLimit, pattern, pageIndex);
       let output = formatted.output;
 
       // Infer hasMore: native fileSearch fills pageSize when more results
@@ -776,7 +802,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 
       if (!formatted.weak && hasMore) {
         const remaining = result.totalMatched - shownSoFar;
-        const cursorId = storeFindCursor({
+        const cursorId = findCursorStore.store({
           query,
           pattern,
           pageSize: effectiveLimit,
@@ -804,7 +830,7 @@ export default function fffExtension(pi: ExtensionAPI) {
       const pattern = args?.pattern ?? "";
       const path = args?.path ?? ".";
       let content =
-        theme.fg("toolTitle", theme.bold(toolNames.find)) +
+        theme.fg("toolTitle", theme.bold(findName)) +
         " " +
         theme.fg("accent", pattern) +
         theme.fg("toolOutput", ` in ${path}`);
@@ -820,6 +846,267 @@ export default function fffExtension(pi: ExtensionAPI) {
     },
   });
 
+  // --- resolve_file tool ---
+
+  const resolveFileSchema = Type.Object({
+    pattern: Type.String({
+      description:
+        "Fuzzy file path query. Turn a vague reference ('auth middleware', 'Chart component') into an exact file path.",
+    }),
+    limit: Type.Optional(
+      Type.Number({
+        description: `Max candidates when ambiguous (default ${DEFAULT_RESOLVE_LIMIT})`,
+      }),
+    ),
+  });
+
+  pi.registerTool({
+    name: "resolve_file",
+    label: "Resolve File",
+    description:
+      "Resolve a fuzzy file reference to an exact absolute path using FFF. Auto-resolves when the top candidate strongly dominates; returns ranked candidates when ambiguous.",
+    promptSnippet: "Resolve a fuzzy file reference",
+    promptGuidelines: [
+      "Use when you have a vague reference like 'auth middleware' or 'main config' instead of an exact path.",
+      "The tool either returns a resolved path (ready for read) or a ranked candidate list.",
+      "More specific queries (2-3 words) produce better results.",
+    ],
+    parameters: resolveFileSchema,
+
+    async execute(_toolCallId, params, signal) {
+      if (signal?.aborted) throw new Error("Operation aborted");
+
+      const f = await ensureFinder(activeCwd);
+      const limit = Math.max(1, params.limit ?? DEFAULT_RESOLVE_LIMIT);
+
+      const result = f.fileSearch(params.pattern, { pageSize: limit });
+      if (!result.ok) throw new Error(result.error);
+
+      if (result.value.items.length === 0) {
+        return {
+          content: [{ type: "text", text: `No files matched "${params.pattern}".` }],
+          details: { resolved: false, totalMatched: 0 },
+        };
+      }
+
+      const topResult = result.value.items[0];
+      const topScore = result.value.scores[0];
+      const secondScore = result.value.scores[1];
+
+      // Auto-resolve when top candidate dominates or is an exact match
+      if (scoreDominates(topScore, secondScore)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `→ Read ${topResult.relativePath}${fffFileAnnotation(topResult)}`,
+            },
+          ],
+          details: {
+            resolved: true,
+            totalMatched: result.value.totalMatched,
+          },
+        };
+      }
+
+      // Ambiguous — return ranked candidates
+      const candidates = result.value.items
+        .slice(0, limit)
+        .map(
+          (item, i) =>
+            `${i + 1}. ${item.relativePath}${fffFileAnnotation(item)}`,
+        )
+        .join("\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Ambiguous reference. Top candidates:\n${candidates}`,
+          },
+        ],
+        details: {
+          resolved: false,
+          totalMatched: result.value.totalMatched,
+        },
+      };
+    },
+  });
+
+  // --- fff_multi_grep tool ---
+
+  const multiGrepSchema = Type.Object({
+    patterns: Type.Array(Type.String({ description: "Literal pattern to search for" }), {
+      minItems: 1,
+      maxItems: 10,
+      description: "Search for any of these literal patterns in one pass (useful for renamed symbols, aliases, spelling variants)",
+    }),
+    path: Type.Optional(
+      Type.String({
+        description:
+          "Repo-relative path constraint. Directory prefix (src/ or src/foo/), bare filename with extension (main.rs), or glob (*.ts, src/**/*.cc, {src,lib}/**).",
+      }),
+    ),
+    exclude: Type.Optional(
+      Type.Union([Type.String(), Type.Array(Type.String())], {
+        description:
+          "Exclude paths (comma/space-separated or array). Same syntax as path: directory prefix ('test/'), filename with extension ('config.json'), or glob ('*.min.js').",
+      }),
+    ),
+    context: Type.Optional(
+      Type.Number({ description: "Context lines before+after each match" }),
+    ),
+    limit: Type.Optional(
+      Type.Number({
+        description: `Max matches (default ${DEFAULT_GREP_LIMIT})`,
+      }),
+    ),
+    outputMode: Type.Optional(
+      Type.String({
+        description: "Output format: 'content' (default), 'files_with_matches', or 'count'",
+      }),
+    ),
+    cursor: Type.Optional(
+      Type.String({ description: "Pagination cursor from previous result" }),
+    ),
+  });
+
+  pi.registerTool({
+    name: "fff_multi_grep",
+    label: "FFF Multi Grep",
+    description:
+      "Search file contents for any of multiple literal patterns in one pass using FFF multi-grep. Useful for renamed symbols, aliases, or common spelling variants.",
+    promptSnippet: "Grep for multiple patterns",
+    promptGuidelines: [
+      "Provide 2-10 literal patterns. All searches happen in one indexed pass.",
+      "Use for symbol renames, API migrations, or finding multiple related terms.",
+      "Use path/exclude to scope; use outputMode for concise results.",
+    ],
+    parameters: multiGrepSchema,
+
+    async execute(_toolCallId, params, signal) {
+      if (signal?.aborted) throw new Error("Operation aborted");
+
+      const f = await ensureFinder(activeCwd);
+      const effectiveLimit = Math.max(1, params.limit ?? DEFAULT_GREP_LIMIT);
+      const query = buildQuery(params.path, "", params.exclude, activeCwd);
+      const explicitContext = params.context ?? 0;
+
+      const grepResult = f.multiGrep({
+        patterns: params.patterns,
+        constraints: query || undefined,
+        cursor: (params.cursor ? cursorStore.get(params.cursor) : null) ?? null,
+        beforeContext: explicitContext,
+        afterContext: Math.max(explicitContext, 3),
+        maxMatchesPerFile: Math.min(effectiveLimit, 50),
+      });
+
+      if (!grepResult.ok) throw new Error(grepResult.error);
+
+      const result = grepResult.value;
+      const outputMode = params.outputMode as GrepOutputMode | undefined;
+      return formatGrepResult(result, outputMode, explicitContext, effectiveLimit);
+    },
+  });
+
+  // --- related_files tool ---
+
+  const relatedFilesSchema = Type.Object({
+    path: Type.String({
+      description:
+        "File path (relative or fuzzy) to find related companion files for (tests, types, styles, stories, etc.).",
+    }),
+    limit: Type.Optional(
+      Type.Number({
+        description: `Max related files (default ${DEFAULT_RESOLVE_LIMIT})`,
+      }),
+    ),
+  });
+
+  pi.registerTool({
+    name: "related_files",
+    label: "Related Files",
+    description:
+      "Find files related to a given file by stem matching — discovers test files, type definitions, styles, and other companion files sharing the same base name.",
+    promptSnippet: "Find companion files",
+    promptGuidelines: [
+      "Pass any file path in the project. The tool strips extensions and test/spec/stories/.d/.module suffixes to find companions.",
+      "Great for finding the test file for a module, or the type definition for an implementation.",
+    ],
+    parameters: relatedFilesSchema,
+
+    async execute(_toolCallId, params, signal) {
+      if (signal?.aborted) throw new Error("Operation aborted");
+
+      const f = await ensureFinder(activeCwd);
+      const limit = Math.max(1, params.limit ?? DEFAULT_RESOLVE_LIMIT);
+
+      // Resolve the reference file first
+      const refResult = f.fileSearch(params.path, { pageSize: limit * 2 });
+      if (!refResult.ok) throw new Error(refResult.error);
+      if (refResult.value.items.length === 0) {
+        return {
+          content: [{ type: "text", text: `No file matched "${params.path}".` }],
+          details: { reference: "", related: [] },
+        };
+      }
+
+      const referencePath = refResult.value.items[0].relativePath;
+
+      // Extract stem: strip test/spec/stories/.d/.module suffixes, then extension
+      // Extract stem: strip test/spec/stories/.d/.module suffixes, then extension
+      const stem = (referencePath.split("/").pop() ?? referencePath)
+        .replace(/\.(test|spec|stories)\./g, ".")
+        .replace(/\.d\./g, ".")
+        .replace(/\.module\./g, ".")
+        .replace(/\.[^.]+$/, "");
+
+      // Search for files with the same stem
+      const relatedResult = f.fileSearch(stem, { pageSize: limit * 3 });
+      if (!relatedResult.ok) throw new Error(relatedResult.error);
+
+      // Filter out the reference file and limit
+      const related = relatedResult.value.items
+        .filter((item) => item.relativePath !== referencePath)
+        .filter((item) => {
+          const candidateBase = item.relativePath.split("/").pop() ?? "";
+          const refDir = referencePath.substring(0, referencePath.lastIndexOf("/"));
+          return (
+            candidateBase.includes(stem) ||
+            item.relativePath.includes(`${refDir}/${stem}`)
+          );
+        })
+        .slice(0, limit);
+
+      if (related.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `No related files found for "${referencePath}".`,
+            },
+          ],
+          details: { reference: referencePath, related: [] },
+        };
+      }
+
+      const output = [
+        `Related files for ${referencePath}:`,
+        ...related.map(
+          (item, i) => `${i + 1}. ${item.relativePath}${fffFileAnnotation(item)}`,
+        ),
+      ].join("\n");
+
+      return {
+        content: [{ type: "text", text: output }],
+        details: {
+          reference: referencePath,
+          related: related.map((i) => i.relativePath),
+        },
+      };
+    },
+  });
+
   // --- commands ---
 
   pi.registerCommand("fff-mode", {
@@ -829,9 +1116,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 
       // No args - show current mode
       if (!arg) {
-        const mode = getMode();
-        const flag = pi.getFlag("fff-mode") ?? "unset";
-        ctx.ui.notify(`Current mode: '${mode}' (flag: ${flag})`, "info");
+        ctx.ui.notify(`Current mode: '${currentMode}' (flag: ${pi.getFlag("fff-mode") ?? "unset"})`, "info");
         return;
       }
 
@@ -842,8 +1127,8 @@ export default function fffExtension(pi: ExtensionAPI) {
       }
 
       const newMode = arg as FffMode;
-      const oldMode = getMode();
-      setMode(newMode);
+      const oldMode = currentMode;
+      currentMode = newMode;
 
       pi.appendEntry("fff-mode", { mode: newMode });
 
@@ -872,7 +1157,7 @@ export default function fffExtension(pi: ExtensionAPI) {
       const h = health.value;
       const lines = [
         `FFF v${h.version}`,
-        `Mode: ${getMode()}`,
+        `Mode: ${currentMode}`,
         `Git: ${h.git.repositoryFound ? `yes (${h.git.workdir ?? "unknown"})` : "no"}`,
         `Picker: ${h.filePicker.initialized ? `${h.filePicker.indexedFiles ?? 0} files` : "not initialized"}`,
         `Frecency: ${h.frecency.initialized ? "active" : "disabled"}`,

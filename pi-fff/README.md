@@ -44,25 +44,63 @@ pi install -l npm:@bacnh85/pi-fff
 
 ### `ffgrep`
 
-Search file contents. Smart case, plain text by default, regex optional.
+Search file contents. Smart-case, auto-detects regex vs literal, git-aware. Results ranked by frecency (most-accessed files first).
 
 Parameters:
 - `pattern` — search text or regex
 - `path` — directory/file constraint (e.g. `src/`, `*.ts`)
-- `ignoreCase` — force case-insensitive
-- `literal` — treat as literal string (default: true)
+- `exclude` — exclude paths (e.g. `test/,*.min.js`)
+- `caseSensitive` — force case-sensitive (default: smart-case)
 - `context` — context lines around matches
-- `limit` — max matches (default: 100)
+- `limit` — max matches (default: 20)
+- `outputMode` — `"content"` (default), `"files_with_matches"` (one preview per file), or `"count"` (file match counts)
 - `cursor` — pagination cursor from previous result
+
+Definition lines (function/class/interface/enum declarations) are auto-expanded with 3 lines of context for scannability.
 
 ### `fffind`
 
-Fuzzy file name search. Frecency-ranked.
+Fuzzy file name search. Frecency-ranked, git-aware, multi-word AND narrowing.
 
 Parameters:
 - `pattern` — fuzzy query (e.g. `main.ts`, `src/ config`)
 - `path` — directory constraint
-- `limit` — max results (default: 200)
+- `exclude` — exclude paths
+- `limit` — max results (default: 30)
+- `cursor` — pagination cursor from previous result
+
+When the top result strongly dominates (exact match or score > 2x runner-up), a `→ Read` hint is shown.
+
+### `resolve_file`
+
+Resolve a vague file reference to an exact path. Auto-resolves when the top FFF candidate strongly dominates; returns ranked candidates when ambiguous.
+
+Parameters:
+- `pattern` — fuzzy file query (e.g. `"auth middleware"`, `"Chart component"`)
+- `limit` — max candidates when ambiguous (default: 8)
+
+### `fff_multi_grep`
+
+Search file contents for any of multiple literal patterns in one pass. Uses FFF multi-grep. Useful for renamed symbols, aliases, or spelling variants.
+
+Parameters:
+- `patterns` — array of literal patterns (1-10)
+- `path` — directory/file constraint
+- `exclude` — exclude paths
+- `context` — context lines around matches
+- `limit` — max matches (default: 20)
+- `outputMode` — `"content"`, `"files_with_matches"`, or `"count"` (default: `"content"`)
+- `cursor` — pagination cursor from previous result
+
+### `related_files`
+
+Find companion files sharing the same base name stem. Discovers test files, type definitions, styles, stories, and other companions.
+
+Parameters:
+- `path` — reference file path (fuzzy or exact)
+- `limit` — max related files (default: 8)
+
+Example: `related_files({ path: "src/Chart.tsx" })` → `Chart.test.tsx`, `Chart.module.css`, `Chart.types.ts`
 
 ## Commands
 
