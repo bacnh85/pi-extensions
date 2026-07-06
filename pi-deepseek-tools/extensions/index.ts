@@ -10,8 +10,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
 	deepSeekSelectionGuidance,
+	findMisuseSuggestion,
 	hasAnyTool,
 	isOpenCodeGoDeepSeekV4FlashModel,
+	isOpenCodeGoDeepSeekV4Model,
+	isOpenCodeGoDeepSeekV4ProModel,
+	DEEPSEEK_V4_PRO_MODEL,
 	isSemanticMissToolCall,
 	missedDedicatedTool,
 	selectionGuidanceEnabled,
@@ -20,8 +24,12 @@ import {
 import { repairDeepSeekToolArguments, type RepairKind } from "./lib/tool-input-repair";
 
 export {
+	DEEPSEEK_V4_PRO_MODEL,
 	deepSeekSelectionGuidance,
+	findMisuseSuggestion,
 	isOpenCodeGoDeepSeekV4FlashModel,
+	isOpenCodeGoDeepSeekV4Model,
+	isOpenCodeGoDeepSeekV4ProModel,
 	isSemanticMissToolCall,
 	missedDedicatedTool,
 	selectionGuidanceEnabled,
@@ -108,7 +116,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", (event, ctx) => {
 		remindedThisTurn = false;
-		repairThisTurn = isOpenCodeGoDeepSeekV4FlashModel(ctx.model);
+		repairThisTurn = isOpenCodeGoDeepSeekV4Model(ctx.model);
 		if (!selectionGuidanceEnabled()) return;
 		if (!repairThisTurn) return;
 
@@ -123,7 +131,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", (event, ctx) => {
-		if (!isOpenCodeGoDeepSeekV4FlashModel(ctx.model)) return;
+		if (!isOpenCodeGoDeepSeekV4Model(ctx.model)) return;
 
 		if (event.toolName.startsWith("serena_")) {
 			remindedThisTurn = false;
@@ -134,11 +142,17 @@ export default function (pi: ExtensionAPI) {
 		const serenaActive = activeTools.some((tool) => tool.startsWith("serena_"));
 		const semanticMiss = serenaActive && isSemanticMissToolCall(event.toolName, event.input);
 		const dedicatedTool = missedDedicatedTool(event.toolName, event.input, activeTools);
-		if (!semanticMiss && !dedicatedTool) return;
+		const misuseTool = findMisuseSuggestion(event.toolName, event.input);
+		if (!semanticMiss && !dedicatedTool && !misuseTool) return;
 
 		const reason = semanticMiss
-			? "For OpenCode Go DeepSeek V4 Flash, use Serena semantic tools before read/bash for code-symbol, declaration, reference, implementation, or refactor work."
-			: `For OpenCode Go DeepSeek V4 Flash, use the dedicated ${dedicatedTool} tool instead of bash for this simple file operation.`;
+			? "For OpenCode Go DeepSeek V4, use Serena semantic tools before read/bash for code-symbol, declaration, reference, implementation, or refactor work."
+			: dedicatedTool
+				? `For OpenCode Go DeepSeek V4, use the dedicated ${dedicatedTool} tool instead of bash for this simple file operation.`
+				: `For OpenCode Go DeepSeek V4, use ${misuseTool} instead of find when the file path is known or the action is to run a command.`;
+
+		// Block find misuse with specific filename — zero ambiguity, definitive error
+		if (misuseTool === "read") return { block: true, reason };
 
 		if (strictSerenaEnabled()) return { block: true, reason };
 		if (remindedThisTurn) return;
@@ -146,10 +160,12 @@ export default function (pi: ExtensionAPI) {
 		remindedThisTurn = true;
 		pi.sendMessage(
 			{
-				customType: "deepseek-flash-tool-selection-reminder",
+				customType: "deepseek-v4-tool-selection-reminder",
 				content: semanticMiss
 					? `${reason} Use read for docs/config/non-code files or after Serena identifies the relevant code region.`
-					: `${reason} Use bash only for real shell commands such as tests, builds, git, package-manager, or process execution.`,
+					: misuseTool
+						? `${reason}`
+						: `${reason} Use bash only for real shell commands such as tests, builds, git, package-manager, or process execution.`,
 				display: true,
 			},
 			{ deliverAs: "steer" },

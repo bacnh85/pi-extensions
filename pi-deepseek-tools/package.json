@@ -1,7 +1,7 @@
 {
   "name": "@bacnh85/pi-deepseek-tools",
-  "version": "0.3.1",
-  "description": "Pi extension that improves OpenCode Go DeepSeek V4 Flash tool selection and tool input repair.",
+  "version": "0.4.0",
+  "description": "Pi extension that improves OpenCode Go DeepSeek V4 (Flash and Pro) tool selection, tool input repair, and find-misuse interception.",
   "type": "module",
   "license": "MIT",
   "publishConfig": {
@@ -19,7 +19,8 @@
     "deepseek",
     "tool-calling",
     "opencode-go",
-    "deepseek-v4-flash"
+    "deepseek-v4-flash",
+    "deepseek-v4-pro"
   ],
   "scripts": {
     "test": "cd extensions && mocha"

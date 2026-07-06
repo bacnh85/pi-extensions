@@ -2,6 +2,9 @@ declare const process: { env: Record<string, string | undefined> };
 
 export const OPENCODE_GO_PROVIDER = "opencode-go";
 export const DEEPSEEK_V4_FLASH_MODEL = "deepseek-v4-flash";
+export const DEEPSEEK_V4_PRO_MODEL = "deepseek-v4-pro";
+
+const DEEPSEEK_V4_MODELS = new Set([DEEPSEEK_V4_FLASH_MODEL, DEEPSEEK_V4_PRO_MODEL]);
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -11,14 +14,17 @@ export function isOpenCodeGoDeepSeekV4FlashModel(model?: { provider?: string; id
 	return model?.provider === OPENCODE_GO_PROVIDER && model?.id === DEEPSEEK_V4_FLASH_MODEL;
 }
 
-/** @deprecated Use isOpenCodeGoDeepSeekV4FlashModel. Kept as a compatibility alias with Flash-only semantics. */
-export function isDeepSeekV4Model(provider?: string, modelId?: string): boolean {
-	return provider === OPENCODE_GO_PROVIDER && modelId === DEEPSEEK_V4_FLASH_MODEL;
+export function isOpenCodeGoDeepSeekV4ProModel(model?: { provider?: string; id?: string }): boolean {
+	return model?.provider === OPENCODE_GO_PROVIDER && model?.id === DEEPSEEK_V4_PRO_MODEL;
 }
 
-/** @deprecated Use isOpenCodeGoDeepSeekV4FlashModel. Kept as a compatibility alias with Flash-only semantics. */
 export function isOpenCodeGoDeepSeekV4Model(model?: { provider?: string; id?: string }): boolean {
-	return isOpenCodeGoDeepSeekV4FlashModel(model);
+	return model?.provider === OPENCODE_GO_PROVIDER && DEEPSEEK_V4_MODELS.has(model?.id ?? "");
+}
+
+/** Alias for isOpenCodeGoDeepSeekV4Model. Matches both Flash and Pro under OpenCode Go. */
+export function isDeepSeekV4Model(provider?: string, modelId?: string): boolean {
+	return provider === OPENCODE_GO_PROVIDER && DEEPSEEK_V4_MODELS.has(modelId ?? "");
 }
 
 export function selectionGuidanceEnabled(env: Record<string, string | undefined> = process.env): boolean {
@@ -93,10 +99,30 @@ export function missedDedicatedTool(toolName: string, input: unknown, activeTool
 	return dedicatedToolForShellCommand(input.command, activeTools);
 }
 
+export function findMisuseSuggestion(toolName: string, input: unknown): string | undefined {
+	if (toolName !== "find" || !isRecord(input)) return undefined;
+
+	const pattern = typeof input.pattern === "string" ? input.pattern : "";
+	const path = typeof input.path === "string" ? input.path : "";
+	const combined = `${path} ${pattern}`.trim();
+
+	// Searching for test files — likely preparing to run tests → suggest bash
+	if (/(\btest\b|__tests?__|\.test\.|\.spec\.)/i.test(pattern)) {
+		return "bash";
+	}
+
+	// No wildcards = looking for a specific named file → should use read
+	if (!/[*?\[\]]/.test(combined) && /\S/.test(combined)) {
+		return "read";
+	}
+
+	return undefined;
+}
+
 export function deepSeekSelectionGuidance(activeTools: readonly string[]): string {
 	const serenaActive = activeTools.some((tool) => tool.startsWith("serena_"));
 	const fileToolsActive = hasAnyTool(activeTools, ["ls", "grep", "find", "read", "edit", "bash"]);
-	const parts = ["OpenCode Go DeepSeek V4 Flash tool-selection rules for Pi:"];
+	const parts = ["OpenCode Go DeepSeek V4 tool-selection rules for Pi:"];
 
 	parts.push("1. Call exactly one provided Pi tool name; never invent tool names such as read_file, search_files, or list_directory.");
 
@@ -110,8 +136,9 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 	if (fileToolsActive) {
 		parts.push(
 			"4. Path fields are filesystem paths, never markdown links or auto-links.",
-			"5. For exact file/text work, use ls, find, grep, or read rather than shelling out. Use bash only for real commands such as tests, builds, git, package-manager, or process execution.",
-			"6. For edits, inspect with the right tool first and then call edit; do not invent missing tools.",
+			"5. Do not default to find. Read → read. Run → bash. Write → write. List → ls. Search → grep. Find/locate → find. Match your first tool call to the verb in the prompt. The most common mistake is using find when prompted to read a file or run a command.",
+			"6. Bash is for running tests, builds, git, package-manager, or process execution. Do not use bash for file reading, file discovery, or text search — read, find, ls, and grep handle those.",
+			"7. For edits, inspect with the right tool first and then call edit; do not invent missing tools.",
 		);
 	}
 

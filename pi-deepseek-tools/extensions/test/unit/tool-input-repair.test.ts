@@ -131,18 +131,23 @@ describe("DeepSeek Flash built-in wrappers", () => {
 		assert.deepEqual(read.prepareArguments({ path: "README.md", limit: 5 }), { path: "README.md", limit: 5 });
 	});
 
-	it("does not enable wrapper repairs for Pro, direct DeepSeek, or OpenAI turns", () => {
+	it("enables wrapper repairs for Pro but not for direct DeepSeek or OpenAI turns", () => {
 		const { handlers, tools } = createFakePi();
 		handlers.session_start[0]({}, { cwd: process.cwd() });
 		const read = tools.read;
 
+		// Pro now gets repairs
+		handlers.before_agent_start[0]({ systemPrompt: "base", systemPromptOptions: { selectedTools: ["read"] } }, { model: { provider: OPENCODE_GO_PROVIDER, id: "deepseek-v4-pro" } });
+		assert.notDeepEqual(read.prepareArguments({ path: "README.md", limit: 5 }), { path: "README.md", limit: 5 });
+		handlers.agent_end[0]({}, {});
+
 		for (const model of [
-			{ provider: OPENCODE_GO_PROVIDER, id: "deepseek-v4-pro" },
 			{ provider: "deepseek", id: DEEPSEEK_V4_FLASH_MODEL },
 			{ provider: "openai-codex", id: "gpt-5.5" },
 		]) {
 			handlers.before_agent_start[0]({ systemPrompt: "base", systemPromptOptions: { selectedTools: ["read"] } }, { model });
 			assert.deepEqual(read.prepareArguments({ path: "README.md", limit: 5 }), { path: "README.md", limit: 5 });
+			handlers.agent_end[0]({}, {});
 		}
 	});
 });
