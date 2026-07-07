@@ -497,10 +497,13 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 		};
 	});
 
-	pi.on("tool_call", async (event) => {
+	pi.on("tool_call", async (event, ctx) => {
 		// Skip semantic miss detection if serena tools are not active (e.g., plan mode)
 		const activeTools = pi.getActiveTools();
 		if (!activeTools.includes("serena_find_symbol")) return;
+
+		// DeepSeek V4: deepseek-tools handles semantic misses — skip to avoid duplicate steer
+		if (ctx.model?.provider === "opencode-go" && ctx.model?.id?.startsWith("deepseek-v4")) return;
 
 		if (event.toolName.startsWith("serena_")) {
 			semanticMissCount = 0;
