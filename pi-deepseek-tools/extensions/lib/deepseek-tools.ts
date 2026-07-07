@@ -111,6 +111,11 @@ export function findMisuseSuggestion(toolName: string, input: unknown): string |
 		return "bash";
 	}
 
+	const knownDocs = /(readme|changelog|license|copying|package\.json|tsconfig\.json|makefile|dockerfile|\.gitignore)/i;
+	if (knownDocs.test(combined)) {
+		return "read";
+	}
+
 	// No wildcards = looking for a specific named file → should use read
 	if (!/[*?\[\]]/.test(combined) && /\S/.test(combined)) {
 		return "read";

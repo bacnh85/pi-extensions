@@ -81,6 +81,18 @@ describe("tool input repair", () => {
 		assert.deepEqual(repaired.repairs, ["bare-string-array", "empty-object-array"]);
 	});
 
+	it("wraps stringified JSON object in array when array is expected", () => {
+		const repaired = repairDeepSeekToolArguments("demo", schema, {
+			path: "notes.md",
+			items: '{"key":"val"}',
+			objects: [],
+			content: "x",
+		});
+
+		assert.deepEqual((repaired.args as any).items, [{ key: "val" }]);
+		assert.deepEqual(repaired.repairs, ["json-object-wrapped-array"]);
+	});
+
 	it("does not parse JSON-looking string content unless the schema expects a container there", () => {
 		const args = { path: "notes.md", items: ["a"], objects: [], content: '["keep as text"]' };
 		const repaired = repairDeepSeekToolArguments("demo", schema, args);
@@ -90,8 +102,12 @@ describe("tool input repair", () => {
 	});
 
 	it("unwraps only degenerate markdown path auto-links", () => {
+		// Degenerate: text matches URL (whitespace in URL)
 		assert.equal(unwrapDegenerateMarkdownAutolink("/tmp/[notes.md](http://notes. md)"), "/tmp/notes.md");
+		// Non-degenerate: real hyperlink, not a path
 		assert.equal(unwrapDegenerateMarkdownAutolink("[click](https://x.com)"), "[click](https://x.com)");
+		// Non-degenerate: URL has real path prefix (different resource)
+		assert.equal(unwrapDegenerateMarkdownAutolink("[nested.md](http://github.com/project/nested.md)"), "[nested.md](http://github.com/project/nested.md)");
 
 		const repaired = repairDeepSeekToolArguments("demo", schema, {
 			path: "/tmp/[notes.md](http://notes. md)",
@@ -101,6 +117,16 @@ describe("tool input repair", () => {
 		});
 		assert.equal((repaired.args as any).path, "/tmp/notes.md");
 		assert.deepEqual(repaired.repairs, ["path-markdown-autolink"]);
+
+		// Real URL with path prefix should NOT be unwrapped
+		const notUnwrapped = repairDeepSeekToolArguments("demo", schema, {
+			path: "[nested.md](http://github.com/project/nested.md)",
+			items: ["a"],
+			objects: [],
+			content: "x",
+		});
+		assert.equal(notUnwrapped.repaired, false);
+		assert.equal((notUnwrapped.args as any).path, "[nested.md](http://github.com/project/nested.md)");
 	});
 });
 

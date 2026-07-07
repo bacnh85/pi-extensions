@@ -76,6 +76,18 @@ const CASES = [
 	},
 ];
 
+function captureInput(event) {
+	const input = event.input ?? event.args ?? event.arguments;
+	if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+	const summary = {};
+	for (const [key, val] of Object.entries(input)) {
+		if (typeof val === 'string') summary[key] = val.length > 120 ? val.slice(0, 120) + '...' : val;
+		else if (typeof val === 'number' || typeof val === 'boolean' || val === null) summary[key] = val;
+		else summary[key] = Array.isArray(val) ? `[${val.length} items]` : `{${Object.keys(val).length} keys}`;
+	}
+	return summary;
+}
+
 function parseArgs(argv) {
 	const args = {
 		provider: "opencode-go",
@@ -88,6 +100,7 @@ function parseArgs(argv) {
 		out: "",
 		case: "",
 		guidance: "on",
+		captureArgs: false,
 	};
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
@@ -96,6 +109,8 @@ function parseArgs(argv) {
 		const next = argv[i + 1];
 		if (key === "help") {
 			args.help = true;
+		} else if (key === "capture-args") {
+			args.captureArgs = true;
 		} else if (next !== undefined) {
 			args[key] = next;
 			i += 1;
@@ -115,6 +130,7 @@ Options:
   --trials <n>        Repetitions per case (default: 1)
   --case <name>       Run only one case
   --guidance on|off   Disable extension guidance for control runs
+  --capture-args      Capture tool call input arguments for post-hoc analysis
   --out <path>        Write JSON summary
   --pi <command>      Pi executable (default: pi)
 `);
@@ -145,6 +161,7 @@ function runPi(args, testCase) {
 
 		const child = spawn(args.pi, commandArgs, { env, cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] });
 		const tools = [];
+		const toolCalls = [];
 		const errors = [];
 		let agentEnded = false;
 		let stderr = "";
@@ -155,8 +172,14 @@ function runPi(args, testCase) {
 				if (!line.trim()) continue;
 				try {
 					const event = JSON.parse(line);
-					if (event.type === "tool_execution_start") tools.push(event.toolName);
-					if (event.type === "tool_execution_end" && event.isError) errors.push({ toolName: event.toolName, result: event.result });
+					if (event.type === "tool_execution_start") {
+						tools.push(event.toolName);
+						if (args.captureArgs) {
+							const captured = captureInput(event);
+							if (captured) toolCalls.push({ toolName: event.toolName, args: captured });
+						}
+					}
+					if (event.type === "tool_execution_end" && event.isError) errors.push({ toolName: event.toolName, result: event.result, toolCallId: event.toolCallId });
 					if (event.type === "agent_end") agentEnded = true;
 				} catch {
 					// Ignore non-JSON diagnostics.
@@ -166,7 +189,7 @@ function runPi(args, testCase) {
 		child.stderr.setEncoding("utf8");
 		child.stderr.on("data", (chunk) => { stderr += chunk; });
 		child.on("close", (code) => {
-			resolveRun({ code, tools, firstTool: tools[0], errors, agentEnded, stderr: stderr.slice(-4000) });
+			resolveRun({ code, tools, firstTool: tools[0], errors, agentEnded, stderr: stderr.slice(-4000), toolCalls: toolCalls.length > 0 ? toolCalls : undefined });
 		});
 		child.on("error", (error) => {
 			resolveRun({ code: -1, tools, firstTool: undefined, errors: [{ error: String(error) }], agentEnded, stderr: String(error) });

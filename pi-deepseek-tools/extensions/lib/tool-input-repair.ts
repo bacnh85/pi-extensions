@@ -1,6 +1,7 @@
 import { Compile } from "typebox/compile";
+import { isRecord } from "./deepseek-tools.ts";
 
-export type RepairKind = "path-markdown-autolink" | "optional-null" | "json-string" | "empty-object-array" | "bare-string-array";
+export type RepairKind = "path-markdown-autolink" | "optional-null" | "json-string" | "empty-object-array" | "bare-string-array" | "json-object-wrapped-array";
 
 export type RepairResult = {
 	args: unknown;
@@ -9,14 +10,6 @@ export type RepairResult = {
 };
 
 const PATH_FIELD_NAMES = new Set(["path", "filePath", "absolutePath", "relativePath", "relative_path"]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function clone<T>(value: T): T {
-	return structuredClone(value);
-}
 
 function compileCheck(schema: unknown, args: unknown): boolean {
 	return Compile(schema as never).Check(args);
@@ -122,6 +115,9 @@ function tryRepairPath(rootSchema: unknown, args: unknown, path: readonly string
 			if ((expects(targetSchema, "array") && Array.isArray(parsed)) || (expects(targetSchema, "object") && isRecord(parsed))) {
 				if (setAtPath(args, path, parsed)) return "json-string";
 			}
+			if (expects(targetSchema, "array") && isRecord(parsed)) {
+				if (setAtPath(args, path, [parsed])) return "json-object-wrapped-array";
+			}
 		} catch {
 			// Not JSON; maybe a bare array item below.
 		}
@@ -146,7 +142,11 @@ export function unwrapDegenerateMarkdownAutolink(value: string): string {
 	return value.replace(/\[([^\]\n]+)\]\((https?:\/\/[^)]+)\)/g, (match, text: string, url: string) => {
 		const normalizedText = text.replace(/\s+/g, "");
 		const normalizedUrl = normalizedLinkTarget(url);
-		return normalizedUrl === normalizedText || normalizedUrl.endsWith(`/${normalizedText}`) ? text : match;
+		if (normalizedUrl === normalizedText) return text;
+		const suffix = `/${normalizedText}`;
+		// Degenerate prefix only: empty, dot, whitespace. NOT host/path/file.ext.
+		if (normalizedUrl.endsWith(suffix) && /^[\s.]*$/.test(normalizedUrl.slice(0, -suffix.length))) return text;
+		return match;
 	});
 }
 
@@ -174,7 +174,7 @@ export function repairDeepSeekToolArguments(_toolName: string, schema: unknown, 
 		return { args: pathCleaned.value, repaired: pathCleaned.changed, repairs: pathCleaned.changed ? ["path-markdown-autolink"] : [] };
 	}
 
-	const candidate = clone(pathCleaned.value);
+	const candidate = structuredClone(pathCleaned.value);
 	const repairs: RepairKind[] = pathCleaned.changed ? ["path-markdown-autolink"] : [];
 	for (const error of validationErrors(schema, candidate)) {
 		const repaired = tryRepairPath(schema, candidate, errorPath(error));

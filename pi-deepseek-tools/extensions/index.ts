@@ -9,6 +9,7 @@ import {
 	createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
+	isRecord,
 	deepSeekSelectionGuidance,
 	findMisuseSuggestion,
 	hasAnyTool,
@@ -35,10 +36,6 @@ export {
 	selectionGuidanceEnabled,
 	strictSerenaEnabled,
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function addReadDefaults(args: unknown): unknown {
 	if (!isRecord(args)) return args;
@@ -151,8 +148,8 @@ export default function (pi: ExtensionAPI) {
 				? `For OpenCode Go DeepSeek V4, use the dedicated ${dedicatedTool} tool instead of bash for this simple file operation.`
 				: `For OpenCode Go DeepSeek V4, use ${misuseTool} instead of find when the file path is known or the action is to run a command.`;
 
-		// Block find misuse with specific filename — zero ambiguity, definitive error
-		if (misuseTool === "read") return { block: true, reason };
+		// Block find misuse: specific filename (read) or test-pattern (bash) — zero ambiguity
+		if (misuseTool === "read" || misuseTool === "bash") return { block: true, reason };
 
 		if (strictSerenaEnabled()) return { block: true, reason };
 		if (remindedThisTurn) return;

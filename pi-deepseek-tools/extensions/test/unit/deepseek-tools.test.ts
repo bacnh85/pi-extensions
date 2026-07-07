@@ -187,6 +187,13 @@ describe("find misuse detection", () => {
 		assert.equal(findMisuseSuggestion("find", { pattern: "**/*.py" }), undefined);
 	});
 
+	it("suggests read for known-document glob patterns (*README*, *CHANGELOG*, etc.)", () => {
+		assert.equal(findMisuseSuggestion("find", { pattern: "*README*" }), "read");
+		assert.equal(findMisuseSuggestion("find", { pattern: "**/pi-deepseek-tools/README*" }), "read");
+		assert.equal(findMisuseSuggestion("find", { pattern: "*CHANGELOG*" }), "read");
+		assert.equal(findMisuseSuggestion("find", { pattern: "*package.json*" }), "read");
+	});
+
 	it("returns undefined for non-find tools", () => {
 		assert.equal(findMisuseSuggestion("bash", { command: "ls" }), undefined);
 		assert.equal(findMisuseSuggestion("read", { path: "README.md" }), undefined);
@@ -282,11 +289,12 @@ describe("extension runtime scoping", () => {
 		assert.equal(m.length, 0);
 	});
 
-	it("sends reminder for test-pattern find calls (ambiguous)", () => {
+	it("blocks find with test-pattern (now unambiguous)", () => {
 		const { handlers: h, messages: m } = createFakePi(activeTools);
 
-		h.tool_call[0]({ toolName: "find", input: { pattern: "*test*" } }, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
-		assert.equal(m.length, 1);
-		assert.match(String((m[0].message as any).content), /use bash instead of find/i);
+		const result = h.tool_call[0]({ toolName: "find", input: { pattern: "*test*" } }, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
+		assert.equal(result.block, true);
+		assert.match(result.reason, /use bash instead of find/i);
+		assert.equal(m.length, 0);
 	});
 });
