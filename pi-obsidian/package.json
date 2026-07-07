@@ -1,0 +1,55 @@
+{
+  "name": "@bacnh85/pi-obsidian",
+  "version": "0.1.0",
+  "description": "Pi extension for Obsidian vault tools — read, search, create, and manage notes via the Obsidian CLI.",
+  "type": "module",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git",
+    "directory": "pi-obsidian"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "obsidian",
+    "notes",
+    "vault",
+    "markdown"
+  ],
+  "scripts": {
+    "test": "cd extensions && mocha",
+    "typecheck": "tsc --noEmit"
+  },
+  "files": [
+    "README.md",
+    "extensions/",
+    "skills/"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  },
+  "devDependencies": {
+    "@sinclair/typebox": "^0.34.41",
+    "@types/chai": "^4.3.20",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.0.0",
+    "chai": "^4.5.0",
+    "mocha": "^10.8.2",
+    "tsx": "^4.22.4",
+    "typescript": "^5.0.0"
+  }
+}

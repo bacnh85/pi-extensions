@@ -30,6 +30,8 @@ jobs:
             test-command: npm pack --dry-run
           - package: pi-deepseek-tools
             test-command: npm ci && npm test
+          - package: pi-obsidian
+            test-command: npm ci && npm test
     defaults:
       run:
         working-directory: ./${{ matrix.package }}
