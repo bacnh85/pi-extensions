@@ -356,6 +356,56 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
+		name: "obsidian_history",
+		label: "Read Version History",
+		description: "List version history for a file, or read a specific version from Obsidian's file recovery.",
+		promptSnippet: "Read version history of an Obsidian note",
+		parameters: Type.Object({
+			...fileRef,
+			version: Type.Optional(Type.Number({ description: "Version number to read (omit to list all versions)." })),
+			...vaultParam, ...timeoutParam,
+		}),
+		execute: tool((p) => {
+			if (!p.file && !p.path) throw new Error("Either 'file' or 'path' is required.");
+			const cmd = p.version ? "history:read" : "history";
+			return run(cmd, p, p.version ? ["format=json"] : []);
+		}),
+	});
+
+	pi.registerTool({
+		name: "obsidian_diff",
+		label: "Diff Versions",
+		description: "Diff two versions of a file in Obsidian's file recovery.",
+		promptSnippet: "Compare two versions of an Obsidian file",
+		parameters: Type.Object({
+			...fileRef,
+			from: Type.Number({ description: "Source version number." }),
+			to: Type.Number({ description: "Target version number." }),
+			...vaultParam, ...timeoutParam,
+		}),
+		execute: tool((p) => {
+			if (!p.file && !p.path) throw new Error("Either 'file' or 'path' is required.");
+			return run("diff", p);
+		}),
+	});
+
+	pi.registerTool({
+		name: "obsidian_history_restore",
+		label: "Restore Version",
+		description: "Restore a previous version of a file from Obsidian's file recovery.",
+		promptSnippet: "Restore an older version of an Obsidian note",
+		parameters: Type.Object({
+			...fileRef,
+			version: Type.Number({ description: "Version number to restore." }),
+			...vaultParam, ...timeoutParam,
+		}),
+		execute: tool((p) => {
+			if (!p.file && !p.path) throw new Error("Either 'file' or 'path' is required.");
+			return run("history:restore", p) || "Restored.";
+		}),
+	});
+
+	pi.registerTool({
 		name: "obsidian_eval",
 		label: "Execute JavaScript",
 		description: "Execute JavaScript code in the Obsidian app context (developer tool).",

@@ -70,6 +70,13 @@ pi install ./extensions/pi-obsidian
 | `obsidian_vault_info` | Show vault name, path, file count, size |
 | `obsidian_files` | List files filtered by folder/extension |
 
+### History & Versioning
+| Tool | Description |
+|---|---|
+| `obsidian_history` | List or read version history for a file |
+| `obsidian_diff` | Diff between two versions of a file |
+| `obsidian_history_restore` | Restore a previous version |
+
 ### Templates
 | Tool | Description |
 |---|---|

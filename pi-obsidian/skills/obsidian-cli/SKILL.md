@@ -60,6 +60,12 @@ Use these pi-obsidian tools for vault automation:
 - `obsidian_vault_info` — show vault name, path, file count
 - `obsidian_files` — list files (filter by folder and extension)
 
+### File History & Versioning
+- `obsidian_history file="Note"` — list all versions for a file
+- `obsidian_history file="Note" version=3` — read a specific version
+- `obsidian_diff file="Note" from=1 to=3` — diff between versions
+- `obsidian_history_restore file="Note" version=3` — restore a version
+
 ### Developer
 - `obsidian_eval code="app.vault.getFiles().length"` — run JS in Obsidian
 
