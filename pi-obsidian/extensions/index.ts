@@ -20,7 +20,6 @@ import {
 // CLI string parser
 // ---------------------------------------------------------------------------
 
-/** Read content inside a quoted string, handling \" and \\ escapes. */
 function readQuotedContent(s: string, pos: number): string {
 	let val = "";
 	while (pos < s.length && s[pos] !== '"') {
@@ -33,33 +32,18 @@ function readQuotedContent(s: string, pos: number): string {
 	return val;
 }
 
-/**
- * Parse a CLI command string into argument tokens, respecting quoted values.
- * Values with spaces MUST be quoted. Bare quotes inside a word (e.g. after `=`)
- * start an inline quoted segment: `file="Meeting Notes"` → `file=Meeting Notes`.
- */
 function parseCliString(s: string): string[] {
 	const args: string[] = [];
 	let i = 0;
 	while (i < s.length) {
 		while (i < s.length && /\s/.test(s[i])) i++;
 		if (i >= s.length) break;
-
 		let val = "";
-		if (s[i] === '"') {
-			i++;
-			val = readQuotedContent(s, i);
-			i += val.length + 1;
-		} else {
+		if (s[i] === '"') { i++; val = readQuotedContent(s, i); i += val.length + 1; }
+		else {
 			while (i < s.length && !/\s/.test(s[i])) {
-				if (s[i] === '"') {
-					i++;
-					const inner = readQuotedContent(s, i);
-					val += inner;
-					i += inner.length + 1;
-				} else {
-					val += s[i++];
-				}
+				if (s[i] === '"') { i++; const inner = readQuotedContent(s, i); val += inner; i += inner.length + 1; }
+				else { val += s[i++]; }
 			}
 		}
 		args.push(val);
@@ -67,7 +51,6 @@ function parseCliString(s: string): string[] {
 	return args;
 }
 
-/** Extract flags from run string: `key=value` pairs. */
 function parseFlags(s: string): Record<string, string> {
 	const flags: Record<string, string> = {};
 	const re = /(\w[\w-]*)=("(?:[^"\\]|\\.)*"|\S+)/g;
@@ -80,154 +63,89 @@ function parseFlags(s: string): Record<string, string> {
 	return flags;
 }
 
-// ponytail: create parent folder via Obsidian CLI eval, 1 line
-function ensureFolder(path: string, vault?: string, timeoutMs = 30_000): void {
-	const parent = path.replace(/\\/g, "/").split("/").slice(0, -1).join("/");
-	if (!parent) return;
+function escapeCliValue(s: string): string {
+	return s.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+}
+
+// ---------------------------------------------------------------------------
+// Higher-level operations via single eval calls
+// ---------------------------------------------------------------------------
+
+function listFilesRecursive(folder: string, vault?: string, timeoutMs = 30_000): string {
 	const args: string[] = [];
 	if (vault) args.push(`vault=${vault}`);
-	args.push("eval", `code=app.vault.getAbstractFileByPath(${JSON.stringify(parent)})?true:app.vault.createFolder(${JSON.stringify(parent)},true)`);
-	execObsidian(args, false, timeoutMs);
+	args.push("eval", `code=app.vault.getFiles().filter(f=>f.path.startsWith(${JSON.stringify(folder)})).map(f=>f.path).sort().join('\\n')`);
+	const out = execObsidian(args, false, timeoutMs).stdout.trim();
+	return out || "No files found.";
 }
 
-// ---------------------------------------------------------------------------
-// Higher-level operations beyond raw CLI
-// ---------------------------------------------------------------------------
-
-/** Recursive file listing via multiple CLI calls. */
-function listFilesRecursive(folder: string, vault?: string, timeoutMs = 30_000): string[] {
-	const results: string[] = [];
-	const queue = [folder.replace(/\/+$/, "")];
-	const seen = new Set<string>();
-
-	while (queue.length > 0) {
-		const dir = queue.pop()!;
-		const args: string[] = [];
-		if (vault) args.push(`vault=${vault}`);
-		args.push("files", `folder=${dir}`, "format=json");
-		const r = execObsidian(args, false, timeoutMs);
-		if (!r.parsed || !Array.isArray(r.parsed)) continue;
-
-		for (const item of r.parsed as string[]) {
-			if (seen.has(item)) continue;
-			seen.add(item);
-			const fullPath = dir ? `${dir}/${item}` : item;
-			if (!item.includes(".") && !item.endsWith("/")) {
-				queue.push(fullPath);
-			}
-			results.push(fullPath);
-		}
-	}
-	return results;
+function createTaskInNote(notePath: string, heading: string, taskText: string, vault?: string, timeoutMs = 30_000): string {
+	const j = JSON.stringify;
+	const script = [
+		`const f=app.vault.getAbstractFileByPath(${j(notePath)});`,
+		`if(!f)return'File not found.';`,
+		`let c=await app.vault.read(f);`,
+		`const ls=c.split('\\n');`,
+		`let hi=-1;`,
+		`for(let i=0;i<ls.length;i++){const t=ls[i].trim();if(t.startsWith('#')&&t.replace(/^#+\\s*/,'')===${j(heading)}){hi=i;break;}}`,
+		`if(hi<0){await app.vault.modify(f,c+'\\n## '+${j(heading)}+'\\n- [ ] '+${j(taskText)}+'\\n');return'Created heading and task.';}`,
+		`const hl=ls[hi].match(/^(#+)\\s/)[1].length;`,
+		`let se=ls.length;`,
+		`for(let i=hi+1;i<ls.length;i++){const m=ls[i].match(/^(#+)\\s/);if(m&&m[1].length<=hl){se=i;break;}}`,
+		`ls.splice(se,0,'- [ ] '+${j(taskText)});`,
+		`await app.vault.modify(f,ls.join('\\n'));`,
+		`return'Task added.';`,
+	].join("");
+	const args: string[] = [];
+	if (vault) args.push(`vault=${vault}`);
+	args.push("eval", `code=(async function(){${script}})()`);
+	return execObsidian(args, false, timeoutMs).stdout.trim() || `Added task "${taskText}" under heading "${heading}".`;
 }
 
-/** Create a task line in a note under a specific heading. */
-function createTaskInNote(
-	notePath: string, heading: string, taskText: string,
-	vault?: string, timeoutMs = 30_000
-): string {
-	const readArgs: string[] = [];
-	if (vault) readArgs.push(`vault=${vault}`);
-	readArgs.push("read", `path=${notePath}`);
-	const readR = execObsidian(readArgs, false, timeoutMs);
-	const content = readR.stdout;
-	const lines = content.split("\n");
-
-	let headingIdx = -1;
-	for (let i = 0; i < lines.length; i++) {
-		const trimmed = lines[i].trim();
-		if (trimmed.startsWith("#") && trimmed.replace(/^#+\s*/, "") === heading) {
-			headingIdx = i;
-			break;
-		}
-	}
-
-	if (headingIdx === -1) {
-		const taskLine = `\n## ${heading}\n- [ ] ${taskText}\n`;
-		const appendArgs: string[] = [];
-		if (vault) appendArgs.push(`vault=${vault}`);
-		appendArgs.push("append", `path=${notePath}`, `content=${escapeCliValue(taskLine)}`);
-		execObsidian(appendArgs, false, timeoutMs);
-		return `Created heading "${heading}" and added task.`;
-	}
-
-	const match = lines[headingIdx].match(/^(#+)\s/);
-	const headingLevel = match ? match[1].length : 2;
-	let sectionEnd = lines.length;
-	for (let i = headingIdx + 1; i < lines.length; i++) {
-		const m = lines[i].match(/^(#+)\s/);
-		if (m && m[1].length <= headingLevel) { sectionEnd = i; break; }
-	}
-
-	lines.splice(sectionEnd, 0, `- [ ] ${taskText}`);
-	const writeArgs: string[] = [];
-	if (vault) writeArgs.push(`vault=${vault}`);
-	writeArgs.push("create", `path=${notePath}`, "overwrite=true", `content=${escapeCliValue(lines.join("\n"))}`);
-	execObsidian(writeArgs, false, timeoutMs);
-	return `Added task "${taskText}" under heading "${heading}".`;
-}
-
-
-
-/** Create a note from a template with frontmatter values filled in. */
-function createFromTemplate(
-	templateName: string, noteName: string, folder: string,
-	fill: Record<string, string>, vault?: string, timeoutMs = 30_000
-): string {
-	const readArgs: string[] = [];
-	if (vault) readArgs.push(`vault=${vault}`);
-	readArgs.push("read", `file=${templateName}`);
-	const template = execObsidian(readArgs, false, timeoutMs).stdout;
-
-	let content = template;
-	for (const [key, val] of Object.entries(fill)) {
-		content = content.replace(new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, "g"), val);
-	}
-
+function createFromTemplate(templateName: string, noteName: string, folder: string, fill: Record<string, string>, vault?: string, timeoutMs = 30_000): string {
+	const j = JSON.stringify;
 	const notePath = folder ? `${folder}/${noteName}` : noteName;
-	const writeArgs: string[] = [];
-	if (vault) writeArgs.push(`vault=${vault}`);
-	writeArgs.push("create", `path=${notePath}`, "overwrite=true", `content=${escapeCliValue(content)}`);
-	execObsidian(writeArgs, false, timeoutMs);
-	return `Created note "${notePath}" from template "${templateName}".`;
+	const script = [
+		`const tf=app.vault.getAbstractFileByPath(${j(templateName)});`,
+		`if(!tf)return'Template not found.';`,
+		`let c=await app.vault.read(tf);`,
+		`const fl=${JSON.stringify(fill)};`,
+		`for(const[k,v]of Object.entries(fl))c=c.replace(new RegExp('\\\\{\\\\{\\\\s*'+k+'\\\\s*\\\\}\\\\}','g'),v);`,
+		`const p=${j(notePath)}.replace(/\\\\/g,'/').split('/').slice(0,-1).join('/');`,
+		`if(p&&!app.vault.getAbstractFileByPath(p))await app.vault.createFolder(p,true);`,
+		`await app.vault.create(${j(notePath)},c);`,
+		`return'Created.';`,
+	].join("");
+	const args: string[] = [];
+	if (vault) args.push(`vault=${vault}`);
+	args.push("eval", `code=(async function(){${script}})()`);
+	return execObsidian(args, false, timeoutMs).stdout.trim() || `Created note "${notePath}" from template "${templateName}".`;
 }
 
-function escapeCliValue(s: string): string {
-	return s
-		.replace(/\\/g, "\\\\")
-		.replace(/\n/g, "\\n")
-		.replace(/\t/g, "\\t");
-}
-
-// ponytail: renameTag via Obsidian eval — 15 lines, not 140
 function renameTag(from: string, to: string, vault?: string, timeoutMs = 30_000): string {
-	const fqFrom = JSON.stringify(from);
-	const fqTo = JSON.stringify(to);
-	const script = `
-const files = app.vault.getMarkdownFiles();
-let u = 0, s = 0;
-for (const f of files) {
-  let c = await app.vault.read(f);
-  const o = c;
-  let m = c.match(/^---\s*\n([\s\S]*?)\n---/);
-  if (!m) { s++; continue; }
-  let fm = m[1];
-  let nfm = fm.replace(/\btags\b[^]*?(?=\n---|$)/g, (tl) => tl.replaceAll(${fqFrom}, ${fqTo}));
-  if (nfm === fm) { s++; continue; }
-  c = '---\n' + nfm + '\n---' + c.slice(m[0].length);
-  await app.vault.modify(f, c); u++;
-}
-return \`tag-rename: \${u} files updated, \${s} skipped.\`;
-`.trim();
-	// ponytail: pass script through read-from-note or inline. Inline via eval.
-	const evalArgs: string[] = [];
-	if (vault) evalArgs.push(`vault=${vault}`);
-	evalArgs.push("eval", `code=(async function(){${script}})()`);
-	return execObsidian(evalArgs, false, timeoutMs).stdout.trim() || "Done.";
+	const script = [
+		`const ff=${JSON.stringify(from)},tt=${JSON.stringify(to)};`,
+		`let u=0,s=0;`,
+		`for(const f of app.vault.getMarkdownFiles()){`,
+		`let c=await app.vault.read(f);`,
+		`const o=c;`,
+		`let m=c.match(/^---\\s*\\n([\\s\\S]*?)\\n---/);`,
+		`if(!m){s++;continue;}`,
+		`let fm=m[1];`,
+		`let nfm=fm.replace(/\\btags\\b[^]*?(?=\\n---|$)/g,(tl)=>tl.replaceAll(ff,tt));`,
+		`if(nfm===fm){s++;continue;}`,
+		`c='---\\n'+nfm+'\\n---'+c.slice(m[0].length);`,
+		`await app.vault.modify(f,c);u++;}`,
+		`return 'tag-rename: '+u+' updated, '+s+' skipped.';`,
+	].join("");
+	const args: string[] = [];
+	if (vault) args.push(`vault=${vault}`);
+	args.push("eval", `code=(async function(){${script}})()`);
+	return execObsidian(args, false, timeoutMs).stdout.trim() || "Done.";
 }
 
 // ---------------------------------------------------------------------------
-// Route JSON output to the correct formatter based on command
+// Route JSON output to formatters
 // ---------------------------------------------------------------------------
 
 function formatObsidianOutput(cmdString: string, parsed: unknown): string {
@@ -237,9 +155,7 @@ function formatObsidianOutput(cmdString: string, parsed: unknown): string {
 	}
 	if (cmdString.startsWith("tasks ") || cmdString.startsWith("tasks")) {
 		const flags = parseFlags(cmdString);
-		if (flags.group === "file" && flags.status) {
-			return formatTasksFiltered(parsed, flags.status as "open" | "done" | "all");
-		}
+		if (flags.group === "file" && flags.status) return formatTasksFiltered(parsed, flags.status as "open" | "done" | "all");
 		if (flags.group === "file") return formatTasks(parsed, true);
 		if (flags.status) return formatTasksFiltered(parsed, flags.status as "open" | "done" | "all");
 		return formatTasks(parsed);
@@ -335,115 +251,108 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 		execute: tool((p) => {
 			let raw = (p.run as string).trim();
 			if (!raw) throw new Error("'run' is required.");
-			const cmds = raw.split(/\s+/);
-			const cmd = cmds[0];
+			const cmd = raw.split(/\s+/)[0];
 			const timeoutMs = (p.timeout_ms as number) ?? 30_000;
-			const vaultOpt = p.vault as string | undefined;
+			const v = p.vault as string | undefined;
+			const flags = parseFlags(raw);
 
-			// --- Fix B4: files folder="/" → list root children ---
+			// --- files: recursive, root, normal ---
 			if (cmd === "files") {
-				const flags = parseFlags(raw);
 				const folder = flags.folder ?? "";
-
-				// Handle root folder
-				if (folder === "/" || folder === "") {
-					if (raw.includes("recursive")) {
-						return listFilesRecursive(folder, vaultOpt, timeoutMs).sort().join("\n") || "No files found.";
+				const isRoot = folder === "/" || folder === "";
+				if (isRoot || raw.includes("recursive")) {
+					if (!isRoot && !raw.includes("recursive")) {
+						// Specific non-root, non-recursive — pass through
+						const args: string[] = [];
+						if (v) args.push(`vault=${v}`);
+						args.push("files", `folder=${folder}`, "format=json");
+						try {
+							const r = execObsidian(args, false, timeoutMs);
+							if (r.parsed && Array.isArray(r.parsed) && r.parsed.length > 0) return (r.parsed as string[]).sort().join("\n");
+						} catch { /* fall through */ }
+						return "No files found.";
 					}
-					const args: string[] = [];
-					if (vaultOpt) args.push(`vault=${vaultOpt}`);
-					args.push("files", "folder=/", "format=json");
-					try {
-						const r = execObsidian(args, false, timeoutMs);
-						if (r.parsed && Array.isArray(r.parsed) && r.parsed.length > 0) {
-							return (r.parsed as string[]).sort().join("\n");
-						}
-					} catch {
-						// Fall through to return empty
-					}
-					return "No files found at root.";
+					return listFilesRecursive(folder, v, timeoutMs);
 				}
-
-				// Recursive listing
-				if (raw.includes("recursive")) {
-					const files = listFilesRecursive(folder, vaultOpt, timeoutMs);
-					if (files.length === 0) return "No files found.";
-					return files.sort().join("\n");
-				}
+				const args: string[] = [];
+				if (v) args.push(`vault=${v}`);
+				args.push("files", `folder=${folder}`, "format=json");
+				try {
+					const r = execObsidian(args, false, timeoutMs);
+					if (r.parsed && Array.isArray(r.parsed) && r.parsed.length > 0) return (r.parsed as string[]).sort().join("\n");
+				} catch { /* fall through */ }
+				return "No files found.";
 			}
 
-			// --- Fix B5: tag-rename command ---
+			// --- tag-rename ---
 			if (cmd === "tag-rename") {
-				const flags = parseFlags(raw);
-				const from = flags.from || "";
-				const to = flags.to || "";
-				if (!from || !to) throw new Error("'from' and 'to' are required for tag-rename.");
-				return renameTag(from, to, vaultOpt, timeoutMs);
+				if (!flags.from || !flags.to) throw new Error("'from' and 'to' required.");
+				return renameTag(flags.from, flags.to, v, timeoutMs);
 			}
 
-			// --- eval: inline or read from vault note, then exec ---
+			// --- eval: inline or from note ---
 			if (cmd === "eval") {
-				const flags = parseFlags(raw);
-				const file = flags.file || "";
 				let code = flags.code || "";
-				if (file) {
-					const readArgs: string[] = [];
-					if (vaultOpt) readArgs.push(`vault=${vaultOpt}`);
-					readArgs.push("read", `path=${file}`);
-					code = execObsidian(readArgs, false, timeoutMs).stdout;
+				if (flags.file) {
+					const rArgs: string[] = [];
+					if (v) rArgs.push(`vault=${v}`);
+					rArgs.push("read", `path=${flags.file}`);
+					code = execObsidian(rArgs, false, timeoutMs).stdout;
 				}
-				if (!code) throw new Error("'code=' or 'file=' is required for eval.");
-				const evalArgs: string[] = [];
-				if (vaultOpt) evalArgs.push(`vault=${vaultOpt}`);
-				evalArgs.push("eval", `code=(async function(){${code}})()`);
-				return execObsidian(evalArgs, false, timeoutMs).stdout.trim() || "Done.";
+				if (!code) throw new Error("'code=' or 'file=' required.");
+				const eArgs: string[] = [];
+				if (v) eArgs.push(`vault=${v}`);
+				eArgs.push("eval", `code=(async function(){${code}})()`);
+				return execObsidian(eArgs, false, timeoutMs).stdout.trim() || "Done.";
 			}
 
-			// --- content_from: read from vault note, write via CLI ---
+			// --- create/write with content_from ---
 			if (cmd === "create" || cmd === "write" || cmd === "overwrite") {
-				const flags = parseFlags(raw);
-				const contentFrom = flags.content_from || "";
 				const path = flags.path || "";
-
-				if (contentFrom && path) {
-					const readArgs: string[] = [];
-					if (vaultOpt) readArgs.push(`vault=${vaultOpt}`);
-					readArgs.push("read", `path=${contentFrom}`);
-					const content = execObsidian(readArgs, false, timeoutMs).stdout;
-					ensureFolder(path, vaultOpt, timeoutMs);
-					const createArgs: string[] = [];
-					if (vaultOpt) createArgs.push(`vault=${vaultOpt}`);
-					createArgs.push("create", `path=${path}`, `content=${escapeCliValue(content)}`);
-					if (raw.includes("overwrite=true")) createArgs.push("overwrite=true");
-					return (execObsidian(createArgs, false, timeoutMs).stdout.trim() || `Created note from "${contentFrom}".`);
+				if (flags.content_from && path) {
+					const rArgs: string[] = [];
+					if (v) rArgs.push(`vault=${v}`);
+					rArgs.push("read", `path=${flags.content_from}`);
+					const content = execObsidian(rArgs, false, timeoutMs).stdout;
+					// ensure parent folder via single eval call
+					if (path.includes("/") || path.includes("\\")) {
+						const eArgs: string[] = [];
+						if (v) eArgs.push(`vault=${v}`);
+						eArgs.push("eval", `code=(async()=>{const p=${JSON.stringify(path)}.replace(/\\\\/g,'/'),d=p.slice(0,p.lastIndexOf('/'));if(d&&!app.vault.getAbstractFileByPath(d))await app.vault.createFolder(d,true)})()`);
+						execObsidian(eArgs, false, timeoutMs);
+					}
+					const cArgs: string[] = [];
+					if (v) cArgs.push(`vault=${v}`);
+					cArgs.push("create", `path=${path}`, `content=${escapeCliValue(content)}`);
+					if (raw.includes("overwrite=true")) cArgs.push("overwrite=true");
+					return execObsidian(cArgs, false, timeoutMs).stdout.trim() || `Created note from "${flags.content_from}".`;
 				}
-				if (path) ensureFolder(path, vaultOpt, timeoutMs);
+				if (path && (path.includes("/") || path.includes("\\"))) {
+					const eArgs: string[] = [];
+					if (v) eArgs.push(`vault=${v}`);
+					eArgs.push("eval", `code=(async()=>{const p=${JSON.stringify(path)}.replace(/\\\\/g,'/'),d=p.slice(0,p.lastIndexOf('/'));if(d&&!app.vault.getAbstractFileByPath(d))await app.vault.createFolder(d,true)})()`);
+					execObsidian(eArgs, false, timeoutMs);
+				}
 			}
 
-			// ponytail: property:set array values — strip space after commas, 1 regex
+			// --- property:set with arrays — rejoin split tokens ---
 			if (cmd === "property:set") {
-				raw = raw.replace(/(value=)\[([^\]]*)\]/g, (_, p, inner) => p + "[" + inner.replace(/,\s*/g, ",") + "]");
-			}
-
-			// --- Standard CLI passthrough ---
-			let args = parseCliString(raw);
-			// ponytail: rejoin value= that split at commas (Obsidian CLI limitation)
-			if (cmd === "property:set") {
+				const args = parseCliString(raw);
 				const ai = args.findIndex(a => a.startsWith("value="));
 				if (ai >= 0 && !args[ai].endsWith("]")) {
 					const joined = [args[ai].slice(6), ...args.slice(ai + 1)].join(" ");
-					args = [...args.slice(0, ai), `value=${joined}`, ...args.slice(ai + 2)];
+					const fixed = [...args.slice(0, ai), `value=${joined}`, ...args.slice(ai + 2)];
+					if (v) fixed.unshift(`vault=${v}`);
+					const r = execObsidian(fixed, false, timeoutMs);
+					return r.stdout.trim() || "Done.";
 				}
 			}
 
-			if (vaultOpt) args.unshift(`vault=${vaultOpt}`);
-
+			// --- Standard CLI passthrough ---
+			const args = parseCliString(raw);
+			if (v) args.unshift(`vault=${v}`);
 			const r = execObsidian(args, false, timeoutMs);
-
-			// Route JSON output to formatters
-			if (r.parsed && typeof r.parsed !== "string") {
-				return formatObsidianOutput(raw, r.parsed);
-			}
+			if (r.parsed && typeof r.parsed !== "string") return formatObsidianOutput(raw, r.parsed);
 			return r.stdout.trim() || "Done.";
 		}),
 	});
