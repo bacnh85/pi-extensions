@@ -27,4 +27,16 @@ describe("buildArgs", () => {
 		expect(buildArgs("search", { query: "test", limit: 10 }))
 			.to.deep.equal(["search", "query=test", "limit=10"]);
 	});
+
+	it("splits multi-word commands by space", () => {
+		expect(buildArgs("tags all", { counts: true }))
+			.to.deep.equal(["tags", "all", "counts"]);
+	});
+
+	it("splits tasks subcommands", () => {
+		expect(buildArgs("tasks daily", {}))
+			.to.deep.equal(["tasks", "daily"]);
+		expect(buildArgs("tasks file", { file: "test.md" }))
+			.to.deep.equal(["tasks", "file", "file=test.md"]);
+	});
 });

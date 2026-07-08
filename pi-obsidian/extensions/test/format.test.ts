@@ -6,6 +6,12 @@ import {
 	formatTasks,
 	formatTags,
 	formatLinks,
+	formatOutline,
+	formatOutgoingLinks,
+	formatFileInfo,
+	formatProperties,
+	formatAliases,
+	formatWordCount,
 } from "../lib/format.js";
 
 describe("formatSearchResults", () => {
@@ -71,4 +77,82 @@ describe("formatLinks", () => {
 	});
 });
 
+describe("formatOutline", () => {
+	it("formats heading tree", () => {
+		const tree = [
+			{ level: 1, heading: "Home", children: [
+				{ level: 2, heading: "Start here" },
+				{ level: 2, heading: "Key spaces" },
+			]},
+		];
+		const output = formatOutline(tree);
+		expect(output).to.include("# Home");
+		expect(output).to.include("## Start here");
+		expect(output).to.include("## Key spaces");
+	});
 
+	it("returns empty message for null", () => {
+		expect(formatOutline(null)).to.equal("(no headings)");
+	});
+});
+
+describe("formatOutgoingLinks", () => {
+	it("formats outgoing links with broken marker", () => {
+		const links = [
+			{ link: "[[Note A]]" },
+			{ link: "[[Broken]]", unresolved: true },
+		];
+		const output = formatOutgoingLinks(links);
+		expect(output).to.include("[[Note A]]");
+		expect(output).to.include("[[Broken]] (broken)");
+	});
+
+	it("returns empty message for empty", () => {
+		expect(formatOutgoingLinks([])).to.equal("No outgoing links.");
+	});
+});
+
+describe("formatProperties", () => {
+	it("formats vault-wide property list", () => {
+		const props = [
+			{ name: "tags", count: 50 },
+			{ name: "status", count: 30 },
+		];
+		const output = formatProperties(props);
+		expect(output).to.include("tags: 50");
+		expect(output).to.include("status: 30");
+	});
+
+	it("returns empty message for empty", () => {
+		expect(formatProperties([])).to.equal("No properties found.");
+	});
+});
+
+describe("formatFileInfo", () => {
+	it("formats file info as key: value", () => {
+		const info = { name: "test.md", size: 1024, created: "2024-01-01" };
+		const output = formatFileInfo(info);
+		expect(output).to.include("name: test.md");
+		expect(output).to.include("size: 1024");
+		expect(output).to.include("created: 2024-01-01");
+	});
+});
+
+describe("formatAliases", () => {
+	it("formats aliases list", () => {
+		const aliases = [
+			{ alias: "Schema", filename: "99 Meta/Frontmatter Schema.md" },
+		];
+		const output = formatAliases(aliases);
+		expect(output).to.include("Schema");
+	});
+});
+
+describe("formatWordCount", () => {
+	it("formats word count object", () => {
+		const wc = { words: 150, characters: 800 };
+		const output = formatWordCount(wc);
+		expect(output).to.include("words: 150");
+		expect(output).to.include("characters: 800");
+	});
+});
