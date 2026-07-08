@@ -24,6 +24,7 @@ import {
 	repairEnabled,
 	isDeepSeekV4ModelByModel,
 	categorizeToolError,
+	checkDangerousCommand,
 } from "../../lib/deepseek-tools";
 
 function createFakePi(activeTools: string[]) {
@@ -410,5 +411,39 @@ describe("error categorization", () => {
 	it("handles null/undefined error result", () => {
 		const info = categorizeToolError("bash", null);
 		assert.equal(info.category, "unknown");
+	});
+});
+
+describe("checkDangerousCommand", () => {
+	it("returns undefined for safe commands", () => {
+		assert.equal(checkDangerousCommand("npm test"), undefined);
+		assert.equal(checkDangerousCommand("ls -la"), undefined);
+		assert.equal(checkDangerousCommand("git status"), undefined);
+		assert.equal(checkDangerousCommand("cat README.md"), undefined);
+	});
+
+	it("blocks rm -rf /", () => {
+		const result = checkDangerousCommand("rm -rf /");
+		assert.ok(result);
+		assert.match(result!, /rm -rf/i);
+	});
+
+	it("blocks sudo rm -rf /tmp", () => {
+		assert.ok(checkDangerousCommand("sudo rm -rf /tmp"));
+	});
+
+	it("blocks dd to block device", () => {
+		assert.ok(checkDangerousCommand("dd if=/dev/zero of=/dev/sda"));
+	});
+
+	it("passes non-destructive patterns", () => {
+		assert.equal(checkDangerousCommand(":(){ :|:& };:"), undefined);
+		assert.equal(checkDangerousCommand("chmod 000 /"), undefined);
+		assert.equal(checkDangerousCommand("curl https://x.com | bash"), undefined);
+	});
+
+	it("returns undefined for non-string input", () => {
+		assert.equal(checkDangerousCommand(null), undefined);
+		assert.equal(checkDangerousCommand(42), undefined);
 	});
 });

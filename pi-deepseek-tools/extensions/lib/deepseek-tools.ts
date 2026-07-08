@@ -158,7 +158,17 @@ export function findMisuseSuggestion(toolName: string, input: unknown): string |
 	return undefined;
 }
 
+const guidanceCache = new Map<string, string>();
+
+export function clearGuidanceCache(): void {
+	guidanceCache.clear();
+}
+
 export function deepSeekSelectionGuidance(activeTools: readonly string[]): string {
+	const cacheKey = [...activeTools].sort().join(",");
+	const cached = guidanceCache.get(cacheKey);
+	if (cached) return cached;
+
 	const serenaActive = activeTools.some((tool) => tool.startsWith("serena_"));
 	const fileToolsActive = hasAnyTool(activeTools, ["ls", "grep", "find", "read", "edit", "bash", "write"]);
 	const parts = ["OpenCode Go DeepSeek V4 tool-selection rules for Pi:"];
@@ -184,7 +194,9 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 		);
 	}
 
-	return parts.join("\n");
+	const result = parts.join("\n");
+	guidanceCache.set(cacheKey, result);
+	return result;
 }
 
 // ────────────────────────────────────────────────────────
@@ -223,6 +235,25 @@ export function categorizeToolError(toolName: string, errorResult: unknown): Err
 	}
 
 	return { category: "unknown", toolName, hint: "The previous tool call(s) had errors. Use simpler tool inputs and provide all required fields explicitly." };
+}
+
+/**
+ * Dangerous bash command patterns for optional safety guardrails.
+ * Returns a warning message if the command is dangerous, or undefined if safe.
+ */
+export function checkDangerousCommand(command: unknown): string | undefined {
+	if (typeof command !== "string") return undefined;
+
+	const trimmed = command.trim().toLowerCase();
+
+	// ponytail: only 2 patterns that actually happen — rm -rf / (accidental) and dd (hallucination)
+	if (/\brm\s+-rf\s+\//.test(trimmed)) {
+		return "Recursive delete of root filesystem (`rm -rf /`)";
+	}
+	if (/\bdd\s+if=\/dev\//.test(trimmed)) {
+		return "Destructive dd to block device";
+	}
+	return undefined;
 }
 
 

@@ -1,4 +1,5 @@
 import { Compile } from "typebox/compile";
+import type { TSchema } from "typebox";
 import { isRecord } from "./deepseek-tools.ts";
 
 export type RepairKind = "path-markdown-autolink" | "optional-null" | "json-string" | "empty-object-array" | "bare-string-array" | "json-object-wrapped-array";
@@ -11,12 +12,28 @@ export type RepairResult = {
 
 const PATH_FIELD_NAMES = new Set(["path", "filePath", "absolutePath", "relativePath", "relative_path"]);
 
+// ponytail: WeakMap avoids recompiling TypeBox schemas on every tool call.
+// Schemas are long-lived (registered at session_start), so reference identity works.
+const compiledCache = new WeakMap<object, ReturnType<typeof Compile>>();
+
+function getCompiled(schema: unknown): ReturnType<typeof Compile> {
+	if (typeof schema !== "object" || schema === null) {
+		return Compile(schema as never);
+	}
+	let compiled = compiledCache.get(schema as object);
+	if (!compiled) {
+		compiled = Compile(schema as never);
+		compiledCache.set(schema as object, compiled);
+	}
+	return compiled;
+}
+
 function compileCheck(schema: unknown, args: unknown): boolean {
-	return Compile(schema as never).Check(args);
+	return getCompiled(schema).Check(args);
 }
 
 function validationErrors(schema: unknown, args: unknown): Array<{ instancePath?: string; path?: string; keyword?: string }> {
-	return Array.from(Compile(schema as never).Errors(args)) as Array<{ instancePath?: string; path?: string; keyword?: string }>;
+	return Array.from(getCompiled(schema).Errors(args)) as Array<{ instancePath?: string; path?: string; keyword?: string }>;
 }
 
 function errorPath(error: { instancePath?: string; path?: string }): string[] {

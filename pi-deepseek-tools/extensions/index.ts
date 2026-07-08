@@ -27,11 +27,12 @@ import {
 	DEEPSEEK_V4_FLASH_MODEL,
 	categorizeToolError,
 	directDeepSeekEnabled,
+	checkDangerousCommand,
 	type ErrorInfo,
 	type ErrorCategory,
 } from "./lib/deepseek-tools";
 import { repairDeepSeekToolArguments, type RepairKind } from "./lib/tool-input-repair";
-import { stripReasoningContent } from "./lib/reasoning-content";
+import { stripReasoningContent, cleanLeakedContentFromMessages } from "./lib/reasoning-content";
 import { debugLog, logWarn } from "./lib/logger";
 
 export {
@@ -50,6 +51,7 @@ export {
 
 export {
 	categorizeToolError,
+	checkDangerousCommand,
 	type ErrorInfo,
 	type ErrorCategory,
 } from "./lib/deepseek-tools";
@@ -107,12 +109,39 @@ export default function (pi: ExtensionAPI) {
 	let repairThisTurn = false;
 	let hasErrorThisTurn = false;
 	let lastErrorInfo: ErrorInfo | null = null;
+
 	const repairCounts = new Map<string, number>();
+	const reminderCounts = new Map<string, number>(); // per-tool reminder count for auto-block escalation
+
+	// ── Auto-block config (env-var backed) ─────────────────
+	function autoBlockAfterReminders(env = process.env): number {
+		const raw = env.PI_DEEPSEEK_TOOLS_AUTO_BLOCK_AFTER_REMINDERS;
+		if (raw === undefined || raw === "") return 0; // off
+		const val = parseInt(raw, 10);
+		return Number.isFinite(val) && val >= 1 ? val : 0;
+	}
+
+	// ── Dangerous-command config ───────────────────────────
+	function blockDangerousEnabled(): boolean {
+		return /^(1|true|yes|on)$/i.test(process.env.PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS ?? "");
+	}
+
+	// ponytail: single flat thinking budget env var. No turn-type detection.
+	function thinkingBudget(env = process.env): number | undefined {
+		const raw = env.PI_DEEPSEEK_TOOLS_THINKING_BUDGET;
+		if (raw === undefined || raw === "") return undefined;
+		const val = parseInt(raw, 10);
+		return Number.isFinite(val) && val >= 0 ? val : undefined;
+	}
 
 	// ── /deepseek-tools-status ──────────────────────────────
 	pi.registerCommand("deepseek-tools-status", {
 		description: "Show pi-deepseek-tools configuration and statistics.",
 		handler: async (_args, cmdCtx) => {
+			const logFormat = process.env.PI_DEEPSEEK_TOOLS_LOG_FORMAT === "json" ? "json" : "plain";
+			const thinkingBudgetVal = process.env.PI_DEEPSEEK_TOOLS_THINKING_BUDGET || "unset";
+			const autoBlockAfter = autoBlockAfterReminders();
+			const dangerousBlockOn = blockDangerousEnabled();
 			const status = [
 				"## pi-deepseek-tools status",
 				"",
@@ -123,8 +152,15 @@ export default function (pi: ExtensionAPI) {
 				`  Reasoning max tokens: ${process.env.PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS || "unlimited"}`,
 				`  Tool-input repair: ${repairEnabled() ? "on" : "off"}`,
 				`  Direct DeepSeek: ${directDeepSeekEnabled() ? "on" : "off"}`,
-				`  Debug logging: ${process.env.PI_DEEPSEEK_TOOLS_DEBUG ? "on" : "off"}`,
+				`  Debug: ${process.env.PI_DEEPSEEK_TOOLS_DEBUG ? "on" : "off"}`,
+				`  Log format: ${logFormat}`,
+				`  Error history cap: ${maxErrorHistory()}`,
+				`  Thinking budget: ${thinkingBudgetVal}`,
+				`  Auto block after reminders: ${autoBlockAfter > 0 ? autoBlockAfter : "off"}`,
+				`  Dangerous command guard: ${dangerousBlockOn ? "on" : "off"}`,
 				"",
+				`**Leaked content cleaning:** always on for DeepSeek V4`,
+				`**Auto thinking adjustment:** on`,
 				`**Repairs:** ${[...repairCounts.values()].reduce((a, b) => a + b, 0)} total`,
 			];
 			for (const [tool, count] of [...repairCounts.entries()].sort((a, b) => b[1] - a[1])) {
@@ -135,12 +171,19 @@ export default function (pi: ExtensionAPI) {
 			for (const [tool, info] of [...errorHistory.entries()].sort((a, b) => b[1].count - a[1].count)) {
 				status.push(`  ${tool}: ${info.count} (last: ${info.lastCategory})`);
 			}
+			if (reminderCounts.size > 0) {
+				status.push(`**Reminders (auto-block after ${autoBlockAfterReminders()}):**`);
+				for (const [key, count] of [...reminderCounts.entries()].sort((a, b) => b[1] - a[1])) {
+					status.push(`  ${key}: ${count}`);
+				}
+			}
 			cmdCtx.ui.notify(status.join("\n"), "info");
 		},
 	});
 
 	// ── session_start: register wrapped tools ───────────────
 	pi.on("session_start", (_event, ctx) => {
+		debugLog("session_start:", ctx.model?.provider, ctx.model?.id);
 		const builtins = [
 			createReadToolDefinition(ctx.cwd),
 			createWriteToolDefinition(ctx.cwd),
@@ -158,17 +201,33 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	// ── before_provider_request: strip reasoning content ────
+	// ── before_provider_request: clean payload, inject thinking budget ───
 	pi.on("before_provider_request", (event, ctx) => {
 		if (!isDeepSeekV4ModelByModel(ctx.model)) return;
-		if (!reasoningStripEnabled()) {
+
+		// 1. Leaked content cleaning — always on for V4 (low-risk, pure cleanup)
+		let payload = cleanLeakedContentFromMessages(event.payload);
+
+		// 2. Reasoning stripping — opt-in (can cause 401s with OpenCode Go)
+		if (reasoningStripEnabled()) {
+			const reasoningCleaned = stripReasoningContent(payload);
+			if (reasoningCleaned !== payload) {
+				debugLog("reasoning: stripped from provider request");
+				payload = reasoningCleaned;
+			}
+		} else {
 			debugLog("reasoning: skip strip (disabled by env)");
-			return;
 		}
-		const cleaned = stripReasoningContent(event.payload);
-		if (cleaned !== event.payload) {
-			debugLog("reasoning: stripped from provider request");
-			return { payload: cleaned };
+
+		// 3. ponytail: single flat thinking budget — always same value when set
+		const budget = thinkingBudget();
+		if (budget !== undefined && isRecord(payload)) {
+			(payload as Record<string, unknown>).thinking = { type: "budget_tokens", budget_tokens: budget };
+			debugLog("thinking: budget", budget);
+		}
+
+		if (payload !== event.payload) {
+			return { payload };
 		}
 	});
 
@@ -178,21 +237,24 @@ export default function (pi: ExtensionAPI) {
 		hasErrorThisTurn = true;
 		const info = categorizeToolError(event.toolName, event.result);
 		lastErrorInfo = info;
-		errorHistory.set(event.toolName, {
-			count: (errorHistory.get(event.toolName)?.count ?? 0) + 1,
-			lastCategory: info.category,
-		});
+		recordError(event.toolName, info.category);
 		logWarn(event.toolName, event.toolCallId, info.category,
 			event.result ? String(event.result).slice(0, 200) : "no result");
+		debugLog(event.toolName, "error:", info.category, "repeat:", errorHistory.get(event.toolName)?.count);
 	});
 
-	// ── before_agent_start: inject guidance + error hints ───
+	// ── before_agent_start: snapshot tool counts, inject guidance + error hints ───
 	pi.on("before_agent_start", (event, ctx) => {
 		const isDeepSeekV4 = isDeepSeekV4ModelByModel(ctx.model);
 		if (isDeepSeekV4) debugLog("model match:", ctx.model?.provider, ctx.model?.id);
+		// ponytail: thinking budget is flat, handled in before_provider_request. No per-turn logic.
+
 		remindedThisTurn = false;
 		repairThisTurn = isDeepSeekV4 && repairEnabled();
-		if (!selectionGuidanceEnabled() || !isDeepSeekV4) return;
+		if (!selectionGuidanceEnabled() || !isDeepSeekV4) {
+			debugLog("guidance: skipped (disabled or not V4)");
+			return;
+		}
 
 		let systemPrompt = event.systemPrompt;
 
@@ -203,28 +265,45 @@ export default function (pi: ExtensionAPI) {
 			if (repeatCount >= 2) {
 				hint += ` You have had ${repeatCount} failures on ${lastErrorInfo!.toolName}. Try the simplest possible inputs — shorter paths, fewer options, explicit required fields only.`;
 			}
+			debugLog("error hint:", lastErrorInfo!.toolName, repeatCount, "repeats, cat:", lastErrorInfo!.category);
 			systemPrompt = `${systemPrompt}\n\nNote: ${hint}`;
 			hasErrorThisTurn = false;
 			lastErrorInfo = null;
 		}
 
 		const activeTools = event.systemPromptOptions?.selectedTools ?? [];
-		if (!hasAnyTool(activeTools, ["serena_get_symbols_overview", "serena_find_symbol", "serena_find_referencing_symbols", "serena_find_declaration", "serena_find_implementations", "ls", "grep", "find", "read", "edit", "bash"])) return;
+		if (!hasAnyTool(activeTools, ["serena_get_symbols_overview", "serena_find_symbol", "serena_find_referencing_symbols", "serena_find_declaration", "serena_find_implementations", "ls", "grep", "find", "read", "edit", "bash"])) {
+			debugLog("guidance: skipped (no relevant tools)");
+			return;
+		}
 
-		debugLog("guidance: injected for tools:", activeTools);
+		debugLog("guidance: injected for", activeTools.length, "tools");
 		return { systemPrompt: `${systemPrompt}\n\n${deepSeekSelectionGuidance(activeTools)}` };
 	});
 
 	// ── agent_end: reset repair flag ────────────────────────
 	pi.on("agent_end", () => {
 		repairThisTurn = false;
+		debugLog("agent_end: repair flag reset");
 		// hasErrorThisTurn intentionally NOT reset here — it's consumed in
 		// the next before_agent_start so the model gets the error-recovery hint.
 	});
 
-	// ── tool_call: intercept misuses ────────────────────────
+	// ── tool_call: count tools, intercept misuses, check dangerous commands ──
 	pi.on("tool_call", (event, ctx) => {
 		if (!isDeepSeekV4ModelByModel(ctx.model)) return;
+
+		debugLog("tool_call:", event.toolName);
+
+		// ── Safety guardrail: block dangerous bash commands ───────────────
+		if (event.toolName === "bash" && blockDangerousEnabled()) {
+			const command = isRecord(event.input) ? event.input.command : undefined;
+			const danger = typeof command === "string" ? checkDangerousCommand(command) : undefined;
+			if (danger) {
+				logWarn("DANGEROUS COMMAND BLOCKED:", danger);
+				return { block: true, reason: `Safety guardrail: blocked dangerous command — ${danger}.` };
+			}
+		}
 
 		if (event.toolName.startsWith("serena_")) {
 			remindedThisTurn = false;
@@ -243,6 +322,26 @@ export default function (pi: ExtensionAPI) {
 			: dedicatedTool
 				? `For DeepSeek V4, use the dedicated ${dedicatedTool} tool instead of bash for this simple file operation.`
 				: `For DeepSeek V4, use ${misuseTool} instead of find when the file path is known or the action is to run a command.`;
+
+		// Build a unique miss key for tracking reminder escalation
+		const missKey = misuseTool ? `find→${misuseTool}`
+			: dedicatedTool ? `bash→${dedicatedTool}`
+			: semanticMiss ? "serena-before-read"
+			: undefined;
+
+		// ── Adaptive escalation: block after N reminders for same miss ──
+		if (missKey) {
+			const threshold = autoBlockAfterReminders();
+			if (threshold > 0) {
+				const count = (reminderCounts.get(missKey) ?? 0) + 1;
+				reminderCounts.set(missKey, count);
+				debugLog("reminder:", missKey, "count:", count, "/", threshold);
+				if (count >= threshold) {
+					debugLog("auto-blocked:", missKey, "after", count, "reminders");
+					return { block: true, reason: `${reason} (auto-blocked after ${count} reminders on this pattern)` };
+				}
+			}
+		}
 
 		// Block unambiguous cases (find misuse) or strict serena mode
 		if (misuseTool || strictSerenaEnabled()) {

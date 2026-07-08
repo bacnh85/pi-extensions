@@ -1,11 +1,10 @@
 /**
- * logger.ts — level-aware logging for pi-deepseek-tools
+ * logger.ts — stderr logging for pi-deepseek-tools
  *
- * Levels: warn (always), debug (PI_DEEPSEEK_TOOLS_DEBUG).
- * Logs go to stderr.
+ * Two levels: warn (always) and debug (PI_DEEPSEEK_TOOLS_DEBUG=1).
+ * JSON format via PI_DEEPSEEK_TOOLS_LOG_FORMAT=json.
  *
- * When PI_DEEPSEEK_TOOLS_LOG_FORMAT=json, each log line is a structured
- * JSON object for programmatic consumption.
+ * ponytail: binary toggle. No info/trace levels — nobody reads them.
  */
 
 declare const process: { env: Record<string, string | undefined>; stderr: { write: (msg: string) => boolean } };
@@ -17,11 +16,9 @@ const PREFIX: Record<string, string> = {
 	debug: "[deepseek-tools:debug]",
 };
 
-// Cache for env-var lookups.
 let _debugCached: boolean | undefined;
 let _formatCached: "plain" | "json" | undefined;
 
-/** Check whether debug logging is enabled. */
 export function isDebugEnabled(): boolean {
 	if (_debugCached === undefined) {
 		_debugCached = /^(1|true|yes|on)$/i.test(process.env.PI_DEEPSEEK_TOOLS_DEBUG ?? "");
@@ -47,7 +44,7 @@ function emit(level: LogLevel, args: unknown[]): void {
 	try {
 		process.stderr.write(line + "\n");
 	} catch {
-		// ignore write errors (e.g., stderr closed in tests)
+		// ignore write errors
 	}
 }
 
@@ -56,10 +53,7 @@ export function logWarn(...args: unknown[]): void {
 	emit("warn", args);
 }
 
-/**
- * Emit a debug log line if debug logging is enabled.
- * Accepts strings and objects (JSON.stringify for the latter).
- */
+/** Emitted only when PI_DEEPSEEK_TOOLS_DEBUG=1. */
 export function debugLog(...args: unknown[]): void {
 	if (!isDebugEnabled()) return;
 	emit("debug", args);
