@@ -18,14 +18,14 @@ const { MuninClient: MuninClientClass } = require("@kalera/munin-sdk");
 
 // Shared schemas
 const projectParam = Type.Optional(
-	Type.String({ description: "Munin project ID. Defaults to MUNIN_PROJECT env var.", default: "" }),
+	Type.String({ description: "Project ID. Default: $MUNIN_PROJECT.", default: "" }),
 );
 const apiKeyParam = Type.Optional(
-	Type.String({ description: "Munin API key. Defaults to MUNIN_API_KEY env var.", default: "" }),
+	Type.String({ description: "API key. Default: $MUNIN_API_KEY.", default: "" }),
 );
 const baseUrlParam = Type.Optional(
 	Type.String({
-		description: "Munin base URL. Defaults to MUNIN_BASE_URL or https://munin.kalera.ai",
+		description: "Base URL. Default: $MUNIN_BASE_URL or https://munin.kalera.ai",
 		default: "",
 	}),
 );
@@ -105,31 +105,31 @@ export default function muninExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "munin_search",
 		label: "Munin Search",
-		description: "BEFORE non-trivial work: SEARCH Munin memory for relevant past fixes, decisions, and context.",
-		promptSnippet: "BEFORE work: search long-term memory for relevant knowledge",
+		description: "BEFORE work: SEARCH for relevant past fixes, decisions, context.",
+		promptSnippet: "BEFORE work: search memory for relevant context",
 		promptGuidelines: [
-			"Use munin_search before non-trivial work when prior project context could affect the outcome.",
-			"Build focused queries from exact errors, subsystem names, file paths, and dependency names.",
-			"Use --tags type:bug-fix,domain:auth for targeted results. Use --topK 5 for focused lookup, up to 20 for exploration.",
+			"Search before non-trivial work when prior context matters.",
+			"Query: exact errors, subsystem names, file paths, deps.",
+			"--tags for targeting, --topK 5-20.",
 		],
 		parameters: Type.Object({
 			...controlSchema,
-			query: Type.String({ description: "Search query terms." }),
+			query: Type.String({ description: "Query terms." }),
 			topK: Type.Optional(
-				Type.Number({ description: "Maximum results to return. Default 10.", default: 10 }),
+				Type.Number({ description: "Max results. Default 10.", default: 10 }),
 			),
-			tags: Type.Optional(Type.String({ description: "Comma-separated tags to filter by." })),
+			tags: Type.Optional(Type.String({ description: "Tags, comma-separated." })),
 			tag_mode: Type.Optional(
-				Type.String({ description: "Tag matching mode: 'all' (default) or 'any'.", default: "all" }),
+				Type.String({ description: "Mode: 'all' or 'any'.", default: "all" }),
 			),
 			since: Type.Optional(
 				Type.String({
-					description: "Filter results updated after this date (e.g., '2024-01-01', 'last week').",
+					description: "Results after this date (e.g., '2024-01-01').",
 				}),
 			),
-			before: Type.Optional(Type.String({ description: "Filter results updated before this date." })),
+			before: Type.Optional(Type.String({ description: "Results before this date." })),
 			include_total: Type.Optional(
-				Type.Boolean({ description: "Include total count in response.", default: false }),
+				Type.Boolean({ description: "Include total count.", default: false }),
 			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, _ctx) {
@@ -158,15 +158,15 @@ export default function muninExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "munin_get",
 		label: "Munin Get Memory",
-		description: "AFTER munin_search: retrieve full memory content by key.",
-		promptSnippet: "After finding a memory key, get the full content",
+		description: "AFTER search: retrieve full memory by key.",
+		promptSnippet: "After search, get full content by key",
 		promptGuidelines: [
-			"Use munin_get after munin_search to retrieve full content of a promising result.",
-			"Verify the retrieved memory against current repository evidence before relying on it.",
+			"After search, retrieve full content of promising results.",
+			"Verify against current repo evidence before using.",
 		],
 		parameters: Type.Object({
 			...controlSchema,
-			key: Type.String({ description: "Memory key to retrieve." }),
+			key: Type.String({ description: "Key to retrieve." }),
 		}),
 		async execute(_id, params, _signal, _onUpdate, _ctx) {
 			const { key } = params as any;
@@ -185,38 +185,38 @@ export default function muninExtension(pi: ExtensionAPI) {
 		name: "munin_store",
 		label: "Munin Store Memory",
 		description:
-			"AT SESSION END (or after a fix): STORE verified durable knowledge.",
-		promptSnippet: "Store durable project knowledge in long-term memory",
+			"AT SESSION END (or after fix): STORE verified durable knowledge.",
+		promptSnippet: "Store durable knowledge in long-term memory",
 		promptGuidelines: [
-			"Use munin_store at the end of a session for verified, durable knowledge that future sessions need.",
-			"Required tags: at least one type: (decision, bug-fix, fact, dependency, fact) AND one domain: (auth, frontend, backend, infra, memory).",
-			"Include conclusion, why it matters, evidence, and file/symbol anchors.",
-			"Never store secrets, credentials, raw logs, or transient TODOs.",
+			"Store at end of session for future sessions.",
+			"Require: one type:(decision|bug-fix|fact|dependency) + one domain:(auth|frontend|backend|infra|memory).",
+			"Include: conclusion, why it matters, evidence, anchors.",
+			"Never store secrets, credentials, raw logs, or TODOs.",
 		],
 		parameters: Type.Object({
 			...controlSchema,
 			key: Type.String({
 				description:
-					"Unique memory key. Use kebab-case namespaced like domain/subject (e.g., auth/refresh-token-fix).",
+					"Unique key. Use kebab-case: domain/subject (e.g., auth/refresh-token-fix).",
 			}),
-			title: Type.String({ description: "Short descriptive title." }),
+			title: Type.String({ description: "Short title." }),
 			content: Type.String({
 				description:
-					"Memory body. Must include conclusion, why it matters, evidence/verification, and durable anchors.",
+					"Body with conclusion, why it matters, evidence, anchors.",
 			}),
 			tags: Type.String({
 				description:
-					"Comma-separated tags. MUST include at least one type: and one domain: tag.",
+					"Tags, comma-separated. Requires one type: + one domain:.",
 			}),
 			valid_from: Type.Optional(
-				Type.String({ description: "ISO date when this memory becomes valid." }),
+				Type.String({ description: "Valid-from ISO date." }),
 			),
 			valid_to: Type.Optional(
-				Type.String({ description: "ISO date when this memory expires." }),
+				Type.String({ description: "Expiry ISO date." }),
 			),
 			pinned: Type.Optional(
 				Type.Boolean({
-					description: "Whether this memory is pinned for higher relevance.",
+					description: "Pin for higher relevance.",
 					default: false,
 				}),
 			),
@@ -254,18 +254,18 @@ export default function muninExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "munin_list",
 		label: "Munin List Memories",
-		description: "LIST all stored memories to discover what exists.",
+		description: "LIST all stored memories.",
 		promptSnippet: "List available memories",
 		promptGuidelines: [
-			"Use munin_list to explore what project knowledge is already stored. Good for planning work.",
+			"Explore what knowledge is stored. Good for planning.",
 		],
 		parameters: Type.Object({
 			...controlSchema,
 			limit: Type.Optional(
-				Type.Number({ description: "Maximum memories to return. Default 20.", default: 20 }),
+				Type.Number({ description: "Max results. Default 20.", default: 20 }),
 			),
 			offset: Type.Optional(
-				Type.Number({ description: "Pagination offset.", default: 0 }),
+				Type.Number({ description: "Offset.", default: 0 }),
 			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, _ctx) {
@@ -283,15 +283,15 @@ export default function muninExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "munin_recent",
 		label: "Munin Recent Memories",
-		description: "CHECK recently updated memories before starting work.",
-		promptSnippet: "Show recently updated memories",
+		description: "CHECK recently updated memories.",
+		promptSnippet: "Show recent updates",
 		promptGuidelines: [
-			"Use munin_recent to see what knowledge has been added or modified recently.",
+			"See what was added or modified recently.",
 		],
 		parameters: Type.Object({
 			...controlSchema,
 			limit: Type.Optional(
-				Type.Number({ description: "Maximum memories to return. Default 10.", default: 10 }),
+				Type.Number({ description: "Max results. Default 10.", default: 10 }),
 			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, _ctx) {
@@ -310,16 +310,16 @@ export default function muninExtension(pi: ExtensionAPI) {
 		name: "munin_delete",
 		label: "Munin Delete Memory",
 		description:
-			"DELETE a memory — only when user explicitly asks.",
-		promptSnippet: "Delete a memory from long-term storage",
+			"DELETE memory — only when user explicitly asks.",
+		promptSnippet: "Delete a memory from storage",
 		promptGuidelines: [
-			"Only use munin_delete when the user explicitly asks to remove a memory. Confirm before deleting.",
+			"Only delete when user explicitly asks. Confirm first.",
 		],
 		parameters: Type.Object({
 			...controlSchema,
-			key: Type.String({ description: "Memory key to delete." }),
+			key: Type.String({ description: "Key to delete." }),
 			force: Type.Optional(
-				Type.Boolean({ description: "Skip confirmation.", default: false }),
+				Type.Boolean({ description: "Skip confirm.", default: false }),
 			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -352,10 +352,10 @@ export default function muninExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "munin_capabilities",
 		label: "Munin Capabilities",
-		description: "CHECK what Munin server features are available.",
-		promptSnippet: "Show Munin server capabilities",
+		description: "CHECK available Munin server features.",
+		promptSnippet: "Show Munin capabilities",
 		promptGuidelines: [
-			"Use munin_capabilities to check what server features are available.",
+			"Check what server features are available.",
 		],
 		parameters: Type.Object({
 			...controlSchema,
@@ -377,13 +377,13 @@ export default function muninExtension(pi: ExtensionAPI) {
 		description: "SHARE memories between projects.",
 		promptSnippet: "Share memories between projects",
 		promptGuidelines: [
-			"Use munin_share to share memories from one project to another.",
-			"Both source and target projects must be accessible with the configured API key.",
+			"Share memories between projects.",
+			"Source and target must be accessible with API key.",
 		],
 		parameters: Type.Object({
 			...controlSchema,
-			memory_ids: Type.Array(Type.String(), { description: "Array of memory IDs to share." }),
-			target_project_ids: Type.Array(Type.String(), { description: "Array of target project IDs." }),
+			memory_ids: Type.Array(Type.String(), { description: "Memory IDs to share." }),
+			target_project_ids: Type.Array(Type.String(), { description: "Target project IDs." }),
 		}),
 		async execute(_id, params, _signal, _onUpdate, _ctx) {
 			const { memory_ids, target_project_ids } = params as any;

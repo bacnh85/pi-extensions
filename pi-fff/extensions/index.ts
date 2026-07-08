@@ -559,28 +559,28 @@ export default function fffExtension(pi: ExtensionAPI) {
 
   const grepSchema = Type.Object({
     pattern: Type.String({
-      description: "Search pattern (literal text or regex)",
+      description: "Literal text or regex",
     }),
     path: Type.Optional(
       Type.String({
         description:
-          "Repo-relative path constraint. Directory prefix (src/ or src/foo/), bare filename with extension (main.rs), or glob (*.ts, src/**/*.cc, {src,lib}/**). Applied to the full repo-relative path.",
+          "Dir prefix (src/), filename (main.rs), or glob (*.ts, src/**/*.cc).",
       }),
     ),
     exclude: Type.Optional(
       Type.Union([Type.String(), Type.Array(Type.String())], {
         description:
-          "Exclude paths (comma/space-separated or array). Same syntax as path: directory prefix ('test/'), filename with extension ('config.json'), or glob ('*.min.js', '**/*.{rs,go}'). A leading '!' is optional and ignored — both 'test/' and '!test/' work. Example: 'test/,*.min.js,!vendor/'.",
+          "Exclude paths — dir prefix, filename, or glob.",
       }),
     ),
     caseSensitive: Type.Optional(
       Type.Boolean({
         description:
-          "Force case-sensitive matching. Default uses smart-case (case-insensitive when pattern is all lowercase).",
+          "Force case-sensitive (smart-case by default).",
       }),
     ),
     context: Type.Optional(
-      Type.Number({ description: "Context lines before+after each match" }),
+      Type.Number({ description: "Context lines before+after" }),
     ),
     limit: Type.Optional(
       Type.Number({
@@ -589,24 +589,24 @@ export default function fffExtension(pi: ExtensionAPI) {
     ),
     outputMode: Type.Optional(
       Type.String({
-        description: "Output format: 'content' (default), 'files_with_matches' (one preview per file), or 'count' (file match counts)",
+        description: "'content' (default), 'files_with_matches', or 'count'",
       }),
     ),
     cursor: Type.Optional(
-      Type.String({ description: "Pagination cursor from previous result" }),
+      Type.String({ description: "Pagination cursor" }),
     ),
   });
 
   pi.registerTool({
     name: grepName,
     label: grepName,
-    description: `Grep file contents. Smart-case, auto-detects regex vs literal, git-aware. Results are ranked by frecency (most-accessed files first); matches within a file stay in source order. Default limit ${DEFAULT_GREP_LIMIT}.`,
+    description: `Grep contents. Smart-case, regex auto-detect, git-aware, frecency-ranked.`,
     promptSnippet: "Grep contents",
     promptGuidelines: [
-      "Prefer bare identifiers as patterns. Literal queries are most efficient.",
-      "Use path for include ('src/', '*.ts') and exclude for noise ('test/,*.min.js').",
-      "caseSensitive: true when you need exact case (smart-case otherwise).",
-      "After 1-2 greps, read the top match instead of more greps.",
+      "Bare identifiers preferred. Literal queries most efficient.",
+      "Use path/include, exclude/noise.",
+      "caseSensitive=true for exact case (smart-case by default).",
+      "After 1-2 greps, read top match.",
     ],
     parameters: grepSchema,
 
@@ -721,18 +721,18 @@ export default function fffExtension(pi: ExtensionAPI) {
   const findSchema = Type.Object({
     pattern: Type.String({
       description:
-        "Fuzzy filename search and glob search. Frecency-ranked, git-aware. Multi-word = narrower (AND) not bound to order, use for multi word related concept search. Prefer this over ls/find/bash as the first exploration step whenever the user names a concept, feature, or symbol — it surfaces the relevant files in one call. Only use ls/read on a directory when you specifically need the alphabetical layout of an unknown repo, or when a concept search returned nothing.",
+        "Fuzzy filename/glob search. Frecency-ranked, git-aware. Multi-word narrows (AND).",
     }),
     path: Type.Optional(
       Type.String({
         description:
-          "Repo-relative path constraint. Directory prefix (src/ or src/foo/), bare filename with extension (main.rs), or glob (*.ts, src/**/*.cc, {src,lib}/**). Applied to the full repo-relative path.",
+          "Dir prefix (src/), filename (main.rs), or glob (*.ts, src/**/*.cc).",
       }),
     ),
     exclude: Type.Optional(
       Type.Union([Type.String(), Type.Array(Type.String())], {
         description:
-          "Exclude paths (comma/space-separated or array). Same syntax as path: directory prefix ('test/'), filename with extension ('config.json'), or glob ('*.min.js', '**/*.{rs,go}'). A leading '!' is optional and ignored — both 'test/' and '!test/' work. Example: 'test/,*.min.js,!vendor/'.",
+          "Exclude paths — dir prefix, filename, or glob.",
       }),
     ),
     limit: Type.Optional(
@@ -741,23 +741,23 @@ export default function fffExtension(pi: ExtensionAPI) {
       }),
     ),
     cursor: Type.Optional(
-      Type.String({ description: "Pagination cursor from previous result" }),
+      Type.String({ description: "Pagination cursor" }),
     ),
   });
 
   pi.registerTool({
     name: findName,
     label: findName,
-    description: `Fuzzy path search and glob search. Matches against the whole repo-relative path, not just the filename. Frecency-ranked, git-aware. Multi-word = narrower (AND). Default limit ${DEFAULT_FIND_LIMIT}.`,
+    description: `Fuzzy path/glob search. Whole-path matching, frecency-ranked, git-aware.`,
     promptSnippet: "Find files by path or glob",
     promptGuidelines: [
-      "Matches the WHOLE path, not just the filename — `profile` hits `chrome/browser/profiles/x.cc` too.",
-      "Keep queries to 1-2 terms; extra words narrow.",
-      "Use for paths, not content. Use grep for content.",
-      "For exact path matches use a glob in `path` — e.g. path: '**/profile.h' for exact filename, or path: 'src/**/profile.h' scoped to a subtree. Bare patterns are fuzzy.",
-      "To list everything inside a directory, pass path: 'dir/**' with an empty or wildcard pattern instead of using pattern alone.",
-      "Use exclude: 'test/,*.min.js' to cut noise in large repos.",
-    ],
+      "Whole-path matching: 'profile' hits 'chrome/browser/profiles/x.cc' too.",
+      "1-2 terms best; extra words narrow.",
+      "Use for paths, use grep for content.",
+      "Exact match: glob in `path` like '**/profile.h'. Bare patterns are fuzzy.",
+      "List dir: path: 'dir/**' with empty/wildcard pattern.",
+      "exclude: 'test/,*.min.js' to cut noise.",
+    ]
     parameters: findSchema,
 
     async execute(_toolCallId, params, signal) {
@@ -851,7 +851,7 @@ export default function fffExtension(pi: ExtensionAPI) {
   const resolveFileSchema = Type.Object({
     pattern: Type.String({
       description:
-        "Fuzzy file path query. Turn a vague reference ('auth middleware', 'Chart component') into an exact file path.",
+        "Fuzzy file path query. Turn vague reference ('auth middleware') into exact path.",
     }),
     limit: Type.Optional(
       Type.Number({
@@ -864,12 +864,12 @@ export default function fffExtension(pi: ExtensionAPI) {
     name: "resolve_file",
     label: "Resolve File",
     description:
-      "Resolve a fuzzy file reference to an exact absolute path using FFF. Auto-resolves when the top candidate strongly dominates; returns ranked candidates when ambiguous.",
+      "Resolve fuzzy file ref to exact path. Auto-resolves when one candidate dominates.",
     promptSnippet: "Resolve a fuzzy file reference",
     promptGuidelines: [
-      "Use when you have a vague reference like 'auth middleware' or 'main config' instead of an exact path.",
-      "The tool either returns a resolved path (ready for read) or a ranked candidate list.",
-      "More specific queries (2-3 words) produce better results.",
+      "Use for vague refs like 'auth middleware' instead of exact path.",
+      "Returns resolved path or ranked candidates.",
+      "2-3 word queries produce best results.",
     ],
     parameters: resolveFileSchema,
 
@@ -936,25 +936,25 @@ export default function fffExtension(pi: ExtensionAPI) {
   // --- fff_multi_grep tool ---
 
   const multiGrepSchema = Type.Object({
-    patterns: Type.Array(Type.String({ description: "Literal pattern to search for" }), {
+    patterns: Type.Array(Type.String({ description: "Literal pattern" }), {
       minItems: 1,
       maxItems: 10,
-      description: "Search for any of these literal patterns in one pass (useful for renamed symbols, aliases, spelling variants)",
+      description: "Literal patterns, one pass. For renames, aliases, or spelling variants.",
     }),
     path: Type.Optional(
       Type.String({
         description:
-          "Repo-relative path constraint. Directory prefix (src/ or src/foo/), bare filename with extension (main.rs), or glob (*.ts, src/**/*.cc, {src,lib}/**).",
+          "Dir prefix (src/), filename (main.rs), or glob (*.ts, src/**/*.cc).",
       }),
     ),
     exclude: Type.Optional(
       Type.Union([Type.String(), Type.Array(Type.String())], {
         description:
-          "Exclude paths (comma/space-separated or array). Same syntax as path: directory prefix ('test/'), filename with extension ('config.json'), or glob ('*.min.js').",
+          "Exclude paths — dir prefix, filename, or glob.",
       }),
     ),
     context: Type.Optional(
-      Type.Number({ description: "Context lines before+after each match" }),
+      Type.Number({ description: "Context lines before+after" }),
     ),
     limit: Type.Optional(
       Type.Number({
@@ -963,11 +963,11 @@ export default function fffExtension(pi: ExtensionAPI) {
     ),
     outputMode: Type.Optional(
       Type.String({
-        description: "Output format: 'content' (default), 'files_with_matches', or 'count'",
+        description: "'content' (default), 'files_with_matches', or 'count'",
       }),
     ),
     cursor: Type.Optional(
-      Type.String({ description: "Pagination cursor from previous result" }),
+      Type.String({ description: "Pagination cursor" }),
     ),
   });
 
@@ -975,12 +975,12 @@ export default function fffExtension(pi: ExtensionAPI) {
     name: "fff_multi_grep",
     label: "FFF Multi Grep",
     description:
-      "Search file contents for any of multiple literal patterns in one pass using FFF multi-grep. Useful for renamed symbols, aliases, or common spelling variants.",
+      "Search for any of multiple literal patterns in one pass. For renamed symbols, aliases, or spelling variants.",
     promptSnippet: "Grep for multiple patterns",
     promptGuidelines: [
-      "Provide 2-10 literal patterns. All searches happen in one indexed pass.",
-      "Use for symbol renames, API migrations, or finding multiple related terms.",
-      "Use path/exclude to scope; use outputMode for concise results.",
+      "2-10 literal patterns, one indexed pass.",
+      "Use for renames, migrations, or multiple related terms.",
+      "Use path/exclude to scope, outputMode for conciseness.",
     ],
     parameters: multiGrepSchema,
 
@@ -1014,7 +1014,7 @@ export default function fffExtension(pi: ExtensionAPI) {
   const relatedFilesSchema = Type.Object({
     path: Type.String({
       description:
-        "File path (relative or fuzzy) to find related companion files for (tests, types, styles, stories, etc.).",
+        "File path (relative or fuzzy) to find companion files for (tests, types, styles, stories).",
     }),
     limit: Type.Optional(
       Type.Number({
@@ -1027,11 +1027,11 @@ export default function fffExtension(pi: ExtensionAPI) {
     name: "related_files",
     label: "Related Files",
     description:
-      "Find files related to a given file by stem matching — discovers test files, type definitions, styles, and other companion files sharing the same base name.",
+      "Find companion files by stem matching (tests, types, styles).",
     promptSnippet: "Find companion files",
     promptGuidelines: [
-      "Pass any file path in the project. The tool strips extensions and test/spec/stories/.d/.module suffixes to find companions.",
-      "Great for finding the test file for a module, or the type definition for an implementation.",
+      "Pass any file path. Strips test/spec/.d/.module suffixes.",
+      "Great for finding test files or type defs for a module.",
     ],
     parameters: relatedFilesSchema,
 

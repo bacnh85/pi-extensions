@@ -38,15 +38,13 @@ const sharedControlSchema = {
 };
 
 const firecrawlControlSchema = {
-	firecrawl_api_key: Type.Optional(Type.String({ description: "Firecrawl API key override. Prefer FIRECRAWL_API_KEY." })),
-	firecrawl_api_url: Type.Optional(Type.String({ description: "Firecrawl API URL override. Defaults to FIRECRAWL_API_URL or hosted." })),
-	timeout_ms: Type.Optional(Type.Number({ description: "Request timeout in milliseconds." })),
+	firecrawl_api_key: Type.Optional(Type.String({ description: "Override $FIRECRAWL_API_KEY." })),
+	firecrawl_api_url: Type.Optional(Type.String({ description: "Override $FIRECRAWL_API_URL." })),
 };
 
 const crawl4aiControlSchema = {
-	crawl4ai_api_url: Type.Optional(Type.String({ description: "Crawl4AI API URL override. Defaults to CRAWL4AI_API_URL or http://172.30.55.22:11235." })),
-	crawl4ai_api_token: Type.Optional(Type.String({ description: "Crawl4AI API token override. Prefer CRAWL4AI_API_TOKEN." })),
-	timeout_ms: Type.Optional(Type.Number({ description: "Request timeout in milliseconds." })),
+	crawl4ai_api_url: Type.Optional(Type.String({ description: "Override $CRAWL4AI_API_URL." })),
+	crawl4ai_api_token: Type.Optional(Type.String({ description: "Override $CRAWL4AI_API_TOKEN." })),
 };
 
 
@@ -82,29 +80,26 @@ export default function piWebExtension(pi: ExtensionAPI) {
 		name: "web_search",
 		label: "Web Search",
 		description:
-			"Search the web. Auto-selects backends adaptively: SearXNG, Brave, Firecrawl.",
+			"Search the web. Auto-selects backends: SearXNG, Brave, Firecrawl.",
 		promptSnippet: "Search current web results",
 		promptGuidelines: [
-			"Use web_search for source discovery, documentation lookup, current facts, and general web search.",
-			"Backend auto-selection is adaptive: broad discovery uses SearXNG first; precision queries, site: searches, docs/source lookups, and include_content use Brave first; Firecrawl is last resort.",
-			"If auto-selection returns poor-quality results, force backend: 'brave' or backend: 'searxng' for a different search index.",
-			"Use the backend parameter to force a specific search engine (e.g., backend: 'brave').",
-			"Use engines parameter for SearXNG tuning (e.g., engines: 'google,github' for technical queries).",
-			"include_content prefers Brave automatically because only Brave search fetches inline page content; for other result URLs, use web_extract.",
-			"Note: Firecrawl Search has poor semantic accuracy on domain-specific/ambiguous queries; prefer SearXNG or Brave for precision.",
-			"Cite result URLs when web results materially support the answer.",
+			"Source discovery, docs, facts, and general search.",
+			"Broad discovery uses SearXNG; precision/site/docs use Brave; Firecrawl is fallback.",
+			"Force backend via backend:'brave'|'searxng' for poor auto results.",
+			"Use engines='google,github' for SearXNG tuning.",
+			"Cite source URLs.",
 		],
 		parameters: Type.Object({
 			query: Type.String(),
 			count: Type.Optional(Type.Number({ default: 5 })),
-			freshness: Type.Optional(Type.String({ description: "Time filter: e.g., 'pw' (past week), 'pm' (past month), 'py' (past year), or a date range like '2024-01-01to2024-06-30'." })),
+			freshness: Type.Optional(Type.String({ description: "Time filter: pw/pm/py or YYYY-MM-DDtoYYYY-MM-DD." })),
 			country: Type.Optional(Type.String({ default: "US" })),
 			backend: Type.Optional(Type.Union(
 				[Type.Literal("auto"), Type.Literal("searxng"), Type.Literal("brave"), Type.Literal("firecrawl")],
-				{ default: "auto", description: "Search backend: auto (default), searxng, brave, or firecrawl." },
+				{ default: "auto", description: "auto, searxng, brave, firecrawl." },
 			)),
-			engines: Type.Optional(Type.String({ description: "SearXNG engine override (e.g., 'google,github' for technical queries). Only used when backend is searxng or auto." })),
-			include_content: Type.Optional(Type.Boolean({ default: false, description: "Fetch page content alongside search results. Slower but provides inline content." })),
+			engines: Type.Optional(Type.String({ description: "SearXNG engine list (google,github). Only for searxng/auto backend." })),
+			include_content: Type.Optional(Type.Boolean({ default: false, description: "Fetch inline page content (slower)." })),
 			content_chars: Type.Optional(Type.Number({ default: 5000 })),
 			...sharedControlSchema,
 		}),
@@ -133,30 +128,26 @@ export default function piWebExtension(pi: ExtensionAPI) {
 		name: "web_extract",
 		label: "Web Content Extraction",
 		description:
-			"Extract readable content from a URL. Auto backend: static \u2192 dynamic \u2192 full.",
+			"Extract readable content from a URL. Auto mode: static\u2192dynamic\u2192full.",
 		promptSnippet: "Extract readable webpage content as markdown",
 		promptGuidelines: [
-			"Use web_extract to get clean markdown content from a known URL.",
-			"Use mode: 'static' for simple static pages (fast, no API key needed, uses JSDOM+Readability).",
-			"Use mode: 'dynamic' for JavaScript-rendered pages (uses Firecrawl Scrape).",
-			"Use mode: 'full' for pages that need Crawl4AI rendering when other modes fail (resource-intensive).",
-			"Default mode 'auto' tries static → dynamic → full. Successive fallbacks are noted in output.",
-			"⚠️ Dynamic mode (Firecrawl Scrape) may fail on bot-protected sites (Ansible docs, CDN-backed doc sites). Full mode (Crawl4AI) handles more sites but is heavier.",
-			"If all extraction modes fail, try web_screenshot for a visual snapshot, or the page may require interactive login.",
-			"Use the prompt and schema parameters for structured JSON extraction (dynamic mode only); structured JSON is returned in details and text when available.",
-			"Cite the source URL when using extracted content in an answer.",
+			"Clean markdown from a known URL.",
+			"mode: 'static' (no API key, JSDOM), 'dynamic' (Firecrawl JS), 'full' (Crawl4AI).",
+			"'auto' tries static\u2192dynamic\u2192full; see diagnostics for fallback chain.",
+			"Use prompt+schema for structured JSON extraction (dynamic mode only).",
+			"Cite the source URL.",
 		],
 		parameters: Type.Object({
 			url: Type.String(),
 			mode: Type.Optional(Type.Union(
 				[Type.Literal("auto"), Type.Literal("static"), Type.Literal("dynamic"), Type.Literal("full")],
-				{ default: "auto", description: "Extraction mode: auto (default), static, dynamic, or full." },
+				{ default: "auto", description: "auto, static, dynamic, full." },
 			)),
 			prompt: Type.Optional(Type.String({ description: "Prompt for structured JSON extraction (dynamic mode only)." })),
 			schema: Type.Optional(Type.Any({ description: "JSON schema for structured extraction (dynamic mode only)." })),
 			content_chars: Type.Optional(Type.Number({ default: 20000 })),
-			wait_for: Type.Optional(Type.Number({ description: "Milliseconds to wait for Firecrawl dynamic rendering before extraction. Full mode uses Crawl4AI /md and may ignore this." })),
-			mobile: Type.Optional(Type.Boolean({ default: false, description: "Emulate mobile viewport (dynamic mode only)." })),
+			wait_for: Type.Optional(Type.Number({ description: "Ms to wait for Firecrawl render before extraction." })),
+			mobile: Type.Optional(Type.Boolean({ default: false, description: "Mobile viewport (dynamic mode only)." })),
 			...sharedControlSchema,
 		}),
 		async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
@@ -184,24 +175,23 @@ export default function piWebExtension(pi: ExtensionAPI) {
 		name: "web_map",
 		label: "Site URL Discovery",
 		description:
-			"Discover URLs from a site using Firecrawl Map.",
+			"Discover site URLs via Firecrawl Map.",
 		promptSnippet: "Map site URLs",
 		promptGuidelines: [
-			"Use web_map to discover URLs from a site before crawling or targeted extraction.",
-			"Works best on base domains (e.g., https://example.com). Returns fewer results on sub-paths; use sitemap: 'only' for sitemap-only discovery on sub-paths.",
-			"Use sitemap: 'only' for sitemap-only discovery.",
-			"Use mapped URLs with web_extract for targeted extraction instead of web_crawl when only a few pages are needed.",
-			"Keep limits small unless broad site discovery is explicitly requested.",
+			"Discover site URLs before crawling. Prefer web_extract for small jobs.",
+			"Best on base domains. sitemap:'only' for sub-path discovery.",
+			"Keep limits small unless broad discovery is requested.",
 		],
 		parameters: Type.Object({
 			url: Type.String(),
 			limit: Type.Optional(Type.Number({ default: 100 })),
 			include_subdomains: Type.Optional(Type.Boolean({ default: false })),
-			search: Type.Optional(Type.String({ description: "Optional search query to guide URL discovery (semantic map)." })),
-			sitemap: Type.Optional(Type.Union([Type.Literal("only"), Type.Literal("include"), Type.Literal("skip")], { description: "Sitemap mode: include (default), only (sitemap-only), or skip." })),
-			use_index: Type.Optional(Type.Boolean({ default: true, description: "Whether to use the Firecrawl search index for URL discovery." })),
-			ignore_cache: Type.Optional(Type.Boolean({ default: false, description: "Ignore cached map results." })),
+			search: Type.Optional(Type.String({ description: "Search query to guide URL discovery (semantic map)." })),
+			sitemap: Type.Optional(Type.Union([Type.Literal("only"), Type.Literal("include"), Type.Literal("skip")], { description: "only, include(default), skip." })),
+			use_index: Type.Optional(Type.Boolean({ default: true, description: "Use Firecrawl index for discovery." })),
+			ignore_cache: Type.Optional(Type.Boolean({ default: false, description: "Ignore cached results." })),
 			...firecrawlControlSchema,
+			...sharedControlSchema,
 		}),
 		async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
 			const body: Record<string, unknown> = {
@@ -228,30 +218,27 @@ export default function piWebExtension(pi: ExtensionAPI) {
 		name: "web_crawl",
 		label: "Site Crawl",
 		description:
-			"Crawl site pages. Firecrawl 'light' or Crawl4AI 'full' headless mode.",
+			"Crawl pages. Firecrawl 'light' or Crawl4AI 'full' headless mode.",
 		promptSnippet: "Crawl a small site section",
 		promptGuidelines: [
-			"Use web_crawl only when multiple pages from a site are truly needed; prefer web_map + web_extract for small numbers of pages.",
-			"Use mode: 'light' (default) for conservative Firecrawl crawling of docs/sites.",
-			"Use mode: 'full' for Crawl4AI crawling with full rendered data (JS, media, links). More resource-intensive.",
-			"For Firecrawl mode ('light'), use the url parameter with optional include_paths/exclude_paths.",
-			"For Crawl4AI mode ('full'), use the urls (array) parameter for batch crawling up to 100 URLs.",
-			"Keep limits conservative (default 10) unless the user explicitly requests large crawls.",
-			"Try web_map first to identify candidate URLs and pass them to web_extract before resorting to a full crawl.",
+			"Prefer web_map + web_extract over crawl for small jobs.",
+			"'light'=Firecrawl (url param), 'full'=Crawl4AI (urls[] param).",
+			"Keep limit low (default 10).",
 		],
 		parameters: Type.Object({
-			url: Type.Optional(Type.String({ description: "URL for Firecrawl-style single-page crawl (mode: 'light')." })),
-			urls: Type.Optional(Type.Array(Type.String(), { description: "URLs for Crawl4AI-style multi-URL crawl (mode: 'full'), up to 100." })),
-			mode: Type.Optional(Type.Union([Type.Literal("light"), Type.Literal("full")], { default: "light", description: "Crawl mode: 'light' (Firecrawl, conservative) or 'full' (Crawl4AI, rendered data)." })),
+			url: Type.Optional(Type.String({ description: "URL for Firecrawl-style crawl (mode:'light')." })),
+			urls: Type.Optional(Type.Array(Type.String(), { description: "URLs for Crawl4AI-style crawl (mode:'full'), up to 100." })),
+			mode: Type.Optional(Type.Union([Type.Literal("light"), Type.Literal("full")], { default: "light", description: "'light'(Firecrawl) or 'full'(Crawl4AI)." })),
 			limit: Type.Optional(Type.Number({ default: 10 })),
-			include_paths: Type.Optional(Type.String({ description: "Comma-separated path patterns to include (Firecrawl mode only)." })),
-			exclude_paths: Type.Optional(Type.String({ description: "Comma-separated path patterns to exclude (Firecrawl mode only)." })),
-			poll: Type.Optional(Type.Boolean({ default: false, description: "Poll for crawl completion (Firecrawl mode only)." })),
-			browser_config: Type.Optional(Type.Any({ description: "Optional BrowserConfig JSON object (Crawl4AI mode only)." })),
-			crawler_config: Type.Optional(Type.Any({ description: "Optional CrawlerRunConfig JSON object (Crawl4AI mode only)." })),
+			include_paths: Type.Optional(Type.String({ description: "Comma-separated paths to include (Firecrawl mode)." })),
+			exclude_paths: Type.Optional(Type.String({ description: "Comma-separated paths to exclude (Firecrawl mode)." })),
+			poll: Type.Optional(Type.Boolean({ default: false, description: "Poll for completion (Firecrawl mode)." })),
+			browser_config: Type.Optional(Type.Any({ description: "BrowserConfig JSON (full mode only)." })),
+			crawler_config: Type.Optional(Type.Any({ description: "CrawlerRunConfig JSON (full mode only)." })),
 			content_chars: Type.Optional(Type.Number({ default: 20000 })),
 			...firecrawlControlSchema,
 			...crawl4aiControlSchema,
+			...sharedControlSchema,
 		}),
 		async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
 			const mode = (params.mode as string) || "light";
@@ -319,19 +306,18 @@ export default function piWebExtension(pi: ExtensionAPI) {
 		name: "web_screenshot",
 		label: "Web Page Screenshot",
 		description:
-			"Capture a full-page PNG screenshot via Crawl4AI headless browser.",
+			"Full-page PNG screenshot via Crawl4AI.",
 		promptSnippet: "Screenshot a webpage",
 		promptGuidelines: [
-			"Use web_screenshot when a visual snapshot of a rendered page is needed, or when web_extract fails on a heavily JS-dependent or bot-protected page.",
-			"The screenshot is returned as a base64-encoded PNG string.",
-			"Use wait_for to delay capture for dynamic content to render (default 2 seconds).",
-			"Use wait_for_images to ensure images are loaded before capture.",
+			"Use when web_extract fails on JS-heavy or bot-protected pages.",
+			"wait_for (default 2s) delays capture for dynamic content.",
 		],
 		parameters: Type.Object({
 			url: Type.String(),
-			wait_for: Type.Optional(Type.Number({ default: 2, description: "Seconds to wait before capturing screenshot." })),
-			wait_for_images: Type.Optional(Type.Boolean({ default: false, description: "Wait for images to load before capture." })),
+			wait_for: Type.Optional(Type.Number({ default: 2, description: "Seconds to wait before capture." })),
+			wait_for_images: Type.Optional(Type.Boolean({ default: false, description: "Wait for images before capture." })),
 			...crawl4aiControlSchema,
+			...sharedControlSchema,
 		}),
 		async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
 			const config = loadCrawl4aiConfig(params as Record<string, unknown>, cwdFromContext(ctx), includeProjectEnv(ctx));
@@ -360,15 +346,16 @@ export default function piWebExtension(pi: ExtensionAPI) {
 		name: "web_pdf",
 		label: "Web Page PDF",
 		description:
-			"Generate a PDF document via Crawl4AI headless browser.",
+			"PDF document via Crawl4AI.",
 		promptSnippet: "PDF a webpage",
 		promptGuidelines: [
-			"Use web_pdf when a printable or archivable snapshot of a page is needed.",
-			"The PDF is returned as a base64-encoded string.",
+			"Printable or archivable page snapshot.",
+			"Returns base64 PDF string.",
 		],
 		parameters: Type.Object({
 			url: Type.String(),
 			...crawl4aiControlSchema,
+			...sharedControlSchema,
 		}),
 		async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
 			const config = loadCrawl4aiConfig(params as Record<string, unknown>, cwdFromContext(ctx), includeProjectEnv(ctx));
@@ -389,14 +376,12 @@ export default function piWebExtension(pi: ExtensionAPI) {
 		name: "web_status",
 		label: "Web Provider Status",
 		description:
-			"Show web provider configuration status without printing secrets.",
-		promptSnippet: "Check web provider configuration and server status",
+			"Show web provider config status without printing secrets.",
+		promptSnippet: "Check web provider config and server status",
 		promptGuidelines: [
-			"Use web_status when web tools fail due to missing credentials/config or to verify which backends are available.",
-			"The output shows which backends are configured; if a backend is missing, configure its env vars.",
-			"Never print API key values; this tool reports only presence and source.",
-			"Shows Crawl4AI server health, version, and auth status when the server is reachable.",
-			"For Firecrawl, `apiKeyFound: false` is normal for self-hosted instances without auth. Use the `ready` field to check whether Firecrawl is actually usable.",
+			"Check which backends are configured and their server status.",
+			"Never prints secrets — reports only presence and source.",
+			"apiKeyFound:false is normal for self-hosted Firecrawl; check ready field.",
 		],
 		parameters: Type.Object({}),
 		async execute(_id: string, _params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {

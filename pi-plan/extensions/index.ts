@@ -302,16 +302,16 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: PLAN_TOOL,
 		label: "Write Plan",
-		description: `Write or replace the current implementation plan as Markdown under ${PLAN_DIR}/. Use in plan mode when the plan is ready for user review.`,
-		promptSnippet: `Write the implementation plan to ${PLAN_DIR}/ as a Markdown file for user review`,
+		description: `Write/replace plan as Markdown under ${PLAN_DIR}/. Use when plan is ready for review.`,
+		promptSnippet: `Write plan to ${PLAN_DIR}/ as Markdown for user review`,
 		promptGuidelines: [
-			`Use ${PLAN_TOOL} in plan mode after repository exploration; do not use edit/write for implementation until the user approves the plan.`,
-			`Do not call ${PLAN_TOOL} while blocking user-answerable questions remain; use ${PLAN_QUESTION_TOOL} first.`,
+			`Use ${PLAN_TOOL} in plan mode after exploration. No edit/write until plan approved.`,
+			`Don't call ${PLAN_TOOL} while blocking questions remain; use ${PLAN_QUESTION_TOOL} first.`,
 		],
 		parameters: Type.Object({
-			title: Type.String({ description: "Short human-readable title for the plan" }),
-			content: Type.String({ description: "Complete Markdown plan content" }),
-			status: Type.Optional(Type.String({ description: "Plan status: draft, approved, or executing" })),
+			title: Type.String({ description: "Short plan title" }),
+			content: Type.String({ description: "Markdown plan content" }),
+			status: Type.Optional(Type.String({ description: "draft, approved, or executing" })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const typedParams = params as WritePlanParams;
@@ -338,24 +338,24 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: PLAN_QUESTION_TOOL,
 		label: "Ask Plan Question",
-		description: "Ask the user a consequential planning question with selectable options and optional free-form input.",
-		promptSnippet: "Ask the user a concise planning question with 2-4 concrete options when an open decision materially affects the plan.",
+		description: "Ask user a planning question with selectable options and optional free-form input.",
+		promptSnippet: "Ask user a planning question with 2-4 concrete options when a decision affects the plan",
 		promptGuidelines: [
-			"Use only after repository research leaves a consequential ambiguity that affects the plan.",
-			"Prefer 2-4 concrete options with short labels and useful descriptions.",
-			"Do not ask about details that can be discovered from the repository.",
-			"If the user already gave a preference, incorporate it instead of asking again.",
+			"Use only when repo research leaves a consequential ambiguity.",
+			"Prefer 2-4 concrete options. Use short labels.",
+			"Don't ask what's discoverable from repo.",
+			"Respect user's stated preference.",
 		],
 		parameters: Type.Object({
-			question: Type.String({ description: "The planning question to ask the user" }),
+			question: Type.String({ description: "Planning question to ask" }),
 			options: Type.Array(
 				Type.Object({
-					label: Type.String({ description: "Short selectable option label" }),
-					description: Type.Optional(Type.String({ description: "Optional explanation shown with the option" })),
+					label: Type.String({ description: "Option label" }),
+					description: Type.Optional(Type.String({ description: "Optional explanation" })),
 				}),
-				{ description: "Concrete options for the user to choose from" },
+				{ description: "Options to choose from" },
 			),
-			allowOther: Type.Optional(Type.Boolean({ description: "Whether to allow a free-form user answer; defaults to true" })),
+			allowOther: Type.Optional(Type.Boolean({ description: "Allow free-form user answer; default true" })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const typedParams = params as PlanQuestionParams;
