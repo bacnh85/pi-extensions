@@ -122,6 +122,28 @@ function createFromTemplate(templateName: string, noteName: string, folder: stri
 	return execObsidian(args, false, timeoutMs).stdout.trim() || `Created note "${notePath}" from template "${templateName}".`;
 }
 
+function propertyRename(from: string, to: string, vault?: string, timeoutMs = 30_000): string {
+	const j = JSON.stringify;
+	const script = [
+		`const ff=${j(from)},tt=${j(to)};`,
+		`let u=0,s=0;`,
+		`for(const f of app.vault.getMarkdownFiles()){`,
+		`let c=await app.vault.read(f);const o=c;`,
+		`let m=c.match(/^---\\s*\\n([\\s\\S]*?)\\n---/);`,
+		`if(!m){s++;continue;}`,
+		`let fm=m[1];`,
+		`let nfm=fm.split('\\n').map((l: string)=>l.startsWith(ff+':')?tt+l.slice(ff.length):l).join('\\n');`,
+		`if(nfm===fm){s++;continue;}`,
+		`c='---\\n'+nfm+'\\n---'+c.slice(m[0].length);`,
+		`await app.vault.modify(f,c);u++;}`,
+		`return u+' properties renamed ('+s+' skipped).';`,
+	].join("");
+	const args: string[] = [];
+	if (vault) args.push(`vault=${vault}`);
+	args.push("eval", `code=(async function(){${script}})()`);
+	return execObsidian(args, false, timeoutMs).stdout.trim() || "Done.";
+}
+
 function renameTag(from: string, to: string, vault?: string, timeoutMs = 30_000): string {
 	const script = [
 		`const ff=${JSON.stringify(from)},tt=${JSON.stringify(to)};`,
@@ -137,6 +159,106 @@ function renameTag(from: string, to: string, vault?: string, timeoutMs = 30_000)
 		`c='---\\n'+nfm+'\\n---'+c.slice(m[0].length);`,
 		`await app.vault.modify(f,c);u++;}`,
 		`return 'tag-rename: '+u+' updated, '+s+' skipped.';`,
+	].join("");
+	const args: string[] = [];
+	if (vault) args.push(`vault=${vault}`);
+	args.push("eval", `code=(async function(){${script}})()`);
+	return execObsidian(args, false, timeoutMs).stdout.trim() || "Done.";
+}
+
+function searchReplace(
+	query: string,
+	replace: string,
+	flags: { regex?: boolean; preview?: boolean },
+	vault?: string,
+	timeoutMs = 30_000
+): string {
+	const j = JSON.stringify;
+	const useRegex = flags.regex ?? false;
+	const preview = flags.preview ?? false;
+	const script = [
+		`const q=${j(query)},r=${j(replace)};`,
+		`const useRegex=${useRegex};`,
+		`const preview=${preview};`,
+		`let results=[];`,
+		`for(const f of app.vault.getMarkdownFiles()){`,
+		`let c=await app.vault.read(f);`,
+		`let nc=c;`,
+		`if(useRegex){`,
+		`try{const re=new RegExp(q,'g');nc=c.replace(re,r);}`,
+		`catch(e){results.push(f.path+': regex error: '+e.message);continue;}`,
+		`}else{`,
+		`nc=c.split(q).join(r);`,
+		`}`,
+		`if(nc!==c){`,
+		`if(preview){`,
+		`// Show first match context`,
+		`const idx=c.indexOf(q);`,
+		`const start=Math.max(0,idx-40);`,
+		`const end=Math.min(c.length,idx+q.length+40);`,
+		`results.push(f.path+': '+JSON.stringify(c.slice(start,end)));`,
+		`}else{`,
+		`await app.vault.modify(f,nc);`,
+		`results.push(f.path);`,
+		`}`,
+		`}`,
+		`}`,
+		`return results.length+' file(s):\\n'+results.join('\\n');`,
+	].join("");
+	const args: string[] = [];
+	if (vault) args.push(`vault=${vault}`);
+	args.push("eval", `code=(async function(){${script}})()`);
+	return execObsidian(args, false, timeoutMs).stdout.trim() || "No changes.";
+}
+
+function filesMissingProperty(property: string, vault?: string, timeoutMs = 30_000): string {
+	const script = [
+		`const prop=${JSON.stringify(property)};`,
+		`const missing=[];`,
+		`for(const f of app.vault.getMarkdownFiles()){`,
+		`let c=await app.vault.read(f);`,
+		`let m=c.match(/^---\\s*\\n([\\s\\S]*?)\\n---/);`,
+		`if(!m){missing.push(f.path+' (no frontmatter)');continue;}`,
+		`if(!m[1].includes(prop+':'))missing.push(f.path);`,
+		`}`,
+		`if(missing.length===0)return 'All files have "'+prop+'".';`,
+		`return missing.length+' file(s) missing "'+prop+'":\\n'+missing.join('\\n');`,
+	].join("");
+	const args: string[] = [];
+	if (vault) args.push(`vault=${vault}`);
+	args.push("eval", `code=(async function(){${script}})()`);
+	return execObsidian(args, false, timeoutMs).stdout.trim() || "Done.";
+}
+
+function frontmatterWrap(vault?: string, timeoutMs = 30_000): string {
+	const script = [
+		`let u=0,s=0;`,
+		`for(const f of app.vault.getMarkdownFiles()){`,
+		`let c=await app.vault.read(f);`,
+		`// Skip if already has ---`,
+		`if(c.match(/^---\\s*\\n/)){s++;continue;}`,
+		`// Look for YAML frontmatter: starts with title: or tags: at line 0 (after trimming whitespace from start)`,
+		`// Actually check the first non-empty line`,
+		`const lines=c.split('\\n');`,
+		`let firstRealLine=-1;`,
+		`for(let i=0;i<lines.length;i++){if(lines[i].trim()){firstRealLine=i;break;}}`,
+		`if(firstRealLine<0){s++;continue;}`,
+		`const fl=lines[firstRealLine].trim();`,
+		`if(!fl.startsWith('title:')&&!fl.startsWith('tags:')){s++;continue;}`,
+		`// Find where frontmatter ends (before # heading, blank line after YAML content, or ## etc.)`,
+		`let fmEnd=lines.length;`,
+		`let afterFirst=false;`,
+		`for(let i=firstRealLine+1;i<lines.length;i++){`,
+		`const t=lines[i].trim();`,
+		`if(t.startsWith('#')||t.startsWith('---')){fmEnd=i;break;}`,
+		`if(afterFirst&&!t){fmEnd=i;break;}`,
+		`if(t)afterFirst=true;`,
+		`}`,
+		`const fm=lines.slice(firstRealLine,fmEnd).join('\\n');`,
+		`const body=lines.slice(fmEnd).join('\\n');`,
+		`await app.vault.modify(f,'---\\n'+fm+'\\n---\\n'+body);u++;`,
+		`}`,
+		`return u+' files wrapped ('+s+' skipped).';`,
 	].join("");
 	const args: string[] = [];
 	if (vault) args.push(`vault=${vault}`);
@@ -206,9 +328,16 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 			"Boolean flags: permanent, overwrite, total, verbose, inline, silent.",
 			"file= for wikilinks, path= for exact paths.",
 			"Commands: read, create, write, append, prepend, delete, move, rename,",
-			"  search, tags, tag-rename, property:set, properties, tasks, task-create,",
-			"  create-from-template, backlinks, outline, links, daily:*,",
-			"  vault, files, history, diff, templates, eval, bookmarks, plugins.",
+			"  search, tags, tag-rename, property:set, property:rename, properties,",
+			"  tasks, task-create, create-from-template,",
+			"  backlinks, outline, links, daily:*,",
+			"  vault, files, history, diff, templates, eval, bookmarks, plugins,",
+			"  frontmatter:wrap.",
+			"Search with replace: `search query=text replace=new regex=true preview=true`",
+			"Files by missing property: `files missing-property=created`",
+			"Property rename: `property:rename from=date to=created`",
+			"Frontmatter wrap: `frontmatter:wrap`",
+			"search --replace uses preview=true for dry-run; omit to apply.",
 		],
 		parameters: Type.Object({
 			run: Type.String({
@@ -221,12 +350,15 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 			let raw = (p.run as string).trim();
 			if (!raw) throw new Error("'run' is required.");
 			const cmd = raw.split(/\s+/)[0];
-			const timeoutMs = (p.timeout_ms as number) ?? 30_000;
+			const timeoutMs = (p.timeout_ms as number) ?? (flags.timeout_ms ? parseInt(flags.timeout_ms) : 30_000) ?? 30_000;
 			const v = p.vault as string | undefined;
 			const flags = parseFlags(raw);
 
-			// --- files: recursive, root, normal ---
+			// --- files: recursive, root, normal, missing-property ---
 			if (cmd === "files") {
+				if (flags["missing-property"]) {
+					return filesMissingProperty(flags["missing-property"], v, timeoutMs);
+				}
 				const folder = flags.folder ?? "";
 				const isRoot = folder === "/" || folder === "";
 				if (isRoot || raw.includes("recursive")) {
@@ -257,6 +389,24 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 			if (cmd === "tag-rename") {
 				if (!flags.from || !flags.to) throw new Error("'from' and 'to' required.");
 				return renameTag(flags.from, flags.to, v, timeoutMs);
+			}
+
+			// --- property:rename ---
+			if (cmd === "property:rename") {
+				if (!flags.from || !flags.to) throw new Error("'from' and 'to' required.");
+				return propertyRename(flags.from, flags.to, v, timeoutMs);
+			}
+
+			// --- search with replace ---
+			if (cmd === "search" && flags.replace) {
+				const regex = flags.regex === "true" || flags.regex === "1";
+				const preview = flags.preview === "true" || flags.preview === "1";
+				return searchReplace(flags.query || "", flags.replace, { regex, preview }, v, timeoutMs);
+			}
+
+			// --- frontmatter:wrap ---
+			if (cmd === "frontmatter:wrap") {
+				return frontmatterWrap(v, timeoutMs);
 			}
 
 			// --- eval: inline or from note ---
