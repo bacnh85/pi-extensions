@@ -1,21 +1,14 @@
 # pi-deepseek-tools
 
-Improves **OpenCode Go DeepSeek V4** (Flash and Pro) tool selection and fixes common tool-input mistakes in Pi.
+Improves **OpenCode Go DeepSeek V4** (Flash and Pro) tool selection, fixes common tool-input mistakes, and provides context-aware error recovery in Pi.
 
-**Scope:** `opencode-go/deepseek-v4-flash` and `opencode-go/deepseek-v4-pro`. Does not affect direct `deepseek` provider requests, GPT/OpenAI models, or any other provider/model.
+**Scope:** `opencode-go/deepseek-v4-flash` and `opencode-go/deepseek-v4-pro`. Optionally also `deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4-pro` (direct). Never affects GPT/OpenAI or other providers.
 
 The extension does not print prompts, tool schemas, API keys, or response bodies.
 
 ## What it does
 
-**Tool-selection guidance** — Injects concise, model-specific rules before each agent turn when relevant tools are active, so the model:
-- calls exactly one Pi tool name (never invents `read_file`, `search_files`, etc.);
-- prefers Serena semantic tools for code navigation, references, and refactoring;
-- uses `read` after Serena identifies the relevant region, or for docs/config/non-code files;
-- uses `ls`, `grep`, `find`, or `read` for simple file/text work instead of shelling out;
-- uses `bash` only for real commands (tests, builds, git, package-manager, process execution);
-- treats path fields as filesystem paths, never markdown links or auto-links;
-- inspects with the right tool first, then calls `edit`.
+**Tool-selection guidance** — Injects concise, model-specific rules before each agent turn when relevant tools are active.
 
 **Tool-input repair** — Wraps Pi's built-in file/shell tools to fix common recoverable argument mistakes before validation:
 - `null` on optional fields → omitted;
@@ -27,13 +20,17 @@ The extension does not print prompts, tool schemas, API keys, or response bodies
 
 Valid inputs pass through unchanged (except for path auto-link cleanup).
 
-**Reasoning-content stripping** — On multi-turn conversations, `reasoning_content` from previous assistant messages can cause 400 errors with some providers. This extension automatically strips `reasoning_content` from all *previous* assistant messages before each request, preserving the current turn's reasoning. Controlled by `PI_DEEPSEEK_TOOLS_STRIP_REASONING`.
+**Reasoning-content stripping** — On multi-turn conversations, `reasoning_content` from previous assistant messages can cause 400 errors with some providers. This extension automatically strips `reasoning_content` from all *previous* assistant messages before each request, preserving the current turn's reasoning. A lazy pre-check avoids cloning the payload when no prior reasoning exists.
 
-**Error-recovery hints** — When tool calls fail, the next turn receives a hint: "the previous tool call(s) had errors. Use simpler tool inputs and provide all required fields explicitly." This helps the model recover without wasting a turn.
+**Context-aware error recovery** — When a tool call fails, the error is categorized (validation, rate-limit, timeout, tool-not-found, api-error, or unknown) and the next turn receives a targeted recovery hint instead of a generic message. This helps the model self-correct more effectively.
 
-**Optional strict mode** — Set `PI_DEEPSEEK_TOOLS_STRICT_SERENA=1` to block obvious misses (reading code files before Serena, using `bash` where a dedicated Pi tool is active). Strict mode is opt-in because normal workflows sometimes legitimately need `read` or `bash`.
+**Find-misuse interception** — Blocks `find` when the model uses it for a known filename (suggest `read`) or test-file pattern (suggest `bash`). No wasted turns on obvious misuses.
 
-**Debug logging** — Set `PI_DEEPSEEK_TOOLS_DEBUG=1` to see stderr logs at every decision point: model detection, guidance injection, repairs triggered, blocks, errors, and reasoning-content stripping.
+**Optional strict Serena mode** — Set `PI_DEEPSEEK_TOOLS_STRICT_SERENA=1` to block obvious misses (reading code files before Serena, using `bash` where a dedicated Pi tool is active). Strict mode is opt-in because normal workflows sometimes legitimately need `read` or `bash`.
+
+**Status command** — `/deepseek-tools-status` shows current configuration, repair counts, error statistics, and last error category at a glance.
+
+**Structured logging** — `PI_DEEPSEEK_TOOLS_DEBUG=1` emits debug-level logs. Warnings and errors (tool failures, error categories) are always logged to stderr with `[deepseek-tools:warn]` / `[deepseek-tools:error]` prefixes.
 
 ## Scope
 
@@ -53,6 +50,12 @@ Add to `/Users/bacnh/.pi/agent/settings.json`:
 
 Then restart Pi or run `/reload` in an existing session.
 
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `/deepseek-tools-status` | Show current config (env vars), runtime repair/error counts, and last error category. |
+
 ## Environment variables
 
 | Variable | Default | Effect |
@@ -68,15 +71,27 @@ Then restart Pi or run `/reload` in an existing session.
 
 ```
 extensions/
-  index.ts                 — Pi extension entry point: registers hooks and wrapped tools
+  index.ts                 — Pi extension entry point: registers hooks, wrapped tools, and /deepseek-tools-status command
   lib/
-    deepseek-tools.ts      — Model detection, env-var helpers, path heuristics, guidance generation
+    deepseek-tools.ts      — Model detection, env-var helpers, path heuristics, guidance generation,
+                             error categorization
     tool-input-repair.ts   — Schema-aware argument repair (6 repair kinds)
     reasoning-content.ts   — Strip reasoning_content from provider request payloads
-    logger.ts              — Conditional stderr debug logging
-  test/unit/               — Mocha + tsx unit tests
+    logger.ts              — Level-aware stderr logging (info, warn, error, debug)
+  test/unit/               — Mocha + tsx unit tests (63 tests)
   scripts/                 — Eval harnesses for tool-selection accuracy and repair coverage
 ```
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| Guidance not injected | `PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE=0` | Unset or set to `1` |
+| Reasoning 400 errors | Provider rejects `reasoning_content` on any message | Set `PI_DEEPSEEK_TOOLS_STRIP_REASONING=0` |
+| Tool calls still fail | Model omits required fields entirely | Repair handles structure mismatches but not missing required fields — set `PI_DEEPSEEK_TOOLS_DEBUG=1` and check stderr for repair details |
+| `deepseek` provider not matched | Direct DeepSeek support is opt-in | Set `PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK=1` |
+| Excessive reminder messages | Model consistently mis-selects tools | Set `PI_DEEPSEEK_TOOLS_STRICT_SERENA=1` to block instead of remind |
+| `/deepseek-tools-status` not found | Extension not loaded | Check settings.json and run `/reload` |
 
 ## Known Limitations
 

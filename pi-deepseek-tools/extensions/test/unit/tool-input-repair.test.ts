@@ -27,6 +27,7 @@ function createFakePi(activeTools: string[] = ["read", "write", "edit", "grep", 
 		registerTool(tool: any) {
 			tools[tool.name] = tool;
 		},
+		registerCommand() {},
 	} as any;
 
 	extension(pi);

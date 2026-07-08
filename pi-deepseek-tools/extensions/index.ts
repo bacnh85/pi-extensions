@@ -25,10 +25,13 @@ import {
 	repairEnabled,
 	isDeepSeekV4ModelByModel,
 	DEEPSEEK_V4_FLASH_MODEL,
+	categorizeToolError,
+	directDeepSeekEnabled,
+	type ErrorInfo,
 } from "./lib/deepseek-tools";
 import { repairDeepSeekToolArguments, type RepairKind } from "./lib/tool-input-repair";
 import { stripReasoningContent, clonePayload } from "./lib/reasoning-content";
-import { debugLog } from "./lib/logger";
+import { debugLog, logWarn } from "./lib/logger";
 
 export {
 	DEEPSEEK_V4_PRO_MODEL,
@@ -43,6 +46,12 @@ export {
 	selectionGuidanceEnabled,
 	strictSerenaEnabled,
 };
+
+export {
+	categorizeToolError,
+	type ErrorInfo,
+	type ErrorCategory,
+} from "./lib/deepseek-tools";
 
 function addReadDefaults(args: unknown): unknown {
 	if (!isRecord(args)) return args;
@@ -100,7 +109,38 @@ export default function (pi: ExtensionAPI) {
 	let remindedThisTurn = false;
 	let repairThisTurn = false;
 	let hasErrorThisTurn = false;
+	let lastErrorInfo: ErrorInfo | null = null;
 	const repairCounts = new Map<string, number>();
+	const errorCounts = new Map<string, number>();
+
+	pi.registerCommand("deepseek-tools-status", {
+		description: "Show pi-deepseek-tools configuration and statistics.",
+		handler: async (_args, cmdCtx) => {
+			const lines: string[] = ["## pi-deepseek-tools status"];
+			lines.push("");
+			lines.push("**Configuration (env):**");
+			lines.push(`  Selection guidance: ${selectionGuidanceEnabled() ? "on" : "off"}`);
+			lines.push(`  Strict Serena mode: ${strictSerenaEnabled() ? "on" : "off"}`);
+			lines.push(`  Reasoning strip: ${reasoningStripEnabled() ? "on" : "off"}`);
+			lines.push(`  Tool-input repair: ${repairEnabled() ? "on" : "off"}`);
+			lines.push(`  Direct DeepSeek: ${directDeepSeekEnabled() ? "on" : "off"}`);
+			lines.push(`  Debug logging: ${/^(1|true|yes|on)$/i.test(process.env.PI_DEEPSEEK_TOOLS_DEBUG ?? "") ? "on" : "off"}`);
+			lines.push("");
+			lines.push("**Runtime state:**");
+			const totalRepairs = [...repairCounts.values()].reduce((a, b) => a + b, 0);
+			lines.push(`  Total tool-input repairs: ${totalRepairs}`);
+			for (const [tool, count] of [...repairCounts.entries()].sort((a, b) => b[1] - a[1])) {
+				lines.push(`    ${tool}: ${count}`);
+			}
+			const totalErrors = [...errorCounts.values()].reduce((a, b) => a + b, 0);
+			lines.push(`  Total tool errors: ${totalErrors}`);
+			for (const [tool, count] of [...errorCounts.entries()].sort((a, b) => b[1] - a[1])) {
+				lines.push(`    ${tool}: ${count}`);
+			}
+			lines.push(`  Last error category: ${lastErrorInfo?.category ?? "none"}`);
+			cmdCtx.ui.notify(lines.join("\n"), "info");
+		},
+	});
 
 	pi.on("session_start", (_event, ctx) => {
 		const builtins = [
@@ -136,7 +176,10 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_execution_end", (event, _ctx) => {
 		if (!event.isError) return;
 		hasErrorThisTurn = true;
-		debugLog("tool error:", event.toolName, event.toolCallId, event.result ? String(event.result).slice(0, 200) : "no result");
+		errorCounts.set(event.toolName, (errorCounts.get(event.toolName) ?? 0) + 1);
+		lastErrorInfo = categorizeToolError(event.toolName, event.result);
+		logWarn(event.toolName, event.toolCallId, lastErrorInfo.category,
+			event.result ? String(event.result).slice(0, 200) : "no result");
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
@@ -149,8 +192,12 @@ export default function (pi: ExtensionAPI) {
 
 		let systemPrompt = event.systemPrompt;
 
-		// Inject error-recovery hint if the previous turn had tool failures
-		if (hasErrorThisTurn) {
+		// Inject context-aware error-recovery hint if the previous turn had tool failures
+		if (hasErrorThisTurn && lastErrorInfo) {
+			systemPrompt = `${systemPrompt}\n\nNote: ${lastErrorInfo.hint}`;
+			hasErrorThisTurn = false;
+			lastErrorInfo = null;
+		} else if (hasErrorThisTurn) {
 			systemPrompt = `${systemPrompt}\n\nNote: the previous tool call(s) had errors. Use simpler tool inputs and provide all required fields explicitly.`;
 			hasErrorThisTurn = false;
 		}

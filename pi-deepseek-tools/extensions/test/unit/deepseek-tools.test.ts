@@ -23,6 +23,7 @@ import {
 	directDeepSeekEnabled,
 	repairEnabled,
 	isDeepSeekV4ModelByModel,
+	categorizeToolError,
 } from "../../lib/deepseek-tools";
 
 function createFakePi(activeTools: string[]) {
@@ -38,6 +39,7 @@ function createFakePi(activeTools: string[]) {
 		sendMessage(message: unknown, options: unknown) {
 			messages.push({ message, options });
 		},
+		registerCommand() {},
 	} as any;
 
 	extension(pi);
@@ -348,5 +350,42 @@ describe("extension runtime scoping", () => {
 		assert.equal(result.block, true);
 		assert.match(result.reason, /use bash instead of find/i);
 		assert.equal(m.length, 0);
+	});
+});
+
+describe("error categorization", () => {
+	it("detects rate limit errors", () => {
+		const info = categorizeToolError("bash", "429 Too Many Requests");
+		assert.equal(info.category, "rate_limit");
+		assert.match(info.hint, /rate-limited/i);
+	});
+
+	it("detects timeout errors", () => {
+		const info = categorizeToolError("read", "timed out after 30000ms");
+		assert.equal(info.category, "timeout");
+		assert.match(info.hint, /timed out|timeout/i);
+	});
+
+	it("detects validation errors", () => {
+		const info = categorizeToolError("edit", "Validation failed: missing required field 'oldText'");
+		assert.equal(info.category, "validation");
+		assert.match(info.hint, /required fields/i);
+	});
+
+	it("detects tool-not-found errors", () => {
+		const info = categorizeToolError("read_file", "Tool read_file is not a function");
+		assert.equal(info.category, "tool_not_found");
+		assert.match(info.hint, /never invent tool names/i);
+	});
+
+	it("falls back to unknown for unrecognized errors", () => {
+		const info = categorizeToolError("bash", "something unexpected happened");
+		assert.equal(info.category, "unknown");
+		assert.match(info.hint, /simpler tool inputs/i);
+	});
+
+	it("handles null/undefined error result", () => {
+		const info = categorizeToolError("bash", null);
+		assert.equal(info.category, "unknown");
 	});
 });

@@ -182,3 +182,43 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 
 	return parts.join("\n");
 }
+
+// ────────────────────────────────────────────────────────
+// Error categorization for context-aware recovery hints
+// ────────────────────────────────────────────────────────
+
+export type ErrorCategory = "validation" | "tool_not_found" | "rate_limit" | "timeout" | "api_error" | "unknown";
+
+export interface ErrorInfo {
+	category: ErrorCategory;
+	hint: string;
+	toolName: string;
+}
+
+/**
+ * Categorize a tool-error result into a specific category and produce
+ * a targeted recovery hint for the next turn.
+ */
+export function categorizeToolError(toolName: string, errorResult: unknown): ErrorInfo {
+	const text = String(errorResult ?? "").toLowerCase();
+
+	if (/rate limit|429|too many requests|exceeded.*limit/i.test(text)) {
+		return { category: "rate_limit", toolName, hint: "The previous tool call was rate-limited. Wait before retrying or simplify the request to reduce API consumption." };
+	}
+	if (/timed? ?out|timeout/i.test(text)) {
+		return { category: "timeout", toolName, hint: "The previous tool call timed out. Use simpler inputs, reduce the scope of the operation, or try a different approach." };
+	}
+	if (/validation failed|invalid_type|required|missing.*(field|argument|property)/i.test(text)) {
+		return { category: "validation", toolName, hint: "The tool call had invalid arguments. Provide all required fields with correct types — strings for text values, arrays for list values, and valid file paths." };
+	}
+	if (/not found|no such tool|unknown tool|is not a function/i.test(text)) {
+		return { category: "tool_not_found", toolName, hint: "Use only the exact Pi tool names provided to you. Never invent tool names like read_file or search_files." };
+	}
+	if (/4\d{2}|5\d{2}/i.test(text)) {
+		return { category: "api_error", toolName, hint: `The tool call to ${toolName} failed. Retry with simpler inputs and ensure all fields are present.` };
+	}
+
+	return { category: "unknown", toolName, hint: "The previous tool call(s) had errors. Use simpler tool inputs and provide all required fields explicitly." };
+}
+
+
