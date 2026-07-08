@@ -4,6 +4,7 @@ import { expect } from "chai";
 import {
 	formatSearchResults,
 	formatTasks,
+	formatTasksFiltered,
 	formatTags,
 	formatLinks,
 	formatOutline,
@@ -34,6 +35,26 @@ describe("formatSearchResults", () => {
 		expect(output).to.include("Journal/2024-01-15.md");
 		expect(output).to.include("team standup");
 	});
+
+	it("groups search results by file", () => {
+		const results = [
+			{ file: "Note A", matches: [{ line: 1, text: "hello" }, { line: 5, text: "world" }] },
+			{ file: "Note B", matches: [{ line: 3, text: "foo" }] },
+		];
+		const output = formatSearchResults(results, true);
+		expect(output).to.include("### Note A");
+		expect(output).to.include("### Note B");
+		expect(output).to.include("line 1: hello");
+		expect(output).to.include("line 5: world");
+		expect(output).to.include("line 3: foo");
+	});
+
+	it("formats string-only results", () => {
+		const results = ["path/to/file1.md", "path/to/file2.md"];
+		const output = formatSearchResults(results);
+		expect(output).to.include("path/to/file1.md");
+		expect(output).to.include("path/to/file2.md");
+	});
 });
 
 describe("formatTasks", () => {
@@ -46,6 +67,72 @@ describe("formatTasks", () => {
 		expect(output).to.include("[ ] Buy groceries");
 		expect(output).to.include("[x] Done task");
 		expect(output).to.include("todo.md:5");
+	});
+
+	it("handles completed boolean", () => {
+		const tasks = [
+			{ text: "Done task", completed: true },
+		];
+		const output = formatTasks(tasks);
+		expect(output).to.include("[x] Done task");
+	});
+
+	it("groups tasks by file", () => {
+		const tasks = [
+			{ status: " ", text: "Task A", filename: "file1.md" },
+			{ status: " ", text: "Task B", filename: "file1.md" },
+			{ status: "x", text: "Task C", filename: "file2.md" },
+		];
+		const output = formatTasks(tasks, true);
+		expect(output).to.include("### file1.md");
+		expect(output).to.include("### file2.md");
+		expect(output).to.include("Task A");
+		expect(output).to.include("Task B");
+		expect(output).to.include("Task C");
+	});
+
+	it("returns empty message for empty array", () => {
+		expect(formatTasks([])).to.equal("No tasks found.");
+	});
+
+	it("returns empty message for null", () => {
+		expect(formatTasks(null)).to.equal("No tasks found.");
+	});
+});
+
+describe("formatTasksFiltered", () => {
+	it("filters to open tasks only", () => {
+		const tasks = [
+			{ status: " ", text: "Open" },
+			{ status: "x", text: "Done" },
+			{ text: "Also open", status: " " },
+		];
+		const output = formatTasksFiltered(tasks, "open");
+		expect(output).to.include("Open");
+		expect(output).to.include("Also open");
+		expect(output).not.to.include("Done");
+	});
+
+	it("filters to done tasks only", () => {
+		const tasks = [
+			{ status: " ", text: "Open" },
+			{ status: "x", text: "Done" },
+			{ text: "Also done", completed: true },
+		];
+		const output = formatTasksFiltered(tasks, "done");
+		expect(output).to.include("Done");
+		expect(output).to.include("Also done");
+		expect(output).not.to.include("Open");
+	});
+
+	it("returns all tasks with 'all' filter", () => {
+		const tasks = [
+			{ status: " ", text: "Open" },
+			{ status: "x", text: "Done" },
+		];
+		const output = formatTasksFiltered(tasks, "all");
+		expect(output).to.include("Open");
+		expect(output).to.include("Done");
 	});
 });
 

@@ -2,7 +2,7 @@
  * Generic list formatter for obsidian CLI JSON output.
  * Each item is mapped through `fn(item)` and joined by newlines.
  */
-function formatList(items: unknown, fn: (item: Record<string, unknown>) => string, emptyMsg = ""): string {
+export function formatList(items: unknown, fn: (item: Record<string, unknown>) => string, emptyMsg = ""): string {
 	const arr = Array.isArray(items) ? items : [];
 	if (arr.length === 0) return emptyMsg;
 	return arr.map((item: any) => fn(item as Record<string, unknown>)).join("\n");
@@ -15,59 +15,120 @@ function formatList(items: unknown, fn: (item: Record<string, unknown>) => strin
  * - array of { file, matches } objects (search:context)
  * - array of { filename, match } objects (legacy)
  */
-export function formatSearchResults(parsed: unknown): string {
+export function formatSearchResults(parsed: unknown, groupByFile = false): string {
 	if (!parsed) return "No results found.";
 	const arr = Array.isArray(parsed) ? parsed : [parsed];
 	if (arr.length === 0) return "No results found.";
+
+	// Group by file when requested
+	if (groupByFile) {
+		const groups = new Map<string, string[]>();
+		for (const item of arr) {
+			if (typeof item === "string") {
+				const file = item;
+				if (!groups.has(file)) groups.set(file, []);
+				continue;
+			}
+			const map = item as Record<string, unknown>;
+			const file = String(map.file ?? map.filename ?? map.path ?? map.name ?? "(unknown)");
+			if (!groups.has(file)) groups.set(file, []);
+			const matches = map.matches as Array<{ line?: number; text?: string }> | undefined;
+			if (matches && Array.isArray(matches) && matches.length > 0) {
+				for (const m of matches) {
+					groups.get(file)!.push(`  line ${m.line ?? "?"}: ${(m.text ?? "").trim()}`);
+				}
+			} else {
+				const excerpt = String(map.match ?? map.excerpt ?? "");
+				if (excerpt) groups.get(file)!.push(`    ${excerpt.replace(/\n/g, "\n    ")}`);
+			}
+		}
+		const lines: string[] = [];
+		for (const [file, hits] of [...groups.entries()].sort()) {
+			lines.push(`\n### ${file}`);
+			lines.push(...hits);
+		}
+		return lines.length > 0 ? lines.join("\n").trim() : "No results found.";
+	}
+
 	return arr.map((item: unknown): string => {
 		if (typeof item === "string") {
 			return item;
 		}
 		const map = item as Record<string, unknown>;
 		const name = String(map.file ?? map.filename ?? map.path ?? map.name ?? "(unknown)");
-		// search:context format has { file, matches: [{ line, text }] }
 		const matches = map.matches as Array<{ line?: number; text?: string }> | undefined;
 		if (matches && Array.isArray(matches) && matches.length > 0) {
 			const lines = matches.map((m) => `  line ${m.line ?? "?"}: ${(m.text ?? "").trim()}`).join("\n");
 			return `${name}\n${lines}`;
 		}
-		// Legacy format with filename + match
 		const excerpt = String(map.match ?? map.excerpt ?? "");
 		if (excerpt) return `${name}\n    ${excerpt.replace(/\n/g, "\n    ")}`;
 		return name;
 	}).join("\n");
 }
 
-/**
- * Search with context (uses search:context CLI command).
- */
-export function formatSearchContext(parsed: unknown): string {
-	if (!parsed) return "No results found.";
-	const arr = Array.isArray(parsed) ? parsed : [parsed];
-	if (arr.length === 0) return "No results found.";
-	return arr.map((item: unknown): string => {
-		const map = item as Record<string, unknown>;
-		const name = String(map.file ?? "(unknown)");
-		const matches = map.matches as Array<{ line?: number; text?: string }> | undefined;
-		if (!matches || !Array.isArray(matches) || matches.length === 0) return name;
-		const lines = matches.map((m) => `  L${m.line ?? "?"}: ${(m.text ?? "").trim()}`).join("\n");
-		return `${name}\n${lines}`;
-	}).join("\n");
+function taskPrefix(status: string, completed?: boolean): string {
+	if (completed === true) return "[x]";
+	if (status === " " || status === "" || status === undefined) return "[ ]";
+	if (status === "x") return "[x]";
+	return `[${status}]`;
 }
 
 /**
- * Format tasks list.
+ * Format tasks list — optionally grouped by file.
+ * Pass `_groupByFile: true` in any task item to trigger grouping.
  */
-export function formatTasks(parsed: unknown): string {
-	return formatList(parsed, (t) => {
-		const status = (t.status ?? t.completed ?? "") as string;
-		const text = (t.text ?? t.content ?? "") as string;
-		const file = (t.filename ?? t.path ?? "") as string;
-		const line = (t.line ?? "") as string;
-		const location = file ? (line ? `${file}:${line}` : file) : "";
-		const prefix = status === " " ? "[ ]" : status === "x" ? "[x]" : `[${status}]`;
-		return `${prefix} ${text}${location ? ` — ${location}` : ""}`;
-	}, "No tasks found.");
+export function formatTasks(parsed: unknown, groupByFile = false): string {
+	if (!parsed || !Array.isArray(parsed) || parsed.length === 0) return "No tasks found.";
+
+	if (!groupByFile) {
+		return formatList(parsed, (t) => {
+			const status = (t.status ?? "") as string;
+			const text = (t.text ?? t.content ?? "") as string;
+			const file = (t.filename ?? t.path ?? "") as string;
+			const line = (t.line ?? "") as string;
+			const location = file ? (line ? `${file}:${line}` : file) : "";
+			const prefix = taskPrefix(status, t.completed as boolean | undefined);
+			return `${prefix} ${text}${location ? ` — ${location}` : ""}`;
+		}, "No tasks found.");
+	}
+
+	// Grouped by file
+	const groups = new Map<string, Array<Record<string, unknown>>>();
+	for (const t of parsed as Array<Record<string, unknown>>) {
+		const file = (t.filename ?? t.path ?? "(unknown)") as string;
+		if (!groups.has(file)) groups.set(file, []);
+		groups.get(file)!.push(t);
+	}
+
+	const lines: string[] = [];
+	for (const [file, tasks] of [...groups.entries()].sort()) {
+		lines.push(`\n### ${file}`);
+		for (const t of tasks) {
+			const status = (t.status ?? "") as string;
+			const text = (t.text ?? t.content ?? "") as string;
+			const line = (t.line ?? "") as string;
+			const prefix = taskPrefix(status, t.completed as boolean | undefined);
+			lines.push(`${prefix} ${text}${line ? ` (line ${line})` : ""}`);
+		}
+	}
+	return lines.length > 0 ? lines.join("\n") : "No tasks found.";
+}
+
+/**
+ * Filter tasks by status and return formatted grouped output.
+ */
+export function formatTasksFiltered(parsed: unknown, status?: "open" | "done" | "all"): string {
+	if (!parsed || !Array.isArray(parsed)) return "No tasks found.";
+
+	const filtered = (parsed as Array<Record<string, unknown>>).filter(t => {
+		if (!status || status === "all") return true;
+		const isDone = (t.status === "x" || t.completed === true);
+		return status === "done" ? isDone : !isDone;
+	});
+
+	// ponytail: reuse grouped formatter
+	return formatTasks(filtered, true);
 }
 
 /**
@@ -89,7 +150,7 @@ export function formatLinks(parsed: unknown, label = "Links"): string {
  */
 export function formatOutline(parsed: unknown): string {
 	if (!parsed || (Array.isArray(parsed) && parsed.length === 0)) return "(no headings)";
-	const tree = parsed as Array<{ level?: number; heading?: string; children?: unknown[] }>;
+	const tree = parsed as Array<{ level?: number; heading?: string; text?: string; children?: unknown[] }>;
 	const lines: string[] = [];
 	function walk(items: typeof tree, depth = 0) {
 		for (const item of items) {
@@ -132,10 +193,14 @@ export function formatOutgoingLinks(parsed: unknown): string {
 export function formatFileInfo(parsed: unknown): string {
 	const info = parsed as Record<string, unknown> | null;
 	if (!info) return "(no file info)";
-	return Object.entries(info)
-		.filter(([_, v]) => v !== undefined && v !== null)
-		.map(([k, v]) => `  ${k}: ${v}`)
-		.join("\n");
+	// Single file — show as key: value
+	if (typeof info === "object" && !Array.isArray(info)) {
+		return Object.entries(info)
+			.filter(([_, v]) => v !== undefined && v !== null)
+			.map(([k, v]) => `  ${k}: ${v}`)
+			.join("\n");
+	}
+	return String(parsed);
 }
 
 /**

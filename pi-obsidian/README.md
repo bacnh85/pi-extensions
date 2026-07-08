@@ -1,6 +1,6 @@
-# pi-obsidian v0.3
+# pi-obsidian v0.4
 
-Pi extension for **Obsidian vault tools** — a single unified tool that runs any Obsidian CLI command: read, write, create, search, delete, move, rename, tasks, properties, history, daily notes, templates, and more.
+Pi extension for **Obsidian vault tools** — a single unified tool that runs any Obsidian CLI command: read, write, create, search, delete, move, rename, append, prepend, tasks, properties, history, daily notes, templates, and more. Plus **enhanced operations** like recursive file listing, task creation, task filtering/grouping, and template-based note creation.
 
 **~6,500 fewer tokens per request** vs 43 separate tools (1.6K vs 8.1K).
 
@@ -34,13 +34,12 @@ One tool: `obsidian` with a `run` parameter containing the full CLI command.
 obsidian run="read file=Meeting Notes" vault="My Vault"
 ```
 
-### Common commands
+### Standard CLI commands
 
 | Category | Example |
 |----------|---------|
 | **Read** | `read file="Meeting Notes"` |
 | **Create** | `create path=folder/note.md overwrite=true content="# Title\n\nBody"` |
-| **Write** (create+overwrite) | Same as `create` with `overwrite=true` |
 | **Append** | `append path=note.md content="More text"` |
 | **Prepend** | `prepend path=note.md content="# Header"` |
 | **Delete** | `delete path=old.md permanent=true` |
@@ -49,26 +48,39 @@ obsidian run="read file=Meeting Notes" vault="My Vault"
 | **Search** | `search query=roadmap limit=10` |
 | **Tags** | `tags counts=true sort=count format=json` |
 | **Tag** | `tag name="#type/reference" verbose` |
-| **Tasks** | `tasks format=json` |
-| **Task** | `task file=todo.md line=12 done` |
 | **Properties** | `property:set file=Note name=status value=active` |
 | **Daily note** | `daily:read`, `daily:append content="- [ ] Task"` |
 | **Backlinks** | `backlinks file=Note format=json` |
-| **Outline** | `outline file=Note format=json` |
+| **Outline** | `outline file=Note` |
 | **History** | `history file=Note`, `diff file=Note from=1 to=3` |
-| **Vault info** | `vault`, `vaults`, `files folder="01 Projects"` |
+| **Vault info** | `vault` |
+| **Files** | `files folder="01 Projects"` |
+
+### Enhanced commands
+
+These are post-processed by the extension for richer output:
+
+| Command | Example | What it does |
+|---------|---------|-------------|
+| **Recursive files** | `files folder="01 Projects" recursive` | Recursively list all files under a folder by traversing subfolders |
+| **Tasks grouped** | `tasks format=json group=file` | Lists all tasks grouped by source file |
+| **Tasks filtered** | `tasks format=json status=open` | Lists only open (`[ ]`) or done (`[x]`) tasks |
+| **Tasks filtered+grouped** | `tasks format=json group=file status=done` | Done tasks grouped by file |
+| **Search grouped** | `search query=roadmap group=file` | Search results grouped by file with line numbers |
+| **Task creation** | `task-create path=note.md heading="Tasks" text="Buy milk"` | Adds a task line under the specified heading; creates the heading if missing |
+| **Create from template** | `create-from-template template="Project Brief" name="My Project" folder="01 Projects" title="..."` | Reads a template, fills `{{placeholder}}` values, writes a new note |
 
 ### Syntax rules
 
 - **Quote values with spaces:** `file="My Note"`, `query="search phrase"`
-- **Boolean flags:** `permanent`, `overwrite`, `total`, `silent`, `inline`, `verbose`
+- **Boolean flags:** `permanent`, `overwrite`, `total`, `silent`, `inline`, `verbose`, `recursive`
 - **For JSON output:** add `format=json` flag
 - **Target a vault:** add `vault="Vault Name"` to any command
 - **Multiline content:** use `\n` for newlines, `\t` for tabs
 
 ## How it works
 
-Previously this extension registered 43 separate tools (`obsidian_read`, `obsidian_create`, `obsidian_search`, etc.), consuming ~8,122 tokens per request. Now it registers a single `obsidian` tool that parses the `run` string and dispatches to the Obsidian CLI directly. All 23 tests pass.
+Previously this extension registered 43 separate tools (`obsidian_read`, `obsidian_create`, `obsidian_search`, etc.), consuming ~8,122 tokens per request. v0.3 consolidated to a single `obsidian` tool that parses the `run` string and dispatches to the Obsidian CLI. v0.4 adds post-processing for recursive file listing, task filtering/grouping, task creation, and template-based note creation — all through the same unified tool.
 
 ## License
 
