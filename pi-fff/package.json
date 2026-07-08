@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-fff",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Pi extension: FFF-powered fuzzy file and content search.",
   "type": "module",
   "license": "MIT",

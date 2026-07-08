@@ -757,7 +757,7 @@ export default function fffExtension(pi: ExtensionAPI) {
       "Exact match: glob in `path` like '**/profile.h'. Bare patterns are fuzzy.",
       "List dir: path: 'dir/**' with empty/wildcard pattern.",
       "exclude: 'test/,*.min.js' to cut noise.",
-    ]
+    ],
     parameters: findSchema,
 
     async execute(_toolCallId, params, signal) {
