@@ -80,141 +80,14 @@ function parseFlags(s: string): Record<string, string> {
 	return flags;
 }
 
-// ---------------------------------------------------------------------------
-// Fix B1/B6: Pre-process run string to escape bare " in content/code values
-// ---------------------------------------------------------------------------
-
-/**
- * Before parsing, escape bare double quotes inside known multi-line parameters
- * (content=, code=). This prevents truncation when the value contains unescaped ".
- *
- * Strategy: find `param="` then walk char by char counting escapes until we find
- * the matching closing `"`, escaping any bare `"` along the way.
- */
-function preprocessArgValue(raw: string, param: string): string {
-	const pattern = `${param}=`;
-	let result = "";
-	let i = 0;
-	while (i < raw.length) {
-		const idx = raw.indexOf(pattern, i);
-		if (idx < 0) { result += raw.slice(i); break; }
-		result += raw.slice(i, idx + pattern.length);
-		i = idx + pattern.length;
-
-		// Value must start with quote to need escaping
-		if (i >= raw.length || raw[i] !== '"') continue;
-		result += '"';
-		i++;
-
-		// Walk the quoted value, escaping bare " to \"
-		while (i < raw.length) {
-			if (raw[i] === '\\' && i + 1 < raw.length && (raw[i + 1] === '"' || raw[i + 1] === '\\')) {
-				result += raw[i] + raw[i + 1];
-				i += 2;
-			} else if (raw[i] === '"') {
-				// Check if this is the closing quote or a bare quote inside
-				// Peek ahead: if followed by space, end of param, or ) it's closing
-				const next = raw[i + 1];
-				if (next === undefined || next === ' ' || next === '\t' || next === '\n' || next === ')' || next === ']') {
-					result += '"';
-					i++;
-					break;
-				}
-				// Bare quote inside content — escape it
-				result += '\\"';
-				i++;
-			} else {
-				result += raw[i];
-				i++;
-			}
-		}
-	}
-	return result;
-}
-
-function preprocessRunString(raw: string): string {
-	let s = raw;
-	// ponytail: handle content= and code= — the two params that carry arbitrary text
-	s = preprocessArgValue(s, "content");
-	s = preprocessArgValue(s, "code");
-	return s;
-}
-
-// ---------------------------------------------------------------------------
-// Fix B2: Helpers for handling array values in property:set
-// ---------------------------------------------------------------------------
-
-/** Check if a string looks like a JSON array `[...]`. */
-function looksLikeArray(s: string): boolean {
-	const t = s.trim();
-	return t.startsWith("[") && t.endsWith("]");
-}
-
-/** Parse tokens that may be split across args (e.g. property value with spaces). */
-function joinPropertyValue(cmd: string, args: string[], startIdx: number): string[] {
-	// For property:set, the value= param may have been split. Rejoin segments.
-	if (cmd !== "property:set") return args;
-
-	const result: string[] = [];
-	let valAccum: string[] | null = null;
-
-	for (const a of args) {
-		if (a.startsWith("value=") || valAccum !== null) {
-			if (valAccum === null) {
-				valAccum = [a.substring(6)]; // strip "value="
-			} else {
-				valAccum.push(a);
-			}
-			// Heuristic: value is complete when it ends with ] or is the last arg
-			if (a.endsWith("]") || a === args[args.length - 1]) {
-				const joined = valAccum.join(" ");
-				result.push(`value=${joined}`);
-				valAccum = null;
-			}
-		} else {
-			result.push(a);
-		}
-	}
-	return result;
-}
-
-// ---------------------------------------------------------------------------
-// Fix B3: Ensure parent directory exists before create
-// ---------------------------------------------------------------------------
-
-function ensureFolderExists(path: string, vault?: string, timeoutMs = 30_000): void {
-	const parts = path.replace(/\\/g, "/").split("/");
-	if (parts.length <= 1) return;
-	const folderPath = parts.slice(0, -1).join("/");
-	// Check if parent folder exists via files listing
-	const checkArgs: string[] = [];
-	if (vault) checkArgs.push(`vault=${vault}`);
-	checkArgs.push("files", `folder=${folderPath}`, "format=json");
-	try {
-		execObsidian(checkArgs, false, timeoutMs);
-	} catch {
-		// Folder doesn't exist — create it with the Obsidian CLI
-		// ponytail: mkdir via creating a dummy file and deleting it is fragile;
-		// use eval to create the folder via the Obsidian API instead
-		const createArgs: string[] = [];
-		if (vault) createArgs.push(`vault=${vault}`);
-		// The CLI doesn't have native mkdir; try to create the path
-		// by writing an empty file — the CLI may create folders implicitly
-		const dummyPath = `${folderPath}/.mkdir`;
-		const writeArgs: string[] = [];
-		if (vault) writeArgs.push(`vault=${vault}`);
-		writeArgs.push("create", `path=${dummyPath}`, "overwrite=true", 'content=""');
-		try {
-			execObsidian(writeArgs, false, timeoutMs);
-			// Clean up the dummy file
-			const delArgs: string[] = [];
-			if (vault) delArgs.push(`vault=${vault}`);
-			delArgs.push("delete", `path=${dummyPath}`, "permanent=true");
-			execObsidian(delArgs, false, timeoutMs);
-		} catch {
-			// Give up — let the create command fail with a clear error
-		}
-	}
+// ponytail: create parent folder via Obsidian CLI eval, 1 line
+function ensureFolder(path: string, vault?: string, timeoutMs = 30_000): void {
+	const parent = path.replace(/\\/g, "/").split("/").slice(0, -1).join("/");
+	if (!parent) return;
+	const args: string[] = [];
+	if (vault) args.push(`vault=${vault}`);
+	args.push("eval", `code=app.vault.getAbstractFileByPath(${JSON.stringify(parent)})?true:app.vault.createFolder(${JSON.stringify(parent)},true)`);
+	execObsidian(args, false, timeoutMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -294,13 +167,7 @@ function createTaskInNote(
 	return `Added task "${taskText}" under heading "${heading}".`;
 }
 
-/** Read a vault note's content and return it. Used by content_from and eval file=. */
-function readNoteContent(notePath: string, vault?: string, timeoutMs = 30_000): string {
-	const args: string[] = [];
-	if (vault) args.push(`vault=${vault}`);
-	args.push("read", `path=${notePath}`);
-	return execObsidian(args, false, timeoutMs).stdout;
-}
+
 
 /** Create a note from a template with frontmatter values filled in. */
 function createFromTemplate(
@@ -332,139 +199,31 @@ function escapeCliValue(s: string): string {
 		.replace(/\t/g, "\\t");
 }
 
-// ---------------------------------------------------------------------------
-// Fix B5: tag-rename command
-// ---------------------------------------------------------------------------
-
+// ponytail: renameTag via Obsidian eval — 15 lines, not 140
 function renameTag(from: string, to: string, vault?: string, timeoutMs = 30_000): string {
-	const args: string[] = [];
-	if (vault) args.push(`vault=${vault}`);
-	args.push("tags", "format=json");
-	const r = execObsidian(args, false, timeoutMs);
-	if (!r.parsed || !Array.isArray(r.parsed)) return "No tags found.";
-
-	const tagMap = new Map<string, number>();
-	for (const t of r.parsed as Array<{ tag?: string; count?: number }>) {
-		const tag = t.tag ?? "";
-		if (tag === from || tag === to) tagMap.set(tag, t.count ?? 1);
-	}
-
-	if (!tagMap.has(from)) return `Tag "${from}" not found in vault.`;
-
-	// Get all files with the old tag
-	const findArgs: string[] = [];
-	if (vault) findArgs.push(`vault=${vault}`);
-	findArgs.push("tag", `name=${from}`, "verbose", "format=json");
-	const findR = execObsidian(findArgs, false, timeoutMs);
-	const files = (findR.parsed as Array<{ filename?: string }> | null) ?? [];
-
-	if (files.length === 0) return `No files found with tag "${from}".`;
-
-	let updated = 0;
-	let skipped = 0;
-
-	for (const f of files) {
-		const filePath = f.filename ?? "";
-		if (!filePath) { skipped++; continue; }
-
-		// Read the file
-		const readArgs2: string[] = [];
-		if (vault) readArgs2.push(`vault=${vault}`);
-		readArgs2.push("read", `path=${filePath}`);
-		const readR2 = execObsidian(readArgs2, false, timeoutMs);
-		const content = readR2.stdout;
-		const original = content;
-
-		// Find frontmatter
-		const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
-		if (!fmMatch) { skipped++; continue; }
-		const fm = fmMatch[1];
-
-		// Find tags line
-		const lines = fm.split("\n");
-		let tagLineIdx = -1;
-		for (let li = 0; li < lines.length; li++) {
-			if (lines[li].trim().startsWith("tags:")) { tagLineIdx = li; break; }
-		}
-		if (tagLineIdx < 0) { skipped++; continue; }
-
-		let modified = false;
-
-		// Handle inline array: tags: ["a", "b"]
-		const inlineMatch = fm.match(/^tags:\s*\[([\s\S]*?)\]\s*$/m);
-		if (inlineMatch) {
-			const raw = inlineMatch[1];
-			const parts: string[] = [];
-			let cur = "";
-			let inQ = false;
-			const q = '"';
-			for (let ci = 0; ci < raw.length; ci++) {
-				const ch = raw[ci];
-				if (ch === q) { inQ = !inQ; continue; }
-				if (ch === "," && !inQ) { parts.push(cur.trim()); cur = ""; continue; }
-				cur += ch;
-			}
-			if (cur.trim()) parts.push(cur.trim());
-
-			const newParts = parts.map((p) => p === from || p === `"${from}"` ? to : p);
-			if (newParts.some((p, i) => p !== parts[i])) {
-				modified = true;
-				const needsQ = (t: string) => t.includes(" ") || t.startsWith("#");
-				const inlineStr = newParts.map((t) => needsQ(t) ? `"${t}"` : t).join(", ");
-				lines[tagLineIdx] = `tags: [${inlineStr}]`;
-			}
-		}
-
-		// Handle indented list: tags:\n  - item
-		if (lines[tagLineIdx].trim() === "tags:" || lines[tagLineIdx].trim() === "tags") {
-			const listItems: Array<{ orig: string; text: string }> = [];
-			for (let li2 = tagLineIdx + 1; li2 < lines.length; li2++) {
-				const l = lines[li2];
-				const trimmed = l.trim();
-				if (!trimmed.startsWith("- ")) break;
-				const q = '"';
-				let text = trimmed.substring(2).trim();
-				if (text.startsWith(q)) text = text.substring(1);
-				if (text.endsWith(q)) text = text.substring(0, text.length - 1);
-				listItems.push({ orig: trimmed, text });
-			}
-
-			let changed = false;
-			const newItems = listItems.map((item) => {
-				if (item.text === from || item.text === `"${from}"`) {
-					changed = true;
-					const q2 = '"';
-					return `  - ${q2}${to}${q2}`;
-				}
-				return item.orig;
-			});
-
-			if (changed) {
-				modified = true;
-				const before = lines.slice(0, tagLineIdx + 1);
-				const after = lines.slice(tagLineIdx + 1 + listItems.length);
-				const all = before.concat(newItems).concat(after);
-				// Rebuild the frontmatter tag section
-				lines.length = 0;
-				lines.push(...all);
-			}
-		}
-
-		if (!modified) { skipped++; continue; }
-
-		const newFm = lines.join("\n");
-		const newContent = "---\n" + newFm + "\n---" + content.slice(fmMatch[0].length);
-		if (newContent === original) { skipped++; continue; }
-
-		// Write back
-		const writeArgs2: string[] = [];
-		if (vault) writeArgs2.push(`vault=${vault}`);
-		writeArgs2.push("create", `path=${filePath}`, "overwrite=true", `content=${escapeCliValue(newContent)}`);
-		execObsidian(writeArgs2, false, timeoutMs);
-		updated++;
-	}
-
-	return `tag-rename: ${updated} files updated, ${skipped} skipped.`;
+	const fqFrom = JSON.stringify(from);
+	const fqTo = JSON.stringify(to);
+	const script = `
+const files = app.vault.getMarkdownFiles();
+let u = 0, s = 0;
+for (const f of files) {
+  let c = await app.vault.read(f);
+  const o = c;
+  let m = c.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (!m) { s++; continue; }
+  let fm = m[1];
+  let nfm = fm.replace(/\btags\b[^]*?(?=\n---|$)/g, (tl) => tl.replaceAll(${fqFrom}, ${fqTo}));
+  if (nfm === fm) { s++; continue; }
+  c = '---\n' + nfm + '\n---' + c.slice(m[0].length);
+  await app.vault.modify(f, c); u++;
+}
+return \`tag-rename: \${u} files updated, \${s} skipped.\`;
+`.trim();
+	// ponytail: pass script through read-from-note or inline. Inline via eval.
+	const evalArgs: string[] = [];
+	if (vault) evalArgs.push(`vault=${vault}`);
+	evalArgs.push("eval", `code=(async function(){${script}})()`);
+	return execObsidian(evalArgs, false, timeoutMs).stdout.trim() || "Done.";
 }
 
 // ---------------------------------------------------------------------------
@@ -622,82 +381,60 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 				return renameTag(from, to, vaultOpt, timeoutMs);
 			}
 
-			// --- Fix B6: eval file=path support ---
+			// --- eval: inline or read from vault note, then exec ---
 			if (cmd === "eval") {
 				const flags = parseFlags(raw);
 				const file = flags.file || "";
-				const code = flags.code || "";
-
+				let code = flags.code || "";
 				if (file) {
-					// Read script from vault note and execute it
 					const readArgs: string[] = [];
 					if (vaultOpt) readArgs.push(`vault=${vaultOpt}`);
 					readArgs.push("read", `path=${file}`);
-					const script = execObsidian(readArgs, false, timeoutMs).stdout;
-					// Execute the script via eval in Obsidian
-					const evalArgs: string[] = [];
-					if (vaultOpt) evalArgs.push(`vault=${vaultOpt}`);
-					evalArgs.push("eval", `code=(async function(){${script}})()`);
-					const result = execObsidian(evalArgs, false, timeoutMs);
-					return result.stdout.trim() || "Script executed (no output).";
+					code = execObsidian(readArgs, false, timeoutMs).stdout;
 				}
-
-				if (code) {
-					// Standard inline eval — passes through to CLI
-					const evalArgs: string[] = [];
-					if (vaultOpt) evalArgs.push(`vault=${vaultOpt}`);
-					evalArgs.push("eval", `code=${code}`);
-					const result = execObsidian(evalArgs, false, timeoutMs);
-					return result.stdout.trim() || "Done.";
-				}
-
-				throw new Error("'code=' or 'file=' is required for eval.");
+				if (!code) throw new Error("'code=' or 'file=' is required for eval.");
+				const evalArgs: string[] = [];
+				if (vaultOpt) evalArgs.push(`vault=${vaultOpt}`);
+				evalArgs.push("eval", `code=(async function(){${code}})()`);
+				return execObsidian(evalArgs, false, timeoutMs).stdout.trim() || "Done.";
 			}
 
-			// --- Fix B1: content_from support for create/write ---
+			// --- content_from: read from vault note, write via CLI ---
 			if (cmd === "create" || cmd === "write" || cmd === "overwrite") {
 				const flags = parseFlags(raw);
 				const contentFrom = flags.content_from || "";
 				const path = flags.path || "";
 
 				if (contentFrom && path) {
-					// Read content from the source note
-					const content = readNoteContent(contentFrom, vaultOpt, timeoutMs);
-					// Build the CLI args with properly escaped content
+					const readArgs: string[] = [];
+					if (vaultOpt) readArgs.push(`vault=${vaultOpt}`);
+					readArgs.push("read", `path=${contentFrom}`);
+					const content = execObsidian(readArgs, false, timeoutMs).stdout;
+					ensureFolder(path, vaultOpt, timeoutMs);
 					const createArgs: string[] = [];
 					if (vaultOpt) createArgs.push(`vault=${vaultOpt}`);
-					createArgs.push("create", `path=${path}`);
+					createArgs.push("create", `path=${path}`, `content=${escapeCliValue(content)}`);
 					if (raw.includes("overwrite=true")) createArgs.push("overwrite=true");
-					createArgs.push(`content=${escapeCliValue(content)}`);
-					// Fix B3: ensure parent folder exists
-					ensureFolderExists(path, vaultOpt, timeoutMs);
-					const r = execObsidian(createArgs, false, timeoutMs);
-					return r.stdout.trim() || `Created note "${path}" from "${contentFrom}".`;
+					return (execObsidian(createArgs, false, timeoutMs).stdout.trim() || `Created note from "${contentFrom}".`);
 				}
-
-				// Standard create — ensure parent folder exists (Fix B3)
-				if (path) ensureFolderExists(path, vaultOpt, timeoutMs);
+				if (path) ensureFolder(path, vaultOpt, timeoutMs);
 			}
 
-			// --- Fix B2: handle property:set with array values ---
+			// ponytail: property:set array values — strip space after commas, 1 regex
 			if (cmd === "property:set") {
-				// Pre-process the raw string to handle array value=[a,b] without spaces
-				// (spaces inside array values would have been split by parseCliString)
-				const rawNormalized = raw.replace(/(value=)\[([^\]]*)\]/g, (match, prefix, inner) => {
-					// Remove spaces after commas inside the array
-					return prefix + "[" + inner.replace(/,\s*/g, ",") + "]";
-				});
-				raw = rawNormalized;
+				raw = raw.replace(/(value=)\[([^\]]*)\]/g, (_, p, inner) => p + "[" + inner.replace(/,\s*/g, ",") + "]");
 			}
-
-			// --- Fix B1/B6: pre-process to escape bare quotes in content=/code= ---
-			raw = preprocessRunString(raw);
 
 			// --- Standard CLI passthrough ---
 			let args = parseCliString(raw);
-
-			// Fix B2: rejoin split property:set values
-			args = joinPropertyValue(cmd, args, 0);
+			// ponytail: rejoin value= that split at commas (Obsidian CLI limitation)
+			if (cmd === "property:set") {
+				const ai = args.findIndex(a => a.startsWith("value="));
+				if (ai >= 0 && !args[ai].endsWith("]")) {
+					const joined = [args[ai].slice(6), ...args.slice(ai + 1)].join(" ");
+					args = [...args.slice(0, ai), `value=${joined}`, ...args.slice(ai + 2)];
+				}
+			}
 
 			if (vaultOpt) args.unshift(`vault=${vaultOpt}`);
 
