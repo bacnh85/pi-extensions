@@ -104,6 +104,16 @@ function wrapToolDefinition(base: any, shouldRepair: () => boolean, onRepair: (t
 // ────────────────────────────────────────────────────────
 const errorHistory = new Map<string, { count: number; lastCategory: ErrorCategory }>();
 
+function maxErrorHistory(env = process.env): number {
+	const val = parseInt(env.PI_DEEPSEEK_TOOLS_ERROR_HISTORY ?? "50", 10);
+	return Number.isFinite(val) && val > 0 ? val : 50;
+}
+
+function recordError(toolName: string, category: ErrorCategory) {
+	errorHistory.set(toolName, { count: (errorHistory.get(toolName)?.count ?? 0) + 1, lastCategory: category });
+	while (errorHistory.size > maxErrorHistory()) errorHistory.delete(errorHistory.keys().next().value!);
+}
+
 export default function (pi: ExtensionAPI) {
 	let remindedThisTurn = false;
 	let repairThisTurn = false;
@@ -208,7 +218,13 @@ export default function (pi: ExtensionAPI) {
 		// 1. Leaked content cleaning — always on for V4 (low-risk, pure cleanup)
 		let payload = cleanLeakedContentFromMessages(event.payload);
 
-		// 2. Reasoning stripping — opt-in (can cause 401s with OpenCode Go)
+		// 2. Fix leaked template model IDs from older OpenCode Go paths.
+		if (isRecord(payload) && payload.model === "{{model}}") {
+			payload = { ...payload, model: ctx.model?.id };
+			debugLog("model: replaced {{model}} with", ctx.model?.id);
+		}
+
+		// 3. Reasoning stripping — opt-in (can cause 401s with OpenCode Go)
 		if (reasoningStripEnabled()) {
 			const reasoningCleaned = stripReasoningContent(payload);
 			if (reasoningCleaned !== payload) {
@@ -219,7 +235,7 @@ export default function (pi: ExtensionAPI) {
 			debugLog("reasoning: skip strip (disabled by env)");
 		}
 
-		// 3. ponytail: single flat thinking budget — always same value when set
+		// 4. ponytail: single flat thinking budget — always same value when set
 		const budget = thinkingBudget();
 		if (budget !== undefined && isRecord(payload)) {
 			(payload as Record<string, unknown>).thinking = { type: "budget_tokens", budget_tokens: budget };
@@ -227,7 +243,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (payload !== event.payload) {
-			return { payload };
+			return payload;
 		}
 	});
 

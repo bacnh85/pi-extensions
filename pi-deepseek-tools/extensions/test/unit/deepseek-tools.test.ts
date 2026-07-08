@@ -315,6 +315,23 @@ describe("extension runtime scoping", () => {
 		}
 	});
 
+	it("replaces leaked {{model}} template in provider payloads", () => {
+		const { handlers } = createFakePi(activeTools);
+		const result = handlers.before_provider_request[0](
+			{ payload: { model: "{{model}}", messages: [{ role: "user", content: "hi" }] } },
+			{ model: { provider: "opencode-go", id: "deepseek-v4-flash" } },
+		);
+		assert.equal(result.model, "deepseek-v4-flash");
+	});
+
+	it("returns the replacement payload directly", () => {
+		const { handlers } = createFakePi(activeTools);
+		const original = { model: "deepseek-v4-flash", messages: [{ role: "assistant", content: "Reasoning: leaked\nhello" }] };
+		const result = handlers.before_provider_request[0]({ payload: original }, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
+		assert.equal(result.payload, undefined);
+		assert.equal(result.messages[0].content, "hello");
+	});
+
 	it("sends reminders for both opencode-go DeepSeek V4 Flash and Pro", () => {
 		const event = { toolName: "read", input: { path: "pi-deepseek-tools/extensions/index.ts" } };
 

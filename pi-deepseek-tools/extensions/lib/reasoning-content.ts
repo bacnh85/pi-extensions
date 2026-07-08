@@ -81,14 +81,17 @@ export function stripReasoningContent(payload: unknown): unknown {
 			// Clone on first reasoning field found — single pass, no pre-scan
 			if (!cloned) {
 				cloned = structuredClone(payload);
-				clonedMessages = findMessagesArray(cloned)!;
+				clonedMessages = findMessagesArray(cloned);
+				if (!clonedMessages) return payload;
 			}
 
-			const value = clonedMessages[i][field];
+			const targetMessages = clonedMessages;
+			if (!targetMessages) return payload;
+			const value = targetMessages[i][field];
 			if (Number.isFinite(threshold) && typeof value === "string" && value.length > threshold) {
-				(clonedMessages[i] as Record<string, unknown>)[field] = value.slice(0, threshold) + "\n\n[reasoning truncated]";
+				targetMessages[i][field] = value.slice(0, threshold) + "\n\n[reasoning truncated]";
 			} else {
-				delete clonedMessages[i][field];
+				delete targetMessages[i][field];
 			}
 		}
 	}
