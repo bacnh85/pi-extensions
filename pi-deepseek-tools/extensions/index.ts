@@ -56,23 +56,14 @@ export {
 
 function addReadDefaults(args: unknown): unknown {
 	if (!isRecord(args)) return args;
-	const hasOffset = args.offset !== undefined;
-	const hasLimit = args.limit !== undefined;
-	if (hasLimit && !hasOffset) {
-		return {
-			...args,
-			offset: 1,
-			__deepseekReadNote: "Note: offset was not provided; defaulted to 1. To read a different range, retry with both offset and limit.",
-		};
-	}
-	if (hasOffset && !hasLimit) {
-		return {
-			...args,
-			limit: 2000,
-			__deepseekReadNote: "Note: limit was not provided; defaulted to 2000 lines. To read a different range, retry with both offset and limit.",
-		};
-	}
-	return args;
+	// Return as-is when both or neither are provided
+	if ((args.offset !== undefined) === (args.limit !== undefined)) return args;
+	// Exactly one is missing — supply the default for the missing one
+	const defaults = args.limit !== undefined ? { offset: 1 } : { limit: 2000 };
+	const note = args.limit !== undefined
+		? "Note: offset was not provided; defaulted to 1. To read a different range, retry with both offset and limit."
+		: "Note: limit was not provided; defaulted to 2000 lines. To read a different range, retry with both offset and limit.";
+	return { ...args, ...defaults, __deepseekReadNote: note };
 }
 
 function appendReadNote(result: any, note: unknown) {
@@ -110,14 +101,6 @@ function wrapToolDefinition(base: any, shouldRepair: () => boolean, onRepair: (t
 // Adaptive error tracking — per-tool count + last category
 // ────────────────────────────────────────────────────────
 const errorHistory = new Map<string, { count: number; lastCategory: ErrorCategory }>();
-
-function recordToolError(toolName: string, info: ErrorInfo): void {
-	const prev = errorHistory.get(toolName) ?? { count: 0, lastCategory: "unknown" as ErrorCategory };
-	prev.count += 1;
-	prev.lastCategory = info.category;
-	errorHistory.set(toolName, prev);
-}
-
 
 export default function (pi: ExtensionAPI) {
 	let remindedThisTurn = false;
@@ -195,7 +178,10 @@ export default function (pi: ExtensionAPI) {
 		hasErrorThisTurn = true;
 		const info = categorizeToolError(event.toolName, event.result);
 		lastErrorInfo = info;
-		recordToolError(event.toolName, info);
+		errorHistory.set(event.toolName, {
+			count: (errorHistory.get(event.toolName)?.count ?? 0) + 1,
+			lastCategory: info.category,
+		});
 		logWarn(event.toolName, event.toolCallId, info.category,
 			event.result ? String(event.result).slice(0, 200) : "no result");
 	});
@@ -206,24 +192,20 @@ export default function (pi: ExtensionAPI) {
 		if (isDeepSeekV4) debugLog("model match:", ctx.model?.provider, ctx.model?.id);
 		remindedThisTurn = false;
 		repairThisTurn = isDeepSeekV4 && repairEnabled();
-		if (!selectionGuidanceEnabled()) return;
-		if (!isDeepSeekV4) return;
+		if (!selectionGuidanceEnabled() || !isDeepSeekV4) return;
 
 		let systemPrompt = event.systemPrompt;
 
 		// Context-aware error-recovery hint — adapts for repeated failures
-		if (hasErrorThisTurn && lastErrorInfo) {
-			const repeatCount = errorHistory.get(lastErrorInfo.toolName)?.count ?? 0;
-			let hint = lastErrorInfo.hint;
+		if (hasErrorThisTurn) {
+			const repeatCount = errorHistory.get(lastErrorInfo!.toolName)?.count ?? 0;
+			let hint = lastErrorInfo!.hint;
 			if (repeatCount >= 2) {
-				hint += ` You have had ${repeatCount} failures on ${lastErrorInfo.toolName}. Try the simplest possible inputs — shorter paths, fewer options, explicit required fields only.`;
+				hint += ` You have had ${repeatCount} failures on ${lastErrorInfo!.toolName}. Try the simplest possible inputs — shorter paths, fewer options, explicit required fields only.`;
 			}
 			systemPrompt = `${systemPrompt}\n\nNote: ${hint}`;
 			hasErrorThisTurn = false;
 			lastErrorInfo = null;
-		} else if (hasErrorThisTurn) {
-			systemPrompt = `${systemPrompt}\n\nNote: the previous tool call(s) had errors. Use simpler tool inputs and provide all required fields explicitly.`;
-			hasErrorThisTurn = false;
 		}
 
 		const activeTools = event.systemPromptOptions?.selectedTools ?? [];

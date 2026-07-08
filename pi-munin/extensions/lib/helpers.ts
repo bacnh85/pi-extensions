@@ -72,11 +72,18 @@ export interface MuninConfig {
 	baseUrl: string;
 }
 
+// ponytail: simple module-level cache, no TTL — config doesn't change mid-process.
+const configCache = new Map<string, MuninConfig>();
+
 export function getMuninConfig(
 	params: Record<string, unknown>,
 	cwd = process.cwd(),
 	includeCwdEnv = false
 ): MuninConfig {
+	const cacheKey = `${cwd}|${includeCwdEnv}|${JSON.stringify(params)}`;
+	const cached = configCache.get(cacheKey);
+	if (cached) return cached;
+
 	loadEnv(cwd, includeCwdEnv);
 	const explicitApiKey = params.api_key as string | undefined;
 	const explicitBaseUrl = params.base_url as string | undefined;
@@ -90,7 +97,9 @@ export function getMuninConfig(
 	if (!projectId) {
 		throw new Error("MUNIN_PROJECT is required. Set it in your environment, .env.local/.env, or pass project.");
 	}
-	return { apiKey, projectId, baseUrl };
+	const config: MuninConfig = { apiKey, projectId, baseUrl };
+	configCache.set(cacheKey, config);
+	return config;
 }
 
 // ---------------------------------------------------------------------------

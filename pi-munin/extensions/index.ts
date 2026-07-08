@@ -105,8 +105,8 @@ export default function muninExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "munin_search",
 		label: "Munin Search",
-		description: "Search memories using Munin semantic search with optional filters.",
-		promptSnippet: "Search long-term memory for relevant knowledge",
+		description: "BEFORE non-trivial work: SEARCH Munin memory for relevant past fixes, decisions, and context.",
+		promptSnippet: "BEFORE work: search long-term memory for relevant knowledge",
 		promptGuidelines: [
 			"Use munin_search before non-trivial work when prior project context could affect the outcome.",
 			"Build focused queries from exact errors, subsystem names, file paths, and dependency names.",
@@ -158,8 +158,8 @@ export default function muninExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "munin_get",
 		label: "Munin Get Memory",
-		description: "Retrieve a single memory by its key.",
-		promptSnippet: "Get a specific memory by key",
+		description: "AFTER munin_search: retrieve full memory content by key.",
+		promptSnippet: "After finding a memory key, get the full content",
 		promptGuidelines: [
 			"Use munin_get after munin_search to retrieve full content of a promising result.",
 			"Verify the retrieved memory against current repository evidence before relying on it.",
@@ -185,7 +185,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 		name: "munin_store",
 		label: "Munin Store Memory",
 		description:
-			"Store a single verified memory with required type and domain tags.",
+			"AT SESSION END (or after a fix): STORE verified durable knowledge.",
 		promptSnippet: "Store durable project knowledge in long-term memory",
 		promptGuidelines: [
 			"Use munin_store at the end of a session for verified, durable knowledge that future sessions need.",
@@ -254,7 +254,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "munin_list",
 		label: "Munin List Memories",
-		description: "List memories with pagination support.",
+		description: "LIST all stored memories to discover what exists.",
 		promptSnippet: "List available memories",
 		promptGuidelines: [
 			"Use munin_list to explore what project knowledge is already stored. Good for planning work.",
@@ -283,7 +283,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "munin_recent",
 		label: "Munin Recent Memories",
-		description: "Show recently updated memories.",
+		description: "CHECK recently updated memories before starting work.",
 		promptSnippet: "Show recently updated memories",
 		promptGuidelines: [
 			"Use munin_recent to see what knowledge has been added or modified recently.",
@@ -310,7 +310,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 		name: "munin_delete",
 		label: "Munin Delete Memory",
 		description:
-			"Delete a memory by key. Requires explicit confirmation unless forced.",
+			"DELETE a memory — only when user explicitly asks.",
 		promptSnippet: "Delete a memory from long-term storage",
 		promptGuidelines: [
 			"Only use munin_delete when the user explicitly asks to remove a memory. Confirm before deleting.",
@@ -352,7 +352,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "munin_capabilities",
 		label: "Munin Capabilities",
-		description: "Show Munin server capabilities.",
+		description: "CHECK what Munin server features are available.",
 		promptSnippet: "Show Munin server capabilities",
 		promptGuidelines: [
 			"Use munin_capabilities to check what server features are available.",
@@ -374,7 +374,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "munin_share",
 		label: "Munin Share Memory",
-		description: "Share memories across projects.",
+		description: "SHARE memories between projects.",
 		promptSnippet: "Share memories between projects",
 		promptGuidelines: [
 			"Use munin_share to share memories from one project to another.",
@@ -426,6 +426,17 @@ export default function muninExtension(pi: ExtensionAPI) {
 	// ====================================================================
 	// Event hooks
 	// ====================================================================
+
+	pi.on("before_agent_start", async (event) => {
+		try {
+			getMuninConfig({});
+		} catch {
+			return; // skip header if Munin not configured
+		}
+		return {
+			systemPrompt: `## Munin Memory Protocol\n\nALWAYS search Munin before non-trivial work. ALWAYS store verified knowledge at end.\n\n---\n\n${event.systemPrompt}`,
+		};
+	});
 
 	pi.on("tool_result", async (event) => {
 		if (!event.toolName.startsWith("munin_") || !event.isError) return;
