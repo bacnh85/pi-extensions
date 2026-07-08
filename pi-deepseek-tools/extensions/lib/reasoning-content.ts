@@ -1,22 +1,59 @@
 /**
- * reasoning-content.ts — strip `reasoning_content` from provider request payloads
+ * reasoning-content.ts — strip reasoning/thinking fields from provider request payloads
  *
- * DeepSeek V4 native responses include `reasoning_content` in assistant messages.
- * On multi-turn conversations the accumulated `reasoning_content` fields can cause
- * 400 errors with OpenCode-Go and other proxy providers. This module strips them
- * from all assistant messages *except* the most recent one (current turn's response),
+ * DeepSeek V4 native responses include reasoning fields in assistant messages
+ * (`reasoning_content`, `reasoning`, `thinking_content`, `chain_of_thought`, etc.).
+ * On multi-turn conversations, accumulated reasoning fields can cause 400 errors
+ * with OpenCode-Go and other proxy providers. This module strips them from all
+ * assistant messages *except* the most recent one (current turn's response),
  * preserving thinking continuity across turns.
+ *
+ * Optional truncation via PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS: when set to a
+ * number, reasoning content longer than that value is truncated (with a marker)
+ * rather than deleted entirely. This is useful when the provider rejects only
+ * very long reasoning fields but short ones are fine.
  */
 
 import { isRecord } from "./deepseek-tools.ts";
 
 /**
- * Walk a provider request payload and remove `reasoning_content` from
- * assistant messages in the `messages[]` array.  Handles both chat-completion
- * style (payload.messages) and older message-list top-level payloads.
+ * Known field names that carry reasoning/thinking content across DeepSeek
+ * proxy variants. Add more here if new wrappers emit different field names.
+ */
+const REASONING_FIELDS = new Set([
+	"reasoning_content",
+	"reasoning",
+	"thinking_content",
+	"chain_of_thought",
+	"cot",
+]);
+
+/**
+ * Read the optional max-tokens threshold from the environment.
+ * Returns Infinity when unset or invalid.
+ */
+function maxReasoningTokens(env = process.env): number {
+	const raw = env.PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS;
+	if (raw === undefined || raw === "") return Infinity;
+	const val = parseInt(raw, 10);
+	return Number.isFinite(val) && val > 0 ? val : Infinity;
+}
+
+/**
+ * Walk a provider request payload and remove reasoning fields from all
+ * assistant messages except the most recent one.  Handles both chat-completion
+ * style (payload.messages) and older message-list top-level payloads
+ * (payload.body.messages).
  *
- * @returns a new payload object if anything was removed, or the original
- *          reference if no change was needed.
+ * Reasoning fields stripped (when present on prior assistant messages):
+ *   reasoning_content, reasoning, thinking_content, chain_of_thought, cot
+ *
+ * When PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS=<N> is set, reasoning values
+ * longer than N characters are truncated with a marker instead of deleted.
+ *
+ * @returns the cloned (and stripped) payload, or the original reference
+ *          if no prior reasoning exists (single pass, clones on first
+ *          field found — the common path pays nothing).
  */
 export function stripReasoningContent(payload: unknown): unknown {
 	if (!isRecord(payload)) return payload;
@@ -24,51 +61,43 @@ export function stripReasoningContent(payload: unknown): unknown {
 	const messages = findMessagesArray(payload);
 	if (!messages || messages.length === 0) return payload;
 
-	// Strip from all but the last message.  The last assistant message is the
-	// current turn's fresh response — stripping it would remove the model's
-	// just-produced reasoning before the provider even sees it.
 	const lastAssistantIdx = findLastAssistantIndex(messages);
-	let changed = false;
+	if (lastAssistantIdx < 0) return payload;
+
+	let cloned: Record<string, unknown> | undefined;
+	let clonedMessages: Array<Record<string, unknown>> | undefined;
+	const threshold = maxReasoningTokens();
 
 	for (let i = 0; i < messages.length; i++) {
-		if (i === lastAssistantIdx) continue; // keep current turn
-		if (messages[i].role !== "assistant") continue;
-		if ("reasoning_content" in messages[i]) {
-			delete messages[i].reasoning_content;
-			changed = true;
-		}
-		// Also handle variations that some wrappers emit
-		if ("reasoning" in messages[i]) {
-			delete messages[i].reasoning;
-			changed = true;
+		if (i === lastAssistantIdx || messages[i].role !== "assistant") continue;
+
+		for (const field of REASONING_FIELDS) {
+			if (!(field in messages[i])) continue;
+
+			// Clone on first reasoning field found — single pass, no pre-scan
+			if (!cloned) {
+				cloned = structuredClone(payload);
+				clonedMessages = findMessagesArray(cloned)!;
+			}
+
+			const value = clonedMessages[i][field];
+			if (Number.isFinite(threshold) && typeof value === "string" && value.length > threshold) {
+				(clonedMessages[i] as Record<string, unknown>)[field] = value.slice(0, threshold) + "\n\n[reasoning truncated]";
+			} else {
+				delete clonedMessages[i][field];
+			}
 		}
 	}
 
-	return changed ? payload : payload; // mutated in-place via clone
-}
-
-/**
- * Deep-clone a payload before mutation so we never touch the original.
- * If the payload is not an object, returns the original unchanged.
- */
-export function clonePayload<T>(payload: T): T {
-	if (typeof payload !== "object" || payload === null) return payload;
-	if (Array.isArray(payload)) return payload.map(clonePayload) as unknown as T;
-	const cloned: Record<string, unknown> = {};
-	for (const key of Object.keys(payload as Record<string, unknown>)) {
-		cloned[key] = clonePayload((payload as Record<string, unknown>)[key]);
-	}
-	return cloned as T;
+	return cloned ?? payload;
 }
 
 // --- internal helpers ---
 
 function findMessagesArray(payload: Record<string, unknown>): Array<Record<string, unknown>> | undefined {
-	// Standard chat completion payload
 	if (Array.isArray(payload.messages)) {
 		return payload.messages as Array<Record<string, unknown>>;
 	}
-	// Some providers nest under `body`
 	if (isRecord(payload.body) && Array.isArray(payload.body.messages)) {
 		return payload.body.messages as Array<Record<string, unknown>>;
 	}

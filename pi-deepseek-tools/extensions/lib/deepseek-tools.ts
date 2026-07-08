@@ -44,7 +44,7 @@ export function strictSerenaEnabled(env: Record<string, string | undefined> = pr
 }
 
 export function reasoningStripEnabled(env: Record<string, string | undefined> = process.env): boolean {
-	return !/^(0|false|no|off)$/i.test(env.PI_DEEPSEEK_TOOLS_STRIP_REASONING ?? "");
+	return /^(1|true|yes|on)$/i.test(env.PI_DEEPSEEK_TOOLS_STRIP_REASONING ?? "");
 }
 
 export function directDeepSeekEnabled(env: Record<string, string | undefined> = process.env): boolean {
@@ -103,7 +103,7 @@ export function commandLooksLikeSemanticCodeSearch(command: unknown): boolean {
 }
 
 function commandIsSimple(command: string): boolean {
-	return !/[|;&<>`$()]|\b(if|for|while|case|xargs|sudo|env|cd)\b/.test(command);
+	return !/[|;&`$()]|\b(if|for|while|case|xargs|sudo|env|cd)\b/.test(command);
 }
 
 export function dedicatedToolForShellCommand(command: unknown, activeTools: readonly string[] = []): string | undefined {
@@ -116,6 +116,7 @@ export function dedicatedToolForShellCommand(command: unknown, activeTools: read
 	if (/^(grep|rg|ag|ack)\b/.test(trimmed) && activeTools.includes("grep")) return "grep";
 	if (/^cat\s+\S+\s*$/.test(trimmed) && activeTools.includes("read")) return "read";
 	if (/^sed\s+-n\s+['"]?\d+(,\d+)?p['"]?\s+\S+\s*$/.test(trimmed) && activeTools.includes("read")) return "read";
+	if (/^(echo|printf)\s.+>\s*\S/.test(trimmed) && activeTools.includes("write")) return "write";
 	return undefined;
 }
 
@@ -139,14 +140,14 @@ export function findMisuseSuggestion(toolName: string, input: unknown): string |
 	const path = typeof input.path === "string" ? input.path : "";
 	const combined = `${path} ${pattern}`.trim();
 
-	// Searching for test files — likely preparing to run tests → suggest bash
-	if (/(\btest\b|__tests?__|\.test\.|\.spec\.)/i.test(pattern)) {
-		return "bash";
-	}
-
 	const knownDocs = /(readme|changelog|license|copying|package\.json|tsconfig\.json|makefile|dockerfile|\.gitignore)/i;
 	if (knownDocs.test(combined)) {
 		return "read";
+	}
+
+	// Directory/glob patterns that look like test discovery → let find through
+	if (/(__tests?__|\.(test|spec)\.)/i.test(pattern)) {
+		return undefined;
 	}
 
 	// No wildcards = looking for a specific named file → should use read
@@ -159,7 +160,7 @@ export function findMisuseSuggestion(toolName: string, input: unknown): string |
 
 export function deepSeekSelectionGuidance(activeTools: readonly string[]): string {
 	const serenaActive = activeTools.some((tool) => tool.startsWith("serena_"));
-	const fileToolsActive = hasAnyTool(activeTools, ["ls", "grep", "find", "read", "edit", "bash"]);
+	const fileToolsActive = hasAnyTool(activeTools, ["ls", "grep", "find", "read", "edit", "bash", "write"]);
 	const parts = ["OpenCode Go DeepSeek V4 tool-selection rules for Pi:"];
 
 	parts.push("1. Call exactly one provided Pi tool name; never invent tool names such as read_file, search_files, or list_directory.");
@@ -175,8 +176,11 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 		parts.push(
 			"4. Path fields are filesystem paths, never markdown links or auto-links.",
 			"5. Do not default to find. Read → read. Run → bash. Write → write. List → ls. Search → grep. Find/locate → find. Match your first tool call to the verb in the prompt. The most common mistake is using find when prompted to read a file or run a command.",
-			"6. Bash is for running tests, builds, git, package-manager, or process execution. Do not use bash for file reading, file discovery, or text search — read, find, ls, and grep handle those.",
-			"7. For edits, inspect with the right tool first and then call edit; do not invent missing tools.",
+			"6. To create or write a file, use the write tool — not echo/printf redirections via bash.",
+			"7. When you know the exact file path (README.md, package.json, etc.), use read directly — not find.",
+			"8. Bash is for running tests, builds, git, package-manager, or process execution. Do not use bash for file reading, file discovery, or text search — read, find, ls, and grep handle those.",
+			"9. For edits, inspect with the right tool first and then call edit; do not invent missing tools.",
+			"10. If you encounter 400 errors related to reasoning or thinking content, add thinking: { type: 'budget_tokens', budget_tokens: 2048 } to the request.",
 		);
 	}
 

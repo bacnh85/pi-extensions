@@ -29,6 +29,7 @@ import {
 function createFakePi(activeTools: string[]) {
 	const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
 	const messages: Array<{ message: unknown; options: unknown }> = [];
+	const commands: Record<string, any> = {};
 	const pi = {
 		on(event: string, handler: (event: any, ctx: any) => any) {
 			(handlers[event] ??= []).push(handler);
@@ -39,11 +40,13 @@ function createFakePi(activeTools: string[]) {
 		sendMessage(message: unknown, options: unknown) {
 			messages.push({ message, options });
 		},
-		registerCommand() {},
+		registerCommand(name: string, def: any) {
+			commands[name] = def;
+		},
 	} as any;
 
 	extension(pi);
-	return { handlers, messages };
+	return { handlers, messages, commands };
 }
 
 describe("OpenCode Go DeepSeek V4 model detection", () => {
@@ -99,10 +102,10 @@ describe("environment toggles", () => {
 		assert.equal(strictSerenaEnabled({}), false);
 	});
 
-	it("reasoningStripEnabled defaults to enabled", () => {
-		assert.equal(reasoningStripEnabled({}), true);
-		assert.equal(reasoningStripEnabled({ PI_DEEPSEEK_TOOLS_STRIP_REASONING: "0" }), false);
-		assert.equal(reasoningStripEnabled({ PI_DEEPSEEK_TOOLS_STRIP_REASONING: "off" }), false);
+	it("reasoningStripEnabled defaults to disabled", () => {
+		assert.equal(reasoningStripEnabled({}), false);
+		assert.equal(reasoningStripEnabled({ PI_DEEPSEEK_TOOLS_STRIP_REASONING: "1" }), true);
+		assert.equal(reasoningStripEnabled({ PI_DEEPSEEK_TOOLS_STRIP_REASONING: "on" }), true);
 	});
 
 	it("directDeepSeekEnabled defaults to disabled", () => {
@@ -133,13 +136,11 @@ describe("direct DeepSeek provider support", () => {
 	});
 
 	it("isDeepSeekV4ModelByModel matches direct deepseek when env is set", () => {
-		// Temporarily set env for this test
 		const previous = process.env.PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK;
 		process.env.PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK = "1";
 		try {
 			assert.equal(isDeepSeekV4ModelByModel({ provider: "deepseek", id: "deepseek-v4-flash" }), true);
 			assert.equal(isDeepSeekV4ModelByModel({ provider: "deepseek", id: "deepseek-v4-pro" }), true);
-			// Still matches opencode-go
 			assert.equal(isDeepSeekV4ModelByModel({ provider: "opencode-go", id: "deepseek-v4-flash" }), true);
 		} finally {
 			if (previous === undefined) delete process.env.PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK;
@@ -149,6 +150,7 @@ describe("direct DeepSeek provider support", () => {
 });
 
 describe("deepSeekSelectionGuidance", () => {
+
 	it("uses model-agnostic V4 procedural wording with explicit Serena rules", () => {
 		const guidance = deepSeekSelectionGuidance(["read", "bash", "serena_find_symbol", "serena_find_referencing_symbols"]);
 
@@ -159,14 +161,37 @@ describe("deepSeekSelectionGuidance", () => {
 	});
 
 	it("includes dedicated file-tool rules when file tools are active", () => {
-		const guidance = deepSeekSelectionGuidance(["ls", "grep", "find", "bash"]);
+		const guidance = deepSeekSelectionGuidance(["ls", "grep", "find", "bash", "write"]);
 
 		assert.match(guidance, /Do not default to find/i);
 		assert.match(guidance, /Read → read/i);
 		assert.match(guidance, /Run → bash/i);
+		assert.match(guidance, /Write → write/i);
 		assert.match(guidance, /most common mistake is using find/i);
 		assert.match(guidance, /Bash is for running tests, builds, git/i);
 		assert.match(guidance, /Do not use bash for file reading/i);
+		assert.match(guidance, /use the write tool — not echo/i);
+		assert.match(guidance, /use read directly — not find/i);
+	});
+
+	it("includes thinking-effort hint rule 8 when file tools are active", () => {
+		const guidance = deepSeekSelectionGuidance(["bash"]);
+		assert.match(guidance, /400 errors related to reasoning or thinking/i);
+		assert.match(guidance, /budget_tokens/i);
+	});
+
+	it("produces consistent output for same tool set", () => {
+		const a = deepSeekSelectionGuidance(["bash", "read"]);
+		const b = deepSeekSelectionGuidance(["read", "bash"]);
+		const c = deepSeekSelectionGuidance(["bash", "read", "serena_find_symbol"]);
+
+		assert.equal(a, b); // same input → same output
+		assert.notEqual(a, c); // different input → different output
+	});
+
+	it("does not include thinking-effort hint when only serena tools are active", () => {
+		const guidance = deepSeekSelectionGuidance(["serena_find_symbol"]);
+		assert.doesNotMatch(guidance, /400 errors related to reasoning/i);
 	});
 });
 
@@ -201,12 +226,14 @@ describe("semantic miss detection", () => {
 
 describe("dedicated tool miss detection", () => {
 	it("maps simple shell substitutions to dedicated Pi tools", () => {
-		const active = ["bash", "ls", "find", "grep", "read"];
+		const active = ["bash", "ls", "find", "grep", "read", "write"];
 		assert.equal(dedicatedToolForShellCommand("ls pi-deepseek-tools", active), "ls");
 		assert.equal(dedicatedToolForShellCommand("find pi-deepseek-tools -name '*.ts'", active), "find");
 		assert.equal(dedicatedToolForShellCommand("grep -R PI_DEEPSEEK README.md", active), "grep");
 		assert.equal(dedicatedToolForShellCommand("cat README.md", active), "read");
 		assert.equal(dedicatedToolForShellCommand("sed -n '1,20p' README.md", active), "read");
+		assert.equal(dedicatedToolForShellCommand("echo 'hello' > /tmp/test.md", active), "write");
+		assert.equal(dedicatedToolForShellCommand("printf 'content' > /tmp/file", active), "write");
 	});
 
 	it("does not flag commands that genuinely need a shell", () => {
@@ -230,10 +257,10 @@ describe("find misuse detection", () => {
 		assert.equal(findMisuseSuggestion("find", { pattern: "index.ts" }), "read");
 	});
 
-	it("suggests bash when find is called with test-related patterns", () => {
-		assert.equal(findMisuseSuggestion("find", { pattern: "*test*" }), "bash");
-		assert.equal(findMisuseSuggestion("find", { pattern: "*.test.*" }), "bash");
-		assert.equal(findMisuseSuggestion("find", { pattern: "__tests__" }), "bash");
+	it("does not block test-file discovery patterns", () => {
+		assert.equal(findMisuseSuggestion("find", { pattern: "*test*" }), undefined);
+		assert.equal(findMisuseSuggestion("find", { pattern: "*.test.*" }), undefined);
+		assert.equal(findMisuseSuggestion("find", { pattern: "__tests__" }), undefined);
 	});
 
 	it("returns undefined for glob patterns (legitimate discovery)", () => {
@@ -290,19 +317,16 @@ describe("extension runtime scoping", () => {
 	it("sends reminders for both opencode-go DeepSeek V4 Flash and Pro", () => {
 		const event = { toolName: "read", input: { path: "pi-deepseek-tools/extensions/index.ts" } };
 
-		// Pro reminder (fresh pi = fresh turn)
 		const { handlers: hPro, messages: mPro } = createFakePi(activeTools);
 		hPro.tool_call[0](event, { model: { provider: "opencode-go", id: "deepseek-v4-pro" } });
 		assert.equal(mPro.length, 1);
 		assert.match(String((mPro[0].message as any).content), /DeepSeek V4/);
 
-		// Flash reminder (fresh pi = fresh turn)
 		const { handlers: hFlash, messages: mFlash } = createFakePi(activeTools);
 		hFlash.tool_call[0](event, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
 		assert.equal(mFlash.length, 1);
 		assert.match(String((mFlash[0].message as any).content), /DeepSeek V4/);
 		assert.deepEqual(mFlash[0].options, { deliverAs: "steer" });
-		assert.equal((mFlash[0].options as any).triggerTurn, undefined);
 	});
 
 	it("blocks misses for both Flash and Pro when strict mode is enabled", () => {
@@ -343,12 +367,11 @@ describe("extension runtime scoping", () => {
 		assert.equal(m.length, 0);
 	});
 
-	it("blocks find with test-pattern (now unambiguous)", () => {
+	it("does not block find with test-pattern (legitimate discovery)", () => {
 		const { handlers: h, messages: m } = createFakePi(activeTools);
 
 		const result = h.tool_call[0]({ toolName: "find", input: { pattern: "*test*" } }, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
-		assert.equal(result.block, true);
-		assert.match(result.reason, /use bash instead of find/i);
+		assert.equal(result, undefined);
 		assert.equal(m.length, 0);
 	});
 });

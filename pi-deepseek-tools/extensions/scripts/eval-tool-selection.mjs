@@ -102,6 +102,7 @@ function parseArgs(argv) {
 		guidance: "on",
 		captureArgs: false,
 	};
+	let providerSet = false;
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (!arg.startsWith("--")) continue;
@@ -113,9 +114,12 @@ function parseArgs(argv) {
 			args.captureArgs = true;
 		} else if (next !== undefined) {
 			args[key] = next;
+			if (key === "provider") providerSet = true;
 			i += 1;
 		}
 	}
+	if (/\{\{[^}]+\}\}/.test(args.model)) throw new Error(`Unexpanded --model template: ${args.model}`);
+	if (!providerSet && args.model.includes("/")) [args.provider, args.model] = args.model.split(/\/(.+)/, 2);
 	args.trials = Number(args.trials || 1);
 	return args;
 }
@@ -125,7 +129,7 @@ function usage() {
 
 Options:
   --provider <id>     Provider to test (default: opencode-go)
-  --model <id>        Model to test (default: deepseek-v4-flash)
+  --model <id>        Model to test; also accepts provider/model (default: deepseek-v4-flash)
   --thinking <level>  Thinking level (default: high)
   --trials <n>        Repetitions per case (default: 1)
   --case <name>       Run only one case
@@ -180,6 +184,7 @@ function runPi(args, testCase) {
 						}
 					}
 					if (event.type === "tool_execution_end" && event.isError) errors.push({ toolName: event.toolName, result: event.result, toolCallId: event.toolCallId });
+					if (event.type === "message_end" && event.message?.stopReason === "error") errors.push({ error: event.message.errorMessage || "model error" });
 					if (event.type === "agent_end") agentEnded = true;
 				} catch {
 					// Ignore non-JSON diagnostics.

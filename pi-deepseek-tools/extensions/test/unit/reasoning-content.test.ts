@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "mocha";
-import { stripReasoningContent, clonePayload } from "../../lib/reasoning-content";
+import { stripReasoningContent } from "../../lib/reasoning-content";
 
 describe("stripReasoningContent", () => {
 	it("leaves payloads without messages unchanged", () => {
@@ -61,6 +61,91 @@ describe("stripReasoningContent", () => {
 		assert.equal((result.messages[0] as any).reasoning, undefined);
 		// Current assistant: reasoning preserved
 		assert.equal((result.messages[2] as any).reasoning, "more thought");
+	});
+
+	it("strips thinking_content field (wider field coverage)", () => {
+		const payload = {
+			messages: [
+				{ role: "assistant", content: "old", thinking_content: "prior thought" },
+				{ role: "user", content: "go on" },
+				{ role: "assistant", content: "new", thinking_content: "fresh thought" },
+			],
+		};
+		const result = stripReasoningContent(payload) as typeof payload;
+		assert.equal((result.messages[0] as any).thinking_content, undefined, "prior thinking_content stripped");
+		assert.equal((result.messages[2] as any).thinking_content, "fresh thought", "current thinking_content preserved");
+	});
+
+	it("strips chain_of_thought field (wider field coverage)", () => {
+		const payload = {
+			messages: [
+				{ role: "assistant", content: "old", chain_of_thought: "prior cot" },
+				{ role: "user", content: "continue" },
+				{ role: "assistant", content: "new", chain_of_thought: "fresh cot" },
+			],
+		};
+		const result = stripReasoningContent(payload) as typeof payload;
+		assert.equal((result.messages[0] as any).chain_of_thought, undefined, "prior chain_of_thought stripped");
+		assert.equal((result.messages[2] as any).chain_of_thought, "fresh cot", "current chain_of_thought preserved");
+	});
+
+	it("strips cot field (wider field coverage)", () => {
+		const payload = {
+			messages: [
+				{ role: "assistant", content: "old", cot: "prior" },
+				{ role: "user", content: "more" },
+				{ role: "assistant", content: "new", cot: "fresh" },
+			],
+		};
+		const result = stripReasoningContent(payload) as typeof payload;
+		assert.equal((result.messages[0] as any).cot, undefined, "prior cot stripped");
+		assert.equal((result.messages[2] as any).cot, "fresh", "current cot preserved");
+	});
+
+	it("truncates long prior reasoning when PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS is set", () => {
+		const previous = process.env.PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS;
+		process.env.PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS = "20";
+		try {
+			const longReasoning = "A".repeat(100);
+			const payload = {
+				messages: [
+					{ role: "assistant", content: "old", reasoning_content: longReasoning },
+					{ role: "user", content: "continue" },
+					{ role: "assistant", content: "new", reasoning_content: "short" },
+				],
+			};
+			const result = stripReasoningContent(payload) as typeof payload;
+			// Prior reasoning truncated, not deleted
+			assert.ok((result.messages[0] as any).reasoning_content.startsWith("A".repeat(20)), "truncated to 20 chars");
+			assert.ok((result.messages[0] as any).reasoning_content.includes("[reasoning truncated]"), "truncation marker present");
+			// Current reasoning preserved
+			assert.equal((result.messages[2] as any).reasoning_content, "short");
+		} finally {
+			if (previous === undefined) delete process.env.PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS;
+			else process.env.PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS = previous;
+		}
+	});
+
+	it("returns original payload when no prior reasoning exists (lazy fast path)", () => {
+		const payload = {
+			messages: [
+				{ role: "user", content: "hi" },
+				{ role: "assistant", content: "hello" },
+			],
+		};
+		// No prior reasoning — should return the exact same reference
+		assert.equal(stripReasoningContent(payload), payload);
+	});
+
+	it("returns original payload when only current turn has reasoning (lazy fast path)", () => {
+		const payload = {
+			messages: [
+				{ role: "user", content: "hi" },
+				{ role: "assistant", content: "hello", reasoning_content: "current thinking" },
+			],
+		};
+		// Only current turn has reasoning — nothing to strip on prior messages
+		assert.equal(stripReasoningContent(payload), payload);
 	});
 
 	it("handles empty messages array", () => {
@@ -130,29 +215,5 @@ describe("stripReasoningContent", () => {
 			],
 		};
 		assert.equal(stripReasoningContent(payload), payload);
-	});
-});
-
-describe("clonePayload", () => {
-	it("deep-clones a plain object", () => {
-		const original = { a: 1, b: { c: [2, 3] } };
-		const cloned = clonePayload(original);
-		assert.deepEqual(cloned, original);
-		assert.notEqual(cloned, original);
-		assert.notEqual(cloned.b, original.b);
-	});
-
-	it("returns primitives unchanged", () => {
-		assert.equal(clonePayload(null), null);
-		assert.equal(clonePayload(42), 42);
-		assert.equal(clonePayload("str"), "str");
-	});
-
-	it("deep-clones arrays", () => {
-		const original = [{ a: 1 }, { b: 2 }];
-		const cloned = clonePayload(original);
-		assert.deepEqual(cloned, original);
-		assert.notEqual(cloned, original);
-		assert.notEqual(cloned[0], original[0]);
 	});
 });

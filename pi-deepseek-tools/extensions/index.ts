@@ -28,9 +28,10 @@ import {
 	categorizeToolError,
 	directDeepSeekEnabled,
 	type ErrorInfo,
+	type ErrorCategory,
 } from "./lib/deepseek-tools";
 import { repairDeepSeekToolArguments, type RepairKind } from "./lib/tool-input-repair";
-import { stripReasoningContent, clonePayload } from "./lib/reasoning-content";
+import { stripReasoningContent } from "./lib/reasoning-content";
 import { debugLog, logWarn } from "./lib/logger";
 
 export {
@@ -105,43 +106,57 @@ function wrapToolDefinition(base: any, shouldRepair: () => boolean, onRepair: (t
 	};
 }
 
+// ────────────────────────────────────────────────────────
+// Adaptive error tracking — per-tool count + last category
+// ────────────────────────────────────────────────────────
+const errorHistory = new Map<string, { count: number; lastCategory: ErrorCategory }>();
+
+function recordToolError(toolName: string, info: ErrorInfo): void {
+	const prev = errorHistory.get(toolName) ?? { count: 0, lastCategory: "unknown" as ErrorCategory };
+	prev.count += 1;
+	prev.lastCategory = info.category;
+	errorHistory.set(toolName, prev);
+}
+
+
 export default function (pi: ExtensionAPI) {
 	let remindedThisTurn = false;
 	let repairThisTurn = false;
 	let hasErrorThisTurn = false;
 	let lastErrorInfo: ErrorInfo | null = null;
 	const repairCounts = new Map<string, number>();
-	const errorCounts = new Map<string, number>();
 
+	// ── /deepseek-tools-status ──────────────────────────────
 	pi.registerCommand("deepseek-tools-status", {
 		description: "Show pi-deepseek-tools configuration and statistics.",
 		handler: async (_args, cmdCtx) => {
-			const lines: string[] = ["## pi-deepseek-tools status"];
-			lines.push("");
-			lines.push("**Configuration (env):**");
-			lines.push(`  Selection guidance: ${selectionGuidanceEnabled() ? "on" : "off"}`);
-			lines.push(`  Strict Serena mode: ${strictSerenaEnabled() ? "on" : "off"}`);
-			lines.push(`  Reasoning strip: ${reasoningStripEnabled() ? "on" : "off"}`);
-			lines.push(`  Tool-input repair: ${repairEnabled() ? "on" : "off"}`);
-			lines.push(`  Direct DeepSeek: ${directDeepSeekEnabled() ? "on" : "off"}`);
-			lines.push(`  Debug logging: ${/^(1|true|yes|on)$/i.test(process.env.PI_DEEPSEEK_TOOLS_DEBUG ?? "") ? "on" : "off"}`);
-			lines.push("");
-			lines.push("**Runtime state:**");
-			const totalRepairs = [...repairCounts.values()].reduce((a, b) => a + b, 0);
-			lines.push(`  Total tool-input repairs: ${totalRepairs}`);
+			const status = [
+				"## pi-deepseek-tools status",
+				"",
+				"**Configuration:**",
+				`  Selection guidance: ${selectionGuidanceEnabled() ? "on" : "off"}`,
+				`  Strict Serena mode: ${strictSerenaEnabled() ? "on" : "off"}`,
+				`  Reasoning strip: ${reasoningStripEnabled() ? "on" : "off"}`,
+				`  Reasoning max tokens: ${process.env.PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS || "unlimited"}`,
+				`  Tool-input repair: ${repairEnabled() ? "on" : "off"}`,
+				`  Direct DeepSeek: ${directDeepSeekEnabled() ? "on" : "off"}`,
+				`  Debug logging: ${process.env.PI_DEEPSEEK_TOOLS_DEBUG ? "on" : "off"}`,
+				"",
+				`**Repairs:** ${[...repairCounts.values()].reduce((a, b) => a + b, 0)} total`,
+			];
 			for (const [tool, count] of [...repairCounts.entries()].sort((a, b) => b[1] - a[1])) {
-				lines.push(`    ${tool}: ${count}`);
+				status.push(`  ${tool}: ${count}`);
 			}
-			const totalErrors = [...errorCounts.values()].reduce((a, b) => a + b, 0);
-			lines.push(`  Total tool errors: ${totalErrors}`);
-			for (const [tool, count] of [...errorCounts.entries()].sort((a, b) => b[1] - a[1])) {
-				lines.push(`    ${tool}: ${count}`);
+			const totalErrors = [...errorHistory.values()].reduce((s, e) => s + e.count, 0);
+			status.push(`**Errors:** ${totalErrors} total${lastErrorInfo ? `, last: ${lastErrorInfo.category} on ${lastErrorInfo.toolName}` : ""}`);
+			for (const [tool, info] of [...errorHistory.entries()].sort((a, b) => b[1].count - a[1].count)) {
+				status.push(`  ${tool}: ${info.count} (last: ${info.lastCategory})`);
 			}
-			lines.push(`  Last error category: ${lastErrorInfo?.category ?? "none"}`);
-			cmdCtx.ui.notify(lines.join("\n"), "info");
+			cmdCtx.ui.notify(status.join("\n"), "info");
 		},
 	});
 
+	// ── session_start: register wrapped tools ───────────────
 	pi.on("session_start", (_event, ctx) => {
 		const builtins = [
 			createReadToolDefinition(ctx.cwd),
@@ -160,6 +175,7 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	// ── before_provider_request: strip reasoning content ────
 	pi.on("before_provider_request", (event, ctx) => {
 		if (!isDeepSeekV4ModelByModel(ctx.model)) return;
 		if (!reasoningStripEnabled()) {
@@ -173,15 +189,18 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	// ── tool_execution_end: categorize errors ───────────────
 	pi.on("tool_execution_end", (event, _ctx) => {
 		if (!event.isError) return;
 		hasErrorThisTurn = true;
-		errorCounts.set(event.toolName, (errorCounts.get(event.toolName) ?? 0) + 1);
-		lastErrorInfo = categorizeToolError(event.toolName, event.result);
-		logWarn(event.toolName, event.toolCallId, lastErrorInfo.category,
+		const info = categorizeToolError(event.toolName, event.result);
+		lastErrorInfo = info;
+		recordToolError(event.toolName, info);
+		logWarn(event.toolName, event.toolCallId, info.category,
 			event.result ? String(event.result).slice(0, 200) : "no result");
 	});
 
+	// ── before_agent_start: inject guidance + error hints ───
 	pi.on("before_agent_start", (event, ctx) => {
 		const isDeepSeekV4 = isDeepSeekV4ModelByModel(ctx.model);
 		if (isDeepSeekV4) debugLog("model match:", ctx.model?.provider, ctx.model?.id);
@@ -192,9 +211,14 @@ export default function (pi: ExtensionAPI) {
 
 		let systemPrompt = event.systemPrompt;
 
-		// Inject context-aware error-recovery hint if the previous turn had tool failures
+		// Context-aware error-recovery hint — adapts for repeated failures
 		if (hasErrorThisTurn && lastErrorInfo) {
-			systemPrompt = `${systemPrompt}\n\nNote: ${lastErrorInfo.hint}`;
+			const repeatCount = errorHistory.get(lastErrorInfo.toolName)?.count ?? 0;
+			let hint = lastErrorInfo.hint;
+			if (repeatCount >= 2) {
+				hint += ` You have had ${repeatCount} failures on ${lastErrorInfo.toolName}. Try the simplest possible inputs — shorter paths, fewer options, explicit required fields only.`;
+			}
+			systemPrompt = `${systemPrompt}\n\nNote: ${hint}`;
 			hasErrorThisTurn = false;
 			lastErrorInfo = null;
 		} else if (hasErrorThisTurn) {
@@ -209,12 +233,14 @@ export default function (pi: ExtensionAPI) {
 		return { systemPrompt: `${systemPrompt}\n\n${deepSeekSelectionGuidance(activeTools)}` };
 	});
 
+	// ── agent_end: reset repair flag ────────────────────────
 	pi.on("agent_end", () => {
 		repairThisTurn = false;
 		// hasErrorThisTurn intentionally NOT reset here — it's consumed in
 		// the next before_agent_start so the model gets the error-recovery hint.
 	});
 
+	// ── tool_call: intercept misuses ────────────────────────
 	pi.on("tool_call", (event, ctx) => {
 		if (!isDeepSeekV4ModelByModel(ctx.model)) return;
 
@@ -236,14 +262,9 @@ export default function (pi: ExtensionAPI) {
 				? `For DeepSeek V4, use the dedicated ${dedicatedTool} tool instead of bash for this simple file operation.`
 				: `For DeepSeek V4, use ${misuseTool} instead of find when the file path is known or the action is to run a command.`;
 
-		// Block find misuse: specific filename (read) or test-pattern (bash) — zero ambiguity
-		if (misuseTool === "read" || misuseTool === "bash") {
+		// Block unambiguous cases (find misuse) or strict serena mode
+		if (misuseTool || strictSerenaEnabled()) {
 			debugLog("blocked:", event.toolName, reason);
-			return { block: true, reason };
-		}
-
-		if (strictSerenaEnabled()) {
-			debugLog("blocked (strict):", event.toolName, reason);
 			return { block: true, reason };
 		}
 		if (remindedThisTurn) return;
