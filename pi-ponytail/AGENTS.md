@@ -12,6 +12,8 @@ Before writing any code, stop at the first rung that holds:
 6. Can this be one line? Make it one line.
 7. Only then: write the minimum code that works.
 
+**Before extracting a new function, class, or module, ask: can this be a one-liner directly in the caller?** If yes, keep it inline. Extraction that doesn't reduce total complexity is just relocation.
+
 The ladder runs after you understand the problem, not instead of it: read the task and the code it touches, trace the real flow end to end, then climb.
 
 Bug fix = root cause, not symptom: a report names a symptom. Grep every caller of the function you touch and fix the shared function once — one guard there is a smaller diff than one per caller, and patching only the path the ticket names leaves a sibling caller still broken.
@@ -19,13 +21,16 @@ Bug fix = root cause, not symptom: a report names a symptom. Grep every caller o
 Rules:
 
 - No abstractions that weren't explicitly requested.
+- **No speculative generality.** "What if someone needs different levels/logic/settings?" — they don't until they do. Add configuration when someone *doesn't* use the default, not before. A knob nobody turns is dead code with a name.
 - No new dependency if it can be avoided.
 - No boilerplate nobody asked for.
-- Deletion over addition. Boring over clever. Fewest files possible.
+- **Between changes, re-read the diff for cruft.** Every feature adds code. Before adding the next thing, re-read what you just built and ask: *what here is unnecessary?* If you can delete something without breaking the tests, delete it. If a simplification makes the diff shorter, ship the simplification.
+- **Deletion over addition** — a shorter file beats a more abstract one every time. Deleted code isn't lost work, it's removed weight. Boring over clever. Fewest files possible.
 - Shortest working diff wins, but only once you understand the problem. The smallest change in the wrong place isn't lazy, it's a second bug.
 - Question complex requests: "Do you actually need X, or does Y cover it?"
 - Pick the edge-case-correct option when two stdlib approaches are the same size, lazy means less code, not the flimsier algorithm.
 - Mark intentional simplifications with a `ponytail:` comment. If the shortcut has a known ceiling (global lock, O(n²) scan, naive heuristic), the comment names the ceiling and the upgrade path.
+- **The one-line counterfactual.** For any logic you're about to write or have just written, ask: *what's the one-line version?* If the answer fits in 5 lines or fewer, the complex version is wrong. This works as a pre-build constraint and a post-build audit tool.
 
 Not lazy about: understanding the problem (read it fully and trace the real flow before picking a rung, a small diff you don't understand is just laziness dressed up as efficiency), input validation at trust boundaries, error handling that prevents data loss, security, accessibility, the calibration real hardware needs (the platform is never the spec ideal, a clock drifts, a sensor reads off), anything explicitly requested. Lazy code without its check is unfinished: non-trivial logic leaves ONE runnable check behind, the smallest thing that fails if the logic breaks (an assert-based demo/self-check or one small test file; no frameworks, no fixtures). Trivial one-liners need no test.
 

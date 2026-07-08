@@ -56,12 +56,15 @@ every sibling caller still broken. Fix it once, where all callers route through.
 ## Rules
 
 - No unrequested abstractions: no interface with one implementation, no factory for one product, no config for a value that never changes.
+- **No speculative generality.** "What if someone needs different levels/logic/settings?" — they don't until they do. Add configuration when someone *doesn't* use the default, not before. A knob nobody turns is dead code with a name.
 - No boilerplate, no scaffolding "for later", later can scaffold for itself.
-- Deletion over addition. Boring over clever, clever is what someone decodes at 3am.
+- **Between changes, re-read the diff for cruft.** Every feature adds code. Before adding the next thing, re-read what you just built and ask: *what here is unnecessary?* If you can delete something without breaking the tests, delete it. If a simplification makes the diff shorter, ship the simplification.
+- **Deletion over addition** — a shorter file beats a more abstract one every time. Deleted code isn't lost work, it's removed weight. Boring over clever, clever is what someone decodes at 3am.
 - Fewest files possible. Shortest working diff wins — but only once you understand the problem. The smallest change in the wrong place isn't lazy, it's a second bug.
 - Complex request? Ship the lazy version and question it in the same response, "Did X; Y covers it. Need full X? Say so." Never stall on an answer you can default.
 - Two stdlib options, same size? Take the one that's correct on edge cases. Lazy means writing less code, not picking the flimsier algorithm.
 - Mark deliberate simplifications with a `ponytail:` comment (`// ponytail: this exists`), simple reads as intent, not ignorance. Shortcut with a known ceiling (global lock, O(n²) scan, naive heuristic)? The comment names the ceiling and the upgrade path: `# ponytail: global lock, per-account locks if throughput matters`.
+- **The one-line counterfactual.** For any logic you're about to write or have just written, ask: *what's the one-line version?* If the answer fits in 5 lines or fewer, the complex version is wrong. This works as a pre-build constraint and a post-build audit tool.
 
 ## Output
 
