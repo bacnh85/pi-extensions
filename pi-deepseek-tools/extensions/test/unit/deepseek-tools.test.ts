@@ -11,6 +11,7 @@ import extension, {
 	missedDedicatedTool,
 	selectionGuidanceEnabled,
 	strictSerenaEnabled,
+	DEEPSEEK_V4_FLASH_MODEL,
 } from "../../index";
 import {
 	dedicatedToolForShellCommand,
@@ -18,7 +19,10 @@ import {
 	isOpenCodeGoDeepSeekV4Model as isOpenCodeGoDeepSeekV4ModelAlias,
 	looksLikeDocsOrConfigPath,
 	OPENCODE_GO_PROVIDER,
-	DEEPSEEK_V4_FLASH_MODEL,
+	reasoningStripEnabled,
+	directDeepSeekEnabled,
+	repairEnabled,
+	isDeepSeekV4ModelByModel,
 } from "../../lib/deepseek-tools";
 
 function createFakePi(activeTools: string[]) {
@@ -91,6 +95,54 @@ describe("environment toggles", () => {
 		assert.equal(strictSerenaEnabled({ PI_DEEPSEEK_TOOLS_STRICT_SERENA: "1" }), true);
 		assert.equal(strictSerenaEnabled({ PI_DEEPSEEK_TOOLS_STRICT_SERENA: "true" }), true);
 		assert.equal(strictSerenaEnabled({}), false);
+	});
+
+	it("reasoningStripEnabled defaults to enabled", () => {
+		assert.equal(reasoningStripEnabled({}), true);
+		assert.equal(reasoningStripEnabled({ PI_DEEPSEEK_TOOLS_STRIP_REASONING: "0" }), false);
+		assert.equal(reasoningStripEnabled({ PI_DEEPSEEK_TOOLS_STRIP_REASONING: "off" }), false);
+	});
+
+	it("directDeepSeekEnabled defaults to disabled", () => {
+		assert.equal(directDeepSeekEnabled({}), false);
+		assert.equal(directDeepSeekEnabled({ PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK: "1" }), true);
+		assert.equal(directDeepSeekEnabled({ PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK: "true" }), true);
+	});
+
+	it("repairEnabled defaults to enabled", () => {
+		assert.equal(repairEnabled({}), true);
+		assert.equal(repairEnabled({ PI_DEEPSEEK_TOOLS_REPAIR_ENABLED: "0" }), false);
+		assert.equal(repairEnabled({ PI_DEEPSEEK_TOOLS_REPAIR_ENABLED: "off" }), false);
+	});
+});
+
+describe("direct DeepSeek provider support", () => {
+	const env = { PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK: "1" };
+
+	it("isDeepSeekV4ModelByModel matches opencode-go by default", () => {
+		assert.equal(isDeepSeekV4ModelByModel({ provider: "opencode-go", id: "deepseek-v4-flash" }), true);
+		assert.equal(isDeepSeekV4ModelByModel({ provider: "opencode-go", id: "deepseek-v4-pro" }), true);
+	});
+
+	it("isDeepSeekV4ModelByModel rejects non-DeepSeek by default", () => {
+		assert.equal(isDeepSeekV4ModelByModel({ provider: "deepseek", id: "deepseek-v4-flash" }), false);
+		assert.equal(isDeepSeekV4ModelByModel({ provider: "deepseek", id: "deepseek-v4-pro" }), false);
+		assert.equal(isDeepSeekV4ModelByModel({ provider: "openai-codex", id: "gpt-5.5" }), false);
+	});
+
+	it("isDeepSeekV4ModelByModel matches direct deepseek when env is set", () => {
+		// Temporarily set env for this test
+		const previous = process.env.PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK;
+		process.env.PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK = "1";
+		try {
+			assert.equal(isDeepSeekV4ModelByModel({ provider: "deepseek", id: "deepseek-v4-flash" }), true);
+			assert.equal(isDeepSeekV4ModelByModel({ provider: "deepseek", id: "deepseek-v4-pro" }), true);
+			// Still matches opencode-go
+			assert.equal(isDeepSeekV4ModelByModel({ provider: "opencode-go", id: "deepseek-v4-flash" }), true);
+		} finally {
+			if (previous === undefined) delete process.env.PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK;
+			else process.env.PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK = previous;
+		}
 	});
 });
 

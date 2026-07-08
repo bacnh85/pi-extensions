@@ -22,9 +22,17 @@ export function isOpenCodeGoDeepSeekV4Model(model?: { provider?: string; id?: st
 	return model?.provider === OPENCODE_GO_PROVIDER && DEEPSEEK_V4_MODELS.has(model?.id ?? "");
 }
 
-/** Alias for isOpenCodeGoDeepSeekV4Model. Matches both Flash and Pro under OpenCode Go. */
+/**
+ * Matches both Flash and Pro under OpenCode Go (always) and optionally
+ * under the direct `deepseek` provider when PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK=1.
+ */
 export function isDeepSeekV4Model(provider?: string, modelId?: string): boolean {
-	return provider === OPENCODE_GO_PROVIDER && DEEPSEEK_V4_MODELS.has(modelId ?? "");
+	const isOpenCodeGo = provider === OPENCODE_GO_PROVIDER && DEEPSEEK_V4_MODELS.has(modelId ?? "");
+	if (isOpenCodeGo) return true;
+	if (directDeepSeekEnabled()) {
+		return provider === "deepseek" && (modelId === DEEPSEEK_V4_FLASH_MODEL || modelId === DEEPSEEK_V4_PRO_MODEL);
+	}
+	return false;
 }
 
 export function selectionGuidanceEnabled(env: Record<string, string | undefined> = process.env): boolean {
@@ -33,6 +41,31 @@ export function selectionGuidanceEnabled(env: Record<string, string | undefined>
 
 export function strictSerenaEnabled(env: Record<string, string | undefined> = process.env): boolean {
 	return /^(1|true|yes|on)$/i.test(env.PI_DEEPSEEK_TOOLS_STRICT_SERENA ?? "");
+}
+
+export function reasoningStripEnabled(env: Record<string, string | undefined> = process.env): boolean {
+	return !/^(0|false|no|off)$/i.test(env.PI_DEEPSEEK_TOOLS_STRIP_REASONING ?? "");
+}
+
+export function directDeepSeekEnabled(env: Record<string, string | undefined> = process.env): boolean {
+	return /^(1|true|yes|on)$/i.test(env.PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK ?? "");
+}
+
+export function repairEnabled(env: Record<string, string | undefined> = process.env): boolean {
+	return !/^(0|false|no|off)$/i.test(env.PI_DEEPSEEK_TOOLS_REPAIR_ENABLED ?? "");
+}
+
+/**
+ * Combined model check: matches OpenCode Go DeepSeek V4 (Flash + Pro) always,
+ * and direct `deepseek` provider when PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK=1.
+ * This is the function runtime hooks should use for gating.
+ */
+export function isDeepSeekV4ModelByModel(model?: { provider?: string; id?: string }): boolean {
+	if (isOpenCodeGoDeepSeekV4Model(model)) return true;
+	if (directDeepSeekEnabled()) {
+		return model?.provider === "deepseek" && (model?.id === DEEPSEEK_V4_FLASH_MODEL || model?.id === DEEPSEEK_V4_PRO_MODEL);
+	}
+	return false;
 }
 
 export function hasAnyTool(activeTools: readonly string[] | undefined, names: readonly string[]): boolean {
