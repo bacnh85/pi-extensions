@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-obsidian",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Pi extension for Obsidian vault tools — read, search, create, and manage notes via the Obsidian CLI.",
   "type": "module",
   "license": "MIT",
@@ -27,16 +27,13 @@
   },
   "files": [
     "README.md",
-    "extensions/",
-    "skills/"
+    "extensions/"
   ],
   "pi": {
     "extensions": [
       "./extensions/index.ts"
     ],
-    "skills": [
-      "./skills"
-    ]
+    "skills": []
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
