@@ -175,18 +175,19 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 	const parts: string[] = [
 		"OpenCode Go DeepSeek V4 tool-selection rules — apply immediately:",
 		"",
-		"1. Code files → Serena first (serena_get_symbols_overview / serena_find_symbol / serena_find_declaration / serena_find_implementations / serena_find_referencing_symbols). Do NOT use read for code files.",
 	];
 
 	if (serenaActive) {
 		parts.push(
+			"1. Code files → Serena first (serena_get_symbols_overview / serena_find_symbol / serena_find_declaration / serena_find_implementations / serena_find_referencing_symbols). Do NOT use read for code files. Pass the exact path from find — real extensions may be .ts even if docs say .js.",
 			"2. Read is for docs, config, logs, generated output, or after Serena identifies the exact code region.",
 		);
 	}
 
+	const n = serenaActive ? 3 : 1;
 	parts.push(
-		"3. Dedicated tools over bash/find: write > echo>, grep > bash grep, ls > bash ls, find (globs) > bash find, read > bash cat/sed/head.",
-		"4. Never invent tool names — use only the exact Pi tool names listed below.",
+		`${n}. Dedicated tools over bash/find: write > echo>, grep > bash grep, ls > bash ls, find (globs) > bash find, read > bash cat/sed/head.`,
+		`${n + 1}. Never invent tool names — use only the exact Pi tool names listed below.`,
 	);
 
 	const result = parts.join("\n");

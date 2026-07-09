@@ -198,7 +198,13 @@ async function main() {
 					assert.ok(result, `${modelLabel}: should inject guidance`);
 					const sp = result.systemPrompt;
 					assert.ok(sp.includes("OpenCode Go DeepSeek V4"), `${modelLabel}: mentions V4`);
-					assert.ok(sp.includes("Do NOT use read for code files"), `${modelLabel}: includes prohibitive rule`);
+					// prohibitive rule only when serena tools are available
+					const hasSerena = activeTools.some((t) => t.startsWith("serena_"));
+					if (hasSerena) {
+						assert.ok(sp.includes("Do NOT use read for code files"), `${modelLabel}: includes prohibitive rule`);
+					} else {
+						assert.ok(!sp.includes("Do NOT use read for code files"), `${modelLabel}: omits prohibitive rule without serena`);
+					}
 				} else {
 					assert.equal(result, undefined, `${modelLabel}: no guidance`);
 				}

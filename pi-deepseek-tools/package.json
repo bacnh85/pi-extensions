@@ -1,55 +1,55 @@
 {
-  "name": "@bacnh85/pi-deepseek-tools",
-  "version": "0.10.0",
-  "description": "Pi extension that improves DeepSeek V4 tool calling, argument repair, reasoning cleanup, and diagnostics for OpenCode Go models.",
-  "type": "module",
-  "license": "MIT",
-  "publishConfig": {
-    "access": "public"
-  },
-  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/bacnh85/pi-extensions.git",
-    "directory": "pi-deepseek-tools"
-  },
-  "bugs": {
-    "url": "https://github.com/bacnh85/pi-extensions/issues"
-  },
-  "keywords": [
-    "pi",
-    "pi-extension",
-    "deepseek",
-    "deepseek-v4",
-    "opencode-go",
-    "tool-calling",
-    "agent-tools",
-    "reasoning",
-    "deepseek-v4-flash",
-    "deepseek-v4-pro"
-  ],
-  "scripts": {
-    "test": "cd extensions && mocha",
-    "typecheck": "tsc --noEmit"
-  },
-  "files": [
-    "README.md",
-    "extensions/",
-    "LICENSE"
-  ],
-  "pi": {
-    "extensions": [
-      "./extensions/index.ts"
-    ]
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
-  },
-  "devDependencies": {
-    "@types/mocha": "^10.0.10",
-    "@types/node": "^20.19.43",
-    "mocha": "^10.8.2",
-    "tsx": "^4.22.4"
-  }
+    "name": "@bacnh85/pi-deepseek-tools",
+    "version": "0.10.1",
+    "description": "Pi extension that improves DeepSeek V4 tool calling, argument repair, reasoning cleanup, and diagnostics for OpenCode Go models.",
+    "type": "module",
+    "license": "MIT",
+    "publishConfig": {
+        "access": "public"
+    },
+    "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/bacnh85/pi-extensions.git",
+        "directory": "pi-deepseek-tools"
+    },
+    "bugs": {
+        "url": "https://github.com/bacnh85/pi-extensions/issues"
+    },
+    "keywords": [
+        "pi",
+        "pi-extension",
+        "deepseek",
+        "deepseek-v4",
+        "opencode-go",
+        "tool-calling",
+        "agent-tools",
+        "reasoning",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro"
+    ],
+    "scripts": {
+        "test": "cd extensions && mocha",
+        "typecheck": "tsc --noEmit"
+    },
+    "files": [
+        "README.md",
+        "extensions/",
+        "LICENSE"
+    ],
+    "pi": {
+        "extensions": [
+            "./extensions/index.ts"
+        ]
+    },
+    "peerDependencies": {
+        "@earendil-works/pi-coding-agent": "*",
+        "typebox": "*"
+    },
+    "devDependencies": {
+        "@types/mocha": "^10.0.10",
+        "@types/node": "^20.19.43",
+        "mocha": "^10.8.2",
+        "tsx": "^4.22.4"
+    }
 }

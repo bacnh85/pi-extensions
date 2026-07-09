@@ -40,8 +40,32 @@ function getPonytailInstructions(mode) {
     return 'PONYTAIL MODE ACTIVE — level: ' + effectiveMode + '\n\n' +
       filterSkillBodyForMode(fs.readFileSync(SKILL_PATH, 'utf8'), effectiveMode);
   } catch (e) {
-    // ponytail: SKILL.md missing or unreadable — one-line fallback. Full rules from the skill file are preferred.
-    return 'PONYTAIL MODE ACTIVE — level: ' + effectiveMode;
+    // ponytail: SKILL.md missing or unreadable — compact inline fallback keeps the ladder and rules.
+    return [
+      'PONYTAIL MODE ACTIVE — level: ' + effectiveMode,
+      '',
+      'Persistence: ACTIVE EVERY RESPONSE. No drift back to over-building.',
+      'Off only: "stop ponytail" / "normal mode". Default: **full**.',
+      '',
+      'The ladder (stop at the first rung that holds):',
+      '1. Does this need to exist at all? (YAGNI)',
+      '2. Already in this codebase? Reuse it.',
+      '3. Stdlib does it? Use it.',
+      '4. Native platform feature covers it?',
+      '5. Already-installed dependency solves it?',
+      '6. Can it be one line? One line.',
+      '7. Only then: minimum code that works.',
+      '',
+      'Rules: No speculative abstractions. Deletion over addition. Fewest files.',
+      'Mark shortcuts with ponytail: comments. One-line counterfactual: if the complex',
+      'version is not a one-liner or 5-line trivial, it\'s over-engineered.',
+      '',
+      'Output: Code first. Then at most 3 lines: what was skipped, when to add it.',
+      'Pattern: [code] → skipped: [X], add when [Y].',
+      '',
+      'Never simplify away: input validation, error handling, security, accessibility,',
+      'or anything explicitly requested. Non-trivial logic needs one runnable check.',
+    ].join('\n');
   }
 }
 

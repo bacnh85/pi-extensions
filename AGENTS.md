@@ -45,21 +45,21 @@ pi-<name>/
   .gitignore            # node_modules/ and .env.*
 
   extensions/           # Pi extension entrypoint and supporting modules
-    index.js            # default export: function(pi: ExtensionAPI)
+    index.ts            # default export: function(pi: ExtensionAPI) — .ts or .js
     package.json        # { "type": "module" }
     test/               # tests co-located with extension code
-      *.test.js
+      *.test.ts         # .ts or .js, matching extension entrypoint
 
   skills/               # skill sub-skills, each in its own directory
     <name>/SKILL.md     # YAML frontmatter + markdown body
 
   hooks/                # (optional) shared modules for extensions + skills
-    *.js
+    *.ts                # .ts or .js, matching extension entrypoint
 ```
 
 **Key conventions:**
 
-- `package.json` root: `"pi": { "extensions": ["./extensions/index.js"], "skills": ["./skills"] }`
+- `package.json` root: `"pi": { "extensions": ["./extensions/index.ts"], "skills": ["./skills"] }` — entrypoint extension matches the file (`.ts` or `.js`)
 - `files` in package.json lists everything (not just `dist/` — Pi loads source directly).
 - `publishConfig.access: "public"` for scoped packages.
 - `extensions/package.json` is just `{ "type": "module" }` to opt into ESM.
