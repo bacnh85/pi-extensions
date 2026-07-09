@@ -32,6 +32,8 @@ jobs:
             test-command: npm ci && npm test
           - package: pi-obsidian
             test-command: npm ci && npm test
+          - package: pi-windows-tools
+            test-command: npm ci && npm test
     defaults:
       run:
         working-directory: ./${{ matrix.package }}
