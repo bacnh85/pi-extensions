@@ -107,6 +107,39 @@ Two GitHub Actions workflows in `.github/workflows/`:
 - **publish.yml** — runs on push to main. Checks each package's `package.json`
   version against the npm registry and publishes if different.
 
+## Development discipline (ponytail)
+
+This monorepo uses **ponytail** — lazy senior dev mode. The ladder below runs on every change, not just at audit time.
+
+### The ladder
+
+Stop at the first rung that holds:
+
+1. **YAGNI** — Does this need to exist at all? Speculative need = skip, say so. If a feature request describes a symptom and the root cause is already fixed elsewhere, don't build it.
+2. **Already in this codebase?** — A helper, util, type, or pattern that already lives here → reuse it. Look before you write.
+3. **Stdlib does it?** — Use it. `fs.readFileSync`, `URL`, `Intl`, `Set`, `Map` — Node.js stdlib covers most needs.
+4. **Native platform feature covers it?** — CSS over JS lib, HTML input types over picker components, DB constraints over app-level validation.
+5. **Already-installed dependency?** — Use it. Never add a new one for what a few lines can do.
+6. **One line?** — One line.
+7. **Only then:** minimum code that works.
+
+### Enforce between changes
+
+Before adding the *next* thing, re-read what you just built and ask: *what here is unnecessary?* If you can delete something without breaking tests, delete it. If a simplification makes the diff shorter, ship the simplification.
+
+**Bug fix = root cause, not symptom.** Fix it once where all callers route through, not patching only the path the ticket names.
+
+### Mark shortcuts
+
+Mark deliberate simplifications with a `ponytail:` comment so the shortcut reads as intent, not ignorance:
+```typescript
+// ponytail: global lock, per-account locks if throughput matters
+```
+
+### Tests
+
+Non-trivial logic (a branch, a loop, a parser, a money/security path) leaves ONE runnable check behind — the smallest thing that fails if the logic breaks. Trivial one-liners need no test.
+
 ## Tool guidelines for agents writing / modifying extensions
 
 - TypeBox schemas go alongside the tool registration (see existing `parameters`).

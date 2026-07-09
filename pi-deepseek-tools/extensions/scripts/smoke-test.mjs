@@ -197,14 +197,9 @@ async function main() {
 					// DS models (OCG + direct with env) get guidance
 					assert.ok(result, `${modelLabel}: should inject guidance`);
 					const sp = result.systemPrompt;
-					assert.ok(sp.includes("OpenCode Go DeepSeek V4"), `${modelLabel}: mentions V4`);
-					// prohibitive rule only when serena tools are available
-					const hasSerena = activeTools.some((t) => t.startsWith("serena_"));
-					if (hasSerena) {
-						assert.ok(sp.includes("Do NOT use read for code files"), `${modelLabel}: includes prohibitive rule`);
-					} else {
-						assert.ok(!sp.includes("Do NOT use read for code files"), `${modelLabel}: omits prohibitive rule without serena`);
-					}
+					assert.ok(sp.includes("pick the right tool"), `${modelLabel}: guidance present`);
+					// prohibitive rule always present in new lookup-table format
+					assert.ok(sp.includes("Do NOT use read for code files"), `${modelLabel}: includes prohibitive rule`);
 				} else {
 					assert.equal(result, undefined, `${modelLabel}: no guidance`);
 				}
@@ -327,7 +322,7 @@ async function main() {
 		assert.equal(modHelpers.maxErrorHistory({}), 100);
 		assert.equal(modHelpers.thinkingBudget({}), undefined);
 		assert.equal(modHelpers.autoBlockAfterReminders({}), 0);
-		assert.equal(modHelpers.blockDangerousEnabled({}), false);
+		assert.equal(modHelpers.blockDangerousEnabled({}), true);
 		assert.equal(
 			modHelpers.maxErrorHistory({ PI_DEEPSEEK_TOOLS_MAX_ERROR_HISTORY: "200" }), 200);
 		assert.equal(

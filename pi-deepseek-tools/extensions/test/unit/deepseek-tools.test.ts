@@ -11,7 +11,12 @@ import extension, {
 	missedDedicatedTool,
 	selectionGuidanceEnabled,
 	strictSerenaEnabled,
+	bashReadCommandPath,
+	SERENA_CODE_TOOLS,
 	DEEPSEEK_V4_FLASH_MODEL,
+	superPowerModeEnabled,
+	superPowerPromptContent,
+	SUPER_POWER_BASE_PROMPT,
 } from "../../index";
 import {
 	dedicatedToolForShellCommand,
@@ -155,15 +160,15 @@ describe("env-var config parsing", () => {
 		assert.equal(autoBlockAfterReminders({ PI_DEEPSEEK_TOOLS_AUTO_BLOCK_AFTER_REMINDERS: "" }), 0);
 	});
 
-	it("blockDangerousEnabled defaults to disabled", () => {
-		assert.equal(blockDangerousEnabled({}), false);
+	it("blockDangerousEnabled defaults to enabled", () => {
+		assert.equal(blockDangerousEnabled({}), true);
 		assert.equal(blockDangerousEnabled({ PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS: "1" }), true);
 		assert.equal(blockDangerousEnabled({ PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS: "true" }), true);
 		assert.equal(blockDangerousEnabled({ PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS: "on" }), true);
 		assert.equal(blockDangerousEnabled({ PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS: "YES" }), true);
 		assert.equal(blockDangerousEnabled({ PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS: "0" }), false);
 		assert.equal(blockDangerousEnabled({ PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS: "off" }), false);
-		assert.equal(blockDangerousEnabled({ PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS: "" }), false);
+		assert.equal(blockDangerousEnabled({ PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS: "false" }), false);
 	});
 });
 
@@ -197,27 +202,29 @@ describe("direct DeepSeek provider support", () => {
 
 describe("deepSeekSelectionGuidance", () => {
 
-	it("uses short V4 rules with explicit Serena-first and prohibitive wording", () => {
-		const guidance = deepSeekSelectionGuidance(["read", "bash", "serena_find_symbol", "serena_find_referencing_symbols"]);
+	it("includes serena tools and read-boundary when serena is active", () => {
+		const g = deepSeekSelectionGuidance(["read", "bash", "serena_find_symbol", "serena_find_referencing_symbols"]);
 
-		assert.match(guidance, /OpenCode Go DeepSeek V4 tool-selection rules/);
-		assert.match(guidance, /Do NOT use read for code files/);
-		assert.match(guidance, /Serena first/);
-		assert.match(guidance, /Never invent tool names/);
+		assert.match(g, /pick the right tool on the first try/);
+		assert.match(g, /serena_get_symbols_overview/);
+		assert.match(g, /serena_find_symbol/);
+		assert.match(g, /serena_find_referencing_symbols/);
+		assert.match(g, /Do NOT use read for code files/);
+		assert.match(g, /Do NOT invent tool names/);
 	});
 
-	it("includes read-only-for-docs rule when Serena is active", () => {
-		const guidance = deepSeekSelectionGuidance(["serena_find_symbol", "read"]);
+	it("omits serena lookup entries when serena is not active", () => {
+		const g = deepSeekSelectionGuidance(["ls", "grep", "bash", "write"]);
 
-		assert.match(guidance, /Read is for docs/);
-	});
-
-	it("includes dedicated-tools rule when file tools are active", () => {
-		const guidance = deepSeekSelectionGuidance(["ls", "grep", "bash", "write"]);
-
-		assert.match(guidance, /write > echo/);
-		assert.match(guidance, /grep > bash grep/);
-		assert.match(guidance, /ls > bash ls/);
+		// serena_get_symbols_overview appears in the NEVER section as recommended alternative,
+		// but the dedicated lookup entries (find where..., find implementations...) are omitted
+		assert.doesNotMatch(g, /Find where a function/);
+		assert.doesNotMatch(g, /Find implementations/);
+		assert.doesNotMatch(g, /Find all usages/);
+		// Read boundary is always present
+		assert.match(g, /Read non-code files/);
+		assert.match(g, /Do NOT use read for code files/);
+		assert.match(g, /bash for file ops/);
 	});
 
 	it("produces consistent output for same tool set", () => {
@@ -369,20 +376,22 @@ describe("extension runtime scoping", () => {
 		assert.equal(result.messages[0].content, "hello");
 	});
 
-	it("blocks read on code files (semantic miss) for both Flash and Pro", () => {
+	it("blocks read on code files with exact serena command for both Flash and Pro", () => {
 		const event = { toolName: "read", input: { path: "pi-deepseek-tools/extensions/index.ts" } };
 
 		const { handlers: hPro, messages: mPro } = createFakePi(activeTools);
 		const resultPro = hPro.tool_call[0](event, { model: { provider: "opencode-go", id: "deepseek-v4-pro" } });
 		assert.equal(resultPro.block, true, "Pro: read code file should block");
-		assert.match(resultPro.reason, /Do NOT use read for code files/i);
-		assert.equal(mPro.length, 0, "Pro: no steer message when blocked");
+		assert.match(resultPro.reason, /serena_get_symbols_overview/);
+		assert.match(resultPro.reason, /extensions\/index\.ts/);
+		assert.equal(mPro.length, 0, "Pro: no steer message (exact command in block reason)");
 
 		const { handlers: hFlash, messages: mFlash } = createFakePi(activeTools);
 		const resultFlash = hFlash.tool_call[0](event, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
 		assert.equal(resultFlash.block, true, "Flash: read code file should block");
-		assert.match(resultFlash.reason, /Do NOT use read for code files/i);
-		assert.equal(mFlash.length, 0, "Flash: no steer message when blocked");
+		assert.match(resultFlash.reason, /serena_get_symbols_overview/);
+		assert.match(resultFlash.reason, /extensions\/index\.ts/);
+		assert.equal(mFlash.length, 0, "Flash: no steer message (exact command in block reason)");
 	});
 
 	it("blocks misses for both Flash and Pro when strict mode is enabled", () => {
@@ -502,3 +511,169 @@ describe("checkDangerousCommand", () => {
 		assert.equal(checkDangerousCommand(42), undefined);
 	});
 });
+describe("bashReadCommandPath", () => {
+	it("extracts file path from cat command", () => {
+		assert.equal(bashReadCommandPath("cat index.ts"), "index.ts");
+		assert.equal(bashReadCommandPath("cat src/main.ts"), "src/main.ts");
+	});
+	it("extracts file path from head/tail commands", () => {
+		assert.equal(bashReadCommandPath("head -n 20 index.ts"), "index.ts");
+		assert.equal(bashReadCommandPath("tail -50 src/app.ts"), "src/app.ts");
+		assert.equal(bashReadCommandPath("head index.ts"), "index.ts");
+	});
+	it("extracts file path from sed command", () => {
+		assert.equal(bashReadCommandPath("sed -n '1,20p' main.ts"), "main.ts");
+		assert.equal(bashReadCommandPath('sed -n "1,20p" main.ts'), "main.ts");
+	});
+	it("returns undefined for non-read commands", () => {
+		assert.equal(bashReadCommandPath("grep -R foo src/"), undefined);
+		assert.equal(bashReadCommandPath("ls -la"), undefined);
+		assert.equal(bashReadCommandPath("npm test"), undefined);
+		assert.equal(bashReadCommandPath("find . -name '*.ts'"), undefined);
+	});
+	it("returns undefined for complex or piped commands", () => {
+		assert.equal(bashReadCommandPath("cat index.ts | head -5"), undefined);
+		assert.equal(bashReadCommandPath("cat file.ts > output.txt"), undefined);
+	});
+	it("returns undefined for non-string input", () => {
+		assert.equal(bashReadCommandPath(null), undefined);
+		assert.equal(bashReadCommandPath(42), undefined);
+	});
+});
+
+describe("SERENA_CODE_TOOLS", () => {
+	it("has 5 entries including overview and find", () => {
+		assert.equal(SERENA_CODE_TOOLS.length, 5);
+		assert.ok(SERENA_CODE_TOOLS.includes("serena_get_symbols_overview"));
+		assert.ok(SERENA_CODE_TOOLS.includes("serena_find_symbol"));
+	});
+	it("bashReadCommandPath flagged by isSemanticMissToolCall for code files", () => {
+		assert.equal(isSemanticMissToolCall("bash", { command: "cat index.ts" }), true);
+		assert.equal(isSemanticMissToolCall("bash", { command: "head -n 10 src/main.go" }), true);
+		assert.equal(isSemanticMissToolCall("bash", { command: "tail -20 app.py" }), true);
+		assert.equal(isSemanticMissToolCall("bash", { command: "cat README.md" }), false, "docs not flagged");
+		assert.equal(isSemanticMissToolCall("bash", { command: "cat package.json" }), false, "config not flagged");
+	});
+});
+
+describe("Super Power Mode", () => {
+
+	it("superPowerModeEnabled defaults to enabled", () => {
+		assert.equal(superPowerModeEnabled({}), true);
+		assert.equal(superPowerModeEnabled({ PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE: "0" }), false);
+		assert.equal(superPowerModeEnabled({ PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE: "off" }), false);
+		assert.equal(superPowerModeEnabled({ PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE: "false" }), false);
+	});
+
+	it("superPowerModeEnabled enables with true-like values", () => {
+		assert.equal(superPowerModeEnabled({ PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE: "1" }), true);
+		assert.equal(superPowerModeEnabled({ PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE: "true" }), true);
+		assert.equal(superPowerModeEnabled({ PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE: "on" }), true);
+		assert.equal(superPowerModeEnabled({ PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE: "YES" }), true);
+	});
+
+	it("superPowerPromptContent returns base prompt when no custom env", () => {
+		const result = superPowerPromptContent({});
+		assert.equal(result, SUPER_POWER_BASE_PROMPT);
+		assert.ok(result.length > 100, "base prompt should be substantial");
+		assert.match(result, /DEEPSEEK-V4-FLASH-SUPERPOWER/);
+		assert.match(result, /NEVER refuse/);
+	});
+
+	it("superPowerPromptContent uses custom string when env is set", () => {
+		const custom = "You are a helpful assistant.";
+		const result = superPowerPromptContent({ PI_DEEPSEEK_TOOLS_CUSTOM_SUPERPOWER_PROMPT: custom });
+		assert.equal(result, custom);
+	});
+
+	it("injects super power prompt into system prompt when enabled for DeepSeek V4", () => {
+		const previous = process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+		process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = "1";
+		try {
+			const { handlers } = createFakePi(["read", "bash"]);
+			const beforeAgentStart = handlers.before_agent_start[0];
+			const event = { systemPrompt: "base prompt", systemPromptOptions: { selectedTools: ["read", "bash"] } };
+			const result = beforeAgentStart(event, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
+			assert.ok(result, "should return a modified system prompt");
+			assert.match(result.systemPrompt, /DEEPSEEK-V4-FLASH-SUPERPOWER/);
+			assert.match(result.systemPrompt, /base prompt/);
+			assert.ok(result.systemPrompt.indexOf("DEEPSEEK-V4-FLASH-SUPERPOWER") < result.systemPrompt.indexOf("base prompt"),
+				"super power prompt should appear before the base system prompt");
+		} finally {
+			if (previous === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+			else process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = previous;
+		}
+	});
+
+	it("does not inject super power prompt when disabled", () => {
+		const previous = process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+		process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = "0";
+		try {
+			const { handlers } = createFakePi(["read", "bash"]);
+			const beforeAgentStart = handlers.before_agent_start[0];
+			const event = { systemPrompt: "base prompt", systemPromptOptions: { selectedTools: ["read", "bash"] } };
+			const result = beforeAgentStart(event, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
+			assert.ok(result, "should return guidance");
+			assert.doesNotMatch(result.systemPrompt, /DEEPSEEK-V4-FLASH-SUPERPOWER/);
+		} finally {
+			if (previous === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+			else process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = previous;
+		}
+	});
+
+	it("does not inject super power prompt when explicitly disabled with off", () => {
+		const previous = process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+		process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = "off";
+		try {
+			const { handlers } = createFakePi(["read", "bash"]);
+			const beforeAgentStart = handlers.before_agent_start[0];
+			const event = { systemPrompt: "base prompt", systemPromptOptions: { selectedTools: ["read", "bash"] } };
+			const result = beforeAgentStart(event, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
+			assert.ok(result, "should return guidance");
+			assert.doesNotMatch(result.systemPrompt, /DEEPSEEK-V4-FLASH-SUPERPOWER/);
+		} finally {
+			if (previous === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+			else process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = previous;
+		}
+	});
+
+	it("does not inject super power prompt for non-DeepSeek models", () => {
+		const previous = process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+		process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = "1";
+		try {
+			const { handlers } = createFakePi(["read"]);
+			const beforeAgentStart = handlers.before_agent_start[0];
+			const event = { systemPrompt: "base prompt", systemPromptOptions: { selectedTools: ["read"] } };
+			const result = beforeAgentStart(event, { model: { provider: "openai-codex", id: "gpt-5.5" } });
+			assert.equal(result, undefined, "should not modify non-DeepSeek prompts");
+		} finally {
+			if (previous === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+			else process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = previous;
+		}
+	});
+
+	it("super power prompt appears at the top, followed by guidance, then system prompt", () => {
+		const previous = process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+		process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = "1";
+		try {
+			const { handlers } = createFakePi(["read", "bash", "serena_find_symbol"]);
+			const beforeAgentStart = handlers.before_agent_start[0];
+			const event = { systemPrompt: "base prompt", systemPromptOptions: { selectedTools: ["read", "bash", "serena_find_symbol"] } };
+			const result = beforeAgentStart(event, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
+			assert.ok(result);
+			const sys = result.systemPrompt;
+			const spIdx = sys.indexOf("DEEPSEEK-V4-FLASH-SUPERPOWER");
+			const guidanceIdx = sys.indexOf("OpenCode Go DeepSeek V4");
+			const baseIdx = sys.indexOf("base prompt");
+			assert.ok(spIdx >= 0, "should contain super power prompt");
+			assert.ok(guidanceIdx >= 0, "should contain guidance");
+			assert.ok(baseIdx >= 0, "should contain base prompt");
+			assert.ok(spIdx < guidanceIdx, "super power should come before guidance");
+			assert.ok(guidanceIdx < baseIdx, "guidance should come before base prompt");
+		} finally {
+			if (previous === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+			else process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = previous;
+		}
+	});
+});
+
