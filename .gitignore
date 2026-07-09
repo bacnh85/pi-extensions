@@ -1,3 +1,6 @@
 .agents/
 .env.*
 node_modules/
+
+# Serena auto-generated config (local)
+.serena/project.yml
