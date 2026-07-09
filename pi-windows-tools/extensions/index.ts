@@ -73,13 +73,9 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
 		execute(_id, p, _s, _u, ctx) {
 			const filePath = resolve(ctx?.cwd || process.cwd(), p.path);
 			const content = readFileSync(filePath, "utf8");
-			if (!content.includes(p.oldText)) {
-				throw new Error(`Text not found in ${filePath}`);
-			}
 			const updated = content.replace(p.oldText, p.newText);
-			if (updated === content) {
-				throw new Error(`Replacement produced no change in ${filePath}`);
-			}
+			if (updated === content) throw new Error(`Not found or no change: ${filePath}`);
+
 			writeFileSync(filePath, updated, "utf8");
 			return tr(`Edited ${filePath}`);
 		} });
