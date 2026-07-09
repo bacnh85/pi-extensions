@@ -198,8 +198,9 @@ async function main() {
 					assert.ok(result, `${modelLabel}: should inject guidance`);
 					const sp = result.systemPrompt;
 					assert.ok(sp.includes("pick the right tool"), `${modelLabel}: guidance present`);
-					// prohibitive rule always present in new lookup-table format
-					assert.ok(sp.includes("Do NOT use read for code files"), `${modelLabel}: includes prohibitive rule`);
+					// prohibitive rules present
+					assert.ok(sp.includes("Do NOT use bash for file ops"), `${modelLabel}: includes bash prohibitive rule`);
+					assert.ok(sp.includes("Read code or non-code files"), `${modelLabel}: includes read mapping`);
 				} else {
 					assert.equal(result, undefined, `${modelLabel}: no guidance`);
 				}

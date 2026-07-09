@@ -209,7 +209,7 @@ describe("deepSeekSelectionGuidance", () => {
 		assert.match(g, /serena_get_symbols_overview/);
 		assert.match(g, /serena_find_symbol/);
 		assert.match(g, /serena_find_referencing_symbols/);
-		assert.match(g, /Do NOT use read for code files/);
+		assert.match(g, /Read code or non-code files/);
 		assert.match(g, /Do NOT invent tool names/);
 	});
 
@@ -222,8 +222,8 @@ describe("deepSeekSelectionGuidance", () => {
 		assert.doesNotMatch(g, /Find implementations/);
 		assert.doesNotMatch(g, /Find all usages/);
 		// Read boundary is always present
-		assert.match(g, /Read non-code files/);
-		assert.match(g, /Do NOT use read for code files/);
+		assert.match(g, /Read code or non-code files/);
+		assert.doesNotMatch(g, /Do NOT use read for code files/);
 		assert.match(g, /bash for file ops/);
 	});
 
@@ -238,9 +238,9 @@ describe("deepSeekSelectionGuidance", () => {
 });
 
 describe("semantic miss detection", () => {
-	it("flags reads of code files", () => {
-		assert.equal(isSemanticMissToolCall("read", { path: "pi-deepseek-tools/extensions/index.ts" }), true);
-		assert.equal(isSemanticMissToolCall("read", { path: "src/app.py?x=1" }), true);
+	it("does not flag reads of code files (read is the correct tool for content)", () => {
+		assert.equal(isSemanticMissToolCall("read", { path: "pi-deepseek-tools/extensions/index.ts" }), false);
+		assert.equal(isSemanticMissToolCall("read", { path: "src/app.py?x=1" }), false);
 	});
 
 	it("does not flag docs, package/config files, or non-code reads", () => {
@@ -255,6 +255,10 @@ describe("semantic miss detection", () => {
 		assert.equal(isSemanticMissToolCall("bash", { command: "rg 'function foo' src/**/*.ts" }), true);
 		assert.equal(isSemanticMissToolCall("bash", { command: "find src -name '*.ts' -print" }), true);
 		assert.equal(isSemanticMissToolCall("bash", { command: "grep -R 'class User' src" }), true);
+		// Simple cat/head/tail on code files are NOT semantic misses — handled by dedicatedToolForShellCommand
+		assert.equal(isSemanticMissToolCall("bash", { command: "cat index.ts" }), false);
+		assert.equal(isSemanticMissToolCall("bash", { command: "head -n 10 src/main.go" }), false);
+		assert.equal(isSemanticMissToolCall("bash", { command: "tail -20 app.py" }), false);
 	});
 
 	it("does not flag normal shell commands or non-code exact searches", () => {
@@ -376,22 +380,16 @@ describe("extension runtime scoping", () => {
 		assert.equal(result.messages[0].content, "hello");
 	});
 
-	it("blocks read on code files with exact serena command for both Flash and Pro", () => {
+	it("does not block read on code files — read is allowed for code content", () => {
 		const event = { toolName: "read", input: { path: "pi-deepseek-tools/extensions/index.ts" } };
 
 		const { handlers: hPro, messages: mPro } = createFakePi(activeTools);
 		const resultPro = hPro.tool_call[0](event, { model: { provider: "opencode-go", id: "deepseek-v4-pro" } });
-		assert.equal(resultPro.block, true, "Pro: read code file should block");
-		assert.match(resultPro.reason, /serena_get_symbols_overview/);
-		assert.match(resultPro.reason, /extensions\/index\.ts/);
-		assert.equal(mPro.length, 0, "Pro: no steer message (exact command in block reason)");
+		assert.equal(resultPro, undefined, "Pro: read code file should NOT block");
 
 		const { handlers: hFlash, messages: mFlash } = createFakePi(activeTools);
 		const resultFlash = hFlash.tool_call[0](event, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
-		assert.equal(resultFlash.block, true, "Flash: read code file should block");
-		assert.match(resultFlash.reason, /serena_get_symbols_overview/);
-		assert.match(resultFlash.reason, /extensions\/index\.ts/);
-		assert.equal(mFlash.length, 0, "Flash: no steer message (exact command in block reason)");
+		assert.equal(resultFlash, undefined, "Flash: read code file should NOT block");
 	});
 
 	it("blocks misses for both Flash and Pro when strict mode is enabled", () => {
@@ -547,10 +545,9 @@ describe("SERENA_CODE_TOOLS", () => {
 		assert.ok(SERENA_CODE_TOOLS.includes("serena_get_symbols_overview"));
 		assert.ok(SERENA_CODE_TOOLS.includes("serena_find_symbol"));
 	});
-	it("bashReadCommandPath flagged by isSemanticMissToolCall for code files", () => {
-		assert.equal(isSemanticMissToolCall("bash", { command: "cat index.ts" }), true);
-		assert.equal(isSemanticMissToolCall("bash", { command: "head -n 10 src/main.go" }), true);
-		assert.equal(isSemanticMissToolCall("bash", { command: "tail -20 app.py" }), true);
+	it("bash cat/head/tail on code files no longer flagged by isSemanticMissToolCall", () => {
+		// Simple reads via bash are handled by missedDedicatedTool → steer reminder, not hard block
+		assert.equal(isSemanticMissToolCall("bash", { command: "cat index.ts" }), false);
 		assert.equal(isSemanticMissToolCall("bash", { command: "cat README.md" }), false, "docs not flagged");
 		assert.equal(isSemanticMissToolCall("bash", { command: "cat package.json" }), false, "config not flagged");
 	});

@@ -96,7 +96,7 @@ export function looksLikeDocsOrConfigPath(value: unknown): boolean {
 export function commandLooksLikeSemanticCodeSearch(command: unknown): boolean {
 	if (typeof command !== "string") return false;
 	const lowered = command.toLowerCase();
-	if (!/\b(rg|grep|ag|ack|sed|awk|cat|find)\b/.test(lowered)) return false;
+	if (!/\b(rg|grep|ag|ack|sed|awk|find)\b/.test(lowered)) return false;
 	if (/\b(ls|pwd|git\s+status|npm\s+(test|run|install)|pnpm\s+(test|run|install)|yarn\s+(test|run|install))\b/.test(lowered)) return false;
 	return /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|cpp|cc|cxx|c|h|hpp)\b/.test(lowered)
 		|| /\b(class|function|def|interface|implements|references?|symbol|declaration|implementation|method|variable|rename|refactor)\b/.test(lowered);
@@ -141,13 +141,8 @@ export function bashReadCommandPath(command: unknown): string | undefined {
 
 export function isSemanticMissToolCall(toolName: string, input: unknown): boolean {
 	if (!isRecord(input)) return false;
-	if (toolName === "read") return looksLikeCodePath(input.path) && !looksLikeDocsOrConfigPath(input.path);
 	if (toolName === "bash") {
-		// Already detects grep/rg/ag semantic code searches
 		if (commandLooksLikeSemanticCodeSearch(input.command)) return true;
-		// Also detect bash cat/head/tail/sed on code files — these should use Serena + read
-		const bashPath = bashReadCommandPath(input.command);
-		if (bashPath && looksLikeCodePath(bashPath) && !looksLikeDocsOrConfigPath(bashPath)) return true;
 		return false;
 	}
 	return false;
@@ -215,7 +210,7 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 	const lookups: string[] = [];
 	if (serenaActive) {
 		lookups.push(
-			"  • Explore/read a code file (*.ts, *.py, *.go, etc.) → serena_get_symbols_overview",
+			"  • Explore symbols in a code file → serena_get_symbols_overview",
 			"  • Find where a function/class/variable is defined → serena_find_symbol",
 			"  • Find where a symbol is declared → serena_find_declaration",
 			"  • Find implementations of a class/interface → serena_find_implementations",
@@ -223,14 +218,13 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 		);
 	}
 	// ponytail: one-liner intent→tool for the read-boundary since it's the most common mistake
-	lookups.push("  • Read non-code files (docs, config, logs, generated output) → read");
+	lookups.push("  • Read code or non-code files (docs, config, logs, generated output) → read");
 
 	for (const l of lookups) lines.push(l);
 
 	lines.push("");
-	// ponytail: 3 prohibitions, not 12. The model only needs to know what NOT to do.
+	// ponytail: 2 prohibitions, not 12. The model only needs to know what NOT to do.
 	lines.push("NEVER do these — they are BLOCKED:");
-	lines.push("  • Do NOT use read for code files — blocked. Use serena_get_symbols_overview or find the symbol directly.");
 	lines.push("  • Do NOT use bash for file ops (ls, grep, cat, find, head, tail) — blocked in strict mode. Use the dedicated tool.");
 	lines.push("  • Do NOT invent tool names (search_files, read_file, edit_file) — use only the exact Pi tool names from the list below.");
 

@@ -364,21 +364,17 @@ export default function (pi: ExtensionAPI) {
 		if (!semanticMiss && !dedicatedTool && !misuseTool) return;
 
 		const reason = semanticMiss
-			? "For DeepSeek V4, use Serena semantic tools before read/bash for code-symbol, declaration, reference, implementation, or refactor work. Do NOT use read for code files."
+			? "For DeepSeek V4, use Serena semantic tools for code-symbol, declaration, reference, implementation, or refactor work."
 			: dedicatedTool
 				? `For DeepSeek V4, use the dedicated ${dedicatedTool} tool instead of bash for this simple file operation.`
 				: `For DeepSeek V4, use ${misuseTool} instead of find when the file path is known or the action is to run a command.`;
 
-		// ── Semantic miss (read code file without Serena) → always block ──
+		// ── Semantic miss (bash code search without Serena) → always block ──
 		if (semanticMiss) {
-			debugLog("blocked: read code file without Serena");
-			// ponytail: tell the model exactly which serena tool + path to use next
-			const input = event.input as Record<string, unknown>;
-			const readPath = typeof input.path === "string" ? input.path
-				: typeof input.command === "string" ? bashReadCommandPath(input.command)
-				: undefined;
-			const pathArg = readPath ? `{relative_path: "${readPath}"}` : "the file";
-			const blockReason = `${reason} Blocked: read is for non-code files only. Use ${SERENA_CODE_TOOLS[0]}(${pathArg}) to explore this file.`;
+			debugLog("blocked: bash code search without Serena");
+			// ponytail: tell the model exactly which serena tool to use next
+			const pathArg = "the file";
+			const blockReason = `${reason} Blocked: bash is for executing commands. Use ${SERENA_CODE_TOOLS[0]}(${pathArg}) to explore symbols.`;
 			return { block: true, reason: blockReason };
 		}
 
