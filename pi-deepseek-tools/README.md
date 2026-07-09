@@ -68,9 +68,11 @@ Valid inputs pass through unchanged (except for path auto-link cleanup). TypeBox
 
 **Context-aware error recovery** — Tool errors are categorized (validation, rate-limit, timeout, tool-not-found, api-error, unknown) and the next turn receives a targeted recovery hint. Repeats of the same tool failure get an escalated hint with the repeat count.
 
+**Read-on-code-file blocking** — Reading a code file (`.ts`, `.py`, `.go`, etc.) without Serena first is **blocked by default** when Serena tools are available. Only docs, config, logs, and generated output bypass the block.
+
 **Find-misuse interception** — Blocks `find` when the model uses it for a known filename (suggests `read`) or test discovery (lets through).
 
-**Optional strict Serena mode** — `PI_DEEPSEEK_TOOLS_STRICT_SERENA=1` blocks obvious misses (reading code files before Serena, using `bash` where a dedicated Pi tool is active).
+**Optional strict Serena mode** — `PI_DEEPSEEK_TOOLS_STRICT_SERENA=1` extends blocking to `bash`-for-dedicated-tool misses (`bash ls`, `bash grep`, `bash cat`, `bash find`).
 
 **Status command** — `/deepseek-tools-status` shows configuration, repair counts, per-tool error statistics, and last error category.
 
@@ -79,7 +81,7 @@ Valid inputs pass through unchanged (except for path auto-link cleanup). TypeBox
 | Variable | Default | Accepted values | Purpose |
 |---|---|---|---|
 | `PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE=0` | on | `0`/`off`/`false` to disable | Tool-selection guidance injection |
-| `PI_DEEPSEEK_TOOLS_STRICT_SERENA=1` | off | `1`/`on`/`true` to enable | Block obvious Serena/dedicated-tool misses |
+| `PI_DEEPSEEK_TOOLS_STRICT_SERENA=1` | off | `1`/`on`/`true` to enable | Block bash-for-dedicated-tool misses (read-on-code-file is blocked by default) |
 | `PI_DEEPSEEK_TOOLS_STRIP_REASONING=1` | off | `1`/`on`/`true` to enable | Strip reasoning fields from prior assistant messages |
 | `PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS=2048` | unlimited | positive integer | Truncate long prior reasoning values |
 | `PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK=1` | off | `1`/`on`/`true` to enable | Also apply to direct `deepseek` provider |

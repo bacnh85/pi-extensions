@@ -115,6 +115,8 @@ export function dedicatedToolForShellCommand(command: unknown, activeTools: read
 	if (/^find\b/.test(trimmed) && activeTools.includes("find")) return "find";
 	if (/^(grep|rg|ag|ack)\b/.test(trimmed) && activeTools.includes("grep")) return "grep";
 	if (/^cat\s+\S+\s*$/.test(trimmed) && activeTools.includes("read")) return "read";
+	if (/^head\s+/.test(trimmed) && activeTools.includes("read")) return "read";
+	if (/^tail\s+/.test(trimmed) && activeTools.includes("read")) return "read";
 	if (/^sed\s+-n\s+['"]?\d+(,\d+)?p['"]?\s+\S+\s*$/.test(trimmed) && activeTools.includes("read")) return "read";
 	if (/^(echo|printf)\s.+>\s*\S/.test(trimmed) && activeTools.includes("write")) return "write";
 	return undefined;
@@ -170,29 +172,22 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 	if (cached) return cached;
 
 	const serenaActive = activeTools.some((tool) => tool.startsWith("serena_"));
-	const fileToolsActive = hasAnyTool(activeTools, ["ls", "grep", "find", "read", "edit", "bash", "write"]);
-	const parts = ["OpenCode Go DeepSeek V4 tool-selection rules for Pi:"];
-
-	parts.push("1. Call exactly one provided Pi tool name; never invent tool names such as read_file, search_files, or list_directory.");
+	const parts: string[] = [
+		"OpenCode Go DeepSeek V4 tool-selection rules — apply immediately:",
+		"",
+		"1. Code files → Serena first (serena_get_symbols_overview / serena_find_symbol / serena_find_declaration / serena_find_implementations / serena_find_referencing_symbols). Do NOT use read for code files.",
+	];
 
 	if (serenaActive) {
 		parts.push(
-			"2. For code-symbol, source navigation, declaration, implementation, reference, rename, or refactor tasks, first use Serena: serena_get_symbols_overview for source-file outlines, serena_find_symbol for functions/classes/methods/variables, serena_find_declaration or serena_find_implementations for definitions/interfaces, and serena_find_referencing_symbols before public behavior changes or renames.",
-			"3. Use read for docs, config, generated output, non-code files, or after Serena identifies the relevant code region.",
+			"2. Read is for docs, config, logs, generated output, or after Serena identifies the exact code region.",
 		);
 	}
 
-	if (fileToolsActive) {
-		parts.push(
-			"4. Path fields are filesystem paths, never markdown links or auto-links.",
-			"5. Do not default to find. Read → read. Run → bash. Write → write. List → ls. Search → grep. Find/locate → find. Match your first tool call to the verb in the prompt. The most common mistake is using find when prompted to read a file or run a command.",
-			"6. To create or write a file, use the write tool — not echo/printf redirections via bash.",
-			"7. When you know the exact file path (README.md, package.json, etc.), use read directly — not find.",
-			"8. Bash is for running tests, builds, git, package-manager, or process execution. Do not use bash for file reading, file discovery, or text search — read, find, ls, and grep handle those.",
-			"9. For edits, inspect with the right tool first and then call edit; do not invent missing tools.",
-			"10. If you encounter 400 errors related to reasoning or thinking content, add thinking: { type: 'budget_tokens', budget_tokens: 2048 } to the request.",
-		);
-	}
+	parts.push(
+		"3. Dedicated tools over bash/find: write > echo>, grep > bash grep, ls > bash ls, find (globs) > bash find, read > bash cat/sed/head.",
+		"4. Never invent tool names — use only the exact Pi tool names listed below.",
+	);
 
 	const result = parts.join("\n");
 	guidanceCache.set(cacheKey, result);

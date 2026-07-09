@@ -198,10 +198,7 @@ async function main() {
 					assert.ok(result, `${modelLabel}: should inject guidance`);
 					const sp = result.systemPrompt;
 					assert.ok(sp.includes("OpenCode Go DeepSeek V4"), `${modelLabel}: mentions V4`);
-					if (activeTools.includes("read") || activeTools.includes("bash")) {
-						assert.ok(sp.includes("Do not default to find") || sp.includes("Read → read"),
-							`${modelLabel}: includes tool rules`);
-					}
+					assert.ok(sp.includes("Do NOT use read for code files"), `${modelLabel}: includes prohibitive rule`);
 				} else {
 					assert.equal(result, undefined, `${modelLabel}: no guidance`);
 				}

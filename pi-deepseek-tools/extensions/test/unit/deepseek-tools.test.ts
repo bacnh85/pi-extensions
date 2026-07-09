@@ -197,33 +197,27 @@ describe("direct DeepSeek provider support", () => {
 
 describe("deepSeekSelectionGuidance", () => {
 
-	it("uses model-agnostic V4 procedural wording with explicit Serena rules", () => {
+	it("uses short V4 rules with explicit Serena-first and prohibitive wording", () => {
 		const guidance = deepSeekSelectionGuidance(["read", "bash", "serena_find_symbol", "serena_find_referencing_symbols"]);
 
-		assert.match(guidance, /OpenCode Go DeepSeek V4 tool-selection rules for Pi/);
-		assert.match(guidance, /never invent tool names such as read_file/);
-		assert.match(guidance, /first use Serena/);
-		assert.match(guidance, /serena_find_referencing_symbols before public behavior changes or renames/);
+		assert.match(guidance, /OpenCode Go DeepSeek V4 tool-selection rules/);
+		assert.match(guidance, /Do NOT use read for code files/);
+		assert.match(guidance, /Serena first/);
+		assert.match(guidance, /Never invent tool names/);
 	});
 
-	it("includes dedicated file-tool rules when file tools are active", () => {
-		const guidance = deepSeekSelectionGuidance(["ls", "grep", "find", "bash", "write"]);
+	it("includes read-only-for-docs rule when Serena is active", () => {
+		const guidance = deepSeekSelectionGuidance(["serena_find_symbol", "read"]);
 
-		assert.match(guidance, /Do not default to find/i);
-		assert.match(guidance, /Read → read/i);
-		assert.match(guidance, /Run → bash/i);
-		assert.match(guidance, /Write → write/i);
-		assert.match(guidance, /most common mistake is using find/i);
-		assert.match(guidance, /Bash is for running tests, builds, git/i);
-		assert.match(guidance, /Do not use bash for file reading/i);
-		assert.match(guidance, /use the write tool — not echo/i);
-		assert.match(guidance, /use read directly — not find/i);
+		assert.match(guidance, /Read is for docs/);
 	});
 
-	it("includes thinking-effort hint rule 8 when file tools are active", () => {
-		const guidance = deepSeekSelectionGuidance(["bash"]);
-		assert.match(guidance, /400 errors related to reasoning or thinking/i);
-		assert.match(guidance, /budget_tokens/i);
+	it("includes dedicated-tools rule when file tools are active", () => {
+		const guidance = deepSeekSelectionGuidance(["ls", "grep", "bash", "write"]);
+
+		assert.match(guidance, /write > echo/);
+		assert.match(guidance, /grep > bash grep/);
+		assert.match(guidance, /ls > bash ls/);
 	});
 
 	it("produces consistent output for same tool set", () => {
@@ -233,11 +227,6 @@ describe("deepSeekSelectionGuidance", () => {
 
 		assert.equal(a, b); // same input → same output
 		assert.notEqual(a, c); // different input → different output
-	});
-
-	it("does not include thinking-effort hint when only serena tools are active", () => {
-		const guidance = deepSeekSelectionGuidance(["serena_find_symbol"]);
-		assert.doesNotMatch(guidance, /400 errors related to reasoning/i);
 	});
 });
 
@@ -277,6 +266,9 @@ describe("dedicated tool miss detection", () => {
 		assert.equal(dedicatedToolForShellCommand("find pi-deepseek-tools -name '*.ts'", active), "find");
 		assert.equal(dedicatedToolForShellCommand("grep -R PI_DEEPSEEK README.md", active), "grep");
 		assert.equal(dedicatedToolForShellCommand("cat README.md", active), "read");
+		assert.equal(dedicatedToolForShellCommand("head -n 5 README.md", active), "read");
+		assert.equal(dedicatedToolForShellCommand("head README.md", active), "read");
+		assert.equal(dedicatedToolForShellCommand("tail -20 README.md", active), "read");
 		assert.equal(dedicatedToolForShellCommand("sed -n '1,20p' README.md", active), "read");
 		assert.equal(dedicatedToolForShellCommand("echo 'hello' > /tmp/test.md", active), "write");
 		assert.equal(dedicatedToolForShellCommand("printf 'content' > /tmp/file", active), "write");
@@ -377,19 +369,20 @@ describe("extension runtime scoping", () => {
 		assert.equal(result.messages[0].content, "hello");
 	});
 
-	it("sends reminders for both opencode-go DeepSeek V4 Flash and Pro", () => {
+	it("blocks read on code files (semantic miss) for both Flash and Pro", () => {
 		const event = { toolName: "read", input: { path: "pi-deepseek-tools/extensions/index.ts" } };
 
 		const { handlers: hPro, messages: mPro } = createFakePi(activeTools);
-		hPro.tool_call[0](event, { model: { provider: "opencode-go", id: "deepseek-v4-pro" } });
-		assert.equal(mPro.length, 1);
-		assert.match(String((mPro[0].message as any).content), /DeepSeek V4/);
+		const resultPro = hPro.tool_call[0](event, { model: { provider: "opencode-go", id: "deepseek-v4-pro" } });
+		assert.equal(resultPro.block, true, "Pro: read code file should block");
+		assert.match(resultPro.reason, /Do NOT use read for code files/i);
+		assert.equal(mPro.length, 0, "Pro: no steer message when blocked");
 
 		const { handlers: hFlash, messages: mFlash } = createFakePi(activeTools);
-		hFlash.tool_call[0](event, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
-		assert.equal(mFlash.length, 1);
-		assert.match(String((mFlash[0].message as any).content), /DeepSeek V4/);
-		assert.deepEqual(mFlash[0].options, { deliverAs: "steer" });
+		const resultFlash = hFlash.tool_call[0](event, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
+		assert.equal(resultFlash.block, true, "Flash: read code file should block");
+		assert.match(resultFlash.reason, /Do NOT use read for code files/i);
+		assert.equal(mFlash.length, 0, "Flash: no steer message when blocked");
 	});
 
 	it("blocks misses for both Flash and Pro when strict mode is enabled", () => {

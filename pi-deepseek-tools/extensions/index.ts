@@ -284,7 +284,8 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		debugLog("guidance: injected for", activeTools.length, "tools");
-		return { systemPrompt: `${systemPrompt}\n\n${deepSeekSelectionGuidance(activeTools)}` };
+		// ponytail: prepend guidance so DeepSeek sees it first, before tool definitions.
+		return { systemPrompt: `${deepSeekSelectionGuidance(activeTools)}\n\n---\n\n${systemPrompt}` };
 	});
 
 	// ── agent_end: reset repair flag ────────────────────────
@@ -324,47 +325,49 @@ export default function (pi: ExtensionAPI) {
 		if (!semanticMiss && !dedicatedTool && !misuseTool) return;
 
 		const reason = semanticMiss
-			? "For DeepSeek V4, use Serena semantic tools before read/bash for code-symbol, declaration, reference, implementation, or refactor work."
+			? "For DeepSeek V4, use Serena semantic tools before read/bash for code-symbol, declaration, reference, implementation, or refactor work. Do NOT use read for code files."
 			: dedicatedTool
 				? `For DeepSeek V4, use the dedicated ${dedicatedTool} tool instead of bash for this simple file operation.`
 				: `For DeepSeek V4, use ${misuseTool} instead of find when the file path is known or the action is to run a command.`;
 
-		// Build a unique miss key for tracking reminder escalation
-		const missKey = misuseTool ? `find→${misuseTool}`
-			: dedicatedTool ? `bash→${dedicatedTool}`
-			: semanticMiss ? "serena-before-read"
-			: undefined;
+		// ── Semantic miss (read code file without Serena) → always block ──
+		if (semanticMiss) {
+			debugLog("blocked: read code file without Serena");
+			return { block: true, reason: `${reason} Use read only for docs, config, logs, or after Serena identifies the code region.` };
+		}
 
-		// ── Adaptive escalation: block after N reminders for same miss ──
-		if (missKey) {
-			const threshold = autoBlockAfterReminders();
-			if (threshold > 0) {
-				const count = (reminderCounts.get(missKey) ?? 0) + 1;
-				reminderCounts.set(missKey, count);
-				debugLog("reminder:", missKey, "count:", count, "/", threshold);
-				if (count >= threshold) {
-					debugLog("auto-blocked:", missKey, "after", count, "reminders");
-					return { block: true, reason: `${reason} (auto-blocked after ${count} reminders on this pattern)` };
-				}
+		// ── Find misuse → always block (unambiguous) ───────
+		if (misuseTool) {
+			debugLog("blocked: find misuse");
+			return { block: true, reason };
+		}
+
+		// ── Dedicated tool miss (bash ls/grep/cat/find) → adaptive escalation ──
+		const missKey = `bash→${dedicatedTool}`;
+		const threshold = autoBlockAfterReminders();
+		if (threshold > 0) {
+			const count = (reminderCounts.get(missKey) ?? 0) + 1;
+			reminderCounts.set(missKey, count);
+			debugLog("reminder:", missKey, "count:", count, "/", threshold);
+			if (count >= threshold) {
+				debugLog("auto-blocked:", missKey, "after", count, "reminders");
+				return { block: true, reason: `${reason} (auto-blocked after ${count} reminders on this pattern)` };
 			}
 		}
 
-		// Block unambiguous cases (find misuse) or strict serena mode
-		if (misuseTool || strictSerenaEnabled()) {
-			debugLog("blocked:", event.toolName, reason);
+		// Strict Serena mode → block dedicated tool misses too
+		if (strictSerenaEnabled()) {
+			debugLog("blocked: dedicated tool miss (strict)");
 			return { block: true, reason };
 		}
-		if (remindedThisTurn) return;
 
+		// Once-per-turn steer reminder
+		if (remindedThisTurn) return;
 		remindedThisTurn = true;
 		pi.sendMessage(
 			{
 				customType: "deepseek-v4-tool-selection-reminder",
-				content: semanticMiss
-					? `${reason} Use read for docs/config/non-code files or after Serena identifies the relevant code region.`
-					: misuseTool
-						? `${reason}`
-						: `${reason} Use bash only for real shell commands such as tests, builds, git, package-manager, or process execution.`,
+				content: `${reason} Use bash only for real shell commands such as tests, builds, git, package-manager, or process execution.`,
 				display: true,
 			},
 			{ deliverAs: "steer" },
