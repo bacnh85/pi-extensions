@@ -28,6 +28,10 @@ import {
 	categorizeToolError,
 	directDeepSeekEnabled,
 	checkDangerousCommand,
+	maxErrorHistory,
+	thinkingBudget,
+	autoBlockAfterReminders,
+	blockDangerousEnabled,
 	type ErrorInfo,
 	type ErrorCategory,
 } from "./lib/deepseek-tools";
@@ -52,6 +56,10 @@ export {
 export {
 	categorizeToolError,
 	checkDangerousCommand,
+	maxErrorHistory,
+	thinkingBudget,
+	autoBlockAfterReminders,
+	blockDangerousEnabled,
 	type ErrorInfo,
 	type ErrorCategory,
 } from "./lib/deepseek-tools";
@@ -104,11 +112,6 @@ function wrapToolDefinition(base: any, shouldRepair: () => boolean, onRepair: (t
 // ────────────────────────────────────────────────────────
 const errorHistory = new Map<string, { count: number; lastCategory: ErrorCategory }>();
 
-function maxErrorHistory(env = process.env): number {
-	const val = parseInt(env.PI_DEEPSEEK_TOOLS_ERROR_HISTORY ?? "50", 10);
-	return Number.isFinite(val) && val > 0 ? val : 50;
-}
-
 function recordError(toolName: string, category: ErrorCategory) {
 	errorHistory.set(toolName, { count: (errorHistory.get(toolName)?.count ?? 0) + 1, lastCategory: category });
 	while (errorHistory.size > maxErrorHistory()) errorHistory.delete(errorHistory.keys().next().value!);
@@ -123,33 +126,16 @@ export default function (pi: ExtensionAPI) {
 	const repairCounts = new Map<string, number>();
 	const reminderCounts = new Map<string, number>(); // per-tool reminder count for auto-block escalation
 
-	// ── Auto-block config (env-var backed) ─────────────────
-	function autoBlockAfterReminders(env = process.env): number {
-		const raw = env.PI_DEEPSEEK_TOOLS_AUTO_BLOCK_AFTER_REMINDERS;
-		if (raw === undefined || raw === "") return 0; // off
-		const val = parseInt(raw, 10);
-		return Number.isFinite(val) && val >= 1 ? val : 0;
-	}
-
-	// ── Dangerous-command config ───────────────────────────
-	function blockDangerousEnabled(): boolean {
-		return /^(1|true|yes|on)$/i.test(process.env.PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS ?? "");
-	}
-
-	// ponytail: single flat thinking budget env var. No turn-type detection.
-	function thinkingBudget(env = process.env): number | undefined {
-		const raw = env.PI_DEEPSEEK_TOOLS_THINKING_BUDGET;
-		if (raw === undefined || raw === "") return undefined;
-		const val = parseInt(raw, 10);
-		return Number.isFinite(val) && val >= 0 ? val : undefined;
-	}
+	// ── Config helpers: imported from deepseek-tools.ts ────
+	// autoBlockAfterReminders(), blockDangerousEnabled(), thinkingBudget()
+	// are now exported from ./lib/deepseek-tools.ts and imported above.
 
 	// ── /deepseek-tools-status ──────────────────────────────
 	pi.registerCommand("deepseek-tools-status", {
 		description: "Show pi-deepseek-tools configuration and statistics.",
 		handler: async (_args, cmdCtx) => {
 			const logFormat = process.env.PI_DEEPSEEK_TOOLS_LOG_FORMAT === "json" ? "json" : "plain";
-			const thinkingBudgetVal = process.env.PI_DEEPSEEK_TOOLS_THINKING_BUDGET || "unset";
+			const thinkingBudgetVal = thinkingBudget() ?? "unset";
 			const autoBlockAfter = autoBlockAfterReminders();
 			const dangerousBlockOn = blockDangerousEnabled();
 			const status = [
@@ -238,6 +224,10 @@ export default function (pi: ExtensionAPI) {
 		// 4. ponytail: single flat thinking budget — always same value when set
 		const budget = thinkingBudget();
 		if (budget !== undefined && isRecord(payload)) {
+			// Clone if payload is still the original reference so the mutation is returned.
+			if (payload === event.payload) {
+				payload = { ...payload };
+			}
 			(payload as Record<string, unknown>).thinking = { type: "budget_tokens", budget_tokens: budget };
 			debugLog("thinking: budget", budget);
 		}

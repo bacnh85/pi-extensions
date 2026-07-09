@@ -1,7 +1,7 @@
 {
   "name": "@bacnh85/pi-deepseek-tools",
-  "version": "0.9.1",
-  "description": "Pi extension that improves OpenCode Go DeepSeek V4 (Flash and Pro) tool selection, tool-input repair, reasoning handling, error recovery, and safety guardrails.",
+  "version": "0.9.2",
+  "description": "Pi extension that improves DeepSeek V4 tool calling, argument repair, reasoning cleanup, and diagnostics for OpenCode Go models.",
   "type": "module",
   "license": "MIT",
   "publishConfig": {
@@ -13,21 +13,29 @@
     "url": "git+https://github.com/bacnh85/pi-extensions.git",
     "directory": "pi-deepseek-tools"
   },
+  "bugs": {
+    "url": "https://github.com/bacnh85/pi-extensions/issues"
+  },
   "keywords": [
-    "pi-package",
+    "pi",
     "pi-extension",
     "deepseek",
-    "tool-calling",
+    "deepseek-v4",
     "opencode-go",
+    "tool-calling",
+    "agent-tools",
+    "reasoning",
     "deepseek-v4-flash",
     "deepseek-v4-pro"
   ],
   "scripts": {
-    "test": "cd extensions && mocha"
+    "test": "cd extensions && mocha",
+    "typecheck": "tsc --noEmit"
   },
   "files": [
     "README.md",
-    "extensions/"
+    "extensions/",
+    "LICENSE"
   ],
   "pi": {
     "extensions": [

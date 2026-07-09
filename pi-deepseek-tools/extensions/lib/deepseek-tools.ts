@@ -237,6 +237,52 @@ export function categorizeToolError(toolName: string, errorResult: unknown): Err
 	return { category: "unknown", toolName, hint: "The previous tool call(s) had errors. Use simpler tool inputs and provide all required fields explicitly." };
 }
 
+// ────────────────────────────────────────────────────────
+// Env-var config helpers (move these here to keep parsing
+// testable alongside the other toggle functions).
+// ────────────────────────────────────────────────────────
+
+/**
+ * Maximum tracked tool errors in the error history.
+ * Default: 100. Invalid/negative values fall back to 100.
+ */
+export function maxErrorHistory(env: Record<string, string | undefined> = process.env): number {
+	const raw = env.PI_DEEPSEEK_TOOLS_MAX_ERROR_HISTORY;
+	if (raw === undefined || raw === "") return 100;
+	const val = parseInt(raw, 10);
+	return Number.isFinite(val) && val > 0 ? val : 100;
+}
+
+/**
+ * Flat thinking budget for all turns.
+ * Returns undefined when unset (model decides).
+ */
+export function thinkingBudget(env: Record<string, string | undefined> = process.env): number | undefined {
+	const raw = env.PI_DEEPSEEK_TOOLS_THINKING_BUDGET;
+	if (raw === undefined || raw === "") return undefined;
+	const val = parseInt(raw, 10);
+	return Number.isFinite(val) && val >= 0 ? val : undefined;
+}
+
+/**
+ * Auto-block threshold: number of reminders before blocking a miss pattern.
+ * Default 0 (off). Invalid/negative values fall back to 0.
+ */
+export function autoBlockAfterReminders(env: Record<string, string | undefined> = process.env): number {
+	const raw = env.PI_DEEPSEEK_TOOLS_AUTO_BLOCK_AFTER_REMINDERS;
+	if (raw === undefined || raw === "") return 0;
+	const val = parseInt(raw, 10);
+	return Number.isFinite(val) && val >= 1 ? val : 0;
+}
+
+/**
+ * Whether the dangerous-command guard is enabled.
+ * Accepts 1/true/yes/on (case-insensitive).
+ */
+export function blockDangerousEnabled(env: Record<string, string | undefined> = process.env): boolean {
+	return /^(1|true|yes|on)$/i.test(env.PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS ?? "");
+}
+
 /**
  * Dangerous bash command patterns for optional safety guardrails.
  * Returns a warning message if the command is dangerous, or undefined if safe.

@@ -25,6 +25,10 @@ import {
 	isDeepSeekV4ModelByModel,
 	categorizeToolError,
 	checkDangerousCommand,
+	maxErrorHistory,
+	thinkingBudget,
+	autoBlockAfterReminders,
+	blockDangerousEnabled,
 } from "../../lib/deepseek-tools";
 
 function createFakePi(activeTools: string[]) {
@@ -119,6 +123,47 @@ describe("environment toggles", () => {
 		assert.equal(repairEnabled({}), true);
 		assert.equal(repairEnabled({ PI_DEEPSEEK_TOOLS_REPAIR_ENABLED: "0" }), false);
 		assert.equal(repairEnabled({ PI_DEEPSEEK_TOOLS_REPAIR_ENABLED: "off" }), false);
+	});
+});
+
+describe("env-var config parsing", () => {
+	it("maxErrorHistory defaults to 100", () => {
+		assert.equal(maxErrorHistory({}), 100);
+		assert.equal(maxErrorHistory({ PI_DEEPSEEK_TOOLS_MAX_ERROR_HISTORY: "200" }), 200);
+		assert.equal(maxErrorHistory({ PI_DEEPSEEK_TOOLS_MAX_ERROR_HISTORY: "0" }), 100);
+		assert.equal(maxErrorHistory({ PI_DEEPSEEK_TOOLS_MAX_ERROR_HISTORY: "-5" }), 100);
+		assert.equal(maxErrorHistory({ PI_DEEPSEEK_TOOLS_MAX_ERROR_HISTORY: "abc" }), 100);
+		assert.equal(maxErrorHistory({ PI_DEEPSEEK_TOOLS_MAX_ERROR_HISTORY: "" }), 100);
+	});
+
+	it("thinkingBudget defaults to undefined (unset)", () => {
+		assert.equal(thinkingBudget({}), undefined);
+		assert.equal(thinkingBudget({ PI_DEEPSEEK_TOOLS_THINKING_BUDGET: "1024" }), 1024);
+		assert.equal(thinkingBudget({ PI_DEEPSEEK_TOOLS_THINKING_BUDGET: "0" }), 0);
+		assert.equal(thinkingBudget({ PI_DEEPSEEK_TOOLS_THINKING_BUDGET: "-1" }), undefined);
+		assert.equal(thinkingBudget({ PI_DEEPSEEK_TOOLS_THINKING_BUDGET: "abc" }), undefined);
+		assert.equal(thinkingBudget({ PI_DEEPSEEK_TOOLS_THINKING_BUDGET: "" }), undefined);
+	});
+
+	it("autoBlockAfterReminders defaults to 0 (off)", () => {
+		assert.equal(autoBlockAfterReminders({}), 0);
+		assert.equal(autoBlockAfterReminders({ PI_DEEPSEEK_TOOLS_AUTO_BLOCK_AFTER_REMINDERS: "5" }), 5);
+		assert.equal(autoBlockAfterReminders({ PI_DEEPSEEK_TOOLS_AUTO_BLOCK_AFTER_REMINDERS: "1" }), 1);
+		assert.equal(autoBlockAfterReminders({ PI_DEEPSEEK_TOOLS_AUTO_BLOCK_AFTER_REMINDERS: "0" }), 0);
+		assert.equal(autoBlockAfterReminders({ PI_DEEPSEEK_TOOLS_AUTO_BLOCK_AFTER_REMINDERS: "-3" }), 0);
+		assert.equal(autoBlockAfterReminders({ PI_DEEPSEEK_TOOLS_AUTO_BLOCK_AFTER_REMINDERS: "abc" }), 0);
+		assert.equal(autoBlockAfterReminders({ PI_DEEPSEEK_TOOLS_AUTO_BLOCK_AFTER_REMINDERS: "" }), 0);
+	});
+
+	it("blockDangerousEnabled defaults to disabled", () => {
+		assert.equal(blockDangerousEnabled({}), false);
+		assert.equal(blockDangerousEnabled({ PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS: "1" }), true);
+		assert.equal(blockDangerousEnabled({ PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS: "true" }), true);
+		assert.equal(blockDangerousEnabled({ PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS: "on" }), true);
+		assert.equal(blockDangerousEnabled({ PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS: "YES" }), true);
+		assert.equal(blockDangerousEnabled({ PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS: "0" }), false);
+		assert.equal(blockDangerousEnabled({ PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS: "off" }), false);
+		assert.equal(blockDangerousEnabled({ PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS: "" }), false);
 	});
 });
 
