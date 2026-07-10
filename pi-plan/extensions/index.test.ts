@@ -294,6 +294,52 @@ describe("tool gating in plan mode", () => {
 		assert.ok(r?.reason?.includes("UI is not available"));
 	});
 
+	const WRITE_CASES = [
+  	["heredoc", "cat > file << 'EOF'\ndata\nEOF"],
+  	["redirect", "echo hello > output.txt"],
+  	["sed -i", "sed -i 's/foo/bar/g' file.txt"],
+  	["tee", "echo data | tee output.txt"]
+];
+
+for (const [label, cmd] of WRITE_CASES) {
+  it(`blocks write commands in plan mode (${label})`, async () => {
+    const { handlers } = createFakePi(["read", "bash"], { plan: true });
+    const ctx = fakeCtx({ hasUI: true });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+    const r = await tc({ toolName: "bash", input: { command: cmd } }, ctx);
+    assert.ok(r?.block, `${label} write must be blocked`);
+    assert.ok(r?.reason?.includes("writing to the filesystem"));
+  });
+}
+it("allows read-only bash commands in plan mode", async () => {
+		let confirmed = false;
+		const { handlers } = createFakePi(["read", "bash"], { plan: true });
+		const ctx = fakeCtx({
+			hasUI: true,
+			ui: {
+				confirm: async () => { confirmed = true; return true; },
+				select: async () => null, editor: async () => "",
+				setStatus: () => {}, setWidget: () => {}, notify: () => {},
+				theme: { fg: (_s: string, t: string) => t },
+			},
+		});
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const tc = handlers.tool_call?.[0];
+		assert.ok(tc);
+
+		// Read-only commands still pass confirmation
+		for (const cmd of ["ls -la", "grep -R foo src/", "find . -name '*.ts'", "git status --short", "cat index.ts"]) {
+			confirmed = false;
+			const r = await tc({ toolName: "bash", input: { command: cmd } }, ctx);
+			assert.equal(r, undefined, `${cmd} must pass when confirmed`);
+			assert.ok(confirmed, `confirm called for ${cmd}`);
+		}
+	});
+
 	it("denies non-read baseline tools without UI", async () => {
 		const { handlers } = createFakePi(["obsidian", "read"], { plan: true });
 		const ctx = fakeCtx({ hasUI: false });

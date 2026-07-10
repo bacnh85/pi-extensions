@@ -52,7 +52,8 @@ pi --plan
 |---|---|
 | Known read/research tools (Serena, FFF, web, Munin) | Auto-allowed without prompt |
 | `write_plan`, `ask_plan_question` | Always available |
-| `bash` | Requires `confirm` dialog; denied without UI |
+| `bash` (write commands: redirects, heredocs, `sed -i`, `tee`, `cp`/`mv`/`rm`, `touch`, `mkdir`) | Hard-blocked — no filesystem mutations via bash in plan mode |
+| `bash` (read commands: `ls`, `grep`, `find`, `git status`, `cat`) | Requires `confirm` dialog; denied without UI |
 | Baseline custom tools not on the known-read list | Requires `confirm` dialog |
 | Unknown tools (not in original baseline) | Requires `confirm` dialog |
 | Direct source mutators (`edit`, `write`, Serena/Munin mutations) | Hard-blocked with error message |

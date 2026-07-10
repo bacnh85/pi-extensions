@@ -365,9 +365,10 @@ export default function (pi: ExtensionAPI) {
 		// ── Semantic miss (bash code search without Serena) → always block ──
 		if (semanticMiss) {
 			debugLog("blocked: bash code search without Serena");
-			// ponytail: tell the model exactly which serena tool to use next
+			// ponytail: suggest ffgrep (grep replacement) alongside serena when available
 			const pathArg = "the file";
-			const blockReason = `${reason} Blocked: bash is for executing commands. Use ${SERENA_CODE_TOOLS[0]}(${pathArg}) to explore symbols.`;
+			const grepAlt = activeTools.includes("ffgrep") ? " or ffgrep" : "";
+			const blockReason = `${reason} Blocked: bash is for executing commands. Use ${SERENA_CODE_TOOLS[0]}(${pathArg})${grepAlt} to search code.`;
 			return { block: true, reason: blockReason };
 		}
 

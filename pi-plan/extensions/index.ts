@@ -125,6 +125,28 @@ function modelKey(model: { provider?: string; id?: string } | undefined): string
 	return `${model.provider}/${model.id}`;
 }
 
+/** Check if a bash command writes to the filesystem. In plan mode, write commands are blocked regardless of confirmation. */
+function isWriteCommand(cmd: string): boolean {
+	const c = cmd.trim();
+
+	// Shell redirect to file: > file, >> file, 2> file, &> file
+	// Excludes fd-level redirects like 2>&1 (>& followed by digits)
+	if (/>(?:>?)\s+(?!&|\|)/.test(c)) return true;
+
+	if (/<<\s/.test(c)) return true;
+
+	if (/\bsed\s+(?:-\S+\s+)*-i/.test(c)) return true;
+
+	// tee writes to file (distinguish from tee --help)
+	if (/\btee\s+(?:-[a-z]+\s+)*[^-]\S/.test(c)) return true;
+
+	if (/\b(?:cp|mv|rm|install|dd)\s+/.test(c)) return true;
+
+	if (/\b(?:touch|mkdir|ln|chmod|chown)\s+/.test(c)) return true;
+
+	return false;
+}
+
 function getEffectiveThinking(prefs: PlanPreferences, model: { provider?: string; id?: string } | undefined): { plan: ThinkingLevel; normal: ThinkingLevel } {
 	const key = modelKey(model);
 	const stored = key ? prefs.perModel[key] : undefined;
@@ -766,9 +788,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	});
 
 	/**
-	 * Three-outcome tool gating in plan mode:
+	 * Tool gating in plan mode:
 	 *   - Blocked tools → deny with error
-	 *   - Bash → require user confirmation
+	 *   - Bash (write commands) → hard-blocked (no file mutations via bash)
+	 *   - Bash (read commands) → require user confirmation
 	 *   - Baseline tools NOT on the known-read list → require confirmation
 	 *   - Unknown tools (outside baseline) → require confirmation
 	 *   - Known-read tools → auto-allowed
@@ -789,6 +812,13 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 		// Bash always requires confirmation
 		if (isToolCallEventType("bash", event)) {
+			// ponytail: block write commands outright — confirmation doesn't override read-only plan mode
+			if (isWriteCommand(event.input.command || "")) {
+				return {
+					block: true,
+					reason: `pi-plan: writing to the filesystem is not allowed in plan mode. "${event.input.command}" modifies files. Exit plan mode to run this command, or use ${PLAN_TOOL} to add file content to the plan.`,
+				};
+			}
 			if (!ctx.hasUI) return { block: true, reason: `pi-plan: bash requires confirmation but UI is not available.\nCommand: ${event.input.command}` };
 			if (!await ctx.ui.confirm("Allow bash command in plan mode?", `Command: ${event.input.command}`)) {
 				return { block: true, reason: `pi-plan: bash command rejected by user.\nCommand: ${event.input.command}` };
@@ -819,7 +849,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			return {
 				systemPrompt:
 					_event.systemPrompt +
-					`\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- All shell (bash) commands require user confirmation — ask before running them.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${PLAN_QUESTION_TOOL} for consequential open decisions with 2-4 clear options and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${PLAN_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${PLAN_DIR}/. Current/next plan path: ${relativePlan}\n- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
+					`\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- Bash commands that write to files (redirect, heredoc, sed -i, tee, cp/mv/rm, etc.) are hard-blocked. Read-only bash commands (ls, grep, find, git status) require user confirmation.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${PLAN_QUESTION_TOOL} for consequential open decisions with 2-4 clear options and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${PLAN_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${PLAN_DIR}/. Current/next plan path: ${relativePlan}\n- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
 			};
 		}
 	});

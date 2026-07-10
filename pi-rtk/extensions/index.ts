@@ -128,11 +128,20 @@ async function rewriteCommand(pi: ExtensionAPI, command: string, signal?: AbortS
 	return rewritten.length > 0 ? rewritten : null;
 }
 
+
+// ponytail: reject RTK rewrites that change the first word or add shell operators
+function isSafeRewrite(original: string, rewritten: string): boolean {
+	var o = original.trim().split(/\s+/)[0], n = rewritten.trim().split(/\s+/)[0];
+	return o === n && (/[|><;&`]/.test(original) || !/[|><;&`]/.test(rewritten));
+}
+
 async function maybeRewriteCommand(pi: ExtensionAPI, command: string, signal?: AbortSignal, ctx: ExtensionContext): Promise<string | null> {
 	if (!rewritingEnabled()) return null;
 	if (typeof command !== "string" || command.trim() === "") return null;
 	if (command.trimStart().startsWith("rtk ")) return null;
-	return rewriteCommand(pi, command, signal, ctx);
+	var rewritten = await rewriteCommand(pi, command, signal, ctx);
+	if (rewritten && rewritten !== command && !isSafeRewrite(command, rewritten)) return null;
+	return rewritten;
 }
 
 async function showRtkStatus(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
