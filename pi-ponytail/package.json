@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-ponytail",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Pi-ponytail — lazy senior dev mode for your Pi agent. Forked from DietrichGebert/ponytail.",
   "keywords": ["pi-package", "pi", "ponytail", "skills"],
   "license": "MIT",
@@ -13,7 +13,8 @@
     "README.md",
     "hooks/",
     "skills/",
-    "extensions/",
+    "extensions/index.js",
+    "extensions/package.json",
     "UPSTREAM",
     "LICENSE"
   ],

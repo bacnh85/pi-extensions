@@ -4,7 +4,6 @@ import {
 	toPosixPath,
 	toWindowsPath,
 	toWslPath,
-	toGitBashPath,
 	normalizeWindowsPath,
 	isWindowsAbsolutePath,
 	quoteForShell,
@@ -64,15 +63,6 @@ describe("path-utils", () => {
 		});
 		it("wraps Git Bash paths to /mnt/", () => {
 			expect(toWslPath("/c/foo")).to.equal("/mnt/c/foo");
-		});
-	});
-
-	describe("toGitBashPath", () => {
-		it("converts C:\\Users to /c/Users", () => {
-			expect(toGitBashPath("C:\\Users")).to.equal("/c/Users");
-		});
-		it("same as toPosixPath", () => {
-			expect(toGitBashPath("D:\\temp")).to.equal(toPosixPath("D:\\temp"));
 		});
 	});
 

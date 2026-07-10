@@ -1,4 +1,4 @@
-# pi-web v0.4
+# pi-web v0.5
 
 Pi extension for **unified web search, content extraction, site crawling, and page capture**.
 

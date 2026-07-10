@@ -24,6 +24,8 @@ export interface ExtractParams {
 	timeout_ms?: number;
 	wait_for?: number;
 	mobile?: boolean;
+	crawl4ai_api_token?: string;
+	crawl4ai_api_url?: string;
 	signal?: AbortSignal;
 	/** Internal: caller-provided ctx for env lookup. */
 	_ctx?: Record<string, unknown>;
@@ -126,7 +128,11 @@ async function extractDynamic(params: ExtractParams, ctx?: Record<string, unknow
 async function extractFull(params: ExtractParams, ctx?: Record<string, unknown>): Promise<ExtractResult | null> {
 	let c4aiConfig: Crawl4aiConfig;
 	try {
-		c4aiConfig = loadCrawl4aiConfig({}, cwdFromContext(ctx ?? {}), includeProjectEnv(ctx ?? {}));
+		c4aiConfig = loadCrawl4aiConfig(
+		{ crawl4ai_api_token: params.crawl4ai_api_token, crawl4ai_api_url: params.crawl4ai_api_url },
+		cwdFromContext(ctx ?? {}),
+		includeProjectEnv(ctx ?? {}),
+	);
 	} catch (e) {
 		throw new Error(`Crawl4AI configuration unavailable: ${sanitizeError(e)}`);
 	}

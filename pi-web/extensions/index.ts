@@ -148,6 +148,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
 			content_chars: Type.Optional(Type.Number({ default: 20000 })),
 			wait_for: Type.Optional(Type.Number({ description: "Ms to wait for Firecrawl render before extraction." })),
 			mobile: Type.Optional(Type.Boolean({ default: false, description: "Mobile viewport (dynamic mode only)." })),
+			...crawl4aiControlSchema,
 			...sharedControlSchema,
 		}),
 		async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
@@ -160,6 +161,8 @@ export default function piWebExtension(pi: ExtensionAPI) {
 				timeout_ms: params.timeout_ms as number | undefined,
 				wait_for: params.wait_for as number | undefined,
 				mobile: params.mobile as boolean | undefined,
+				crawl4ai_api_token: params.crawl4ai_api_token as string | undefined,
+				crawl4ai_api_url: params.crawl4ai_api_url as string | undefined,
 				signal,
 				_ctx: ctx,
 			});

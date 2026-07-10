@@ -9,8 +9,6 @@ export const SERENA_PLAN_TOOLS = [
 	"serena_find_referencing_symbols",
 	"serena_search_for_pattern",
 	"serena_get_diagnostics_for_file",
-	"serena_list_memories",
-	"serena_read_memory",
 ];
 
 export const WEB_PLAN_TOOLS = [
@@ -24,15 +22,11 @@ export const WEB_PLAN_TOOLS = [
 ];
 
 export const MUNIN_PLAN_TOOLS = [
-	"munin_recall",
 	"munin_search",
 	"munin_get",
 	"munin_list",
 	"munin_recent",
-	"munin_versions",
-	"munin_diff",
 	"munin_capabilities",
-	"munin_summarize",
 ];
 
 export const DEFAULT_PLAN_TOOLS = [

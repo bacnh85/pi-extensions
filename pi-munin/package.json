@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-munin",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "Pi extension that provides native Munin long-term memory tools through direct SDK integration.",
   "license": "MIT",
   "publishConfig": {
@@ -28,7 +28,8 @@
   },
   "files": [
     "README.md",
-    "extensions/",
+    "extensions/index.ts",
+    "extensions/lib/",
     "skills/"
   ],
   "pi": {

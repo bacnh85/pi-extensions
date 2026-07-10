@@ -12,7 +12,10 @@ export function execObsidian(args: string[], formatJson = false, timeoutMs = 30_
 		windowsHide: true,
 	});
 
-	const stdout = result.stdout ?? "";
+	const stdout = (result.stdout ?? "")
+		.split("\n")
+		.filter((line) => !/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d Loading updated app package /.test(line) && line !== "Your Obsidian installer is out of date. Please download the latest installer which includes better CLI support: https://obsidian.md/download")
+		.join("\n");
 	const stderr = result.stderr ?? "";
 	const exitCode = result.status ?? 1;
 

@@ -71,15 +71,11 @@ describe("plan-mode tool allowlist", () => {
 
 	it("includes only read-only Munin tools for planning", () => {
 		expect(MUNIN_PLAN_TOOLS).to.include.members([
-			"munin_recall",
 			"munin_search",
 			"munin_get",
 			"munin_list",
 			"munin_recent",
-			"munin_versions",
-			"munin_diff",
 			"munin_capabilities",
-			"munin_summarize",
 		]);
 		expect(DEFAULT_PLAN_TOOLS).to.include.members(MUNIN_PLAN_TOOLS);
 		expect(DEFAULT_PLAN_TOOLS).not.to.include.members([

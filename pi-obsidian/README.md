@@ -1,4 +1,4 @@
-# pi-obsidian v0.5
+# pi-obsidian v0.7
 
 Pi extension for **Obsidian vault tools** — a single unified tool that runs any Obsidian CLI command: read, write, create, search, delete, move, rename, append, prepend, tasks, properties, history, daily notes, templates, and more. Plus **enhanced operations** like recursive file listing, task creation, task filtering/grouping, and template-based note creation.
 

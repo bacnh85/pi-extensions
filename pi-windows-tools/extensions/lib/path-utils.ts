@@ -41,13 +41,6 @@ export function toWindowsPath(posixPath: string): string {
 }
 
 /**
- * Convert a Windows path to Git Bash format (/c/Users/...).
- */
-export function toGitBashPath(windowsPath: string): string {
-	return toPosixPath(windowsPath);
-}
-
-/**
  * Convert a Windows path to WSL format (/mnt/c/Users/...).
  * Ignores input already in WSL or POSIX format.
  */

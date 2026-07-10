@@ -1,7 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { detectShell, detectAllShells, getDefaultShell } from "./lib/shell-detect";
 import type { WindowsShellKind } from "./lib/shell-detect";
 import { executeCommand as execCmd } from "./lib/shell-exec";
@@ -56,30 +54,6 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
 			return tr(o);
 		} });
 
-	// ── File edit tool (reliable replacement for built-in edit) ──
-	pi.registerTool({ name: "windows_file_edit", label: "Windows: Edit File", description: "Replace literal text in a file. Reads actual file bytes so no line-ending/whitespace mismatch issues.",
-		promptSnippet: "Edit a file reliably using Node.js",
-		promptGuidelines: [
-			"Use instead of the built-in edit tool on all platforms.",
-			"Reads actual file bytes so replacements always match regardless of line endings.",
-			"Throws a clear error if oldText is not found.",
-		],
-		parameters: Type.Object({
-			path: Type.String({ description: "Path to the file (absolute or relative to cwd)." }),
-			oldText: Type.String({ description: "Literal text to find and replace." }),
-			newText: Type.String({ description: "Replacement text." }),
-			...cs,
-		}),
-		execute(_id, p, _s, _u, ctx) {
-			const filePath = resolve(ctx?.cwd || process.cwd(), p.path);
-			const content = readFileSync(filePath, "utf8");
-			const updated = content.replace(p.oldText, p.newText);
-			if (updated === content) throw new Error(`Not found or no change: ${filePath}`);
-
-			writeFileSync(filePath, updated, "utf8");
-			return tr(`Edited ${filePath}`);
-		} });
-
 	// ── Audit tools ──
 	pi.registerTool({ name: "windows_audit_log", label: "Windows: Audit Log", description: "Show command history and exit codes.", promptSnippet: "Show Windows command audit log", promptGuidelines: ["Use to see what was executed."],
 		parameters: Type.Object({ clear: Type.Optional(Type.Boolean({ description: "Clear after viewing." })), ...cs }),
@@ -91,7 +65,7 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
 	pi.registerTool({ name: "windows_path_to_wsl", label: "Windows: Convert to WSL", description: "Convert Windows path to /mnt/c/...", promptSnippet: "Convert path to WSL", promptGuidelines: ["Use to pass Windows path to WSL."], parameters: Type.Object({ path: Type.String(), ...cs }),
 		execute(_id, p) { return tr(pathUtils.toWslPath(p.path)); } });
 	pi.registerTool({ name: "windows_path_to_gitbash", label: "Windows: Convert to Git Bash", description: "Convert Windows path to /c/...", promptSnippet: "Convert path to Git Bash", promptGuidelines: ["Use to pass Windows path to Git Bash."], parameters: Type.Object({ path: Type.String(), ...cs }),
-		execute(_id, p) { return tr(pathUtils.toGitBashPath(p.path)); } });
+		execute(_id, p) { return tr(pathUtils.toPosixPath(p.path)); } });
 	pi.registerTool({ name: "windows_path_quote", label: "Windows: Quote Path", description: "Quote a path for a Windows shell.", promptSnippet: "Quote path for shell", promptGuidelines: ["Each shell has different quoting rules."], parameters: Type.Object({ path: Type.String(), shell: Type.Optional(sk), ...cs }),
 		execute(_id, p) { return tr(pathUtils.quoteForShell(p.path, rs(p.shell as WindowsShellKind | undefined))); } });
 
