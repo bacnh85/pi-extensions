@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-plan",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Pi extension that adds a plan mode with workspace markdown plans and thinking-level presets.",
   "license": "MIT",
   "publishConfig": {

@@ -450,8 +450,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			guardPlanMode(PLAN_TOOL);
-
+			// ponytail: write_plan is available in normal mode too — agent updates plans during execution
 			const typedParams = params as WritePlanParams;
 
 			// ponytail: reuse draft path for refinements, new path for new plans
@@ -747,6 +746,11 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 		// ponytail: restore state from current branch (shared with session_tree)
 		restoreStateFromBranch(ctx);
+
+		// ponytail: ensure write_plan is always visible — covers --plan and normal-mode starts
+		if (!pi.getActiveTools().includes(PLAN_TOOL))
+			pi.setActiveTools([...pi.getActiveTools(), PLAN_TOOL]);
+
 		// ponytail: skip plan mode re-entry during execution handoff
 		if (
 			pi.getFlag("plan") === true &&

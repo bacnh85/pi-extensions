@@ -156,7 +156,7 @@ describe("plan-mode tool lists", () => {
 	});
 
 	it("includes plan-only tools", () => {
-		assert.ok(PLAN_ONLY_TOOLS.has("write_plan"));
+		assert.ok(!PLAN_ONLY_TOOLS.has("write_plan"), "write_plan is available in normal mode, not plan-only");
 		assert.ok(PLAN_ONLY_TOOLS.has("ask_plan_question"));
 	});
 });
@@ -430,17 +430,14 @@ describe("write_plan lifecycle", () => {
 		assert.ok(selectCalled, "settled after new plan prompts again");
 	});
 
-	it("guards write_plan outside plan mode by throwing", async () => {
+	it("allows write_plan outside plan mode", async () => {
 		const { toolDefs } = createFakePi(["read"], {});
 		const wd = toolDefs.write_plan;
 		assert.ok(wd);
 
-		try {
-			await wd.execute("c1", { title: "Test", content: "# Test" }, undefined, undefined, fakeCtx());
-			assert.fail("should have thrown");
-		} catch (e: any) {
-			assert.ok(e.message.includes("only available in plan mode"));
-		}
+		// ponytail: write_plan is available in any mode
+		const result = await wd.execute("c1", { title: "Test", content: "# Test" }, undefined, undefined, fakeCtx());
+		assert.ok(result);
 	});
 });
 

@@ -16,6 +16,8 @@ export const READ_ONLY_TOOLS = new Set([
 	"serena_search_for_pattern", "serena_get_diagnostics_for_file",
 	// Munin read-only
 	"munin_search", "munin_get", "munin_list", "munin_recent", "munin_capabilities",
+	// Plan tools (path-constrained to .agents/plans/, safe in plan mode)
+	"write_plan",
 ]);
 
 /**
@@ -37,4 +39,4 @@ export const BLOCKED_TOOLS = new Set([
 /**
  * Tools available only in plan mode.
  */
-export const PLAN_ONLY_TOOLS = new Set(["write_plan", "ask_plan_question"]);
+export const PLAN_ONLY_TOOLS = new Set(["ask_plan_question"]);
