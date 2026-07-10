@@ -8,6 +8,7 @@ Each package lives in its own directory and can be installed independently. This
 
 | Package | Version | What it adds |
 | --- | ---: | --- |
+| [`@bacnh85/pi-notebooklm`](./pi-notebooklm) | 0.1.0 | Google NotebookLM notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | [`@bacnh85/pi-ponytail`](./pi-ponytail) | 0.1.2 | Lazy senior-dev mode: YAGNI, stdlib-first coding discipline, and ponytail skills. |
 | [`@bacnh85/pi-serena`](./pi-serena) | 0.8.1 | Serena semantic code navigation, references, refactors, and diagnostics through a persistent worker. |
 | [`@bacnh85/pi-web`](./pi-web) | 0.4.5 | Web search, page extraction, site mapping/crawling, screenshots, and PDFs. |
@@ -22,6 +23,7 @@ Each package lives in its own directory and can be installed independently. This
 Install the published package you want:
 
 ```bash
+pi install npm:@bacnh85/pi-notebooklm
 pi install npm:@bacnh85/pi-web
 pi install npm:@bacnh85/pi-serena
 pi install npm:@bacnh85/pi-munin
@@ -55,9 +57,11 @@ Packages are standalone npm packages. Most TypeScript packages use Mocha + `tsx`
 npm test --prefix pi-web
 npm test --prefix pi-serena
 npm test --prefix pi-munin
+npm test --prefix pi-notebooklm
 npm test --prefix pi-plan
 npm test --prefix pi-ponytail
 npm test --prefix pi-fff
+npm test --prefix pi-obsidian
 
 # Packaging checks
 npm pack --dry-run ./pi-rtk
@@ -80,7 +84,10 @@ pi-extensions/
   pi-munin/
   pi-plan/
   pi-fff/
+  pi-notebooklm/
+  pi-obsidian/
   pi-rtk/
   pi-sub/
+  pi-windows-tools/
   .github/workflows/
 ```

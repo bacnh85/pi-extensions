@@ -8,6 +8,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | Package | Version | Description |
 |---------|---------|-------------|
 | **pi-deepseek-tools** | 0.12.0 | DeepSeek V4 tool calling fixes, argument repair, reasoning cleanup, thinking level compatibility, Super Power Mode. |
+| **pi-notebooklm** | 0.1.0 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | **pi-ponytail** | 0.1.4 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
 | **pi-serena** | 0.8.3 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
 | **pi-web** | 0.4.6 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
@@ -23,6 +24,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 
 ```
 pi-extensions/
+  pi-notebooklm/        # TS extension + skill for NotebookLM CLI bridge
   pi-ponytail/          # JS extension + hooks + 6 sub-skills
   pi-serena/            # TS extension + worker + Python bridge
   pi-web/               # TS extension + 9 lib modules + skill
@@ -88,13 +90,14 @@ npm test
 cd pi-<name> && npm test
 
 # Test runners (follow package conventions):
-# pi-ponytail: node --test extensions/test/*.test.js   (no framework, plain JS)
-# pi-serena:   cd extensions && mocha                  (mocha + tsx)
-# pi-web:      cd extensions && mocha                  (mocha + tsx, ESM)
-# pi-munin:    npx mocha                               (mocha + tsx)
-# pi-plan:     cd extensions && mocha                  (mocha + tsx)
-# pi-rtk:      npm pack --dry-run                      (packaging check)
-# pi-sub:      npm pack --dry-run                      (packaging check)
+# pi-notebooklm: cd extensions && mocha                (mocha + tsx)
+# pi-ponytail:   node --test extensions/test/*.test.js (no framework, plain JS)
+# pi-serena:     cd extensions && mocha                (mocha + tsx)
+# pi-web:        cd extensions && mocha                (mocha + tsx, ESM)
+# pi-munin:      npx mocha                             (mocha + tsx)
+# pi-plan:       cd extensions && mocha                (mocha + tsx)
+# pi-rtk:        npm pack --dry-run                    (packaging check)
+# pi-sub:        npm pack --dry-run                    (packaging check)
 ```
 
 Test files use unit-test style (no fixture frameworks, consistent with ponytail
@@ -105,7 +108,7 @@ spec). pi-ponytail uses `node --test` with no mocha or tsx dependency at all.
 
 Two GitHub Actions workflows in `.github/workflows/`:
 
-- **test.yml** — runs on push to main and PRs. Matrix across all 8 packages.
+- **test.yml** — runs on push to main and PRs. Matrix across all 12 packages.
   pi-ponytail uses `node --test` directly, pi-rtk and pi-sub use `npm pack --dry-run`, others use `npm ci && npm test`.
 - **publish.yml** — runs on push to main. Checks each package's `package.json`
   version against the npm registry and publishes if different.

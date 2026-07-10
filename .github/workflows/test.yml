@@ -24,6 +24,8 @@ jobs:
             test-command: npm ci && npm test
           - package: pi-fff
             test-command: npm ci && npm test
+          - package: pi-notebooklm
+            test-command: npm ci && npm test
           - package: pi-rtk
             test-command: npm pack --dry-run
           - package: pi-sub

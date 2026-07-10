@@ -439,6 +439,18 @@ describe("error categorization", () => {
 		assert.match(info.hint, /rate-limited/i);
 	});
 
+	it("detects edit-mismatch errors — could not find edits", () => {
+		const info = categorizeToolError("edit", "Could not find edits[1] in /path/to/file. The oldText must match exactly including all whitespace and newlines.");
+		assert.equal(info.category, "edit_mismatch");
+		assert.match(info.hint, /byte.for.byte|verbatim/i);
+	});
+
+	it("detects edit-mismatch errors — oldText must match", () => {
+		const info = categorizeToolError("edit", "The oldText must match exactly including all whitespace and newlines.");
+		assert.equal(info.category, "edit_mismatch");
+		assert.match(info.hint, /byte.for.byte|verbatim/i);
+	});
+
 	it("detects timeout errors", () => {
 		const info = categorizeToolError("read", "timed out after 30000ms");
 		assert.equal(info.category, "timeout");

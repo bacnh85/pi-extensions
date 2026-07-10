@@ -219,6 +219,7 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 	}
 	// ponytail: one-liner intent→tool for the read-boundary since it's the most common mistake
 	lookups.push("  • Read code or non-code files (docs, config, logs, generated output) → read");
+	lookups.push("  • edit oldText → copy verbatim from a narrow read (≤5 lines), watch for tabs vs spaces");
 
 	for (const l of lookups) lines.push(l);
 
@@ -237,7 +238,7 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 // Error categorization for context-aware recovery hints
 // ────────────────────────────────────────────────────────
 
-export type ErrorCategory = "validation" | "tool_not_found" | "rate_limit" | "timeout" | "api_error" | "unknown";
+export type ErrorCategory = "validation" | "tool_not_found" | "rate_limit" | "timeout" | "api_error" | "edit_mismatch" | "unknown";
 
 export interface ErrorInfo {
 	category: ErrorCategory;
@@ -266,6 +267,9 @@ export function categorizeToolError(toolName: string, errorResult: unknown): Err
 	}
 	if (/4\d{2}|5\d{2}/i.test(text)) {
 		return { category: "api_error", toolName, hint: `The tool call to ${toolName} failed. Retry with simpler inputs and ensure all fields are present.` };
+	}
+	if (/could not find edits|oldText must match exactly|oldtext must match exactly/i.test(text)) {
+		return { category: "edit_mismatch", toolName, hint: "The edit tool requires exact byte-for-byte matching. Read a narrow range (≤5 lines) around the target, copy the full oldText verbatim from read output. Watch for tab characters — the read tool displays tabs as spaces but they are different bytes." };
 	}
 
 	return { category: "unknown", toolName, hint: "The previous tool call(s) had errors. Use simpler tool inputs and provide all required fields explicitly." };
