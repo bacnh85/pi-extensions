@@ -34,24 +34,28 @@ The footer status appears after Pi's built-in status/token usage line and includ
 Example subscription line:
 
 ```text
-(user@example.com) R:15%/2H W:20%/3D
+(user@example.com) R:15%/2H W:20%/3D 42 tok/s
 ```
 
 ### OpenCode Go
 
-OpenCode Go does not expose a public usage-window API, so the footer shows the active account/key label and accumulated session cost:
+OpenCode Go does not expose a public usage-window API, so the footer shows the active account/key label, accumulated session cost, and last response speed:
 
 ```text
-OpenCode Go (OpenCode Go key#1a2b3c4d) $0.23
+OpenCode Go (OpenCode Go key#1a2b3c4d) $0.23 42 tok/s
 ```
 
 ### Z.ai
 
-Z.ai (GLM Coding Plan) shows the active account/key label plus 5-hour rolling and weekly remaining quota with reset countdowns:
+Z.ai (GLM Coding Plan) shows the active account/key label, 5-hour rolling and weekly remaining quota with reset countdowns, and last response speed:
 
 ```text
-(Z.ai key#1a2b3c4d) R:55%/2H W:80%/3D
+(Z.ai key#1a2b3c4d) R:55%/2H W:80%/3D 42 tok/s
 ```
+
+### Tokens per second
+
+`pi-sub` tracks each response's tokens-per-second (tok/s) speed by measuring the time from provider request to message completion against the response's output token count. The last response's speed is shown in the footer next to usage data. The `/sub` detail view shows both the last response speed and the session-wide average.
 
 When the current model provider is not supported, `pi-sub` clears its subscription line and does not refresh subscription data.
 
@@ -63,18 +67,23 @@ When the current model provider is not supported, `pi-sub` clears its subscripti
 | `/sub status` | Same as `/sub`. |
 | `/sub refresh` | Force a usage refresh, then show details. |
 
-When Pi OpenAI Codex auth is available, `/sub` shows the active account usage:
+When Pi OpenAI Codex auth is available, `/sub` shows the active account usage and speed:
 
 ```text
+Provider: Codex · Model: o4-mini · Fetched: 14:23
+Session cost: $0.12
+Last response: 42 tok/s · Session avg: 39 tok/s
+
 ACCOUNT                 PLAN  ROLLING  WEEKLY  LAST ACTIVITY
 * user@example.com     Plus  15%/2H   20%/3D  Now
 ```
 
-For OpenCode Go, `/sub` shows the provider/model, active account/key label, and session cost:
+For OpenCode Go, `/sub` shows the provider/model, active account/key label, session cost, and speed:
 
 ```text
 Provider: OpenCode Go · Model: kimi-k2.6 · Fetched: 14:23
 Session cost: $0.23
+Last response: 42 tok/s · Session avg: 39 tok/s
 
   ACCOUNT                         PLAN  LAST ACTIVITY
 ------------------------------------------------------
@@ -83,10 +92,12 @@ Session cost: $0.23
 OpenCode Go does not expose usage windows.
 ```
 
-For Z.ai, `/sub` shows the rolling and weekly quota windows:
+For Z.ai, `/sub` shows the rolling and weekly quota windows and speed:
 
 ```text
 Provider: Z.ai · Model: glm-5.2 · Fetched: 14:23
+Session cost: $0.05
+Last response: 42 tok/s · Session avg: 39 tok/s
 
   ACCOUNT             PLAN  ROLLING        WEEKLY             LAST ACTIVITY
   ------------------------------------------------------------------------

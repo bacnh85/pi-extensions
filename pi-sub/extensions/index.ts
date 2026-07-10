@@ -85,6 +85,10 @@ interface State {
 	inFlight?: Promise<SubscriptionUsageSnapshot>;
 	refreshTimer?: NodeJS.Timeout;
 	debounceTimer?: NodeJS.Timeout;
+	responseStartTime?: number;
+	lastTokPerSec?: number;
+	cumulativeOutput: number;
+	cumulativeDurationMs: number;
 }
 
 function isCodexModel(model: ModelLike): boolean {
@@ -531,6 +535,7 @@ function renderSubscriptionLine(ctx: ExtensionContext, state: State): void {
 		const cost = snapshot.cost;
 		const hasWindows = windowParts.length > 0;
 		if (cost !== undefined && cost > 0) segments.push(`$${cost.toFixed(2)}`);
+		if (state.lastTokPerSec !== undefined) segments.push(`${state.lastTokPerSec} tok/s`);
 		if (segments.length === 0) {
 			line = `Sub ${state.adapter.displayName}`;
 		} else if (!hasWindows) {
@@ -656,7 +661,13 @@ function buildDetails(snapshot: SubscriptionUsageSnapshot | undefined, state: St
 	});
 
 	const costLine = snapshot.cost !== undefined ? `\nSession cost: $${snapshot.cost.toFixed(2)}` : "";
-	const lines = [`Provider: ${snapshot.providerDisplayName} · Model: ${state.model?.id ?? "unknown-model"} · Fetched: ${new Date(snapshot.fetchedAt).toLocaleTimeString()}${costLine}`, "", header, sep, ...body];
+	const tokPerSecLine = state.lastTokPerSec !== undefined
+		? `\nLast response: ${state.lastTokPerSec} tok/s` +
+			(state.cumulativeDurationMs > 0
+				? ` · Session avg: ${Math.round(state.cumulativeOutput / (state.cumulativeDurationMs / 1000))} tok/s`
+				: "")
+		: "";
+	const lines = [`Provider: ${snapshot.providerDisplayName} · Model: ${state.model?.id ?? "unknown-model"} · Fetched: ${new Date(snapshot.fetchedAt).toLocaleTimeString()}${costLine}${tokPerSecLine}`, "", header, sep, ...body];
 	if (!hasFiveHour && !hasWeekly) {
 		lines.push("", `${snapshot.providerDisplayName} does not expose usage windows.`);
 	}
@@ -664,7 +675,7 @@ function buildDetails(snapshot: SubscriptionUsageSnapshot | undefined, state: St
 }
 
 export default function (pi: ExtensionAPI) {
-	const state: State = { lastRefreshAt: 0, refreshGeneration: 0 };
+	const state: State = { lastRefreshAt: 0, refreshGeneration: 0, cumulativeOutput: 0, cumulativeDurationMs: 0 };
 
 	pi.on("session_start", async (_event, ctx) => {
 		updateActiveAdapter(ctx, state, ctx.model);
@@ -674,6 +685,24 @@ export default function (pi: ExtensionAPI) {
 	pi.on("model_select", async (event, ctx) => {
 		updateActiveAdapter(ctx, state, event.model);
 		if (state.adapter) void refreshUsage(ctx, state, true);
+	});
+
+	pi.on("before_provider_request", async (_event, _ctx) => {
+		state.responseStartTime = Date.now();
+	});
+
+	pi.on("message_end", async (event, ctx) => {
+		if (event.message.role === "assistant" && state.responseStartTime) {
+			const output = (event.message.usage as any)?.output ?? 0;
+			const elapsed = Date.now() - state.responseStartTime;
+			state.responseStartTime = undefined;
+			if (elapsed > 0 && output > 0) {
+				state.lastTokPerSec = Math.round(output / (elapsed / 1000));
+				state.cumulativeOutput += output;
+				state.cumulativeDurationMs += elapsed;
+				if (state.adapter) renderSubscriptionLine(ctx, state);
+			}
+		}
 	});
 
 	pi.on("after_provider_response", async (_event, ctx) => {
