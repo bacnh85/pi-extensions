@@ -109,6 +109,7 @@ munin_store
 
 - **Missing extension**: Install `pi-munin` extension.
 - **Missing credentials**: Set `MUNIN_API_KEY` and `MUNIN_PROJECT` in `.env.local` or environment.
+- **"Project not found" errors**: Do **not** pass the `project` parameter to tool calls. It defaults to `$MUNIN_PROJECT`, which is already set correctly. Hardcoding a value like the repo directory name causes this error.
 - **Tag validation failed**: Ensure at least one `type:` and one `domain:` tag. Check spelling.
 - **Single-word search queries return noise**: Use 4-8 word queries with at least one quoted phrase or capitalized entity name. See "Search Query Quality" section above.
 - **No results**: Try broader queries, fewer tags, or `munin_list` to see what exists.
