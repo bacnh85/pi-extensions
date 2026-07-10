@@ -10,7 +10,7 @@ export async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
 		catch (e) {
 			last = e as Error;
 			if (i === 3) throw e;
-			const msg = last.message.toLowerCase();
+			const msg = last.message.toLowerCase().replace(/_/g, " ");
 			if (nonRetryable.some(p => msg.includes(p))) throw e;
 			if (!retryable.some(p => msg.includes(p))) throw e;
 			const delay = Math.min(1000 * Math.pow(2, i) + Math.random() * 100 * Math.pow(2, i), 10000);

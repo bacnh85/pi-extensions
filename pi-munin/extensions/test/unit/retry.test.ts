@@ -98,6 +98,20 @@ describe("withRetry", () => {
 		expect(attempts).to.equal(1);
 	});
 
+	it("does NOT retry ERR_STALE_PROTOCOL errors", async () => {
+		let attempts = 0;
+		try {
+			await withRetry(async () => {
+				attempts++;
+				throw new Error("ERR_STALE_PROTOCOL");
+			});
+			expect.fail("Should have thrown");
+		} catch (err) {
+			expect((err as Error).message).to.include("ERR_STALE_PROTOCOL");
+		}
+		expect(attempts).to.equal(1);
+	});
+
 	it("does NOT retry validation errors", async () => {
 		let attempts = 0;
 		try {

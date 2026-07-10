@@ -254,7 +254,7 @@ export function validateSearchQuery(query: unknown): string {
 
 export function classifyError(error: unknown): { type: string; message: string } {
 	const err = error instanceof Error ? error : new Error(String(error));
-	const message = err.message.toLowerCase();
+	const message = err.message.toLowerCase().replace(/_/g, " ");
 	if (message.includes("unauthorized") || message.includes("invalid api key")) {
 		return { type: "auth", message: err.message };
 	}

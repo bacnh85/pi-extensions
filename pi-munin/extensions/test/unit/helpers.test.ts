@@ -233,6 +233,12 @@ describe("classifyError", () => {
 		);
 	});
 
+	it("classifies ERR_STALE_PROTOCOL errors", () => {
+		expect(classifyError(new Error("ERR_STALE_PROTOCOL")).type).to.equal(
+			"stale_protocol",
+		);
+	});
+
 	it("classifies not found errors", () => {
 		expect(classifyError(new Error("Memory not found")).type).to.equal("not_found");
 	});
