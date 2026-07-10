@@ -1,44 +1,57 @@
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { isToolCallEventType, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import {
+	CONFIG_DIR_NAME,
+	isToolCallEventType,
+	withFileMutationQueue,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { isDestructiveBash, isReadOnlyBash } from "./lib/bash-gating";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
-import { DEFAULT_PLAN_TOOLS as READ_ONLY_PLAN_TOOLS, PLAN_ALLOWED_TOOLS as READ_ONLY_ALLOWED_TOOLS } from "./lib/plan-tools";
+import { BLOCKED_TOOLS, PLAN_ONLY_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 
 const STATUS_KEY = "pi-plan";
-const PLAN_DIR = path.join(".agents", "plans");
+const PLAN_DIR = ".agents/plans";
 const PLAN_TOOL = "write_plan";
 const PLAN_QUESTION_TOOL = "ask_plan_question";
 const PLAN_EXECUTE_COMMAND = "plan-execute";
-const PREFERENCES_FILE = path.join(os.homedir(), ".pi", "agent", "pi-plan", "preferences.json");
-const DEFAULT_PLAN_TOOLS = [
-	...READ_ONLY_PLAN_TOOLS,
-	PLAN_TOOL, PLAN_QUESTION_TOOL,
-];
-const PLAN_ALLOWED_TOOLS = new Set([...READ_ONLY_ALLOWED_TOOLS, PLAN_TOOL, PLAN_QUESTION_TOOL]);
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+const PREFERENCES_FILE = path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "pi-plan", "preferences.json");
+const THINKING_LEVELS = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const;
 
 type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 type PlanStatus = "draft" | "approved" | "executing";
 
 interface PlanState {
 	enabled: boolean;
-	executing: boolean;
 	planThinking: ThinkingLevel;
 	normalThinking: ThinkingLevel;
 	toolsBeforePlan?: string[];
 	lastPlanPath?: string;
 	lastPlanTitle?: string;
 	lastPlanStatus?: PlanStatus;
+	planReadyForReview?: boolean;
 }
 
 interface PlanPreferences {
 	version: 2;
 	defaults: { planThinking: ThinkingLevel; normalThinking: ThinkingLevel };
-	perModel: Record<string, { planThinking: ThinkingLevel; normalThinking: ThinkingLevel }>;
+	perModel: Record<
+		string,
+		{ planThinking: ThinkingLevel; normalThinking: ThinkingLevel }
+	>;
 }
 
 interface WritePlanParams {
@@ -64,10 +77,6 @@ function isThinkingLevel(value: string): value is ThinkingLevel {
 
 function isPlanStatus(value: string | undefined): value is PlanStatus {
 	return value === "draft" || value === "approved" || value === "executing";
-}
-
-function unique(values: string[]): string[] {
-	return [...new Set(values)];
 }
 
 function slugify(value: string): string {
@@ -129,10 +138,18 @@ async function loadPreferences(): Promise<PlanPreferences | undefined> {
 	try {
 		const raw = await readFile(PREFERENCES_FILE, "utf8");
 		const parsed = JSON.parse(raw) as Record<string, any>;
-		if (parsed.version === 2 && isThinkingLevel(parsed.defaults?.planThinking) && isThinkingLevel(parsed.defaults?.normalThinking) && typeof parsed.perModel === "object" && parsed.perModel !== null) {
-			return { version: 2, defaults: parsed.defaults, perModel: parsed.perModel } as PlanPreferences;
+		if (parsed.version !== 2 || !isThinkingLevel(parsed.defaults?.planThinking) || !isThinkingLevel(parsed.defaults?.normalThinking) || typeof parsed.perModel !== "object" || parsed.perModel === null) {
+			return undefined;
 		}
-		return undefined;
+		// ponytail: validate each persisted per-model entry
+		const perModel: Record<string, { planThinking: ThinkingLevel; normalThinking: ThinkingLevel }> = {};
+		for (const [key, val] of Object.entries(parsed.perModel)) {
+			const m = val as Record<string, string>;
+			if (isThinkingLevel(m.planThinking) && isThinkingLevel(m.normalThinking)) {
+				perModel[key] = { planThinking: m.planThinking, normalThinking: m.normalThinking };
+			}
+		}
+		return { version: 2, defaults: parsed.defaults, perModel };
 	} catch {
 		return undefined;
 	}
@@ -140,14 +157,13 @@ async function loadPreferences(): Promise<PlanPreferences | undefined> {
 
 async function savePreferences(preferences: PlanPreferences): Promise<void> {
 	await mkdir(path.dirname(PREFERENCES_FILE), { recursive: true });
-	const temporaryPath = `${PREFERENCES_FILE}.${process.pid}.tmp`;
-	await writeFile(temporaryPath, `${JSON.stringify(preferences, null, 2)}\n`, "utf8");
-	await rename(temporaryPath, PREFERENCES_FILE);
+	const tmp = `${PREFERENCES_FILE}.${process.pid}.tmp`;
+	await writeFile(tmp, `${JSON.stringify(preferences, null, 2)}\n`, "utf8");
+	await rename(tmp, PREFERENCES_FILE);
 }
 
 export default function piPlanExtension(pi: ExtensionAPI): void {
 	let planModeEnabled = false;
-	let executionMode = false;
 	let toolsBeforePlan: string[] | undefined;
 	let planThinking: ThinkingLevel = "high";
 	let normalThinking: ThinkingLevel = "medium";
@@ -155,37 +171,70 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	let lastPlanTitle: string | undefined;
 	let lastPlanStatus: PlanStatus | undefined;
 	let applyingStoredThinking = false;
+	/** Set on successful write_plan, cleared after first agent_settled prompt. */
+	let planReadyForReview = false;
+	/** Suppress --plan flag during fresh-session handoff. */
+	let executionHandoff = false;
+	let preferences: PlanPreferences | undefined;
+
+	// ── UI helpers ──────────────────────────────────────────────
 
 	function clearPlanWidget(ctx: ExtensionContext): void {
 		ctx.ui.setWidget(STATUS_KEY, undefined);
 	}
+
 	function updateFooter(ctx: ExtensionContext): void {
-		ctx.ui.setStatus(STATUS_KEY, planModeEnabled ? ctx.ui.theme.fg("accent", "Plan mode") : undefined);
+		ctx.ui.setStatus(
+			STATUS_KEY,
+			planModeEnabled
+				? ctx.ui.theme.fg("accent", "Plan mode")
+				: undefined,
+		);
 	}
+
 	function persistState(): void {
 		pi.appendEntry("pi-plan", {
 			enabled: planModeEnabled,
-			executing: executionMode,
 			planThinking,
 			normalThinking,
 			toolsBeforePlan,
 			lastPlanPath,
 			lastPlanTitle,
 			lastPlanStatus,
+			planReadyForReview,
 		} satisfies PlanState);
 	}
-
-	let preferences: PlanPreferences | undefined;
 
 	function persistPreferences(): void {
 		if (!preferences) return;
 		void savePreferences(preferences).catch(() => undefined);
 	}
 
+	// ponytail: shared state restore — session_start and session_tree both need this
+	function restoreStateFromBranch(ctx: ExtensionContext): void {
+		const branch = ctx.sessionManager.getBranch();
+		const saved = branch
+			.filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === "pi-plan")
+			.pop() as { data?: PlanState } | undefined;
+		if (!saved?.data) return;
+		planModeEnabled = saved.data.enabled ?? planModeEnabled;
+		if (isThinkingLevel(saved.data.planThinking)) planThinking = saved.data.planThinking;
+		if (isThinkingLevel(saved.data.normalThinking)) normalThinking = saved.data.normalThinking;
+		toolsBeforePlan = saved.data.toolsBeforePlan ?? toolsBeforePlan;
+		lastPlanPath = saved.data.lastPlanPath ?? lastPlanPath;
+		lastPlanTitle = saved.data.lastPlanTitle ?? lastPlanTitle;
+		lastPlanStatus = saved.data.lastPlanStatus ?? lastPlanStatus;
+		if (typeof saved.data.planReadyForReview === "boolean") planReadyForReview = saved.data.planReadyForReview;
+	}
+
 	function enablePlanTools(): void {
 		const baseline = toolsBeforePlan ?? pi.getActiveTools();
 		toolsBeforePlan = baseline;
-		pi.setActiveTools(unique([...baseline.filter((tool) => PLAN_ALLOWED_TOOLS.has(tool)), ...DEFAULT_PLAN_TOOLS]));
+		// ponytail: preserve active read tools, remove mutators, add plan-only (no duplicates)
+		pi.setActiveTools([
+			...baseline.filter((t) => !BLOCKED_TOOLS.has(t) && !PLAN_ONLY_TOOLS.has(t)),
+			...PLAN_ONLY_TOOLS,
+		]);
 	}
 
 	function restoreTools(): void {
@@ -196,12 +245,13 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	function applyThinking(level: ThinkingLevel): void {
 		applyingStoredThinking = true;
 		pi.setThinkingLevel(level);
-		setTimeout(() => {
-			applyingStoredThinking = false;
-		}, 0);
+		queueMicrotask(() => { applyingStoredThinking = false; });
 	}
 
-	function recordActiveThinkingLevel(level: ThinkingLevel, ctx: ExtensionContext): void {
+	function recordActiveThinkingLevel(
+		level: ThinkingLevel,
+		ctx: ExtensionContext,
+	): void {
 		if (planModeEnabled) {
 			if (planThinking === level) return;
 			planThinking = level;
@@ -211,7 +261,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		}
 		const key = modelKey(ctx.model);
 		if (key && preferences) {
-			preferences.perModel[key] = { planThinking, normalThinking };
+			preferences.perModel[key] = {
+				planThinking,
+				normalThinking,
+			};
 		}
 		updateFooter(ctx);
 		persistState();
@@ -220,18 +273,29 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 	function enterPlanMode(ctx: ExtensionContext): void {
 		planModeEnabled = true;
-		executionMode = false;
+		// ponytail: after approval, start fresh plan path
+		if (lastPlanStatus === "approved" || lastPlanStatus === "executing") {
+			lastPlanPath = undefined;
+			lastPlanTitle = undefined;
+			lastPlanStatus = undefined;
+		}
 		enablePlanTools();
 		applyThinking(planThinking);
 		updateFooter(ctx);
 		clearPlanWidget(ctx);
 		persistState();
-		ctx.ui.notify(`Plan mode enabled. Plans will be written to ${PLAN_DIR}/`, "info");
+		ctx.ui.notify(
+			`Plan mode enabled. Plans will be written to ${PLAN_DIR}/`,
+			"info",
+		);
 	}
 
-	function leavePlanMode(ctx: ExtensionContext, restoreThinking = true): void {
+	function leavePlanMode(
+		ctx: ExtensionContext,
+		restoreThinking = true,
+	): void {
 		planModeEnabled = false;
-		executionMode = false;
+		planReadyForReview = false;
 		restoreTools();
 		if (restoreThinking) applyThinking(normalThinking);
 		updateFooter(ctx);
@@ -240,61 +304,103 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		ctx.ui.notify("Plan mode disabled.", "info");
 	}
 
-	async function handlePlanCommand(args: string, ctx: ExtensionContext): Promise<void> {
+	// ── Commands ────────────────────────────────────────────────
+
+	async function handlePlanCommand(
+		args: string,
+		ctx: ExtensionContext,
+	): Promise<void> {
 		if (args.trim().length > 0) {
-			ctx.ui.notify("/plan does not take arguments; use /plan or Ctrl+Alt+P to toggle plan mode.", "warning");
+			ctx.ui.notify(
+				"/plan does not take arguments; use /plan or Ctrl+Alt+P to toggle plan mode.",
+				"warning",
+			);
 			return;
 		}
 		if (planModeEnabled) leavePlanMode(ctx);
 		else enterPlanMode(ctx);
 	}
 
-	function beginCurrentSessionExecution(ctx: ExtensionContext, relativePlan: string): void {
+	function beginCurrentSessionExecution(
+		ctx: ExtensionContext,
+		relativePlan: string,
+	): void {
 		planModeEnabled = false;
-		executionMode = true;
+		planReadyForReview = false;
 		lastPlanStatus = "approved";
 		restoreTools();
 		applyThinking(normalThinking);
 		updateFooter(ctx);
 		clearPlanWidget(ctx);
 		persistState();
-		persistPreferences();
-		pi.sendUserMessage(buildExecutionPrompt(relativePlan, "current"), { deliverAs: "followUp" });
+		// ponytail: one-shot execution prompt, no persistent execution mode
+		pi.sendUserMessage(
+			buildExecutionPrompt(relativePlan, "current"),
+			{ deliverAs: "followUp" },
+		);
 	}
 
-	async function beginNewSessionExecution(ctx: ExtensionCommandContext): Promise<void> {
+	async function beginNewSessionExecution(
+		ctx: ExtensionCommandContext,
+	): Promise<void> {
 		if (!lastPlanPath) {
-			ctx.ui.notify("No approved plan is available to execute.", "error");
+			ctx.ui.notify(
+				"No approved plan is available to execute.",
+				"error",
+			);
 			return;
 		}
 		await ctx.waitForIdle();
-		const planPathToExecute = lastPlanPath;
-		const planTitleToExecute = lastPlanTitle;
-		const relativePlan = relativeToCwd(ctx.cwd, planPathToExecute);
-		const parentSession = ctx.sessionManager.getSessionFile();
-		const state: PlanState = {
-			enabled: false,
-			executing: true,
-			planThinking,
-			normalThinking,
-			lastPlanPath: planPathToExecute,
-			lastPlanTitle: planTitleToExecute,
-			lastPlanStatus: "approved",
-		};
-		const result = await ctx.newSession({
-			parentSession,
-			setup: async (sessionManager) => {
-				sessionManager.appendCustomEntry("pi-plan", state);
-			},
-			withSession: async (replacementCtx) => {
-				await replacementCtx.sendUserMessage(buildExecutionPrompt(relativePlan, "new"));
-			},
-		});
-		if (result.cancelled) ctx.ui.notify("New-session execution cancelled.", "info");
+		{
+			const planPathToExecute = lastPlanPath;
+			const planTitleToExecute = lastPlanTitle;
+			const relativePlan = relativeToCwd(ctx.cwd, planPathToExecute);
+			const parentSession = ctx.sessionManager.getSessionFile();
+			// ponytail: persist handoff marker so replacement instance suppresses --plan
+			const state: PlanState = {
+				enabled: false,
+				planThinking,
+				normalThinking,
+				lastPlanPath: planPathToExecute,
+				lastPlanTitle: planTitleToExecute,
+				lastPlanStatus: "approved",
+				planReadyForReview: false,
+			};
+
+			executionHandoff = true;
+			try {
+				const result = await ctx.newSession({
+					parentSession,
+					setup: async (sessionManager) => {
+						sessionManager.appendCustomEntry("pi-plan", state);
+					},
+					withSession: async (replacementCtx) => {
+						await replacementCtx.sendUserMessage(
+							buildExecutionPrompt(relativePlan, "new"),
+						);
+					},
+				});
+				if (result.cancelled) {
+					ctx.ui.notify("New-session execution cancelled.", "info");
+				}
+			} finally {
+				executionHandoff = false;
+			}
+		}
+	}
+
+	// ── Registration ────────────────────────────────────────────
+
+	// ponytail: throw so Pi marks the tool result as an error
+	function guardPlanMode(tool: string): void {
+		if (!planModeEnabled) {
+			throw new Error(`Error: ${tool} is only available in plan mode. Enable plan mode with /plan first.`);
+		}
 	}
 
 	pi.registerFlag("plan", {
-		description: "Start in pi-plan read-only planning mode",
+		description:
+			"Start in pi-plan read-only planning mode",
 		type: "boolean",
 		default: false,
 	});
@@ -309,28 +415,83 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			`Don't call ${PLAN_TOOL} while blocking questions remain; use ${PLAN_QUESTION_TOOL} first.`,
 		],
 		parameters: Type.Object({
-			title: Type.String({ description: "Short plan title" }),
-			content: Type.String({ description: "Markdown plan content" }),
-			status: Type.Optional(Type.String({ description: "draft, approved, or executing" })),
+			title: Type.String({
+				description: "Short plan title",
+			}),
+			content: Type.String({
+				description: "Markdown plan content",
+			}),
+			status: Type.Optional(
+				Type.String({
+					description: "draft, approved, or executing",
+				}),
+			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			guardPlanMode(PLAN_TOOL);
+
 			const typedParams = params as WritePlanParams;
-			const destination = lastPlanPath ?? planPath(ctx.cwd, typedParams.title);
+
+			// ponytail: reuse draft path for refinements, new path for new plans
+			let destination: string;
+			if (
+				lastPlanPath &&
+				lastPlanStatus === "draft" &&
+				typedParams.title.trim() === lastPlanTitle
+			) {
+				// ponytail: compare relative to resolved plan dir (portable, rejects siblings)
+				const resolved = path.resolve(ctx.cwd, lastPlanPath);
+				const planDir = path.resolve(ctx.cwd, PLAN_DIR);
+				const rel = path.relative(planDir, resolved);
+				if (rel.startsWith("..") || path.isAbsolute(rel)) {
+					throw new Error(`Plan path is outside ${PLAN_DIR}/`);
+				}
+				destination = resolved;
+			} else {
+				destination = planPath(
+					ctx.cwd,
+					typedParams.title,
+				);
+			}
+
 			const content = normalizePlanContent(typedParams);
-			await withFileMutationQueue(destination, async () => {
-				await mkdir(path.dirname(destination), { recursive: true });
-				await writeFile(destination, content, "utf8");
-			});
+			await withFileMutationQueue(
+				destination,
+				async () => {
+					await mkdir(path.dirname(destination), {
+						recursive: true,
+					});
+					await writeFile(
+						destination,
+						content,
+						"utf8",
+					);
+				},
+			);
 			lastPlanPath = destination;
-			lastPlanTitle = typedParams.title.trim() || "Plan";
-			lastPlanStatus = isPlanStatus(typedParams.status) ? typedParams.status : "draft";
+			lastPlanTitle =
+				typedParams.title.trim() || "Plan";
+			lastPlanStatus = isPlanStatus(typedParams.status)
+				? typedParams.status
+				: "draft";
+			planReadyForReview = true;
 			persistState();
+
 			const warning = hasOpenQuestionWarning(content)
 				? ` If the plan contains blocking user-answerable open questions, call ${PLAN_QUESTION_TOOL} before requesting approval.`
 				: "";
 			return {
-				content: [{ type: "text", text: `Plan written to ${relativeToCwd(ctx.cwd, destination)}. If no blocking user-answerable questions remain, ask the user to approve, refine, execute in current session, execute in a new session, or keep planning.${warning}` }],
-				details: { path: destination, title: lastPlanTitle, status: lastPlanStatus },
+				content: [
+					{
+						type: "text",
+						text: `Plan written to ${relativeToCwd(ctx.cwd, destination)}. If no blocking user-answerable questions remain, ask the user to approve, refine, execute in current session, execute in a new session, or keep planning.${warning}`,
+					},
+				],
+				details: {
+					path: destination,
+					title: lastPlanTitle,
+					status: lastPlanStatus,
+				},
 			};
 		},
 	});
@@ -338,8 +499,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: PLAN_QUESTION_TOOL,
 		label: "Ask Plan Question",
-		description: "Ask user a planning question with selectable options and optional free-form input.",
-		promptSnippet: "Ask user a planning question with 2-4 concrete options when a decision affects the plan",
+		description:
+			"Ask user a planning question with selectable options and optional free-form input.",
+		promptSnippet:
+			"Ask user a planning question with 2-4 concrete options when a decision affects the plan",
 		promptGuidelines: [
 			"Use only when repo research leaves a consequential ambiguity.",
 			"Prefer 2-4 concrete options. Use short labels.",
@@ -347,79 +510,187 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			"Respect user's stated preference.",
 		],
 		parameters: Type.Object({
-			question: Type.String({ description: "Planning question to ask" }),
+			question: Type.String({
+				description: "Planning question to ask",
+			}),
 			options: Type.Array(
 				Type.Object({
-					label: Type.String({ description: "Option label" }),
-					description: Type.Optional(Type.String({ description: "Optional explanation" })),
+					label: Type.String({
+						description: "Option label",
+					}),
+					description: Type.Optional(
+						Type.String({
+							description:
+								"Optional explanation",
+						}),
+					),
 				}),
-				{ description: "Options to choose from" },
+				{
+					description:
+						"Options to choose from (2-4 required)",
+					minItems: 2,
+					maxItems: 4,
+				},
 			),
-			allowOther: Type.Optional(Type.Boolean({ description: "Allow free-form user answer; default true" })),
+			allowOther: Type.Optional(
+				Type.Boolean({
+					description:
+						"Allow free-form user answer; default true",
+				}),
+			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			guardPlanMode(PLAN_QUESTION_TOOL);
+
 			const typedParams = params as PlanQuestionParams;
 			const options = typedParams.options ?? [];
-			if (options.length === 0) {
-				return {
-					content: [{ type: "text", text: "Error: ask_plan_question requires at least one option." }],
-					details: { question: typedParams.question, answer: null },
-				};
+
+			// ponytail: runtime validation since TypeBox minItems can't check blank/duplicate
+			const labels = options.map((o) => o.label.trim());
+			if (labels.some((l) => !l)) {
+				throw new Error(
+					"Each option must have a non-blank label.",
+				);
 			}
+			if (new Set(labels).size !== labels.length) {
+				throw new Error(
+					"Option labels must be unique.",
+				);
+			}
+			if (
+				labels.some(
+					(l) =>
+						l.toLowerCase() === "other" ||
+						l.toLowerCase().startsWith("other "),
+				)
+			) {
+				throw new Error(
+					'Option labels cannot conflict with the "Other" label.',
+				);
+			}
+
 			if (!ctx.hasUI) {
 				return {
-					content: [{ type: "text", text: "UI is not available. Ask this planning question directly in chat and wait for the user's answer." }],
-					details: { question: typedParams.question, options, answer: null },
+					content: [
+						{
+							type: "text",
+							text: "UI is not available. Ask this planning question directly in chat and wait for the user's answer.",
+						},
+					],
+					details: {
+						question: typedParams.question,
+						options,
+						answer: null,
+					},
 				};
 			}
 
-			const allowOther = typedParams.allowOther !== false;
-			const labels = options.map((option) =>
-				option.description ? `${option.label} — ${option.description}` : option.label,
+			const allowOther =
+				typedParams.allowOther !== false;
+			const displayLabels = options.map((option) =>
+				option.description
+					? `${option.label} — ${option.description}`
+					: option.label,
 			);
 			const otherLabel = "Other / type my answer";
-			const choice = await ctx.ui.select(typedParams.question, allowOther ? [...labels, otherLabel] : labels);
+			const choice = await ctx.ui.select(
+				typedParams.question,
+				allowOther
+					? [...displayLabels, otherLabel]
+					: displayLabels,
+			);
 			if (!choice) {
 				return {
-					content: [{ type: "text", text: "User cancelled the planning question." }],
-					details: { question: typedParams.question, options, answer: null, cancelled: true },
+					content: [
+						{
+							type: "text",
+							text: "User cancelled the planning question.",
+						},
+					],
+					details: {
+						question: typedParams.question,
+						options,
+						answer: null,
+						cancelled: true,
+					},
 				};
 			}
 
 			if (choice === otherLabel) {
-				const answer = (await ctx.ui.editor("Your answer", ""))?.trim();
+				const answer = (
+					await ctx.ui.editor(
+						"Your answer",
+						"",
+					)
+				)?.trim();
 				if (!answer) {
 					return {
-						content: [{ type: "text", text: "User cancelled the planning question." }],
-						details: { question: typedParams.question, options, answer: null, cancelled: true },
+						content: [
+							{
+								type: "text",
+								text: "User cancelled the planning question.",
+							},
+						],
+						details: {
+							question: typedParams.question,
+							options,
+							answer: null,
+							cancelled: true,
+						},
 					};
 				}
 				return {
-					content: [{ type: "text", text: `User wrote: ${answer}` }],
-					details: { question: typedParams.question, options, answer, wasCustom: true },
+					content: [
+						{
+							type: "text",
+							text: `User wrote: ${answer}`,
+						},
+					],
+					details: {
+						question: typedParams.question,
+						options,
+						answer,
+						wasCustom: true,
+					},
 				};
 			}
 
-			const selectedIndex = labels.indexOf(choice);
+			const selectedIndex =
+				displayLabels.indexOf(choice);
 			const selected = options[selectedIndex];
 			const answer = selected?.label ?? choice;
 			return {
-				content: [{ type: "text", text: `User selected: ${answer}` }],
-				details: { question: typedParams.question, options, answer, selectedIndex: selectedIndex + 1, wasCustom: false },
+				content: [
+					{
+						type: "text",
+						text: `User selected: ${answer}`,
+					},
+				],
+				details: {
+					question: typedParams.question,
+					options,
+					answer,
+					selectedIndex: selectedIndex + 1,
+					wasCustom: false,
+				},
 			};
 		},
 	});
 
 	pi.registerCommand("plan", {
 		description: "Toggle pi-plan mode",
-		handler: async (args, ctx) => handlePlanCommand(args, ctx),
+		handler: async (args, ctx) =>
+			handlePlanCommand(args, ctx),
 	});
 
 	pi.registerCommand(PLAN_EXECUTE_COMMAND, {
 		description: "Internal pi-plan execution bridge",
 		handler: async (args, ctx) => {
 			if (args.trim() !== "new") {
-				ctx.ui.notify(`Usage: /${PLAN_EXECUTE_COMMAND} new`, "warning");
+				ctx.ui.notify(
+					`Usage: /${PLAN_EXECUTE_COMMAND} new`,
+					"warning",
+				);
 				return;
 			}
 			await beginNewSessionExecution(ctx);
@@ -434,35 +705,37 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		},
 	});
 
+	// ── Events ──────────────────────────────────────────────────
+
 	pi.on("session_start", async (_event, ctx) => {
 		preferences = await loadPreferences();
 		if (!preferences) {
-			preferences = { version: 2, defaults: { planThinking, normalThinking }, perModel: {} };
+			preferences = {
+				version: 2,
+				defaults: { planThinking, normalThinking },
+				perModel: {},
+			};
 		}
-		const effective = getEffectiveThinking(preferences, ctx.model);
+		const effective = getEffectiveThinking(
+			preferences,
+			ctx.model,
+		);
 		planThinking = effective.plan;
 		normalThinking = effective.normal;
 
-		const entries = ctx.sessionManager.getEntries();
-		const saved = entries
-			.filter((entry: { type: string; customType?: string }) => entry.type === "custom" && entry.customType === "pi-plan")
-			.pop() as { data?: PlanState } | undefined;
-		if (saved?.data) {
-			planModeEnabled = saved.data.enabled ?? planModeEnabled;
-			executionMode = saved.data.executing ?? executionMode;
-			if (isThinkingLevel(saved.data.planThinking)) planThinking = saved.data.planThinking;
-			if (isThinkingLevel(saved.data.normalThinking)) normalThinking = saved.data.normalThinking;
-			toolsBeforePlan = saved.data.toolsBeforePlan ?? toolsBeforePlan;
-			lastPlanPath = saved.data.lastPlanPath ?? lastPlanPath;
-			lastPlanTitle = saved.data.lastPlanTitle ?? lastPlanTitle;
-			lastPlanStatus = saved.data.lastPlanStatus ?? lastPlanStatus;
+		// ponytail: restore state from current branch (shared with session_tree)
+		restoreStateFromBranch(ctx);
+		// ponytail: skip plan mode re-entry during execution handoff
+		if (
+			pi.getFlag("plan") === true &&
+			!executionHandoff
+		) {
+			planModeEnabled = true;
 		}
-		persistPreferences();
-		if (pi.getFlag("plan") === true) planModeEnabled = true;
 		if (planModeEnabled) {
 			enablePlanTools();
 			applyThinking(planThinking);
-		} else if (executionMode) {
+		} else {
 			applyThinking(normalThinking);
 		}
 		updateFooter(ctx);
@@ -470,20 +743,18 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("model_select", async (event, ctx) => {
-		if (executionMode) return;
 		if (!preferences) return;
 		const effective = getEffectiveThinking(preferences, event.model);
-		if (planModeEnabled) {
-			if (planThinking !== effective.plan) {
-				planThinking = effective.plan;
-				applyThinking(planThinking);
-			}
-		} else {
-			if (normalThinking !== effective.normal) {
-				normalThinking = effective.normal;
-				applyThinking(normalThinking);
-			}
-		}
+		// ponytail: always update both stored levels, then apply active one
+		planThinking = effective.plan;
+		normalThinking = effective.normal;
+		applyThinking(planModeEnabled ? planThinking : normalThinking);
+		updateFooter(ctx);
+		persistState();
+	});
+
+	pi.on("session_tree", async (_event, ctx) => {
+		restoreStateFromBranch(ctx);
 		updateFooter(ctx);
 		persistState();
 	});
@@ -494,92 +765,107 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		recordActiveThinkingLevel(event.level, ctx);
 	});
 
-	pi.on("tool_call", async (event) => {
+	/**
+	 * Three-outcome tool gating in plan mode:
+	 *   - Blocked tools → deny with error
+	 *   - Bash → require user confirmation
+	 *   - Baseline tools NOT on the known-read list → require confirmation
+	 *   - Unknown tools (outside baseline) → require confirmation
+	 *   - Known-read tools → auto-allowed
+	 */
+	pi.on("tool_call", async (event, ctx) => {
 		if (!planModeEnabled) return;
-		if (!PLAN_ALLOWED_TOOLS.has(event.toolName)) {
-			return { block: true, reason: `pi-plan: ${event.toolName} is disabled in read-only plan mode. Use ${PLAN_TOOL} to write the plan file.` };
+
+		// ponytail: hard-blocked mutators never available
+		if (BLOCKED_TOOLS.has(event.toolName)) {
+			return {
+				block: true,
+				reason: `pi-plan: ${event.toolName} is not available in plan mode. Use ${PLAN_TOOL} to write the plan file.`,
+			};
 		}
-		if (!isToolCallEventType("bash", event)) return;
-		if (isDestructiveBash(event.input.command) || !isReadOnlyBash(event.input.command)) {
-			return { block: true, reason: `pi-plan: bash command blocked in plan mode because only simple read-only inspection commands are allowed.\nCommand: ${event.input.command}` };
+
+		// Plan-only tools are always allowed
+		if (PLAN_ONLY_TOOLS.has(event.toolName)) return;
+
+		// Bash always requires confirmation
+		if (isToolCallEventType("bash", event)) {
+			if (!ctx.hasUI) return { block: true, reason: `pi-plan: bash requires confirmation but UI is not available.\nCommand: ${event.input.command}` };
+			if (!await ctx.ui.confirm("Allow bash command in plan mode?", `Command: ${event.input.command}`)) {
+				return { block: true, reason: `pi-plan: bash command rejected by user.\nCommand: ${event.input.command}` };
+			}
+			return;
+		}
+
+		// ponytail: even baseline custom tools (e.g. obsidian) need confirm unless known-read
+		if (toolsBeforePlan && !READ_ONLY_TOOLS.has(event.toolName)) {
+			if (!ctx.hasUI) return { block: true, reason: `pi-plan: ${event.toolName} requires confirmation but UI is not available.` };
+			if (!await ctx.ui.confirm(`Allow ${event.toolName} in plan mode?`, `Tool: ${event.toolName}`)) {
+				return { block: true, reason: `pi-plan: ${event.toolName} rejected by user.` };
+			}
+			return;
 		}
 	});
 
-	pi.on("context", async (event) => {
-		// When not in plan mode or execution mode, filter out stale context messages
-		if (!planModeEnabled && !executionMode) {
-			return {
-				messages: event.messages.filter((m) => {
-					const msg = m as { customType?: string };
-					return msg.customType !== "pi-plan-context" && msg.customType !== "pi-plan-execution-context";
-				}),
-			};
-		}
-		// In execution mode, filter out stale plan mode context messages
-		if (executionMode && !planModeEnabled) {
-			return {
-				messages: event.messages.filter((m) => {
-					const msg = m as { customType?: string };
-					return msg.customType !== "pi-plan-context";
-				}),
-			};
-		}
-		// In plan mode, let all messages through
-	});
-
+	/**
+	 * Inject planning instructions via systemPrompt chaining.
+	 * This preserves Ponytail, project instructions, and other
+	 * extensions regardless of load order.
+	 */
 	pi.on("before_agent_start", async (_event, ctx) => {
 		if (planModeEnabled) {
-			const relativePlan = lastPlanPath ? relativeToCwd(ctx.cwd, lastPlanPath) : `${PLAN_DIR}/<timestamp>-<title>.md`;
+			const relativePlan = lastPlanPath
+				? relativeToCwd(ctx.cwd, lastPlanPath)
+				: `${PLAN_DIR}/<timestamp>-<title>.md`;
 			return {
-				message: {
-					customType: "pi-plan-context",
-					content: `[PI-PLAN MODE ACTIVE]\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and run read-only shell commands.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${PLAN_QUESTION_TOOL} for consequential open decisions with 2-4 clear options and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${PLAN_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${PLAN_DIR}/. Current/next plan path: ${relativePlan}\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
-					display: false,
-				},
-			};
-		}
-
-		if (executionMode && lastPlanPath) {
-			let content = "";
-			try {
-				content = await readFile(lastPlanPath, "utf8");
-			} catch {
-				content = `Plan file unavailable at ${lastPlanPath}`;
-			}
-			return {
-				message: {
-					customType: "pi-plan-execution-context",
-					content: `[PI-PLAN EXECUTION]\nExecute the approved plan at ${relativeToCwd(ctx.cwd, lastPlanPath)}. Use normal mode thinking=${normalThinking}. Keep changes scoped to the plan and verify the result.\n\n${content}`,
-					display: false,
-				},
+				systemPrompt:
+					_event.systemPrompt +
+					`\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- All shell (bash) commands require user confirmation — ask before running them.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${PLAN_QUESTION_TOOL} for consequential open decisions with 2-4 clear options and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${PLAN_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${PLAN_DIR}/. Current/next plan path: ${relativePlan}\n- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
 			};
 		}
 	});
 
-	pi.on("agent_end", async (_event, ctx) => {
-		if (!planModeEnabled || !lastPlanPath || !ctx.hasUI) return;
-		const relativePlan = relativeToCwd(ctx.cwd, lastPlanPath);
-		const currentSessionChoice = "Yes, implement this plan          Switch to Default and start coding.";
+	/**
+	 * One-shot approval prompt: fires only once after a successful
+	 * write_plan, on agent_settled (not agent_end). Fresh-session
+	 * execution is queued as a command handler to avoid using
+	 * ExtensionCommandContext APIs from an event handler.
+	 */
+	pi.on("agent_settled", async (_event, ctx) => {
+		if (
+			!planModeEnabled ||
+			!planReadyForReview ||
+			!lastPlanPath ||
+			!ctx.hasUI
+		)
+			return;
+
+		planReadyForReview = false;
+		persistState();
+		const relativePlan = relativeToCwd(
+			ctx.cwd,
+			lastPlanPath,
+		);
+		const currentSessionChoice =
+			"Yes, implement this plan          Switch to Default and start coding.";
 		const newSessionChoice = `Yes, clear context and implement  Fresh thread. ${formatShortContextUsage(ctx)}`;
-		const choice = await ctx.ui.select("Implement this plan?", [
-			currentSessionChoice,
-			newSessionChoice,
-			"No, stay in Plan mode             Continue planning with the model.",
-		]);
+		const choice = await ctx.ui.select(
+			"Implement this plan?",
+			[
+				currentSessionChoice,
+				newSessionChoice,
+				"No, stay in Plan mode             Continue planning with the model.",
+			],
+		);
+
 		if (choice === currentSessionChoice) {
 			beginCurrentSessionExecution(ctx, relativePlan);
 		} else if (choice === newSessionChoice) {
-			planModeEnabled = false;
-			executionMode = false;
+			// ponytail: queue command handler instead of calling command-only APIs directly
+			leavePlanMode(ctx, true);
 			lastPlanStatus = "approved";
-			restoreTools();
-			applyThinking(normalThinking);
-			updateFooter(ctx);
-			clearPlanWidget(ctx);
 			persistState();
-			persistPreferences();
-			ctx.ui.setEditorText(`/${PLAN_EXECUTE_COMMAND} new`);
-			ctx.ui.notify("Press Enter to start execution in a new session.", "info");
+			pi.sendUserMessage(`/${PLAN_EXECUTE_COMMAND} new`, { deliverAs: "followUp" });
 		}
+		// "Stay in Plan mode" — do nothing, prompt was cleared
 	});
 }

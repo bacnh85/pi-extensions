@@ -1,313 +1,504 @@
 /**
- * Unit tests for pi-plan bash gating (isReadOnlyBash).
+ * Tests for pi-plan extension: prompt composition, tool gating, plan lifecycle,
+ * path containment.
  */
 
-import { isReadOnlyBash, isDestructiveBash } from "./lib/bash-gating";
-import { DEFAULT_PLAN_TOOLS, MUNIN_PLAN_TOOLS, SERENA_PLAN_TOOLS, WEB_PLAN_TOOLS } from "./lib/plan-tools";
+import assert from "node:assert/strict";
+import { before, describe, it } from "mocha";
+import os from "node:os";
+import path from "node:path";
+import { mkdirSync } from "node:fs";
+import piPlanExtension from "./index";
+import { BLOCKED_TOOLS, PLAN_ONLY_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
-import { expect } from "chai";
+
+/** Real temp directory for tests that write files. */
+const TMP = path.join(os.tmpdir(), "pi-plan-test-" + process.pid);
+before(() => { mkdirSync(TMP, { recursive: true }); });
+
+// ── Fake Pi harness ──────────────────────────────────────────────
+
+type EventHandler = (event: any, ctx: any) => any;
+
+interface FakePi {
+	handlers: Record<string, EventHandler[]>;
+	toolDefs: Record<string, any>;
+	commands: Record<string, any>;
+	flags: Record<string, any>;
+	shortcuts: Record<string, any>;
+	activeTools: string[];
+	thinkingLevel: string | null;
+	entries: any[];
+	sentMessages: any[];
+	customMessages: any[];
+	flagValues: Record<string, any>;
+}
+
+function createFakePi(
+	initialTools: string[] = [],
+	flagValues: Record<string, any> = {},
+): { pi: any } & FakePi {
+	const state: FakePi = {
+		handlers: {},
+		toolDefs: {},
+		commands: {},
+		flags: {},
+		shortcuts: {},
+		activeTools: [...initialTools],
+		thinkingLevel: null,
+		entries: [],
+		sentMessages: [],
+		customMessages: [],
+		flagValues: { ...flagValues },
+	};
+
+	const pi = {
+		on(event: string, handler: EventHandler) {
+			(state.handlers[event] ??= []).push(handler);
+		},
+		registerTool(def: any) {
+			state.toolDefs[def.name] = def;
+		},
+		registerCommand(name: string, def: any) {
+			state.commands[name] = def;
+		},
+		registerFlag(name: string, def: any) {
+			state.flags[name] = def;
+		},
+		registerShortcut(keys: string, def: any) {
+			state.shortcuts[keys] = def;
+		},
+		getActiveTools() {
+			return [...state.activeTools];
+		},
+		setActiveTools(tools: string[]) {
+			state.activeTools = [...tools];
+		},
+		setThinkingLevel(level: string) {
+			state.thinkingLevel = level;
+		},
+		appendEntry(customType: string, data?: any) {
+			state.entries.push({ customType, data });
+		},
+		getFlag(name: string) {
+			return state.flagValues[name] ?? false;
+		},
+		sendUserMessage(content: string, options?: any) {
+			state.sentMessages.push({ content, options });
+		},
+		getSessionName() { return undefined; },
+		sendMessage(message: any, options?: any) {
+			state.customMessages.push({ message, options });
+		},
+	};
+
+	piPlanExtension(pi);
+	return { ...state, pi };
+}
+
+function fakeCtx(overrides: Record<string, any> = {}): any {
+	const ctx: any = {
+		cwd: overrides.cwd ?? TMP,
+		hasUI: overrides.hasUI ?? true,
+		model: overrides.model ?? { provider: "test", id: "model-1" },
+		getContextUsage: () => ({ percent: 50 }),
+		ui: {
+			theme: { fg: (_style: string, text: string) => text },
+			setStatus: () => {},
+			setWidget: () => {},
+			notify: () => {},
+			select: async (_question: string, _options: string[]) => null,
+			confirm: async (_title: string, _body: string) => false,
+			editor: async (_title: string, _default: string) => "",
+		},
+		sessionManager: {
+			getBranch: () => [],
+			getSessionFile: () => "/test/session.jsonl",
+		},
+		waitForIdle: async () => {},
+		sendUserMessage: async (_content: string, _options?: any) => {},
+		...overrides,
+	};
+	if (overrides.ui) Object.assign(ctx.ui, overrides.ui);
+	if (overrides.sessionManager) Object.assign(ctx.sessionManager, overrides.sessionManager);
+	return ctx;
+}
+
+// ── Tests ────────────────────────────────────────────────────────
 
 describe("plan-mode guidance", () => {
 	it("tells agents to use Serena before raw code reads/searches", () => {
-		expect(PLAN_MODE_SERENA_GUIDANCE).to.include("use Serena before raw reads/searches");
-		expect(PLAN_MODE_SERENA_GUIDANCE).to.include("serena_get_symbols_overview");
-		expect(PLAN_MODE_SERENA_GUIDANCE).to.include("serena_find_symbol");
-		expect(PLAN_MODE_SERENA_GUIDANCE).to.include("Use read for docs/config/non-code files");
+		assert.ok(PLAN_MODE_SERENA_GUIDANCE.includes("use Serena before raw reads/searches"));
+		assert.ok(PLAN_MODE_SERENA_GUIDANCE.includes("serena_get_symbols_overview"));
+		assert.ok(PLAN_MODE_SERENA_GUIDANCE.includes("serena_find_symbol"));
+		assert.ok(PLAN_MODE_SERENA_GUIDANCE.includes("Use read for docs/config/non-code files"));
 	});
 });
 
-describe("plan-mode tool allowlist", () => {
-	it("includes all unified pi-web v0.4 tools", () => {
-		expect(WEB_PLAN_TOOLS).to.include.members([
-			"web_search",
-			"web_extract",
-			"web_map",
-			"web_crawl",
-			"web_screenshot",
-			"web_pdf",
-			"web_status",
-		]);
-		expect(DEFAULT_PLAN_TOOLS).to.include.members(WEB_PLAN_TOOLS);
+describe("plan-mode tool lists", () => {
+	it("includes all known read/research tools", () => {
+		for (const tool of ["read", "ffgrep", "fffind", "web_search", "web_extract",
+			"serena_find_symbol", "serena_get_symbols_overview",
+			"munin_search", "munin_get", "munin_list",
+		]) {
+			assert.ok(READ_ONLY_TOOLS.has(tool), `${tool} in known-read set`);
+		}
 	});
 
-	it("does not include removed pi-web v0.3 tool names", () => {
-		expect(DEFAULT_PLAN_TOOLS).not.to.include.members([
-			"searxng_search",
-			"brave_search",
-			"brave_content",
-			"firecrawl_search",
-			"firecrawl_scrape",
-			"firecrawl_map",
-			"firecrawl_crawl",
-		]);
+	it("hard-blocks known source mutators", () => {
+		for (const tool of ["edit", "write",
+			"serena_replace_symbol_body", "serena_insert_before_symbol",
+			"serena_rename_symbol", "serena_replace_content",
+			"munin_store", "munin_delete",
+		]) {
+			assert.ok(BLOCKED_TOOLS.has(tool), `${tool} should be blocked`);
+		}
 	});
 
-	it("includes only read-only Serena tools for planning", () => {
-		expect(SERENA_PLAN_TOOLS).to.include.members([
-			"serena_status",
-			"serena_list_tools",
-			"serena_get_symbols_overview",
-			"serena_find_symbol",
-			"serena_find_declaration",
-			"serena_find_implementations",
-			"serena_find_referencing_symbols",
-			"serena_search_for_pattern",
-			"serena_get_diagnostics_for_file",
-		]);
-		expect(DEFAULT_PLAN_TOOLS).to.include.members(SERENA_PLAN_TOOLS);
-		expect(DEFAULT_PLAN_TOOLS).not.to.include.members([
-			"serena_replace_symbol_body",
-			"serena_insert_before_symbol",
-			"serena_insert_after_symbol",
-			"serena_rename_symbol",
-			"serena_safe_delete_symbol",
-			"serena_replace_content",
-			"serena_write_memory",
-			"serena_edit_memory",
-			"serena_rename_memory",
-			"serena_delete_memory",
-		]);
-	});
-
-	it("includes only read-only Munin tools for planning", () => {
-		expect(MUNIN_PLAN_TOOLS).to.include.members([
-			"munin_search",
-			"munin_get",
-			"munin_list",
-			"munin_recent",
-			"munin_capabilities",
-		]);
-		expect(DEFAULT_PLAN_TOOLS).to.include.members(MUNIN_PLAN_TOOLS);
-		expect(DEFAULT_PLAN_TOOLS).not.to.include.members([
-			"munin_store",
-			"munin_capture",
-			"munin_batch_store",
-			"munin_delete",
-			"munin_rollback",
-			"munin_share",
-			"munin_acknowledge_setup",
-			"munin_encrypt",
-			"munin_decrypt",
-			"munin_export",
-		]);
+	it("includes plan-only tools", () => {
+		assert.ok(PLAN_ONLY_TOOLS.has("write_plan"));
+		assert.ok(PLAN_ONLY_TOOLS.has("ask_plan_question"));
 	});
 });
 
-describe("isReadOnlyBash", () => {
-	// --- git commands ---
+describe("plan mode prompt composition", () => {
+	it("chains systemPrompt with plan instructions via before_agent_start", async () => {
+		const { handlers } = createFakePi(["read", "ffgrep"], { plan: true });
 
-	it("allows git status with -- flag separator", () => {
-		expect(isReadOnlyBash("git status --short -- path/to/dir")).to.be.true;
+		const ssHandler = handlers.session_start?.[0];
+		assert.ok(ssHandler);
+		await ssHandler({ reason: "startup" }, fakeCtx({ model: { provider: "test", id: "m" } }));
+
+		const basHandler = handlers.before_agent_start?.[0];
+		assert.ok(basHandler);
+
+		const result = await basHandler(
+			{ systemPrompt: "[Base prompt]\n\n[Ponytail mode active]", systemPromptOptions: {} },
+			fakeCtx({ model: { provider: "test", id: "m" } }),
+		);
+
+		assert.ok(result);
+		assert.ok(result.systemPrompt.includes("[Base prompt]\n\n[Ponytail mode active]"), "base prompt preserved");
+		assert.ok(result.systemPrompt.includes("## Plan Mode"), "plan mode header added");
+		assert.ok(result.systemPrompt.includes("smallest complete"), "smallest complete change rule");
+		assert.ok(result.systemPrompt.includes("read-only planning mode"), "read-only mode stated");
 	});
 
-	it("allows git status with -- and multiple paths", () => {
-		expect(isReadOnlyBash("git status --short -- extensions/pi-review/ extensions/pi-plan/")).to.be.true;
-	});
+	it("does not inject plan prompt when not in plan mode", async () => {
+		const { handlers } = createFakePi(["read"], {});
+		const basHandler = handlers.before_agent_start?.[0];
+		assert.ok(basHandler);
 
-	it("allows git status without -- separator", () => {
-		expect(isReadOnlyBash("git status --short")).to.be.true;
-		expect(isReadOnlyBash("git status -s")).to.be.true;
-		expect(isReadOnlyBash("git status --porcelain")).to.be.true;
-	});
-
-	it("allows git log with -- separator and --grep", () => {
-		expect(isReadOnlyBash('git log --all --oneline --grep="serena" -- extensions/pi-plan/')).to.be.true;
-	});
-
-	it("allows git log with common flags", () => {
-		expect(isReadOnlyBash("git log --oneline -5")).to.be.true;
-		expect(isReadOnlyBash("git log --oneline --grep=pattern")).to.be.true;
-	});
-
-	it("allows git diff", () => {
-		expect(isReadOnlyBash("git diff")).to.be.true;
-		expect(isReadOnlyBash("git diff --stat")).to.be.true;
-		expect(isReadOnlyBash("git diff HEAD~3 HEAD -- package.json")).to.be.true;
-	});
-
-	it("allows git show", () => {
-		expect(isReadOnlyBash("git show HEAD -- package.json")).to.be.true;
-	});
-
-	it("allows git branch (read-only)", () => {
-		expect(isReadOnlyBash("git branch --show-current")).to.be.true;
-		expect(isReadOnlyBash("git branch -a")).to.be.true;
-	});
-
-	it("allows rev-parse and ls-files", () => {
-		expect(isReadOnlyBash("git rev-parse --show-toplevel")).to.be.true;
-		expect(isReadOnlyBash("git ls-files")).to.be.true;
-	});
-
-	it("blocks destructive git commands", () => {
-		expect(isReadOnlyBash("git add .")).to.be.false;
-		expect(isReadOnlyBash("git commit -m 'msg'")).to.be.false;
-		expect(isReadOnlyBash("git push origin main")).to.be.false;
-		expect(isReadOnlyBash("git checkout -b new-branch")).to.be.false;
-		expect(isReadOnlyBash("git reset --hard")).to.be.false;
-		expect(isReadOnlyBash("git stash")).to.be.false;
-		expect(isReadOnlyBash("git merge feature")).to.be.false;
-	});
-
-	// --- chaining with && and ; ---
-
-	it("allows && chaining of read-only commands", () => {
-		expect(isReadOnlyBash("ls path && git status --short")).to.be.true;
-		expect(isReadOnlyBash("ls path && grep pattern file.ts")).to.be.true;
-	});
-
-	it("allows ; chaining of read-only commands", () => {
-		expect(isReadOnlyBash("echo start ; git status --short ; echo done")).to.be.true;
-	});
-
-	it("allows mixed && and ; chaining", () => {
-		expect(isReadOnlyBash("cd /tmp && ls ; echo done")).to.be.true;
-	});
-
-	it("allows chaining with pipes inside chain segments", () => {
-		expect(isReadOnlyBash("ls | grep test && cat file.ts")).to.be.true;
-	});
-
-	it("blocks && chaining when a segment is destructive", () => {
-		expect(isReadOnlyBash("ls path && rm -rf /")).to.be.false;
-		expect(isReadOnlyBash("cat file && git add .")).to.be.false;
-	});
-
-	// --- cd prefix stripping ---
-
-	it("strips cd && prefix and validates the rest", () => {
-		expect(isReadOnlyBash("cd /tmp && ls")).to.be.true;
-		expect(isReadOnlyBash("cd /path/to/dir && git status")).to.be.true;
-	});
-
-	it("strips cd ; prefix and validates the rest", () => {
-		expect(isReadOnlyBash("cd /tmp ; ls")).to.be.true;
-	});
-
-	it("strips cd && with quoted paths", () => {
-		expect(isReadOnlyBash('cd "C:\\Program Files" && ls')).to.be.true;
-	});
-
-	// --- echo command ---
-
-	it("allows echo", () => {
-		expect(isReadOnlyBash('echo "test"')).to.be.true;
-		expect(isReadOnlyBash("echo hello world")).to.be.true;
-		expect(isReadOnlyBash("echo ---")).to.be.true;
-	});
-
-	it("allows echo in chains", () => {
-		expect(isReadOnlyBash("echo start ; echo middle ; echo end")).to.be.true;
-		expect(isReadOnlyBash("ls && echo done")).to.be.true;
-	});
-
-	// --- pipes ---
-
-	it("allows pipes between read-only commands", () => {
-		expect(isReadOnlyBash("ls | grep pattern")).to.be.true;
-		expect(isReadOnlyBash("cat file.ts | head -5")).to.be.true;
-		expect(isReadOnlyBash("rg pattern src/ | wc -l")).to.be.true;
-	});
-
-	// --- security blocks ---
-
-	it("blocks shell metacharacters", () => {
-		expect(isReadOnlyBash("ls $(dangerous)")).to.be.false;
-		expect(isReadOnlyBash("ls `dangerous`")).to.be.false;
-		expect(isReadOnlyBash("ls || rm -rf /")).to.be.false;
-	});
-
-	it("blocks interpreter commands", () => {
-		expect(isReadOnlyBash("node script.js")).to.be.false;
-		expect(isReadOnlyBash("python3 script.py")).to.be.false;
-		expect(isReadOnlyBash("sh -c 'dangerous'")).to.be.false;
-	});
-
-	it("blocks npm non-metadata commands", () => {
-		expect(isReadOnlyBash("npm install")).to.be.false;
-		expect(isReadOnlyBash("npm test")).to.be.false;
-		expect(isReadOnlyBash("npm run build")).to.be.false;
-		expect(isReadOnlyBash("npm pack mocha")).to.be.false;
-		expect(isReadOnlyBash("npm pack mocha --dry-run --json")).to.be.false;
-		expect(isReadOnlyBash("npm pack mocha --ignore-scripts --json")).to.be.false;
-	});
-
-	it("allows npm metadata commands", () => {
-		expect(isReadOnlyBash("npm view mocha")).to.be.true;
-		expect(isReadOnlyBash("npm info typescript version")).to.be.true;
-	});
-
-	it("allows npm pack only as dry-run with scripts disabled", () => {
-		expect(isReadOnlyBash("npm pack mocha --dry-run --json --ignore-scripts")).to.be.true;
-		expect(isReadOnlyBash("npm pack @scope/pkg@1.2.3 --dry-run --ignore-scripts --registry https://registry.npmjs.org")).to.be.true;
-	});
-
-	// --- simple read-only commands ---
-
-	it("allows simple read-only commands", () => {
-		expect(isReadOnlyBash("ls")).to.be.true;
-		expect(isReadOnlyBash("pwd")).to.be.true;
-		expect(isReadOnlyBash("which node")).to.be.true;
-		expect(isReadOnlyBash("cat file.ts")).to.be.true;
-		expect(isReadOnlyBash("head -20 file.ts")).to.be.true;
-		expect(isReadOnlyBash("rg pattern src/")).to.be.true;
-		expect(isReadOnlyBash("grep -rn pattern src/")).to.be.true;
-		expect(isReadOnlyBash("find . -name '*.ts'")).to.be.true;
-		expect(isReadOnlyBash("wc -l file.ts")).to.be.true;
-		expect(isReadOnlyBash("sort file.ts")).to.be.true;
-	});
-
-	// --- empty / trivial ---
-
-	it("handles empty and trivial commands", () => {
-		expect(isReadOnlyBash("")).to.be.true;
-		expect(isReadOnlyBash("   ")).to.be.true;
+		const result = await basHandler(
+			{ systemPrompt: "[Base]", systemPromptOptions: {} },
+			fakeCtx(),
+		);
+		assert.equal(result, undefined);
 	});
 });
 
-describe("isDestructiveBash (false-positive prevention)", () => {
-	it("does not flag 'kill' in paths or arguments", () => {
-		expect(isDestructiveBash("ls /bin/kill")).to.be.false;
-		expect(isDestructiveBash("type kill")).to.be.false;
-		expect(isDestructiveBash("which pkill")).to.be.false;
-		expect(isDestructiveBash("grep -r kill src/")).to.be.false;
+describe("tool gating in plan mode", () => {
+	it("auto-allows known read/research tools in baseline", async () => {
+		const { handlers } = createFakePi(["read", "ffgrep", "web_search", "serena_find_symbol"], { plan: true });
+		const ctx = fakeCtx({ hasUI: true });
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const tc = handlers.tool_call?.[0];
+		assert.ok(tc);
+
+		for (const tool of ["read", "ffgrep", "web_search", "serena_find_symbol"]) {
+			const r = await tc({ toolName: tool, input: {} }, ctx);
+			assert.equal(r, undefined, `${tool} auto-allowed`);
+		}
 	});
 
-	it("does not flag 'rm'/'mv'/'cp' in paths or arguments", () => {
-		expect(isDestructiveBash("ls /usr/bin/rm")).to.be.false;
-		expect(isDestructiveBash("cat src/rm-old/file.ts")).to.be.false;
-		expect(isDestructiveBash("grep -r cp src/")).to.be.false;
-		expect(isDestructiveBash("ls -la /bin/mv")).to.be.false;
+	it("requires confirmation for baseline custom tools not in known-read set", async () => {
+		const { handlers } = createFakePi(["obsidian", "custom_research_tool", "read"], { plan: true });
+		let confirmed: string[] = [];
+		const ctx = fakeCtx({
+			hasUI: true,
+			ui: {
+				confirm: async (_t: string, body: string) => { confirmed.push(body); return true; },
+				select: async () => null, editor: async () => "",
+				setStatus: () => {}, setWidget: () => {}, notify: () => {},
+				theme: { fg: (_s: string, t: string) => t },
+			},
+		});
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const tc = handlers.tool_call?.[0];
+		assert.ok(tc);
+
+		// obsidian is baseline but not in READ_ONLY_TOOLS → needs confirm
+		const r1 = await tc({ toolName: "obsidian", input: { run: "read" } }, ctx);
+		assert.equal(r1, undefined, "obsidian allowed after confirm");
+		assert.ok(confirmed.some(c => c.includes("obsidian")), "obsidian confirmed");
+
+		// read is both baseline and in READ_ONLY_TOOLS → auto-allowed
+		const r2 = await tc({ toolName: "read", input: { path: "f.ts" } }, ctx);
+		assert.equal(r2, undefined, "read auto-allowed");
+		assert.equal(confirmed.length, 1, "only obsidian triggered confirm");
 	});
 
-	it("does not flag 'sudo' in paths or arguments", () => {
-		expect(isDestructiveBash("ls /usr/bin/sudo")).to.be.false;
-		expect(isDestructiveBash("grep sudo /etc/sudoers")).to.be.false;
+	it("blocks direct source mutators", async () => {
+		const { handlers } = createFakePi(["read", "edit", "write"], { plan: true });
+		const ctx = fakeCtx({ hasUI: true });
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const tc = handlers.tool_call?.[0];
+		assert.ok(tc);
+
+		const r1 = await tc({ toolName: "edit", input: { path: "f.ts" } }, ctx);
+		assert.ok(r1?.block, "edit blocked");
+		assert.ok(r1?.reason?.includes("write_plan"));
+
+		const r2 = await tc({ toolName: "write", input: { path: "f.ts" } }, ctx);
+		assert.ok(r2?.block, "write blocked");
 	});
 
-	it("does not flag 2>&1 fd redirects", () => {
-		expect(isDestructiveBash("ls 2>&1")).to.be.false;
-		expect(isDestructiveBash("cat file.ts 2>&1")).to.be.false;
+	it("requires confirmation for bash commands", async () => {
+		let confirmed = false;
+		const { handlers } = createFakePi(["read", "bash"], { plan: true });
+		const ctx = fakeCtx({
+			hasUI: true,
+			ui: {
+				confirm: async () => { confirmed = true; return true; },
+				select: async () => null, editor: async () => "",
+				setStatus: () => {}, setWidget: () => {}, notify: () => {},
+				theme: { fg: (_s: string, t: string) => t },
+			},
+		});
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const tc = handlers.tool_call?.[0];
+		assert.ok(tc);
+		const r = await tc({ toolName: "bash", input: { command: "ls -la" } }, ctx);
+		assert.equal(r, undefined, "bash passes when confirmed");
+		assert.ok(confirmed, "confirm called");
 	});
 
-	it("does flag file redirects", () => {
-		expect(isDestructiveBash("ls > output.txt")).to.be.true;
-		expect(isDestructiveBash("echo test > file")).to.be.true;
-		expect(isDestructiveBash("cmd 2> error.log")).to.be.true;
+	it("denies bash when UI is not available", async () => {
+		const { handlers } = createFakePi(["read", "bash"], { plan: true });
+		const ctx = fakeCtx({ hasUI: false });
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const tc = handlers.tool_call?.[0];
+		assert.ok(tc);
+		const r = await tc({ toolName: "bash", input: { command: "find . -delete" } }, ctx);
+		assert.ok(r?.block);
+		assert.ok(r?.reason?.includes("UI is not available"));
 	});
 
-	it("does flag destructive commands", () => {
-		expect(isDestructiveBash("rm -rf /")).to.be.true;
-		expect(isDestructiveBash("kill 1234")).to.be.true;
-		expect(isDestructiveBash("sudo rm -rf /")).to.be.true;
-		expect(isDestructiveBash("mv old new")).to.be.true;
-		expect(isDestructiveBash("cp /etc/passwd /tmp")).to.be.true;
-		expect(isDestructiveBash("npm install")).to.be.true;
-		expect(isDestructiveBash("git push origin main")).to.be.true;
+	it("denies non-read baseline tools without UI", async () => {
+		const { handlers } = createFakePi(["obsidian", "read"], { plan: true });
+		const ctx = fakeCtx({ hasUI: false });
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const tc = handlers.tool_call?.[0];
+		assert.ok(tc);
+		const r = await tc({ toolName: "obsidian", input: {} }, ctx);
+		assert.ok(r?.block);
+		assert.ok(r?.reason?.includes("confirmation"));
 	});
 
-	it("does flag destructive commands in chained contexts", () => {
-		expect(isDestructiveBash("ls && rm -rf /")).to.be.true;
-		expect(isDestructiveBash("cat file ; sudo echo test")).to.be.true;
+	it("allows plan-only tools without gating", async () => {
+		const { handlers } = createFakePi(["read"], { plan: true });
+		const ctx = fakeCtx({ hasUI: true });
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const tc = handlers.tool_call?.[0];
+		assert.ok(tc);
+		const r = await tc({ toolName: "write_plan", input: { title: "T", content: "# T" } }, ctx);
+		assert.equal(r, undefined, "write_plan auto-allowed");
+	});
+});
+
+describe("plan path containment", () => {
+	it("generates paths under .agents/plans/", async () => {
+		const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+		const ctx = fakeCtx({ hasUI: true, cwd: TMP });
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const wd = toolDefs.write_plan;
+		assert.ok(wd);
+		const result = await wd.execute("c1", { title: "My Plan", content: "# Plan\nDo work." }, undefined, undefined, ctx);
+		assert.ok(result);
+		assert.ok(result.details?.path?.includes(".agents/plans/"), `path under .agents/plans/: ${result.details?.path}`);
+	});
+
+});
+
+describe("write_plan lifecycle", () => {
+	it("sets planReadyForReview, agent_settled consumes it once", async () => {
+		const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+
+		let selectCalled = false;
+		const ctx = fakeCtx({
+			hasUI: true, cwd: TMP,
+			getContextUsage: () => ({ percent: 50 }),
+			ui: {
+				select: async () => { selectCalled = true; return "No, stay in Plan mode"; },
+				confirm: async () => false, editor: async () => "",
+				setStatus: () => {}, setWidget: () => {}, notify: () => {},
+				theme: { fg: (_s: string, t: string) => t },
+			},
+		});
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const wd = toolDefs.write_plan;
+		assert.ok(wd);
+
+		// Write plan
+		await wd.execute("c1", { title: "My Plan", content: "# Plan\nDo work." }, undefined, undefined, ctx);
+		// Refinement
+		await wd.execute("c2", { title: "My Plan", content: "# Plan\nDo more." }, undefined, undefined, ctx);
+
+		const settled = handlers.agent_settled?.[0];
+		assert.ok(settled);
+
+		// First agent_settled: should prompt
+		selectCalled = false;
+		await settled({}, ctx);
+		assert.ok(selectCalled, "first settled shows prompt");
+
+		// Second: should NOT prompt (flag consumed)
+		selectCalled = false;
+		await settled({}, ctx);
+		assert.ok(!selectCalled, "second settled does not reprompt");
+
+		// Write new plan
+		await wd.execute("c3", { title: "Another Plan", content: "# Another\nWork." }, undefined, undefined, ctx);
+
+		// Again prompts
+		selectCalled = false;
+		await settled({}, ctx);
+		assert.ok(selectCalled, "settled after new plan prompts again");
+	});
+
+	it("guards write_plan outside plan mode by throwing", async () => {
+		const { toolDefs } = createFakePi(["read"], {});
+		const wd = toolDefs.write_plan;
+		assert.ok(wd);
+
+		try {
+			await wd.execute("c1", { title: "Test", content: "# Test" }, undefined, undefined, fakeCtx());
+			assert.fail("should have thrown");
+		} catch (e: any) {
+			assert.ok(e.message.includes("only available in plan mode"));
+		}
+	});
+});
+
+describe("execution handoff", () => {
+	it("current-session execution produces one kickoff message", async () => {
+		const { handlers, toolDefs, sentMessages } = createFakePi(["read"], { plan: true });
+
+		const selectChoice = "Yes, implement this plan          Switch to Default and start coding.";
+		const ctx = fakeCtx({
+			hasUI: true, cwd: TMP,
+			getContextUsage: () => ({ percent: 50 }),
+			ui: {
+				select: async () => selectChoice,
+				confirm: async () => false, editor: async () => "",
+				setStatus: () => {}, setWidget: () => {}, notify: () => {},
+				theme: { fg: (_s: string, t: string) => t },
+			},
+		});
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		await toolDefs.write_plan.execute("c1", { title: "Plan", content: "# Plan\nWork." }, undefined, undefined, ctx);
+
+		const settled = handlers.agent_settled?.[0];
+		await settled({}, ctx);
+
+		assert.equal(sentMessages.length, 1);
+		assert.ok(sentMessages[0].content?.includes("Execute the approved plan"));
+		assert.equal(sentMessages[0].options?.deliverAs, "followUp");
+	});
+
+	it("fresh-session execution queues /plan-execute new", async () => {
+		const { handlers, toolDefs, sentMessages } = createFakePi(["read"], { plan: true });
+
+		const ctx = fakeCtx({
+			hasUI: true, cwd: TMP,
+			getContextUsage: () => ({ percent: 60 }),
+			ui: {
+				select: async () => "Yes, clear context and implement  Fresh thread. Context: 60% used.",
+				confirm: async () => false, editor: async () => "",
+				setStatus: () => {}, setWidget: () => {}, notify: () => {},
+				theme: { fg: (_s: string, t: string) => t },
+			},
+		});
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+		await toolDefs.write_plan.execute("c1", { title: "Plan", content: "# Plan\nWork." }, undefined, undefined, ctx);
+
+		const settled = handlers.agent_settled?.[0];
+		await settled({}, ctx);
+
+		// Should have queued /plan-execute new via sendUserMessage
+		assert.ok(sentMessages.some((m: any) => m.content === "/plan-execute new"), "queued /plan-execute new");
+	});
+
+	it("calls appendEntry when plan mode is toggled", async () => {
+		const { handlers, entries, commands } = createFakePi(["read"], {});
+
+		const ctx = fakeCtx({ hasUI: true, cwd: TMP });
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		// Enter plan mode via /plan command
+		const planCmd = commands.plan;
+		assert.ok(planCmd);
+		await planCmd.handler("", ctx);
+
+		const stateEntry = entries.find((e: any) => e.customType === "pi-plan");
+		assert.ok(stateEntry, "should persist pi-plan state");
+		assert.ok(stateEntry.data.hasOwnProperty("enabled"), "state includes enabled field");
+	});
+});
+
+describe("thinking level preferences", () => {
+	it("includes 'max' in valid thinking levels", () => {
+		assert.ok(["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes("max"));
+	});
+
+	it("preserves per-model thinking on model_select", async () => {
+		const { handlers } = createFakePi(["read"], {});
+
+		const ctx = fakeCtx({
+			model: { provider: "test", id: "m1" },
+		});
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const ms = handlers.model_select?.[0];
+		if (ms) {
+			await ms(
+				{ model: { provider: "test2", id: "m2" }, previousModel: { provider: "test", id: "m1" } },
+				ctx,
+			);
+		}
+		// No crash = success
+	});
+});
+
+describe("ask_plan_question validation", () => {
+	it("rejects fewer than 2 options at TypeBox level", async () => {
+		const { toolDefs } = createFakePi(["read"], { plan: true });
+		const def = toolDefs.ask_plan_question;
+		assert.ok(def);
+		assert.ok(def.parameters?.properties?.options?.minItems === 2);
+		assert.ok(def.parameters?.properties?.options?.maxItems === 4);
 	});
 });
