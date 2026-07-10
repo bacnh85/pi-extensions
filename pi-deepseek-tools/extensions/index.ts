@@ -167,8 +167,8 @@ export default function (pi: ExtensionAPI) {
 				`  Super Power Mode: ${superPowerModeEnabled() ? "on" : "off"}`,
 			];
 			status.push("");
+			status.push(`  Thinking: ${thinkingBudgetVal === "unset" ? "pi native (off/high/max)" : `budget override (${thinkingBudgetVal} tokens)`}`);
 			status.push("**Leaked content cleaning:** always on for DeepSeek V4");
-			status.push("**Auto thinking adjustment:** on");
 			status.push(`**Repairs:** ${[...repairCounts.values()].reduce((a, b) => a + b, 0)} total`);
 			for (const [tool, count] of [...repairCounts.entries()].sort((a, b) => b[1] - a[1])) {
 				status.push(`  ${tool}: ${count}`);
@@ -216,13 +216,7 @@ export default function (pi: ExtensionAPI) {
 		// 1. Leaked content cleaning — always on for V4 (low-risk, pure cleanup)
 		let payload = cleanLeakedContentFromMessages(event.payload);
 
-		// 2. Fix leaked template model IDs from older OpenCode Go paths.
-		if (isRecord(payload) && payload.model === "{{model}}") {
-			payload = { ...payload, model: ctx.model?.id };
-			debugLog("model: replaced {{model}} with", ctx.model?.id);
-		}
-
-		// 3. Reasoning stripping — opt-in (can cause 401s with OpenCode Go)
+		// 2. Reasoning stripping — opt-in (can cause 401s with OpenCode Go)
 		if (reasoningStripEnabled()) {
 			const reasoningCleaned = stripReasoningContent(payload);
 			if (reasoningCleaned !== payload) {
@@ -233,15 +227,14 @@ export default function (pi: ExtensionAPI) {
 			debugLog("reasoning: skip strip (disabled by env)");
 		}
 
-		// 4. ponytail: single flat thinking budget — always same value when set
+		// 3. Flat budget override (opt-in). When unset, pi handles off/high/max natively.
 		const budget = thinkingBudget();
 		if (budget !== undefined && isRecord(payload)) {
-			// Clone if payload is still the original reference so the mutation is returned.
 			if (payload === event.payload) {
 				payload = { ...payload };
 			}
 			(payload as Record<string, unknown>).thinking = { type: "budget_tokens", budget_tokens: budget };
-			debugLog("thinking: budget", budget);
+			debugLog("thinking: budget override", budget);
 		}
 
 		if (payload !== event.payload) {
@@ -265,7 +258,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", (event, ctx) => {
 		const isDeepSeekV4 = isDeepSeekV4ModelByModel(ctx.model);
 		if (isDeepSeekV4) debugLog("model match:", ctx.model?.provider, ctx.model?.id);
-		// ponytail: thinking budget is flat, handled in before_provider_request. No per-turn logic.
+		// ponytail: budget override handled in before_provider_request. Native when unset.
 
 		remindedThisTurn = false;
 		repairThisTurn = isDeepSeekV4 && repairEnabled();

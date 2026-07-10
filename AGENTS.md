@@ -7,14 +7,17 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| **pi-ponytail** | 0.1.2 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
-| **pi-serena** | 0.8.1 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
-| **pi-web** | 0.4.5 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
-| **pi-munin** | 0.4.1 | Munin long-term memory as native Pi tools (search, store, recall, capture, summarize, share, export, E2EE). |
-| **pi-plan** | 0.4.1 | Plan mode with read-only tool gating, Markdown plan files, and approval flow. |
-| **pi-fff** | 0.6.0 | FFF-powered fuzzy file and content search for Pi. |
+| **pi-deepseek-tools** | 0.12.0 | DeepSeek V4 tool calling fixes, argument repair, reasoning cleanup, thinking level compatibility, Super Power Mode. |
+| **pi-ponytail** | 0.1.4 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
+| **pi-serena** | 0.8.3 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
+| **pi-web** | 0.4.6 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
+| **pi-munin** | 0.4.3 | Munin long-term memory as native Pi tools (search, store, recall, capture, summarize, share, export, E2EE). |
+| **pi-plan** | 0.4.2 | Plan mode with read-only tool gating, Markdown plan files, and approval flow. |
+| **pi-fff** | 0.7.2 | FFF-powered fuzzy file and content search for Pi. |
+| **pi-obsidian** | 0.6.0 | Obsidian vault integration for Pi. |
 | **pi-rtk** | 0.1.5 | Bash command token rewriting through RTK. |
 | **pi-sub** | 0.1.10 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
+| **pi-windows-tools** | 0.2.0 | Windows-specific tools for Pi. |
 
 ## Repository Structure
 

@@ -60,7 +60,7 @@ Valid inputs pass through unchanged (except for path auto-link cleanup). TypeBox
 
 **Reasoning-content stripping (opt-in)** — Set `PI_DEEPSEEK_TOOLS_STRIP_REASONING=1` to strip reasoning fields from prior assistant messages before each request, preserving the current turn's reasoning. Optional truncation via `PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS`.
 
-**Thinking budget control (opt-in)** — Set `PI_DEEPSEEK_TOOLS_THINKING_BUDGET=N` to cap thinking tokens on every turn. Helps avoid 400 errors on tool-heavy turns.
+**Thinking budget control (opt-in)** — Set `PI_DEEPSEEK_TOOLS_THINKING_BUDGET=N` to override pi's native thinking level with a flat token budget. When unset (default), pi 0.80.6+ manages thinking natively via `thinkingLevelMap` (`off`/`high`/`max` for DeepSeek V4). Helps avoid 400 errors on tool-heavy turns when set.
 
 **Safety guardrails (on by default)** — Intercepts destructive commands before execution. Blocks only `rm -rf /` and `dd` to block devices. Set `PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS=0` to disable. This is not a sandbox and does not replace user review.
 
@@ -91,7 +91,7 @@ Valid inputs pass through unchanged (except for path auto-link cleanup). TypeBox
 | `PI_DEEPSEEK_TOOLS_DEBUG=1` | off | `1`/`on`/`true` to enable | stderr debug logging |
 | `PI_DEEPSEEK_TOOLS_LOG_FORMAT=json` | plain | `json` | Structured JSON log lines |
 | `PI_DEEPSEEK_TOOLS_MAX_ERROR_HISTORY=200` | 100 | positive integer | Maximum tracked tool errors in the error history |
-| `PI_DEEPSEEK_TOOLS_THINKING_BUDGET=1024` | unset | non-negative integer | Flat thinking budget for all turns |
+| `PI_DEEPSEEK_TOOLS_THINKING_BUDGET=1024` | unset (pi native) | non-negative integer | Override pi's native thinking level with a flat budget. When unset, pi 0.80.6+ manages thinking (`off`/`high`/`max` for DeepSeek V4) |
 | `PI_DEEPSEEK_TOOLS_AUTO_BLOCK_AFTER_REMINDERS=5` | off | positive integer | Auto-block tool-selection misses after N reminders |
 | `PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS=0` | on | `0`/`off`/`false`/`no` to disable | Block dangerous bash commands (on by default) |
 | `PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE=0` | on | `0`/`off`/`false`/`no` to disable | Super Power Mode system-prompt enhancement for DeepSeek V4 (on by default) |
@@ -168,7 +168,7 @@ If you are uncomfortable running unverified Pi extensions, you can inspect each 
 - **Tool-input repair** handles structural mismatches but not missing required fields. If the model omits a required argument entirely, the provider still rejects the call.
 - **Reasoning-content stripping** is opt-in because OpenCode Go DeepSeek V4 can reject follow-up turns when provider history is mutated. It preserves the current turn's reasoning to avoid disrupting thinking continuity.
 - **Direct DeepSeek provider** support is opt-in and may not work perfectly with all API configurations.
-- **Auto thinking adjustment** only takes effect when `PI_DEEPSEEK_TOOLS_THINKING_BUDGET` is set. Without it, the model uses its default thinking budget.
+- **Auto thinking adjustment** only takes effect when `PI_DEEPSEEK_TOOLS_THINKING_BUDGET` is set. Without it (default), pi 0.80.6+ manages thinking natively via `thinkingLevelMap` — DeepSeek V4 supports `off`, `high`, and `max`.
 - **Dangerous command guard** is on by default and blocks only `rm -rf /` and `dd` to block devices. Set `PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS=0` to disable. It is not a sandbox and does not replace user review of commands.
 - **Argument repair** is best-effort and focused on recoverable harness mismatches — not malicious or deeply malformed inputs.
 - **Leaked content cleaning** can strip tool-call-like text that looks like a Pi tool invocation, even when it was intentional content.
@@ -215,6 +215,13 @@ Tests use Mocha + tsx with Node.js assert. No test framework mocks — tests use
 - [ ] Publish: `npm publish`
 
 ## Changelog
+
+### 0.12.0
+
+- **pi 0.80.6 compatibility**: Thinking budget now only overrides pi's native thinking level when `PI_DEEPSEEK_TOOLS_THINKING_BUDGET` is explicitly set. When unset (default), pi 0.80.6+ manages thinking natively via `thinkingLevelMap` — DeepSeek V4 supports `off`, `high`, `max`. The extension no longer injects a flat budget that would override the user's selected thinking level (Shift+Tab, `/settings`, `--thinking`).
+- **Removed `{{model}}` workaround**: pi 0.80.6 resolves model IDs upstream; the `before_provider_request` `{{model}}` guard was dead code.
+- **Status command**: Added Thinking mode line showing whether pi native or extension override is active.
+- **Docs**: Updated thinking budget docs, config table, and known limitations to reflect pi 0.80.6 native thinking level support.
 
 ### 0.11.0
 
