@@ -23,8 +23,8 @@
     "long-term-memory"
   ],
   "scripts": {
-    "test": "cd extensions && mocha",
-    "test:unit": "cd extensions && mocha --spec 'test/unit/**/*.test.ts'"
+    "test": "cd extensions && npx mocha",
+    "test:unit": "cd extensions && npx mocha --spec 'test/unit/**/*.test.ts'"
   },
   "files": [
     "README.md",

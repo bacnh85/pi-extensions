@@ -43,6 +43,6 @@
     "tsx": "^4.22.4"
   },
   "scripts": {
-    "test": "cd extensions && mocha"
+    "test": "cd extensions && npx mocha"
   }
 }

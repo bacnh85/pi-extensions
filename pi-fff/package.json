@@ -26,7 +26,7 @@
     "ai-agent"
   ],
   "scripts": {
-    "test": "cd extensions && mocha",
+    "test": "cd extensions && npx mocha",
     "typecheck": "tsc --noEmit"
   },
   "files": [

@@ -33,7 +33,7 @@
     ]
   },
   "scripts": {
-    "test": "cd extensions && mocha"
+    "test": "cd extensions && npx mocha"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

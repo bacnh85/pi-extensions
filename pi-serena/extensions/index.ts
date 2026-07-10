@@ -113,6 +113,7 @@ const searchPatternSchema = Type.Object({
 	restrict_search_to_code_files: Type.Optional(Type.Boolean({ description: "Restrict search to source/code files when supported by Serena." })),
 	multiline: Type.Optional(Type.Boolean({ description: "Treat the pattern as a multiline regular expression when supported by Serena." })),
 	max_answer_chars: MAX_CHARS_PARAM,
+	limit: Type.Optional(Type.Number({ description: "Max matches to return." })),
 });
 
 const replaceContentSchema = Type.Object({
@@ -351,10 +352,39 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 					details: { ok: false, error: "multiline not supported" },
 				};
 			}
-			// ponytail: map pattern→substring_pattern for Python backend
-			const { pattern, multiline: _ml, ...searchParams } = params;
+				// ponytail: map pattern→substring_pattern for Python backend
+			const { pattern, multiline: _ml, limit: _limit, ...searchParams } = params;
 			if (pattern) searchParams.substring_pattern = pattern;
-			return callSerena(ctx, "search_for_pattern", searchParams);
+			const result = await callSerena(ctx, "search_for_pattern", searchParams);
+			if (_limit && result.content?.[0]?.text) {
+				try {
+					// ponytail: parse result JSON, count matches, truncate if over limit
+					const parsed = JSON.parse(result.content[0].text);
+					if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+						const entries = Object.entries(parsed) as [string, unknown[]][];
+						const total = entries.reduce((s, [, v]) => s + (Array.isArray(v) ? v.length : 0), 0);
+						if (total > _limit) {
+							let kept = 0;
+							const out: Record<string, unknown[]> = {};
+							for (const [f, arr] of entries) {
+								if (!Array.isArray(arr)) continue;
+								const need = _limit - kept;
+								if (need <= 0) break;
+								out[f] = arr.slice(0, need);
+								kept += out[f]!.length;
+							}
+							result.content[0].text = JSON.stringify(out) + `\n\n[Results truncated to ${_limit} matches out of ${total}. Refine search or increase limit.]`;
+						}
+					}
+				} catch {
+					// ponytail: not JSON, fall back to line truncation
+					const lines = result.content[0].text.split("\n");
+					if (lines.length > _limit) {
+						result.content[0].text = lines.slice(0, _limit).join("\n") + `\n\n[Results truncated to ${_limit} lines. Refine search or increase limit.]`;
+					}
+				}
+			}
+			return result;
 		},
 	});
 

@@ -24,7 +24,7 @@
     "crawling"
   ],
   "scripts": {
-    "test": "cd extensions && mocha"
+    "test": "cd extensions && npx mocha"
   },
   "files": [
     "README.md",
