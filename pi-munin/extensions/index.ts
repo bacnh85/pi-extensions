@@ -18,7 +18,7 @@ const { MuninClient: MuninClientClass } = require("@kalera/munin-sdk");
 
 // Shared schemas
 const projectParam = Type.Optional(
-	Type.String({ description: "Project ID. Default: $MUNIN_PROJECT.", default: "" }),
+	Type.String({ description: "Leave empty — defaults to $MUNIN_PROJECT. Do not set unless you need a different project.", default: "" }),
 );
 const apiKeyParam = Type.Optional(
 	Type.String({ description: "API key. Default: $MUNIN_API_KEY.", default: "" }),
