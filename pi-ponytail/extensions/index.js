@@ -3,8 +3,12 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const {
   DEFAULT_MODE,
+  RUNTIME_MODES,
   getDefaultMode,
+  getQuietStartup,
+  getHideStatus,
   normalizeMode,
+  normalizePersistedMode,
   isDeactivationCommand,
   writeDefaultMode,
 } = require("../hooks/ponytail-config.js");
@@ -12,16 +16,17 @@ const { getPonytailInstructions, filterSkillBodyForMode } = require("../hooks/po
 
 export { filterSkillBodyForMode };
 export const readDefaultMode = getDefaultMode;
+export const readQuietStartup = getQuietStartup;
 
 export function resolveSessionMode(entries, fallbackMode = DEFAULT_MODE) {
-  const fallback = normalizeMode(fallbackMode) || DEFAULT_MODE;
+  const fallback = normalizePersistedMode(fallbackMode) || DEFAULT_MODE;
   if (!Array.isArray(entries)) return fallback;
 
   for (let i = entries.length - 1; i >= 0; i -= 1) {
     const entry = entries[i];
     if (entry?.type !== "custom" || entry?.customType !== "ponytail-mode") continue;
 
-    const mode = normalizeMode(entry?.data?.mode);
+    const mode = normalizePersistedMode(entry?.data?.mode);
     if (mode) return mode;
   }
 
@@ -29,7 +34,7 @@ export function resolveSessionMode(entries, fallbackMode = DEFAULT_MODE) {
 }
 
 export function parsePonytailCommand(text, defaultMode = DEFAULT_MODE) {
-  const fallback = normalizeMode(defaultMode) || DEFAULT_MODE;
+  const fallback = normalizePersistedMode(defaultMode) || DEFAULT_MODE;
   const normalizedText = String(text || "").trim().toLowerCase();
 
   if (!normalizedText) {
@@ -41,6 +46,7 @@ export function parsePonytailCommand(text, defaultMode = DEFAULT_MODE) {
   if (primary === "status") return { type: "status" };
 
   if (primary === "default") {
+    // ponytail: a default must be a runtime level; review is session-only (#377).
     const mode = normalizeMode(secondary);
     return mode ? { type: "set-default", mode } : { type: "invalid", reason: "invalid-default-mode" };
   }
@@ -54,12 +60,16 @@ export { writeDefaultMode };
 export default function ponytailExtension(pi) {
   let currentMode = DEFAULT_MODE;
   let configuredDefaultMode = getDefaultMode();
+  let hideStatus = getHideStatus();
   let isActive = false;
 
   // -- Status bar --
   function syncStatus(ctx) {
-    if (!ctx?.ui?.setStatus || !ctx.ui.theme?.fg) return;
-    const theme = ctx.ui.theme;
+    if (hideStatus) return;
+    if (!ctx?.ui?.setStatus) return;
+    // ponytail: try/catch guards against pi-web theme proxy throwing before initTheme (#336).
+    let theme;
+    try { theme = ctx.ui.theme; if (!theme?.fg) return; } catch { return; }
     if (currentMode === "off") {
       ctx.ui.setStatus("ponytail", "");
       return;
@@ -72,7 +82,7 @@ export default function ponytailExtension(pi) {
   }
 
   const setMode = (mode, ctx) => {
-    const normalized = normalizeMode(mode);
+    const normalized = normalizePersistedMode(mode);
     if (!normalized) return;
 
     currentMode = normalized;
@@ -81,8 +91,12 @@ export default function ponytailExtension(pi) {
     ctx?.ui?.notify?.(`Ponytail mode set to ${normalized}.`, "info");
   };
 
+  const sendAlias = (skillName) => {
+    pi.sendUserMessage(skillName);
+  };
+
   pi.registerCommand("ponytail", {
-    description: "Set or report Ponytail mode",
+    description: `Set mode: ${RUNTIME_MODES.join("|")}. Commands: status, default <mode>`,
     handler: async (args, ctx) => {
       const parsed = parsePonytailCommand(args, configuredDefaultMode);
 
@@ -92,13 +106,17 @@ export default function ponytailExtension(pi) {
       }
 
       if (parsed.type === "set-default") {
-        const written = writeDefaultMode(parsed.mode);
-        if (written) {
-          configuredDefaultMode = getDefaultMode();
-          const message = configuredDefaultMode === written
-            ? `Default Ponytail mode set to ${written}.`
-            : `Saved default ${written}, but env override keeps default at ${configuredDefaultMode}.`;
-          ctx?.ui?.notify?.(message, "info");
+        try {
+          const written = writeDefaultMode(parsed.mode);
+          if (written) {
+            configuredDefaultMode = getDefaultMode();
+            const message = configuredDefaultMode === written
+              ? `Default Ponytail mode set to ${written}.`
+              : `Saved default ${written}, but env override keeps default at ${configuredDefaultMode}.`;
+            ctx?.ui?.notify?.(message, "info");
+          }
+        } catch (e) {
+          ctx?.ui?.notify?.(`Failed to save default mode: ${e.message}`, "error");
         }
         return;
       }
@@ -110,6 +128,13 @@ export default function ponytailExtension(pi) {
 
       ctx?.ui?.notify?.("Unknown or unsupported /ponytail mode.", "warning");
     },
+  });
+
+  ["review", "audit", "gain", "debt", "help"].forEach((name) => {
+    pi.registerCommand(`ponytail-${name}`, {
+      description: `Run /skill:ponytail-${name}`,
+      handler: () => sendAlias(`/skill:ponytail-${name}`),
+    });
   });
 
   pi.on("input", async (event) => {
@@ -124,9 +149,12 @@ export default function ponytailExtension(pi) {
   pi.on("session_start", async (_event, ctx) => {
     const entries = ctx?.sessionManager?.getBranch?.() || ctx?.sessionManager?.getEntries?.() || [];
     configuredDefaultMode = getDefaultMode();
+    hideStatus = getHideStatus();
     currentMode = resolveSessionMode(entries, configuredDefaultMode);
     syncStatus(ctx);
-    ctx?.ui?.notify?.(`Ponytail loaded: ${currentMode}`, "info");
+    if (!getQuietStartup()) {
+      ctx?.ui?.notify?.(`Ponytail loaded: ${currentMode}`, "info");
+    }
   });
 
   pi.on("agent_start", async (_event, ctx) => {
@@ -141,6 +169,8 @@ export default function ponytailExtension(pi) {
 
   pi.on("before_agent_start", async (event) => {
     if (!currentMode || currentMode === "off") return;
-    return { systemPrompt: `${getPonytailInstructions(currentMode)}\n\n---\n\n${event.systemPrompt}` };
+    // Guard null/undefined event and missing systemPrompt (#439, #440).
+    const base = event?.systemPrompt ? `${event.systemPrompt}\n\n` : "";
+    return { systemPrompt: `${base}${getPonytailInstructions(currentMode)}` };
   });
 }
