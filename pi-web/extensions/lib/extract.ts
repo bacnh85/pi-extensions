@@ -181,11 +181,20 @@ export async function extractWithDiagnostics(params: ExtractParams): Promise<Ext
 		}
 	}
 
-	const diagnostics = attempts.map((a) => `${a.mode}: ${a.status}${a.message ? ` (${a.message})` : ""}`).join("\n");
-	const mode = params.mode ?? "auto";
-	throw new Error(
-		`Extraction failed for ${params.url} with mode="${mode}".\n${diagnostics}\n` +
-		"Try a different mode or use web_screenshot for a visual snapshot.",
-	);
+	// All modes exhausted — return the best attempt with diagnostics instead of throwing
+	const lastAttempt = attempts[attempts.length - 1];
+	const bestResult: ExtractResult = {
+		title: "",
+		markdown: `[All extraction modes failed for ${params.url}]\n\n` +
+			attempts.map((a) => `  ${a.mode}: ${a.status}${a.message ? ` (${a.message})` : ""}`).join("\n") +
+			"\n\nTry web_screenshot for a visual snapshot, or verify the URL is accessible.",
+		backend: lastAttempt?.backend ?? "none",
+	};
+	return {
+		result: bestResult,
+		attempts,
+		selectedMode: lastAttempt?.mode ?? "static",
+		fallbackUsed: true,
+	};
 }
 

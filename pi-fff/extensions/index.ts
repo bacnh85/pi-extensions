@@ -613,9 +613,25 @@ export default function fffExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("Operation aborted");
 
-      const f = await ensureFinder(activeCwd);
+      let f;
+      try {
+        f = await ensureFinder(activeCwd);
+      } catch {
+        return {
+          content: [{ type: "text", text: "FFF search unavailable in this directory. Try a different working directory or use built-in find instead." }],
+          details: { totalMatched: 0, totalFiles: 0 },
+        };
+      }
       const effectiveLimit = Math.max(1, params.limit ?? DEFAULT_GREP_LIMIT);
-      const query = buildQuery(params.path, params.pattern, params.exclude, activeCwd);
+      let query;
+      try {
+        query = buildQuery(params.path, params.pattern, params.exclude, activeCwd);
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `Invalid path constraint: ${(e as Error).message}. Try without path/exclude constraints.` }],
+          details: { totalMatched: 0, totalFiles: 0 },
+        };
+      }
       // Auto-detect: regex if the pattern has regex metacharacters AND parses
       // as a valid regex, otherwise plain literal. The fuzzy fallback below
       // only kicks in for plain mode — regex queries are intentional.
@@ -658,34 +674,52 @@ export default function fffExtension(pi: ExtensionAPI) {
       const explicitContext = params.context ?? 0;
 
       // Always request a little context so definition auto-expand can work.
-      const grepResult = f.grep(query, {
-        mode,
-        smartCase,
-        maxMatchesPerFile: Math.min(effectiveLimit, 50),
-        cursor: (params.cursor ? cursorStore.get(params.cursor) : null) ?? null,
-        beforeContext: explicitContext,
-        afterContext: Math.max(explicitContext, 3),
-        classifyDefinitions: true,
-      });
+      let grepResult;
+      try {
+        grepResult = f.grep(query, {
+          mode,
+          smartCase,
+          maxMatchesPerFile: Math.min(effectiveLimit, 50),
+          cursor: (params.cursor ? cursorStore.get(params.cursor) : null) ?? null,
+          beforeContext: explicitContext,
+          afterContext: Math.max(explicitContext, 3),
+          classifyDefinitions: true,
+        });
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `Search error: ${(e as Error).message}` }],
+          details: { totalMatched: 0, totalFiles: 0 },
+        };
+      }
 
-      if (!grepResult.ok) throw new Error(grepResult.error);
+      if (!grepResult.ok) {
+        return {
+          content: [{ type: "text", text: `Search failed: ${grepResult.error}` }],
+          details: { totalMatched: 0, totalFiles: 0 },
+        };
+      }
 
       let result = grepResult.value;
       let fuzzyNotice: string | null = null;
 
       // automatic fuzzy fallback allows to broad the queries and find different cases
       if (result.items.length === 0 && !params.cursor && mode !== "regex") {
-        const fuzzy = f.grep(params.pattern, {
-          mode: "fuzzy",
-          smartCase,
-          maxMatchesPerFile: Math.min(effectiveLimit, 50),
-          cursor: null,
-          beforeContext: 0,
-          afterContext: 0,
-          classifyDefinitions: true,
-        });
+        let fuzzy;
+        try {
+          fuzzy = f.grep(params.pattern, {
+            mode: "fuzzy",
+            smartCase,
+            maxMatchesPerFile: Math.min(effectiveLimit, 50),
+            cursor: null,
+            beforeContext: 0,
+            afterContext: 0,
+            classifyDefinitions: true,
+          });
+        } catch {
+          fuzzy = null;
+        }
 
-        if (fuzzy.ok && fuzzy.value.items.length > 0) {
+        if (fuzzy?.ok && fuzzy.value.items.length > 0) {
           fuzzyNotice = `0 exact matches. Maybe you meant this?`;
           result = fuzzy.value;
         }
@@ -763,7 +797,15 @@ export default function fffExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("Operation aborted");
 
-      const f = await ensureFinder(activeCwd);
+      let f;
+      try {
+        f = await ensureFinder(activeCwd);
+      } catch {
+        return {
+          content: [{ type: "text", text: "FFF search unavailable in this directory. Try a different working directory." }],
+          details: { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
+        };
+      }
 
       // Resume from a prior cursor if supplied — cursor owns query+pageSize so
       // the agent can't accidentally mix patterns across pages.
@@ -771,17 +813,38 @@ export default function fffExtension(pi: ExtensionAPI) {
       const effectiveLimit = resumed
         ? resumed.pageSize
         : Math.max(1, params.limit ?? DEFAULT_FIND_LIMIT);
-      const query = resumed
-        ? resumed.query
-        : buildQuery(params.path, params.pattern, params.exclude, activeCwd);
+      let query;
+      try {
+        query = resumed
+          ? resumed.query
+          : buildQuery(params.path, params.pattern, params.exclude, activeCwd);
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `Invalid path constraint: ${(e as Error).message}. Try without path/exclude constraints.` }],
+          details: { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
+        };
+      }
       const pattern = resumed ? resumed.pattern : params.pattern;
       const pageIndex = resumed?.nextPageIndex ?? 0;
 
-      const searchResult = f.fileSearch(query, {
-        pageIndex,
-        pageSize: effectiveLimit,
-      });
-      if (!searchResult.ok) throw new Error(searchResult.error);
+      let searchResult;
+      try {
+        searchResult = f.fileSearch(query, {
+          pageIndex,
+          pageSize: effectiveLimit,
+        });
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `Search error: ${(e as Error).message}` }],
+          details: { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
+        };
+      }
+      if (!searchResult.ok) {
+        return {
+          content: [{ type: "text", text: `Search failed: ${searchResult.error}` }],
+          details: { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
+        };
+      }
 
       const result = searchResult.value;
       const formatted = formatFindOutput(result, effectiveLimit, pattern, pageIndex);
@@ -876,11 +939,32 @@ export default function fffExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("Operation aborted");
 
-      const f = await ensureFinder(activeCwd);
+      let f;
+      try {
+        f = await ensureFinder(activeCwd);
+      } catch {
+        return {
+          content: [{ type: "text", text: "FFF search unavailable in this directory." }],
+          details: { resolved: false, totalMatched: 0 },
+        };
+      }
       const limit = Math.max(1, params.limit ?? DEFAULT_RESOLVE_LIMIT);
 
-      const result = f.fileSearch(params.pattern, { pageSize: limit });
-      if (!result.ok) throw new Error(result.error);
+      let result;
+      try {
+        result = f.fileSearch(params.pattern, { pageSize: limit });
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `Search error: ${(e as Error).message}` }],
+          details: { resolved: false, totalMatched: 0 },
+        };
+      }
+      if (!result.ok) {
+        return {
+          content: [{ type: "text", text: `Search failed: ${result.error}` }],
+          details: { resolved: false, totalMatched: 0 },
+        };
+      }
 
       if (result.value.items.length === 0) {
         return {
@@ -987,21 +1071,50 @@ export default function fffExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("Operation aborted");
 
-      const f = await ensureFinder(activeCwd);
+      let f;
+      try {
+        f = await ensureFinder(activeCwd);
+      } catch {
+        return {
+          content: [{ type: "text", text: "FFF search unavailable in this directory." }],
+          details: { totalMatched: 0, totalFiles: 0 },
+        };
+      }
       const effectiveLimit = Math.max(1, params.limit ?? DEFAULT_GREP_LIMIT);
-      const query = buildQuery(params.path, "", params.exclude, activeCwd);
+      let query;
+      try {
+        query = buildQuery(params.path, "", params.exclude, activeCwd);
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `Invalid path constraint: ${(e as Error).message}.` }],
+          details: { totalMatched: 0, totalFiles: 0 },
+        };
+      }
       const explicitContext = params.context ?? 0;
 
-      const grepResult = f.multiGrep({
-        patterns: params.patterns,
-        constraints: query || undefined,
-        cursor: (params.cursor ? cursorStore.get(params.cursor) : null) ?? null,
-        beforeContext: explicitContext,
-        afterContext: Math.max(explicitContext, 3),
-        maxMatchesPerFile: Math.min(effectiveLimit, 50),
-      });
+      let grepResult;
+      try {
+        grepResult = f.multiGrep({
+          patterns: params.patterns,
+          constraints: query || undefined,
+          cursor: (params.cursor ? cursorStore.get(params.cursor) : null) ?? null,
+          beforeContext: explicitContext,
+          afterContext: Math.max(explicitContext, 3),
+          maxMatchesPerFile: Math.min(effectiveLimit, 50),
+        });
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `Search error: ${(e as Error).message}` }],
+          details: { totalMatched: 0, totalFiles: 0 },
+        };
+      }
 
-      if (!grepResult.ok) throw new Error(grepResult.error);
+      if (!grepResult.ok) {
+        return {
+          content: [{ type: "text", text: `Search failed: ${grepResult.error}` }],
+          details: { totalMatched: 0, totalFiles: 0 },
+        };
+      }
 
       const result = grepResult.value;
       const outputMode = params.outputMode as GrepOutputMode | undefined;
@@ -1038,12 +1151,33 @@ export default function fffExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("Operation aborted");
 
-      const f = await ensureFinder(activeCwd);
+      let f;
+      try {
+        f = await ensureFinder(activeCwd);
+      } catch {
+        return {
+          content: [{ type: "text", text: "FFF search unavailable in this directory." }],
+          details: { reference: "", related: [] },
+        };
+      }
       const limit = Math.max(1, params.limit ?? DEFAULT_RESOLVE_LIMIT);
 
       // Resolve the reference file first
-      const refResult = f.fileSearch(params.path, { pageSize: limit * 2 });
-      if (!refResult.ok) throw new Error(refResult.error);
+      let refResult;
+      try {
+        refResult = f.fileSearch(params.path, { pageSize: limit * 2 });
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `Search error: ${(e as Error).message}` }],
+          details: { reference: "", related: [] },
+        };
+      }
+      if (!refResult.ok) {
+        return {
+          content: [{ type: "text", text: `Search failed: ${refResult.error}` }],
+          details: { reference: "", related: [] },
+        };
+      }
       if (refResult.value.items.length === 0) {
         return {
           content: [{ type: "text", text: `No file matched "${params.path}".` }],
@@ -1062,8 +1196,21 @@ export default function fffExtension(pi: ExtensionAPI) {
         .replace(/\.[^.]+$/, "");
 
       // Search for files with the same stem
-      const relatedResult = f.fileSearch(stem, { pageSize: limit * 3 });
-      if (!relatedResult.ok) throw new Error(relatedResult.error);
+      let relatedResult;
+      try {
+        relatedResult = f.fileSearch(stem, { pageSize: limit * 3 });
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `Search error: ${(e as Error).message}` }],
+          details: { reference: "", related: [] },
+        };
+      }
+      if (!relatedResult.ok) {
+        return {
+          content: [{ type: "text", text: `Search failed: ${relatedResult.error}` }],
+          details: { reference: "", related: [] },
+        };
+      }
 
       // Filter out the reference file and limit
       const related = relatedResult.value.items

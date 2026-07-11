@@ -449,6 +449,34 @@ export default function piNotebooklmExtension(pi: ExtensionAPI) {
 			}
 		}
 
+		// -------------------------------------------------------------------
+		// Validate: source add accepts exactly one CONTENT per call
+		// -------------------------------------------------------------------
+		if (args.length >= 3 && args[0] === "source" && args[1] === "add") {
+			const { rest } = extractCommandPath(args.slice(2));
+			const lastIsArg = rest.length > 0 && !rest[rest.length - 1].startsWith("-");
+			const firstContent = rest.find((a) => !a.startsWith("-"));
+			if (firstContent && lastIsArg && rest.indexOf(firstContent) !== rest.length - 1) {
+				throw new Error(
+					"notebooklm source add accepts exactly one source. " +
+						"Add sources one at a time: call notebooklm separately for each URL/file/text.",
+				);
+			}
+		}
+
+		// -------------------------------------------------------------------
+		// Validate: -n/--notebook after download subcommand must precede type
+		// -------------------------------------------------------------------
+		if (args[0] === "download") {
+			const nbIndex = args.indexOf("-n") === -1 ? args.indexOf("--notebook") : args.indexOf("-n");
+			if (nbIndex > 1 && nbIndex < args.length - 1) {
+				throw new Error(
+					"Place -n/--notebook immediately after 'download', before the artifact type. " +
+						"Example: args: [\"download\", \"-n\", \"NOTEBOOK_ID\", \"audio\", ...]",
+				);
+			}
+		}
+
 			// -------------------------------------------------------------------
 			// Helper: execute and format result
 			// -------------------------------------------------------------------
@@ -466,7 +494,11 @@ export default function piNotebooklmExtension(pi: ExtensionAPI) {
 						throw new Error("notebooklm CLI not found in PATH. Install with: uv tool install 'notebooklm-py[browser]'");
 					}
 					if (e?.killed || e?.signal) {
-						throw new Error(`notebooklm command was cancelled (${e.message || "interrupted"})`);
+						const isGenerate = args[0] === "generate";
+						const hint = isGenerate
+							? " Re-run with a longer timeout_ms or use notebooklm artifact poll <id> to check status."
+							: "";
+						throw new Error(`notebooklm command was cancelled (${e.message || "interrupted"}).${hint}`);
 					}
 					throw e;
 				}
@@ -476,8 +508,12 @@ export default function piNotebooklmExtension(pi: ExtensionAPI) {
 
 				// Check killed before exit code: killed may have a nonzero/null code
 				if (result.killed) {
+					const isGenerate = args[0] === "generate";
+					const hint = isGenerate
+						? " Re-run with a longer timeout_ms or use notebooklm artifact poll <id> to check status."
+						: "";
 					throw new Error(
-						`notebooklm command was cancelled (${result.code == null ? "timeout" : "interrupted"})\n` +
+						`notebooklm command was cancelled (${result.code == null ? "timeout" : "interrupted"})${hint}\n` +
 							`  Args: notebooklm ${formatArgsForError(args)}`,
 					);
 				}
