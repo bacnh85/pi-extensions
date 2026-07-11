@@ -1,6 +1,6 @@
 ---
 name: pi-windows-tools
-description: Provides Windows-native tool manipulation: shell profiles, path conversion, command execution, WSL bridge, safety policy, and developer tool discovery. Enables Pi to work correctly with PowerShell, cmd, Git Bash, and WSL.
+description: "Provides Windows-native tool manipulation: shell profiles, path conversion, command execution, WSL bridge, safety policy, and developer tool discovery. Enables Pi to work correctly with PowerShell, cmd, Git Bash, and WSL."
 ---
 
 # pi-windows-tools
