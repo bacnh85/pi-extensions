@@ -44,7 +44,7 @@ Then reload Pi:
 
 ## Features
 
-**Tool-selection guidance** — Injects concise, model-specific rules before each agent turn when relevant tools are active. Results are cached per tool-set combination.
+**Tool-selection guidance** — Injects concise, model-specific rules before each agent turn when relevant tools are active, including clone-first GitHub repository analysis and discover-before-read handling for uncertain file paths. Results are cached per tool-set combination.
 
 **Tool-input repair** — Wraps Pi's built-in file/shell tools to fix common recoverable argument mistakes before validation:
 - `null` on optional fields → omitted
@@ -70,7 +70,7 @@ Valid inputs pass through unchanged (except for path auto-link cleanup). TypeBox
 
 **Read-on-code-file blocking** — Reading a code file (`.ts`, `.py`, `.go`, etc.) without Serena first is **blocked by default** when Serena tools are available. Only docs, config, logs, and generated output bypass the block.
 
-**Find-misuse interception** — Blocks `find` when the model uses it for a known filename (suggests `read`) or test discovery (lets through).
+**Missing-path recovery** — Classifies ENOENT/path-not-found failures separately and directs the model to discover the exact file path before retrying. `find` remains available for locating named files in external checkouts.
 
 **Optional strict Serena mode** — `PI_DEEPSEEK_TOOLS_STRICT_SERENA=1` extends blocking to `bash`-for-dedicated-tool misses (`bash ls`, `bash grep`, `bash cat`, `bash find`).
 
@@ -215,6 +215,12 @@ Tests use Mocha + tsx with Node.js assert. No test framework mocks — tests use
 - [ ] Publish: `npm publish`
 
 ## Changelog
+
+### 0.12.3
+
+- **Clone-first repository analysis**: DeepSeek V4 now clones GitHub repository URLs and inspects the local checkout instead of scraping repository pages.
+- **Discover before read**: Uncertain file locations are resolved with workspace finders or built-in `find` for external checkouts; the exact-filename `find` blocker was removed.
+- **Missing-path recovery**: ENOENT/path-not-found failures now receive a targeted discovery hint instead of generic or missing-tool advice.
 
 ### 0.12.0
 

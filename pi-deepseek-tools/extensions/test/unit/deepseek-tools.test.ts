@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { describe, it } from "mocha";
 import extension, {
 	deepSeekSelectionGuidance,
-	findMisuseSuggestion,
 	isOpenCodeGoDeepSeekV4FlashModel,
 	isOpenCodeGoDeepSeekV4Model,
 	isOpenCodeGoDeepSeekV4ProModel,
@@ -206,10 +205,12 @@ describe("deepSeekSelectionGuidance", () => {
 		const g = deepSeekSelectionGuidance(["read", "bash", "serena_find_symbol", "serena_find_referencing_symbols"]);
 
 		assert.match(g, /pick the right tool on the first try/);
+		assert.match(g, /GitHub repository\/codebase URL.*git clone.*local checkout/);
+		assert.match(g, /File location uncertain.*find before read.*external temporary clones.*Never guess subdirectories/);
+		assert.match(g, /exact path is verified.*read/);
 		assert.match(g, /serena_get_symbols_overview/);
 		assert.match(g, /serena_find_symbol/);
 		assert.match(g, /serena_find_referencing_symbols/);
-		assert.match(g, /Read code or non-code files/);
 		assert.match(g, /Do NOT invent tool names/);
 	});
 
@@ -221,8 +222,8 @@ describe("deepSeekSelectionGuidance", () => {
 		assert.doesNotMatch(g, /Find where a function/);
 		assert.doesNotMatch(g, /Find implementations/);
 		assert.doesNotMatch(g, /Find all usages/);
-		// Read boundary is always present
-		assert.match(g, /Read code or non-code files/);
+		// Verified-path read boundary is always present
+		assert.match(g, /exact path is verified.*read/);
 		assert.doesNotMatch(g, /Do NOT use read for code files/);
 		assert.match(g, /bash for file ops/);
 	});
@@ -234,6 +235,8 @@ describe("deepSeekSelectionGuidance", () => {
 
 		assert.equal(a, b); // same input → same output
 		assert.notEqual(a, c); // different input → different output
+		assert.match(deepSeekSelectionGuidance(["read", "resolve_file"]), /resolve_file before read/);
+		assert.match(deepSeekSelectionGuidance(["read", "fffind"]), /fffind before read/);
 	});
 });
 
@@ -296,42 +299,6 @@ describe("dedicated tool miss detection", () => {
 	it("reports missed dedicated tools for bash calls", () => {
 		assert.equal(missedDedicatedTool("bash", { command: "ls extensions" }, ["bash", "ls"]), "ls");
 		assert.equal(missedDedicatedTool("read", { path: "README.md" }, ["bash", "ls"]), undefined);
-	});
-});
-
-describe("find misuse detection", () => {
-	it("suggests read when find is called with a specific filename (no wildcards)", () => {
-		assert.equal(findMisuseSuggestion("find", { pattern: "README.md" }), "read");
-		assert.equal(findMisuseSuggestion("find", { pattern: "pi-deepseek-tools/README.md" }), "read");
-		assert.equal(findMisuseSuggestion("find", { pattern: "index.ts" }), "read");
-	});
-
-	it("does not block test-file discovery patterns", () => {
-		assert.equal(findMisuseSuggestion("find", { pattern: "*test*" }), undefined);
-		assert.equal(findMisuseSuggestion("find", { pattern: "*.test.*" }), undefined);
-		assert.equal(findMisuseSuggestion("find", { pattern: "__tests__" }), undefined);
-	});
-
-	it("returns undefined for glob patterns (legitimate discovery)", () => {
-		assert.equal(findMisuseSuggestion("find", { pattern: "*.ts" }), undefined);
-		assert.equal(findMisuseSuggestion("find", { pattern: "**/*.py" }), undefined);
-	});
-
-	it("suggests read for known-document glob patterns (*README*, *CHANGELOG*, etc.)", () => {
-		assert.equal(findMisuseSuggestion("find", { pattern: "*README*" }), "read");
-		assert.equal(findMisuseSuggestion("find", { pattern: "**/pi-deepseek-tools/README*" }), "read");
-		assert.equal(findMisuseSuggestion("find", { pattern: "*CHANGELOG*" }), "read");
-		assert.equal(findMisuseSuggestion("find", { pattern: "*package.json*" }), "read");
-	});
-
-	it("returns undefined for non-find tools", () => {
-		assert.equal(findMisuseSuggestion("bash", { command: "ls" }), undefined);
-		assert.equal(findMisuseSuggestion("read", { path: "README.md" }), undefined);
-	});
-
-	it("returns undefined for empty or missing pattern", () => {
-		assert.equal(findMisuseSuggestion("find", {}), undefined);
-		assert.equal(findMisuseSuggestion("find", { pattern: "" }), undefined);
 	});
 });
 
@@ -406,13 +373,15 @@ describe("extension runtime scoping", () => {
 		}
 	});
 
-	it("blocks find with specific filename (no wildcards)", () => {
-		const { handlers: h, messages: m } = createFakePi(activeTools);
+	it("allows find with a specific filename when the path is unknown", () => {
+		const { handlers, messages } = createFakePi(activeTools);
 
-		const result = h.tool_call[0]({ toolName: "find", input: { pattern: "README.md" } }, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
-		assert.equal(result.block, true);
-		assert.match(result.reason, /use read instead of find/i);
-		assert.equal(m.length, 0);
+		const result = handlers.tool_call[0](
+			{ toolName: "find", input: { pattern: "notebooklm_cli.py", path: "/tmp/notebooklm-py" } },
+			{ model: { provider: "opencode-go", id: "deepseek-v4-flash" } },
+		);
+		assert.equal(result, undefined);
+		assert.equal(messages.length, 0);
 	});
 
 	it("does not block glob find calls (legitimate discovery)", () => {
@@ -461,6 +430,17 @@ describe("error categorization", () => {
 		const info = categorizeToolError("edit", "Validation failed: missing required field 'oldText'");
 		assert.equal(info.category, "validation");
 		assert.match(info.hint, /required fields/i);
+	});
+
+	it("detects missing file paths", () => {
+		for (const error of [
+			"ENOENT: no such file or directory, access '/tmp/repo/guessed.py'",
+			"Path not found: /tmp/repo",
+		]) {
+			const info = categorizeToolError("read", error);
+			assert.equal(info.category, "path_not_found");
+			assert.match(info.hint, /discover the exact path/i);
+		}
 	});
 
 	it("detects tool-not-found errors", () => {

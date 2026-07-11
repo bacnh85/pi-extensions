@@ -11,7 +11,6 @@ import {
 import {
 	isRecord,
 	deepSeekSelectionGuidance,
-	findMisuseSuggestion,
 	hasAnyTool,
 	isOpenCodeGoDeepSeekV4FlashModel,
 	isOpenCodeGoDeepSeekV4Model,
@@ -48,7 +47,6 @@ export {
 	DEEPSEEK_V4_PRO_MODEL,
 	DEEPSEEK_V4_FLASH_MODEL,
 	deepSeekSelectionGuidance,
-	findMisuseSuggestion,
 	isOpenCodeGoDeepSeekV4FlashModel,
 	isOpenCodeGoDeepSeekV4Model,
 	isOpenCodeGoDeepSeekV4ProModel,
@@ -353,14 +351,11 @@ export default function (pi: ExtensionAPI) {
 		const serenaActive = activeTools.some((tool) => tool.startsWith("serena_"));
 		const semanticMiss = serenaActive && isSemanticMissToolCall(event.toolName, event.input);
 		const dedicatedTool = missedDedicatedTool(event.toolName, event.input, activeTools);
-		const misuseTool = findMisuseSuggestion(event.toolName, event.input);
-		if (!semanticMiss && !dedicatedTool && !misuseTool) return;
+		if (!semanticMiss && !dedicatedTool) return;
 
 		const reason = semanticMiss
 			? "For DeepSeek V4, use Serena semantic tools for code-symbol, declaration, reference, implementation, or refactor work."
-			: dedicatedTool
-				? `For DeepSeek V4, use the dedicated ${dedicatedTool} tool instead of bash for this simple file operation.`
-				: `For DeepSeek V4, use ${misuseTool} instead of find when the file path is known or the action is to run a command.`;
+			: `For DeepSeek V4, use the dedicated ${dedicatedTool} tool instead of bash for this simple file operation.`;
 
 		// ── Semantic miss (bash code search without Serena) → always block ──
 		if (semanticMiss) {
@@ -370,12 +365,6 @@ export default function (pi: ExtensionAPI) {
 			const grepAlt = activeTools.includes("ffgrep") ? " or ffgrep" : "";
 			const blockReason = `${reason} Blocked: bash is for executing commands. Use ${SERENA_CODE_TOOLS[0]}(${pathArg})${grepAlt} to search code.`;
 			return { block: true, reason: blockReason };
-		}
-
-		// ── Find misuse → always block (unambiguous) ───────
-		if (misuseTool) {
-			debugLog("blocked: find misuse");
-			return { block: true, reason };
 		}
 
 		// ── Dedicated tool miss (bash ls/grep/cat/find) → adaptive escalation ──

@@ -11,6 +11,7 @@ const DEFAULT_TOOLS = [
 	"ls",
 	"write",
 	"edit",
+	"web_extract",
 	"serena_get_symbols_overview",
 	"serena_find_symbol",
 	"serena_find_referencing_symbols",
@@ -52,7 +53,7 @@ const CASES = [
 	{
 		name: "docs-read",
 		prompt: "Read the pi-deepseek-tools README scope section.",
-		expect: { firstOneOf: ["read"] },
+		expect: { firstOneOf: ["read", "find"] },
 	},
 	{
 		name: "read-limit-only",
@@ -68,6 +69,16 @@ const CASES = [
 		name: "glob-find",
 		prompt: "Find TypeScript test files under pi-deepseek-tools/extensions/test.",
 		expect: { firstOneOf: ["find"] },
+	},
+	{
+		name: "unknown-file-location",
+		prompt: "Read the first 20 lines of deepseek-tools.ts under pi-deepseek-tools.",
+		expect: { firstOneOf: ["find"] },
+	},
+	{
+		name: "github-repository-analysis",
+		prompt: "Analyze the codebase at https://github.com/octocat/Hello-World and summarize its structure.",
+		expect: { firstOneOf: ["bash"] },
 	},
 	{
 		name: "legit-shell",

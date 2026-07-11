@@ -165,31 +165,6 @@ export function missedDedicatedTool(toolName: string, input: unknown, activeTool
 	return dedicatedToolForShellCommand(input.command, activeTools);
 }
 
-export function findMisuseSuggestion(toolName: string, input: unknown): string | undefined {
-	if (toolName !== "find" || !isRecord(input)) return undefined;
-
-	const pattern = typeof input.pattern === "string" ? input.pattern : "";
-	const path = typeof input.path === "string" ? input.path : "";
-	const combined = `${path} ${pattern}`.trim();
-
-	const knownDocs = /(readme|changelog|license|copying|package\.json|tsconfig\.json|makefile|dockerfile|\.gitignore)/i;
-	if (knownDocs.test(combined)) {
-		return "read";
-	}
-
-	// Directory/glob patterns that look like test discovery → let find through
-	if (/(__tests?__|\.(test|spec)\.)/i.test(pattern)) {
-		return undefined;
-	}
-
-	// No wildcards = looking for a specific named file → should use read
-	if (!/[*?\[\]]/.test(combined) && /\S/.test(combined)) {
-		return "read";
-	}
-
-	return undefined;
-}
-
 const guidanceCache = new Map<string, string>();
 
 export function clearGuidanceCache(): void {
@@ -202,12 +177,18 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 	if (cached) return cached;
 
 	const serenaActive = activeTools.some((tool) => tool.startsWith("serena_"));
+	const workspaceFinder = activeTools.includes("resolve_file")
+		? "resolve_file"
+		: activeTools.includes("fffind")
+			? "fffind"
+			: "find";
 	const lines: string[] = ["OpenCode Go DeepSeek V4 — pick the right tool on the first try:", ""];
 
-	// ponytail: only the non-obvious mappings — serena tools (unfamiliar names)
-	// and the read-boundary (read is not for code files). write/edit/grep/find/ls/bash
-	// are self-evident from their names.
-	const lookups: string[] = [];
+	// ponytail: only non-obvious mappings — remote repositories, unverified paths, and serena tools.
+	const lookups: string[] = [
+		"  • Analyze a GitHub repository/codebase URL → bash git clone to a temporary directory, then inspect the local checkout with Serena/read; use web tools only for webpage content such as issues, PRs, releases, or individual pages",
+		`  • File location uncertain → ${workspaceFinder} before read inside the workspace; use find with the checkout root for external temporary clones. Never guess subdirectories from naming conventions`,
+	];
 	if (serenaActive) {
 		lookups.push(
 			"  • Explore symbols in a code file → serena_get_symbols_overview",
@@ -217,8 +198,7 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 			"  • Find all usages/references of a symbol → serena_find_referencing_symbols",
 		);
 	}
-	// ponytail: one-liner intent→tool for the read-boundary since it's the most common mistake
-	lookups.push("  • Read code or non-code files (docs, config, logs, generated output) → read");
+	lookups.push("  • Read a file whose exact path is verified → read");
 	lookups.push("  • edit oldText → copy verbatim from a narrow read (≤5 lines), watch for tabs vs spaces");
 
 	for (const l of lookups) lines.push(l);
@@ -238,7 +218,7 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 // Error categorization for context-aware recovery hints
 // ────────────────────────────────────────────────────────
 
-export type ErrorCategory = "validation" | "tool_not_found" | "rate_limit" | "timeout" | "api_error" | "edit_mismatch" | "unknown";
+export type ErrorCategory = "validation" | "tool_not_found" | "path_not_found" | "rate_limit" | "timeout" | "api_error" | "edit_mismatch" | "unknown";
 
 export interface ErrorInfo {
 	category: ErrorCategory;
@@ -262,7 +242,10 @@ export function categorizeToolError(toolName: string, errorResult: unknown): Err
 	if (/validation failed|invalid_type|required|missing.*(field|argument|property)/i.test(text)) {
 		return { category: "validation", toolName, hint: "The tool call had invalid arguments. Provide all required fields with correct types — strings for text values, arrays for list values, and valid file paths." };
 	}
-	if (/not found|no such tool|unknown tool|is not a function/i.test(text)) {
+	if (/enoent|no such file or directory|(?:file|path) not found/i.test(text)) {
+		return { category: "path_not_found", toolName, hint: "The file path was missing, stale, or guessed. Discover the exact path before retrying: use find with the checkout root, or resolve_file/fffind inside the active workspace." };
+	}
+	if (/no such tool|unknown tool|is not a function|tool\s+\S+\s+(?:was\s+)?not found/i.test(text)) {
 		return { category: "tool_not_found", toolName, hint: "Use only the exact Pi tool names provided to you. Never invent tool names like read_file or search_files." };
 	}
 	if (/4\d{2}|5\d{2}/i.test(text)) {
