@@ -2,6 +2,7 @@
  * Known read-only/research tools auto-allowed in plan mode.
  * Tools not in this set but in the active baseline require confirmation.
  */
+// ponytail: keep in sync with pi-review/extensions/index.ts SAFE_REVIEW_TOOLS (additions there should be mirrored here)
 export const READ_ONLY_TOOLS = new Set([
 	// Built-in reads
 	"read",

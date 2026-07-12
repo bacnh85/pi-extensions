@@ -130,8 +130,20 @@ async function rewriteCommand(pi: ExtensionAPI, command: string, signal?: AbortS
 
 
 // ponytail: reject RTK rewrites that change the first word or add shell operators
+// Also reject rewrites of eval/script commands (node -e, python -c, etc.)
+// because RTK cannot safely transform arbitrary inline scripts.
+const SCRIPT_COMMAND_RE = /^(node|python|python3|ruby|perl|php|deno|bun)\s+(-[pec]|--eval|--print)\b/;
+function isEvalCommand(command: string): boolean {
+	return SCRIPT_COMMAND_RE.test(command.trim());
+}
 function isSafeRewrite(original: string, rewritten: string): boolean {
-	var o = original.trim().split(/\s+/)[0], n = rewritten.trim().split(/\s+/)[0];
+	// Never rewrite inline script commands — RTK can't transform arbitrary code
+	if (isEvalCommand(original) || isEvalCommand(rewritten)) return false;
+	const oTokens = original.trim().split(/\s+/);
+	const rTokens = rewritten.trim().split(/\s+/);
+	// RTK prepends "rtk" as the first token; compare against the original's first token
+	const rtkIdx = rTokens[0] === "rtk" ? 1 : 0;
+	const o = oTokens[0], n = rTokens[rtkIdx] ?? "";
 	return o === n && (/[|><;&`]/.test(original) || !/[|><;&`]/.test(rewritten));
 }
 
@@ -221,6 +233,10 @@ export default function piRtkExtension(pi: ExtensionAPI) {
 			const originalCommand = event.input.command;
 			const rewritten = await maybeRewriteCommand(pi, originalCommand, ctx.signal, ctx);
 			if (rewritten && rewritten !== originalCommand) {
+				// Notify when a command is rewritten so the model sees the discrepancy
+				if (ctx.hasUI) {
+					ctx.ui.notify(`[pi-rtk] rewrote: ${originalCommand.slice(0, 80)} → ${rewritten.slice(0, 80)}`, "info");
+				}
 				event.input.command = rewritten;
 			}
 		} catch (error) {

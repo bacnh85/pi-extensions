@@ -32,6 +32,9 @@ pi --plan
 | Command / shortcut | Description |
 | --- | --- |
 | `/plan` | Toggle plan mode. |
+| `/plan-approve [current|new|flow]` | Open approval choices or execute a specific handoff through Pi's command router. |
+| `/flow status` | Show the active workflow phase and review pass. |
+| `/flow stop` | Abort review and stop the active workflow. |
 | `Ctrl+Alt+P` | Toggle plan mode. |
 
 ## Workflow
@@ -41,10 +44,13 @@ pi --plan
 3. The model explores with read-only tools. Bash requires your confirmation; known read/research tools (Serena, FFF, web, Munin) run automatically; other tools prompt you.
 4. If decisions are ambiguous, the model can call `ask_plan_question` so you can choose or type your own answer.
 5. The model calls `write_plan` — the plan is saved under `.agents/plans/<timestamp>-<title>.md`.
-6. After the plan is written, you'll see three choices:
+6. After the plan is written, Pi prefills `/plan-approve` in the TUI. Press Enter, then choose:
    - **Implement in current session** — exits plan mode, restores tools, sends an execution prompt.
-   - **Implement in new session** — exits plan mode and starts a fresh session with the plan as handoff.
+   - **Implement in new session** — starts a fresh session with the plan as handoff.
+   - **Implement, verify, and review** — captures the Git baseline, implements in fresh context, invokes `pi-review` through `pi-subagent`, feeds blocking findings back, and stops clean or after three review passes.
    - **Stay in Plan mode** — continue refining the plan.
+
+Fresh-session replacement is intentionally initiated by `/plan-approve`: extension-originated messages bypass Pi's slash-command router and cannot call command-only session APIs. The automated choice requires `pi-review` and `pi-subagent`. It never resets files or Git state; initial dirty paths are recorded for reviewer context. The implementer must report exact checks with `[verification: pass]` or `[verification: fail]`.
 
 ## Tool gating in plan mode
 

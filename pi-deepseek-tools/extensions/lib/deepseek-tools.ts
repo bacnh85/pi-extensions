@@ -98,6 +98,7 @@ export function commandLooksLikeSemanticCodeSearch(command: unknown): boolean {
 	const lowered = command.toLowerCase();
 	if (!/\b(rg|grep|ag|ack|sed|awk|find)\b/.test(lowered)) return false;
 	if (/\b(ls|pwd|git\s+status|npm\s+(test|run|install)|pnpm\s+(test|run|install)|yarn\s+(test|run|install))\b/.test(lowered)) return false;
+	if (/^sed\s+-n\b/.test(command.trim().toLowerCase())) return false;
 	return /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|cpp|cc|cxx|c|h|hpp)\b/.test(lowered)
 		|| /\b(class|function|def|interface|implements|references?|symbol|declaration|implementation|method|variable|rename|refactor)\b/.test(lowered);
 }
@@ -110,14 +111,14 @@ export function dedicatedToolForShellCommand(command: unknown, activeTools: read
 	if (typeof command !== "string") return undefined;
 	const trimmed = command.trim();
 	if (!trimmed || !commandIsSimple(trimmed)) return undefined;
-	if (/^(npm|pnpm|yarn|bun|node|npx|git|make|cargo|go|pytest|python|tsx|tsc)\b/.test(trimmed)) return undefined;
+	if (/^(npm|pnpm|yarn|bun|node|npx|git|make|cargo|go|pytest|python|tsx|tsc|awk)\b/.test(trimmed)) return undefined;
 	if (/^ls\b/.test(trimmed) && activeTools.includes("ls")) return "ls";
 	if (/^find\b/.test(trimmed) && activeTools.includes("find")) return "find";
 	if (/^(grep|rg|ag|ack)\b/.test(trimmed) && activeTools.includes("grep")) return "grep";
 	if (/^cat\s+\S+\s*$/.test(trimmed) && activeTools.includes("read")) return "read";
 	if (/^head\s+/.test(trimmed) && activeTools.includes("read")) return "read";
 	if (/^tail\s+/.test(trimmed) && activeTools.includes("read")) return "read";
-	if (/^sed\s+-n\s+['"]?\d+(,\d+)?p['"]?\s+\S+\s*$/.test(trimmed) && activeTools.includes("read")) return "read";
+	if (/^sed\s+-n\b/.test(trimmed)) return undefined;
 	if (/^(echo|printf)\s.+>\s*\S/.test(trimmed) && activeTools.includes("write")) return "write";
 	return undefined;
 }
@@ -145,7 +146,42 @@ export function isSemanticMissToolCall(toolName: string, input: unknown): boolea
 		if (commandLooksLikeSemanticCodeSearch(input.command)) return true;
 		return false;
 	}
+	// ponytail: grep/ffgrep on code-symbol searches are also semantic misses
+	if (toolName === "grep" || toolName === "ffgrep") {
+		if (grepLooksLikeSymbolSearch(input)) return true;
+		return false;
+	}
 	return false;
+}
+
+/**
+ * Check if a grep/ffgrep call targets code files with a symbol-like pattern.
+ * A symbol pattern is an identifier (function/class/variable name) that
+ * serena_find_symbol could resolve in one call.
+ */
+function grepLooksLikeSymbolSearch(input: Record<string, unknown>): boolean {
+	const pattern = typeof input.pattern === "string" ? input.pattern.trim() : "";
+	if (!pattern) return false;
+
+	// Skip if searching non-code files explicitly
+	const glob = typeof input.glob === "string" ? input.glob : "";
+	if (glob && !/\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|py|go|rs|java|kt|rb|php|cs|cpp|hpp)$/i.test(glob)) return false;
+
+	// Check if the search targets code files (path or glob implies code)
+	const searchPath = typeof input.path === "string" ? input.path : "";
+	if (searchPath && looksLikeDocsOrConfigPath(searchPath)) return false;
+
+	// Check if the pattern looks like a code symbol (identifier, not a regex or text phrase)
+	// ponytail: exclude ALL_CAPS (env vars, constants) and patterns with underscores
+	const isAllCaps = /^[A-Z_][A-Z_0-9]{3,}$/.test(pattern);
+	if (isAllCaps) return false;
+
+	const isSymbolPattern =
+		/^[a-zA-Z_$][\w.$]{2,}$/.test(pattern) ||  // plain identifier with optional dots (mixed-case symbols)
+		/^class\s+\w/i.test(pattern) ||             // class search
+		/^(function|def|const|let|var|interface|type|enum|export)\s+\w/i.test(pattern); // keyword + name
+
+	return isSymbolPattern;
 }
 
 /**
@@ -163,6 +199,116 @@ export function missedDedicatedTool(toolName: string, input: unknown, activeTool
 	if (toolName !== "bash" || !isRecord(input)) return undefined;
 	if (commandLooksLikeSemanticCodeSearch(input.command)) return undefined;
 	return dedicatedToolForShellCommand(input.command, activeTools);
+}
+
+/**
+ * Analyze a blocked bash command and suggest the best serena tool + arguments.
+ * Returns a formatted suggestion string like:
+ *   "Try: serena_find_symbol({name_path_pattern: \"SymbolName\"})"
+ * or "serena_get_symbols_overview({relative_path: \"src/file.ts\"})" when no
+ * specific symbol can be extracted.
+ */
+export function suggestBestSerenaCommand(input: unknown, activeTools: readonly string[]): string {
+	if (!isRecord(input)) return defaultSerenaSuggest(activeTools);
+
+	// Handle grep/ffgrep tool calls — extract symbol from pattern field
+	const pattern = typeof input.pattern === "string" ? input.pattern.trim() : "";
+	if (pattern && activeTools.includes("serena_find_symbol")) {
+		// Check if the pattern looks like a symbol identifier
+		if (/^[a-zA-Z_$][\w.$]{2,}$/.test(pattern)) {
+			return `Try: serena_find_symbol({name_path_pattern: "${pattern}"})`;
+		}
+		if (/^(class|function|def|const|let|var|interface|type|enum|export)\s+(\w+)/i.test(pattern)) {
+			const symbol = RegExp.$2;
+			return `Try: serena_find_symbol({name_path_pattern: "${symbol}"})`;
+		}
+		return defaultSerenaSuggest(activeTools);
+	}
+
+	// Handle bash commands — extract symbol from grep/rg/ag
+	const command = typeof input.command === "string" ? input.command.trim() : "";
+	if (!command) return defaultSerenaSuggest(activeTools);
+
+	const symbol = extractSymbolFromGrep(command);
+	if (symbol && activeTools.includes("serena_find_symbol")) {
+		return `Try: serena_find_symbol({name_path_pattern: "${symbol}"})`;
+	}
+
+	// Check for find+grep: suggest serena_search_for_pattern if available
+	if (/\bfind\b/.test(command) && /\b(grep|rg|ag)\b/.test(command)) {
+		if (activeTools.includes("serena_search_for_pattern")) {
+			const p = extractGrepPattern(command);
+			return p
+				? `Try: serena_search_for_pattern({pattern: "${p}"})`
+				: defaultSerenaSuggest(activeTools);
+		}
+		return defaultSerenaSuggest(activeTools);
+	}
+
+	return defaultSerenaSuggest(activeTools);
+}
+
+/**
+ * Extract a plain identifier from a grep command. Returns the first
+ * argument that looks like a function/class/variable name.
+ * Strips common grep flags (-rn, -i, -H, -l, -w, etc.) and file globs.
+ */
+function extractSymbolFromGrep(command: string): string | undefined {
+	// Only handle grep/rg/ag commands
+	if (!/^\s*(grep|rg|ag|ack)\b/.test(command)) return undefined;
+
+	// Split into tokens, stripping quotes
+	const tokens: string[] = [];
+	const tokenRe = /"([^"]*)"|'([^']*)'|(\S+)/g;
+	let m;
+	while ((m = tokenRe.exec(command)) !== null) {
+		const tok = m[1] ?? m[2] ?? m[3];
+		tokens.push(tok);
+	}
+
+	// Skip the command name and known flags
+	const skipPrefixes = /^(grep|rg|ag|ack)$/;
+	const skipPattern = /^-[a-z0-9A-Z]+$/;
+	const fileExtPattern = /^\*?\.[a-z]+$/;
+
+	for (const tok of tokens) {
+		if (skipPrefixes.test(tok)) continue;
+		if (skipPattern.test(tok)) continue;
+		if (fileExtPattern.test(tok)) continue;
+		if (tok === "--" || tok === "-e" || tok === "-f") continue;
+		// Look for something that looks like an identifier
+		if (/^[a-zA-Z_$][\w.$]*$/.test(tok) && tok.length >= 3) return tok;
+		// Also accept quoted identifiers with spaces (class/property names)
+		if (/^[a-zA-Z_$][\w. $()]*$/.test(tok) && tok.length >= 3 && !/\s{3,}/.test(tok)) return tok;
+	}
+	return undefined;
+}
+
+/** Extract the search pattern from a grep command. */
+function extractGrepPattern(command: string): string | undefined {
+	const tokens: string[] = [];
+	const tokenRe = /"([^"]*)"|'([^']*)'|(\S+)/g;
+	let m;
+	while ((m = tokenRe.exec(command)) !== null) {
+		const tok = m[1] ?? m[2] ?? m[3];
+		tokens.push(tok);
+	}
+	const skipPrefixes = /^(grep|rg|ag|ack|find)$/;
+	const skipPattern = /^-[a-z0-9A-Z]+$/;
+	for (const tok of tokens) {
+		if (skipPrefixes.test(tok)) continue;
+		if (skipPattern.test(tok)) continue;
+		if (tok === "--" || tok === "-e" || tok === "-exec") continue;
+		return tok;
+	}
+	return undefined;
+}
+
+function defaultSerenaSuggest(activeTools: readonly string[]): string {
+	if (activeTools.includes("serena_get_symbols_overview")) {
+		return "Try: serena_get_symbols_overview({relative_path: \"the file\"})";
+	}
+	return `Try: ${SERENA_CODE_TOOLS[0]}`;
 }
 
 const guidanceCache = new Map<string, string>();
@@ -186,19 +332,23 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 
 	// ponytail: only non-obvious mappings — remote repositories, unverified paths, and serena tools.
 	const lookups: string[] = [
+		`  • File location uncertain → ${workspaceFinder} before read inside the workspace; use find with the checkout root for external temporary clones. Never guess subdirectories from naming conventions — a guessed path that doesn't exist is a wasted turn. Discover first.`,
 		"  • Analyze a GitHub repository/codebase URL → bash git clone to a temporary directory, then inspect the local checkout with Serena/read; use web tools only for webpage content such as issues, PRs, releases, or individual pages",
-		`  • File location uncertain → ${workspaceFinder} before read inside the workspace; use find with the checkout root for external temporary clones. Never guess subdirectories from naming conventions`,
 	];
 	if (serenaActive) {
 		lookups.push(
-			"  • Explore symbols in a code file → serena_get_symbols_overview",
-			"  • Find where a function/class/variable is defined → serena_find_symbol",
-			"  • Find where a symbol is declared → serena_find_declaration",
-			"  • Find implementations of a class/interface → serena_find_implementations",
-			"  • Find all usages/references of a symbol → serena_find_referencing_symbols",
+			"  • FIRST: use Serena semantic tools for code navigation before resorting to bash or grep — they understand symbols and references",
+			"  • serena_get_symbols_overview — explore symbols in a source file",
+			"  • serena_find_symbol — find where a function/class/variable is defined",
+			"  • serena_find_declaration — find a symbol's declaration",
+			"  • serena_find_implementations — find implementations of a class/interface",
+			"  • serena_find_referencing_symbols — find all usages/references of a symbol",
 		);
+		// ponytail: counter the "I know the file → grep is faster" bias
+		lookups.push("  • Serena is ONE call vs multiple read/grep scans — even when you know the file, serena_get_symbols_overview returns all symbols at once, and serena_find_symbol finds definitions grep would miss");
 	}
 	lookups.push("  • Read a file whose exact path is verified → read");
+	lookups.push("  • Write a new file → write (never bash echo/printf > for file creation)");
 	lookups.push("  • edit oldText → copy verbatim from a narrow read (≤5 lines), watch for tabs vs spaces");
 
 	for (const l of lookups) lines.push(l);
@@ -206,8 +356,10 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 	lines.push("");
 	// ponytail: 2 prohibitions, not 12. The model only needs to know what NOT to do.
 	lines.push("NEVER do these — they are BLOCKED:");
-	lines.push("  • Do NOT use bash for file ops (ls, grep, cat, find, head, tail) — blocked in strict mode. Use the dedicated tool.");
+	lines.push("  • Do NOT use grep or ffgrep for code-symbol searches — use serena_find_symbol. grep/ffgrep are for text search in docs/logs/config, not code symbols.");
+	lines.push("  • Do NOT use bash for file ops (ls, grep, cat, find, head, tail, echo >, printf >) — blocked in strict mode. Use the dedicated tool.");
 	lines.push("  • Do NOT invent tool names (search_files, read_file, edit_file) — use only the exact Pi tool names from the list below.");
+	lines.push("  • Use bash for real commands: npm/pnpm/yarn, node/npx, git (except git clone for URLs), make/cargo/go, pytest, tsx/tsc, python, awk, sed -n (read-only), xxd, shasum, and pipes/redirects for data processing.");
 
 	const result = lines.join("\n");
 	guidanceCache.set(cacheKey, result);

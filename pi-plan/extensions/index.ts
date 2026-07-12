@@ -9,7 +9,9 @@ import {
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
@@ -20,6 +22,11 @@ const PLAN_DIR = ".agents/plans";
 const PLAN_TOOL = "write_plan";
 const PLAN_QUESTION_TOOL = "ask_plan_question";
 const PLAN_EXECUTE_COMMAND = "plan-execute";
+// ponytail: keep in sync with pi-review/extensions/index.ts REVIEW_EVENT
+const REVIEW_EVENT = "pi-review:run";
+const MAX_REVIEW_PASSES = 3;
+const MAX_DIRTY_PATCH_BYTES = 50 * 1024;
+const MAX_UNTRACKED_SNAPSHOT_BYTES = 10 * 1024;
 const PREFERENCES_FILE = path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "pi-plan", "preferences.json");
 const THINKING_LEVELS = [
 	"off",
@@ -33,6 +40,29 @@ const THINKING_LEVELS = [
 
 type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 type PlanStatus = "draft" | "approved" | "executing";
+type FlowPhase = "implement" | "fix" | "review" | "done" | "stopped";
+
+interface ReviewFinding {
+	severity: string;
+	file: string;
+	line: number;
+	issue: string;
+	evidence: string;
+	suggestedFix: string;
+	blocking: boolean;
+}
+
+interface FlowState {
+	baseline: string;
+	initialDirty: string;
+	initialDirtyPatch?: string;
+	initialUntracked?: string;
+	initialUntrackedSnapshot?: string;
+	phase: FlowPhase;
+	reviewPass: number;
+	verificationSummary?: string;
+	blockingFindings?: ReviewFinding[];
+}
 
 interface PlanState {
 	enabled: boolean;
@@ -43,6 +73,7 @@ interface PlanState {
 	lastPlanTitle?: string;
 	lastPlanStatus?: PlanStatus;
 	planReadyForReview?: boolean;
+	flow?: FlowState;
 }
 
 interface PlanPreferences {
@@ -104,6 +135,39 @@ function relativeToCwd(cwd: string, absolutePath: string): string {
 	return path.relative(cwd, absolutePath).split(path.sep).join("/");
 }
 
+/**
+ * Platform-independent, bounded untracked file snapshot using Node.js APIs.
+ * Returns JSON path/hash/base64 entries, or an empty string if no files.
+ * Throws on error so callers can handle failure.
+ */
+export async function snapshotUntrackedFiles(cwd: string): Promise<string> {
+	const stdout = await new Promise<string>((resolve, reject) => {
+		execFile(
+			"git",
+			["ls-files", "-z", "--others", "--exclude-standard"],
+			{ cwd, encoding: "utf8", timeout: 10_000, maxBuffer: 10 * 1024 * 1024 },
+			(error, output) => error ? reject(error) : resolve(output),
+		);
+	});
+	const files = stdout.split("\0").filter(Boolean);
+	if (!files.length) return "";
+	let totalBytes = 0;
+	const entries: Array<{ path: string; hash: string; content: string }> = [];
+	for (const file of files) {
+		const content = await readFile(path.join(cwd, file));
+		totalBytes += content.length;
+		if (totalBytes > MAX_UNTRACKED_SNAPSHOT_BYTES) {
+			throw new Error(`untracked content exceeds ${MAX_UNTRACKED_SNAPSHOT_BYTES / 1024} KB`);
+		}
+		entries.push({
+			path: file,
+			hash: createHash("sha256").update(content).digest("hex"),
+			content: content.toString("base64"),
+		});
+	}
+	return JSON.stringify(entries);
+}
+
 function formatShortContextUsage(ctx: ExtensionContext): string {
 	const usage = ctx.getContextUsage();
 	return usage?.percent === null || usage?.percent === undefined
@@ -111,9 +175,10 @@ function formatShortContextUsage(ctx: ExtensionContext): string {
 		: `Context: ${Math.round(usage.percent)}% used.`;
 }
 
-function buildExecutionPrompt(relativePlan: string, mode: "current" | "new"): string {
+function buildExecutionPrompt(relativePlan: string, mode: "current" | "new", flow = false): string {
 	const prefix = mode === "new" ? "This is a fresh session created from an approved pi-plan. " : "";
-	return `${prefix}Execute the approved plan in ${relativePlan}. Read the plan file if needed, keep the implementation scoped to the plan, update the plan if reality differs materially, and run the verification described there.`;
+	const verification = flow ? " Finish your response with `[verification: pass]` after listing exact checks and outcomes, or `[verification: fail]` with the blocker." : "";
+	return `${prefix}Execute the approved plan in ${relativePlan}. Read the plan file if needed, keep the implementation scoped to the plan, update the plan if reality differs materially, and run the verification described there.${verification}`;
 }
 
 function hasOpenQuestionWarning(content: string): boolean {
@@ -128,23 +193,14 @@ function modelKey(model: { provider?: string; id?: string } | undefined): string
 /** Check if a bash command writes to the filesystem. In plan mode, write commands are blocked regardless of confirmation. */
 function isWriteCommand(cmd: string): boolean {
 	const c = cmd.trim();
-
-	// Shell redirect to file: > file, >> file, 2> file, &> file
-	// Excludes fd-level redirects like 2>&1 (>& followed by digits)
-	if (/>(?:>?)\s+(?!&|\|)/.test(c)) return true;
-
-	if (/<<\s/.test(c)) return true;
-
-	if (/\bsed\s+(?:-\S+\s+)*-i/.test(c)) return true;
-
-	// tee writes to file (distinguish from tee --help)
-	if (/\btee\s+(?:-[a-z]+\s+)*[^-]\S/.test(c)) return true;
-
-	if (/\b(?:cp|mv|rm|install|dd)\s+/.test(c)) return true;
-
-	if (/\b(?:touch|mkdir|ln|chmod|chown)\s+/.test(c)) return true;
-
-	return false;
+	if (!c || /[\r\n;&|`$()<>]/.test(c) || /--output(?:=|\s)/i.test(c)) return true;
+	if (/^git\s+/i.test(c)) {
+		return !(/^git\s+(status|rev-parse|diff|show|log|ls-files)\b/i.test(c)
+			|| /^git\s+branch\s+--(?:list|all|remote|merged|no-merged|contains|show-current)\b/i.test(c));
+	}
+	if (/^find\b/i.test(c) && /-(delete|exec|execdir|ok|okdir|fprint[f0]?|fls)\b/i.test(c)) return true;
+	if (/^sort\b/i.test(c) && /\s-o(?:\s|$)/i.test(c)) return true;
+	return !/^(?:rg|grep|find|fd|ls|pwd|cat|head|tail|awk|wc|sort|uniq|cut)\b/i.test(c);
 }
 
 function getEffectiveThinking(prefs: PlanPreferences, model: { provider?: string; id?: string } | undefined): { plan: ThinkingLevel; normal: ThinkingLevel } {
@@ -197,6 +253,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	let planReadyForReview = false;
 	/** Suppress --plan flag during fresh-session handoff. */
 	let executionHandoff = false;
+	let flow: FlowState | undefined;
+	let flowController: AbortController | undefined;
 	let preferences: PlanPreferences | undefined;
 
 	// ── UI helpers ──────────────────────────────────────────────
@@ -206,12 +264,12 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	}
 
 	function updateFooter(ctx: ExtensionContext): void {
-		ctx.ui.setStatus(
-			STATUS_KEY,
-			planModeEnabled
-				? ctx.ui.theme.fg("accent", "Plan mode")
-				: undefined,
-		);
+		const flowStatus = flow && !["done", "stopped"].includes(flow.phase)
+			? `flow: ${flow.phase} · review ${flow.reviewPass}/${MAX_REVIEW_PASSES}`
+			: undefined;
+		ctx.ui.setStatus(STATUS_KEY, flowStatus
+			? ctx.ui.theme.fg("accent", flowStatus)
+			: planModeEnabled ? ctx.ui.theme.fg("accent", "Plan mode") : undefined);
 	}
 
 	function persistState(): void {
@@ -224,6 +282,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			lastPlanTitle,
 			lastPlanStatus,
 			planReadyForReview,
+			flow,
 		} satisfies PlanState);
 	}
 
@@ -238,15 +297,30 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		const saved = branch
 			.filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === "pi-plan")
 			.pop() as { data?: PlanState } | undefined;
-		if (!saved?.data) return;
-		planModeEnabled = saved.data.enabled ?? planModeEnabled;
+		if (!saved?.data) {
+			// ponytail: no saved entry for this branch — reset ALL branch-scoped state
+			// so the subsequent persistState() in session_tree doesn't leak the
+			// previous branch's workflow or plan mode into the selected branch.
+			flow = undefined;
+			planModeEnabled = false;
+			lastPlanPath = undefined;
+			lastPlanTitle = undefined;
+			lastPlanStatus = undefined;
+			planReadyForReview = false;
+			toolsBeforePlan = undefined;
+			return;
+		}
+		// ponytail: treat saved state as authoritative — no ?? fallback to
+		// previous module state, which leaks state across unrelated branches.
+		planModeEnabled = saved.data.enabled ?? false;
 		if (isThinkingLevel(saved.data.planThinking)) planThinking = saved.data.planThinking;
 		if (isThinkingLevel(saved.data.normalThinking)) normalThinking = saved.data.normalThinking;
-		toolsBeforePlan = saved.data.toolsBeforePlan ?? toolsBeforePlan;
-		lastPlanPath = saved.data.lastPlanPath ?? lastPlanPath;
-		lastPlanTitle = saved.data.lastPlanTitle ?? lastPlanTitle;
-		lastPlanStatus = saved.data.lastPlanStatus ?? lastPlanStatus;
-		if (typeof saved.data.planReadyForReview === "boolean") planReadyForReview = saved.data.planReadyForReview;
+		toolsBeforePlan = saved.data.toolsBeforePlan;
+		lastPlanPath = saved.data.lastPlanPath;
+		lastPlanTitle = saved.data.lastPlanTitle;
+		lastPlanStatus = saved.data.lastPlanStatus;
+		planReadyForReview = typeof saved.data.planReadyForReview === "boolean" ? saved.data.planReadyForReview : false;
+		flow = saved.data.flow ?? undefined;
 	}
 
 	function enablePlanTools(): void {
@@ -266,6 +340,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 	function applyThinking(level: ThinkingLevel): void {
 		applyingStoredThinking = true;
+		// @ts-expect-error — SDK 0.80.2 ThinkingLevel omits "max", runtime accepts it
 		pi.setThinkingLevel(level);
 		queueMicrotask(() => { applyingStoredThinking = false; });
 	}
@@ -297,6 +372,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		planModeEnabled = true;
 		// ponytail: after approval, start fresh plan path
 		if (lastPlanStatus === "approved" || lastPlanStatus === "executing") {
+			flow = undefined;
 			lastPlanPath = undefined;
 			lastPlanTitle = undefined;
 			lastPlanStatus = undefined;
@@ -364,51 +440,261 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 	async function beginNewSessionExecution(
 		ctx: ExtensionCommandContext,
+		withFlow = false,
 	): Promise<void> {
 		if (!lastPlanPath) {
-			ctx.ui.notify(
-				"No approved plan is available to execute.",
-				"error",
-			);
+			ctx.ui.notify("No approved plan is available to execute.", "error");
 			return;
 		}
-		await ctx.waitForIdle();
-		{
-			const planPathToExecute = lastPlanPath;
-			const planTitleToExecute = lastPlanTitle;
-			const relativePlan = relativeToCwd(ctx.cwd, planPathToExecute);
-			const parentSession = ctx.sessionManager.getSessionFile();
-			// ponytail: persist handoff marker so replacement instance suppresses --plan
-			const state: PlanState = {
-				enabled: false,
-				planThinking,
-				normalThinking,
-				lastPlanPath: planPathToExecute,
-				lastPlanTitle: planTitleToExecute,
-				lastPlanStatus: "approved",
-				planReadyForReview: false,
-			};
 
-			executionHandoff = true;
-			try {
-				const result = await ctx.newSession({
-					parentSession,
-					setup: async (sessionManager) => {
-						sessionManager.appendCustomEntry("pi-plan", state);
-					},
-					withSession: async (replacementCtx) => {
-						await replacementCtx.sendUserMessage(
-							buildExecutionPrompt(relativePlan, "new"),
-						);
-					},
-				});
-				if (result.cancelled) {
-					ctx.ui.notify("New-session execution cancelled.", "info");
-				}
-			} finally {
-				executionHandoff = false;
+		await ctx.waitForIdle();
+		const planPathToExecute = lastPlanPath;
+		const planTitleToExecute = lastPlanTitle;
+		const relativePlan = relativeToCwd(ctx.cwd, planPathToExecute);
+		const parentSession = ctx.sessionManager.getSessionFile();
+		if (withFlow) {
+			const [head, dirty, dirtyPatch, untracked] = await Promise.all([
+				pi.exec("git", ["rev-parse", "HEAD"], { timeout: 5_000 }),
+				pi.exec("git", ["status", "--porcelain"], { timeout: 5_000 }),
+				pi.exec("git", ["diff", "HEAD"], { timeout: 30_000 }),
+				pi.exec("git", ["ls-files", "--others", "--exclude-standard"], { timeout: 5_000 }),
+			]);
+			if (head.code !== 0 || !head.stdout.trim()) {
+				ctx.ui.notify("Cannot create workflow: git repository not found (rev-parse HEAD failed).", "error");
+				return;
 			}
+			if (dirty.code !== 0) {
+				ctx.ui.notify("Cannot create workflow: could not capture git status.", "error");
+				return;
+			}
+			if (dirtyPatch.code !== 0) {
+				ctx.ui.notify("Cannot create workflow: initial dirty patch could not be captured.", "error");
+				return;
+			}
+			const initialDirtyPatch = dirtyPatch.stdout.trim();
+			if (Buffer.byteLength(initialDirtyPatch, "utf8") > MAX_DIRTY_PATCH_BYTES) {
+				ctx.ui.notify(`Cannot create workflow: initial dirty patch exceeds ${MAX_DIRTY_PATCH_BYTES / 1024} KB. Commit, stash, or reduce existing changes first.`, "error");
+				return;
+			}
+			let initialUntrackedSnapshot: string;
+			try {
+				initialUntrackedSnapshot = await snapshotUntrackedFiles(ctx.cwd);
+			} catch (error) {
+				ctx.ui.notify(`Cannot create workflow: untracked file snapshot failed (required for change tracking). ${String(error)}`, "error");
+				return;
+			}
+			flow = {
+				baseline: head.code === 0 ? head.stdout.trim() : "unavailable",
+				initialDirty: dirty.code === 0 ? dirty.stdout.trim() : "unavailable",
+				initialDirtyPatch,
+				initialUntracked: untracked.code === 0 ? untracked.stdout.trim() : undefined,
+				initialUntrackedSnapshot,
+				phase: "implement",
+				reviewPass: 0,
+			};
 		}
+		const state: PlanState = {
+			enabled: false,
+			planThinking,
+			normalThinking,
+			lastPlanPath: planPathToExecute,
+			lastPlanTitle: planTitleToExecute,
+			lastPlanStatus: "approved",
+			planReadyForReview: false,
+			flow,
+		};
+
+		executionHandoff = true;
+		try {
+			const result = await ctx.newSession({
+				parentSession,
+				setup: async (sessionManager) => { sessionManager.appendCustomEntry("pi-plan", state); },
+				withSession: async (replacementCtx) => replacementCtx.sendUserMessage(
+					buildExecutionPrompt(relativePlan, "new", withFlow),
+				),
+			});
+			if (result.cancelled) {
+				if (flow) flow.phase = "stopped";
+				ctx.ui.notify("New-session execution cancelled.", "info");
+			}
+		} finally {
+			executionHandoff = false;
+		}
+	}
+
+
+	function latestAssistantText(ctx: ExtensionContext): string {
+		const branch = ctx.sessionManager.getBranch() as any[];
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const item = branch[i];
+			if (!item || typeof item !== "object" || !("message" in item)) continue;
+			const message = item?.type === "message" ? item.message : undefined;
+			if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+			const text = message.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("");
+			if (text.trim()) return text;
+		}
+		return "";
+	}
+
+	async function requestFlowReview(ctx: ExtensionContext): Promise<{ ok: boolean; findings?: ReviewFinding[]; error?: string }> {
+		if (!flow || !lastPlanPath) return { ok: false, error: "Workflow state is incomplete" };
+		try { await access(lastPlanPath); } catch { return { ok: false, error: `Plan file not found: ${lastPlanPath}` }; }
+		const id = crypto.randomUUID();
+		let accepted = false;
+		let settled = false;
+		let resolve!: (value: { ok: boolean; findings?: ReviewFinding[]; error?: string }) => void;
+		const result = new Promise<{ ok: boolean; findings?: ReviewFinding[]; error?: string }>((done) => { resolve = done; });
+		flowController?.abort();
+		flowController = new AbortController();
+		const timer = setTimeout(() => {
+			if (!settled) {
+				settled = true;
+				flowController?.abort();
+				resolve({ ok: false, error: "Reviewer timed out" });
+			}
+		}, 180_000);
+
+		let untrackedDelta = "";
+		try {
+			type SnapshotEntry = { path: string; hash: string; content: string };
+			const currentRaw = await snapshotUntrackedFiles(ctx.cwd);
+			const before = new Map<string, SnapshotEntry>((flow.initialUntrackedSnapshot ? JSON.parse(flow.initialUntrackedSnapshot) as SnapshotEntry[] : []).map((entry) => [entry.path, entry]));
+			const current = new Map<string, SnapshotEntry>((currentRaw ? JSON.parse(currentRaw) as SnapshotEntry[] : []).map((entry) => [entry.path, entry]));
+			const paths = new Set([...before.keys(), ...current.keys()]);
+			const changes = [...paths].flatMap((file) => {
+				const oldEntry = before.get(file);
+				const newEntry = current.get(file);
+				if (oldEntry?.hash === newEntry?.hash) return [];
+				return [{
+					path: file,
+					before: oldEntry ? Buffer.from(oldEntry.content, "base64").toString("utf8") : null,
+					after: newEntry ? Buffer.from(newEntry.content, "base64").toString("utf8") : null,
+				}];
+			});
+			untrackedDelta = changes.length
+				? `\n\nUntracked content changes since start:\n${JSON.stringify(changes, null, 2)}`
+				: "\n\nUntracked files unchanged since start.";
+		} catch (error) {
+			clearTimeout(timer);
+			return { ok: false, error: `Current untracked file snapshot failed: ${String(error)}` };
+		}
+
+		pi.events.emit(REVIEW_EVENT, {
+			id,
+			cwd: ctx.cwd,
+			prompt: `Review implementation of ${relativeToCwd(ctx.cwd, lastPlanPath)} against Git baseline ${flow.baseline}. Initial dirty paths at workflow start (exclude unless changed by this implementation):\n${(flow.initialDirty || "(none)").slice(0, MAX_DIRTY_PATCH_BYTES)}\n\nInitial dirty patch (all tracked changes, staged + unstaged from git diff HEAD, 50 KB max):\n${flow.initialDirtyPatch || "(none)"}${untrackedDelta}\n\nCompare the current diff against the initial patch above. Report only regressions introduced by this implementation, not pre-existing dirt.`,
+			timeout: 180_000,
+			signal: flowController.signal,
+			accept: () => {
+				if (accepted) return false;
+				accepted = true;
+				return true;
+			},
+			respond: (response: any) => {
+				if (settled || response?.id !== id) return;
+				settled = true;
+				clearTimeout(timer);
+				resolve(response.ok ? { ok: true, findings: response.result?.findings ?? [] } : { ok: false, error: response.error });
+			},
+		});
+		if (!accepted) {
+			settled = true;
+			clearTimeout(timer);
+			return { ok: false, error: "pi-review is unavailable" };
+		}
+		return result;
+	}
+
+	async function advanceFlow(ctx: ExtensionContext): Promise<void> {
+		if (!flow || !["implement", "fix"].includes(flow.phase)) return;
+		const verification = latestAssistantText(ctx);
+		flow.verificationSummary = verification.slice(-2_000);
+		if (/\[verification:\s*fail\]/i.test(verification) || !/\[verification:\s*pass\]/i.test(verification)) {
+			flow.phase = "stopped";
+			persistState();
+			updateFooter(ctx);
+			ctx.ui.notify(/\[verification:\s*fail\]/i.test(verification)
+				? "Workflow stopped: verification failed."
+				: "Workflow stopped: verification evidence marker missing.", "error");
+			return;
+		}
+
+		flow.phase = "review";
+		flow.reviewPass++;
+		persistState();
+		updateFooter(ctx);
+		const review = await requestFlowReview(ctx);
+		// Recheck — the workflow may have been stopped while we awaited the review
+		if (!flow || flow.phase !== "review") return;
+		if (!review.ok) {
+			flow.phase = "stopped";
+			persistState();
+			updateFooter(ctx);
+			ctx.ui.notify(`Workflow stopped: ${review.error}`, "error");
+			return;
+		}
+
+		const blocking = (review.findings ?? []).filter((finding) => finding.blocking);
+		flow.blockingFindings = blocking;
+		if (blocking.length === 0) {
+			flow.phase = "done";
+			persistState();
+			updateFooter(ctx);
+			pi.sendMessage({
+				customType: "pi-flow-result",
+				content: `Workflow complete. Verification recorded; independent review clean on pass ${flow.reviewPass}.`,
+				display: true,
+				details: flow,
+			});
+			return;
+		}
+		if (flow.reviewPass >= MAX_REVIEW_PASSES) {
+			flow.phase = "stopped";
+			persistState();
+			updateFooter(ctx);
+			ctx.ui.notify(`Workflow stopped after ${MAX_REVIEW_PASSES} review passes.`, "error");
+			return;
+		}
+
+		flow.phase = "fix";
+		persistState();
+		updateFooter(ctx);
+		pi.sendUserMessage(`Independent review found blocking issues:\n${JSON.stringify(blocking, null, 2)}\n\nFix only these evidenced issues, rerun affected checks, and finish with [verification: pass] or [verification: fail].`, { deliverAs: "followUp" });
+	}
+
+
+	async function handlePlanApproval(args: string, ctx: ExtensionCommandContext): Promise<void> {
+		if (!lastPlanPath) {
+			ctx.ui.notify("No plan is ready for approval.", "warning");
+			return;
+		}
+		const relativePlan = relativeToCwd(ctx.cwd, lastPlanPath);
+		let mode = args.trim().toLowerCase();
+		if (!mode) {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("Usage: /plan-approve current|new|flow", "warning");
+				return;
+			}
+			const currentChoice = "Implement in current session";
+			const newChoice = `Clear context and implement · ${formatShortContextUsage(ctx)}`;
+			const flowChoice = "Implement, verify, and review · fresh context";
+			const stayChoice = "Stay in Plan mode";
+			const choice = await ctx.ui.select("Implement this plan?", [currentChoice, newChoice, flowChoice, stayChoice]);
+			if (!choice || choice === stayChoice) return;
+			mode = choice === currentChoice ? "current" : choice === newChoice ? "new" : "flow";
+		}
+		if (!(["current", "new", "flow"] as string[]).includes(mode)) {
+			ctx.ui.notify("Usage: /plan-approve current|new|flow", "warning");
+			return;
+		}
+		if (mode === "current") {
+			beginCurrentSessionExecution(ctx, relativePlan);
+			return;
+		}
+		leavePlanMode(ctx, true);
+		lastPlanStatus = "approved";
+		persistState();
+		await beginNewSessionExecution(ctx, mode === "flow");
 	}
 
 	// ── Registration ────────────────────────────────────────────
@@ -704,17 +990,37 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			handlePlanCommand(args, ctx),
 	});
 
+	pi.registerCommand("plan-approve", {
+		description: "Approve the current plan for current, fresh, or reviewed execution",
+		handler: async (args, ctx) => handlePlanApproval(args, ctx),
+	});
+
 	pi.registerCommand(PLAN_EXECUTE_COMMAND, {
-		description: "Internal pi-plan execution bridge",
+		description: "Backward-compatible fresh plan execution command",
 		handler: async (args, ctx) => {
-			if (args.trim() !== "new") {
-				ctx.ui.notify(
-					`Usage: /${PLAN_EXECUTE_COMMAND} new`,
-					"warning",
-				);
+			const mode = args.trim();
+			if (mode !== "new" && mode !== "flow") {
+				ctx.ui.notify(`Usage: /${PLAN_EXECUTE_COMMAND} new|flow`, "warning");
 				return;
 			}
-			await beginNewSessionExecution(ctx);
+			await beginNewSessionExecution(ctx, mode === "flow");
+		},
+	});
+
+	pi.registerCommand("flow", {
+		description: "Show or stop the active plan workflow",
+		handler: async (args, ctx) => {
+			const command = args.trim() || "status";
+			if (command === "stop" && flow && !["done", "stopped"].includes(flow.phase)) {
+				flowController?.abort();
+				flow.phase = "stopped";
+				persistState();
+				updateFooter(ctx);
+				ctx.ui.notify("Workflow stopped.", "info");
+				return;
+			}
+			if (command !== "status") return ctx.ui.notify("Usage: /flow status|stop", "warning");
+			ctx.ui.notify(flow ? `flow: ${flow.phase} · review ${flow.reviewPass}/${MAX_REVIEW_PASSES}` : "No workflow state.", "info");
 		},
 	});
 
@@ -780,7 +1086,17 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {
+		const previousToolsBeforePlan = toolsBeforePlan;
 		restoreStateFromBranch(ctx);
+		if (planModeEnabled) {
+			toolsBeforePlan ??= previousToolsBeforePlan ?? pi.getActiveTools();
+			enablePlanTools();
+			applyThinking(planThinking);
+		} else {
+			if (previousToolsBeforePlan) pi.setActiveTools(previousToolsBeforePlan);
+			toolsBeforePlan = undefined;
+			applyThinking(normalThinking);
+		}
 		updateFooter(ctx);
 		persistState();
 	});
@@ -858,13 +1174,21 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	/**
-	 * One-shot approval prompt: fires only once after a successful
-	 * write_plan, on agent_settled (not agent_end). Fresh-session
-	 * execution is queued as a command handler to avoid using
-	 * ExtensionCommandContext APIs from an event handler.
+		/**
+	 * Session replacement APIs are command-only. Extension-originated
+	 * sendUserMessage() deliberately skips command routing, so the TUI must
+	 * submit /plan-approve before showing the approval picker.
+	 *
+	 * Instead of showing the picker here (ctx is ExtensionContext — no
+	 * newSession()), prefill /plan-approve so the command handler runs with
+	 * the proper ExtensionCommandContext that has newSession().
 	 */
+	// @ts-expect-error — "agent_settled" dispatched at runtime, missing from SDK 0.80.2 event map
 	pi.on("agent_settled", async (_event, ctx) => {
+		if (flow && !planModeEnabled && ["implement", "fix"].includes(flow.phase)) {
+			await advanceFlow(ctx);
+			return;
+		}
 		if (
 			!planModeEnabled ||
 			!planReadyForReview ||
@@ -875,31 +1199,12 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 		planReadyForReview = false;
 		persistState();
-		const relativePlan = relativeToCwd(
-			ctx.cwd,
-			lastPlanPath,
+		// ponytail: prefill command — command handler (ExtensionCommandContext)
+		// owns the picker and newSession() call.
+		ctx.ui.setEditorText("/plan-approve");
+		ctx.ui.notify(
+			"Plan ready for approval. Press Enter to run /plan-approve.",
+			"info",
 		);
-		const currentSessionChoice =
-			"Yes, implement this plan          Switch to Default and start coding.";
-		const newSessionChoice = `Yes, clear context and implement  Fresh thread. ${formatShortContextUsage(ctx)}`;
-		const choice = await ctx.ui.select(
-			"Implement this plan?",
-			[
-				currentSessionChoice,
-				newSessionChoice,
-				"No, stay in Plan mode             Continue planning with the model.",
-			],
-		);
-
-		if (choice === currentSessionChoice) {
-			beginCurrentSessionExecution(ctx, relativePlan);
-		} else if (choice === newSessionChoice) {
-			// ponytail: queue command handler instead of calling command-only APIs directly
-			leavePlanMode(ctx, true);
-			lastPlanStatus = "approved";
-			persistState();
-			pi.sendUserMessage(`/${PLAN_EXECUTE_COMMAND} new`, { deliverAs: "followUp" });
-		}
-		// "Stay in Plan mode" — do nothing, prompt was cleared
 	});
 }

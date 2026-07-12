@@ -13,9 +13,11 @@ Each package lives in its own directory and can be installed independently. This
 | [`@bacnh85/pi-serena`](./pi-serena) | 0.8.1 | Serena semantic code navigation, references, refactors, and diagnostics through a persistent worker. |
 | [`@bacnh85/pi-web`](./pi-web) | 0.4.5 | Web search, page extraction, site mapping/crawling, screenshots, and PDFs. |
 | [`@bacnh85/pi-munin`](./pi-munin) | 0.4.1 | Munin long-term memory tools and skill integration. |
-| [`@bacnh85/pi-plan`](./pi-plan) | 0.4.1 | Read-only plan mode with Markdown plan files and approval flow. |
+| [`@bacnh85/pi-plan`](./pi-plan) | 0.5.0 | Read-only planning plus fresh implement → verify → independent review workflow. |
+| [`@bacnh85/pi-subagent`](./pi-subagent) | 0.5.0 | Isolated in-process subagents, parallel/chain delegation, and inspectable threads. |
+| [`@bacnh85/pi-review`](./pi-review) | 0.2.0 | Isolated read-only review with same-session fallback. |
 | [`@bacnh85/pi-fff`](./pi-fff) | 0.6.0 | FFF-powered fuzzy file and content search for Pi. |
-| [`@bacnh85/pi-rtk`](./pi-rtk) | 0.1.5 | Bash command rewriting through RTK for token savings. |
+| [`@bacnh85/pi-rtk`](./pi-rtk) | 0.1.8 | Bash command rewriting through RTK for token savings. |
 | [`@bacnh85/pi-sub`](./pi-sub) | 0.1.10 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 
 ## Install
@@ -28,6 +30,8 @@ pi install npm:@bacnh85/pi-web
 pi install npm:@bacnh85/pi-serena
 pi install npm:@bacnh85/pi-munin
 pi install npm:@bacnh85/pi-plan
+pi install npm:@bacnh85/pi-subagent
+pi install npm:@bacnh85/pi-review
 pi install npm:@bacnh85/pi-ponytail
 pi install npm:@bacnh85/pi-fff
 pi install npm:@bacnh85/pi-rtk
@@ -59,6 +63,8 @@ npm test --prefix pi-serena
 npm test --prefix pi-munin
 npm test --prefix pi-notebooklm
 npm test --prefix pi-plan
+npm test --prefix pi-subagent
+npm test --prefix pi-review
 npm test --prefix pi-ponytail
 npm test --prefix pi-fff
 npm test --prefix pi-obsidian
@@ -83,6 +89,8 @@ pi-extensions/
   pi-web/
   pi-munin/
   pi-plan/
+  pi-subagent/
+  pi-review/
   pi-fff/
   pi-notebooklm/
   pi-obsidian/

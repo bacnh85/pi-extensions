@@ -16,6 +16,7 @@ import extension, {
 	superPowerModeEnabled,
 	superPowerPromptContent,
 	SUPER_POWER_BASE_PROMPT,
+	suggestBestSerenaCommand,
 } from "../../index";
 import {
 	dedicatedToolForShellCommand,
@@ -39,6 +40,7 @@ function createFakePi(activeTools: string[]) {
 	const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
 	const messages: Array<{ message: unknown; options: unknown }> = [];
 	const commands: Record<string, any> = {};
+	const registeredTools: Record<string, any> = {};
 	const pi = {
 		on(event: string, handler: (event: any, ctx: any) => any) {
 			(handlers[event] ??= []).push(handler);
@@ -52,10 +54,11 @@ function createFakePi(activeTools: string[]) {
 		registerCommand(name: string, def: any) {
 			commands[name] = def;
 		},
+		registerTool(def: any) { registeredTools[def.name] = def; },
 	} as any;
 
 	extension(pi);
-	return { handlers, messages, commands };
+	return { handlers, messages, commands, registeredTools };
 }
 
 describe("OpenCode Go DeepSeek V4 model detection", () => {
@@ -283,7 +286,7 @@ describe("dedicated tool miss detection", () => {
 		assert.equal(dedicatedToolForShellCommand("head -n 5 README.md", active), "read");
 		assert.equal(dedicatedToolForShellCommand("head README.md", active), "read");
 		assert.equal(dedicatedToolForShellCommand("tail -20 README.md", active), "read");
-		assert.equal(dedicatedToolForShellCommand("sed -n '1,20p' README.md", active), "read");
+		assert.equal(dedicatedToolForShellCommand("sed -n '1,20p' README.md", active), undefined, "sed -n is a real command");
 		assert.equal(dedicatedToolForShellCommand("echo 'hello' > /tmp/test.md", active), "write");
 		assert.equal(dedicatedToolForShellCommand("printf 'content' > /tmp/file", active), "write");
 	});
@@ -588,8 +591,10 @@ describe("Super Power Mode", () => {
 	});
 
 	it("does not inject super power prompt when disabled", () => {
-		const previous = process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+		const prevSp = process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+		const prevSg = process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE;
 		process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = "0";
+		delete process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE;
 		try {
 			const { handlers } = createFakePi(["read", "bash"]);
 			const beforeAgentStart = handlers.before_agent_start[0];
@@ -598,14 +603,18 @@ describe("Super Power Mode", () => {
 			assert.ok(result, "should return guidance");
 			assert.doesNotMatch(result.systemPrompt, /DEEPSEEK-V4-FLASH-SUPERPOWER/);
 		} finally {
-			if (previous === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
-			else process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = previous;
+			if (prevSp === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+			else process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = prevSp;
+			if (prevSg === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE;
+			else process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE = prevSg;
 		}
 	});
 
 	it("does not inject super power prompt when explicitly disabled with off", () => {
-		const previous = process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+		const prevSp = process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+		const prevSg = process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE;
 		process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = "off";
+		delete process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE;
 		try {
 			const { handlers } = createFakePi(["read", "bash"]);
 			const beforeAgentStart = handlers.before_agent_start[0];
@@ -614,8 +623,10 @@ describe("Super Power Mode", () => {
 			assert.ok(result, "should return guidance");
 			assert.doesNotMatch(result.systemPrompt, /DEEPSEEK-V4-FLASH-SUPERPOWER/);
 		} finally {
-			if (previous === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
-			else process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = previous;
+			if (prevSp === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+			else process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = prevSp;
+			if (prevSg === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE;
+			else process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE = prevSg;
 		}
 	});
 
@@ -635,8 +646,10 @@ describe("Super Power Mode", () => {
 	});
 
 	it("super power prompt appears at the top, followed by guidance, then system prompt", () => {
-		const previous = process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+		const prevSp = process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+		const prevSg = process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE;
 		process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = "1";
+		delete process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE;
 		try {
 			const { handlers } = createFakePi(["read", "bash", "serena_find_symbol"]);
 			const beforeAgentStart = handlers.before_agent_start[0];
@@ -653,9 +666,79 @@ describe("Super Power Mode", () => {
 			assert.ok(spIdx < guidanceIdx, "super power should come before guidance");
 			assert.ok(guidanceIdx < baseIdx, "guidance should come before base prompt");
 		} finally {
-			if (previous === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
-			else process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = previous;
+			if (prevSp === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+			else process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = prevSp;
+			if (prevSg === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE;
+			else process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE = prevSg;
 		}
+	});
+
+	describe("tool cwd binding", () => {
+		it("uses ctx.cwd at execution time, not process.cwd()", async () => {
+			const { mkdtempSync, writeFileSync } = await import("node:fs");
+			const path = await import("node:path");
+			const os = await import("node:os");
+			const cwdA = mkdtempSync(path.join(os.tmpdir(), "pi-ds-cwd-a-"));
+			const cwdB = mkdtempSync(path.join(os.tmpdir(), "pi-ds-cwd-b-"));
+			writeFileSync(path.join(cwdA, "hello.txt"), "content-a");
+			writeFileSync(path.join(cwdB, "hello.txt"), "content-b");
+
+			const { registeredTools } = createFakePi(["read", "bash", "edit", "write", "grep", "find", "ls"]);
+			const readTool = registeredTools.read;
+			assert.ok(readTool, "read tool registered");
+
+			// Execute with ctx pointing to cwdA
+			const resultA = await readTool.execute("c1", { path: "hello.txt" }, undefined, undefined, { cwd: cwdA });
+			assert.ok(resultA?.content, "content returned");
+			const textA = resultA.content.filter((p: any) => p.type === "text").map((p: any) => p.text).join("");
+			assert.ok(textA.includes("content-a"), "read from cwdA");
+
+			// Execute with ctx pointing to cwdB
+			const resultB = await readTool.execute("c2", { path: "hello.txt" }, undefined, undefined, { cwd: cwdB });
+			const textB = resultB.content.filter((p: any) => p.type === "text").map((p: any) => p.text).join("");
+			assert.ok(textB.includes("content-b"), "read from cwdB");
+		});
+	});
+
+	describe("suggestBestSerenaCommand", () => {
+		const tools = ["serena_get_symbols_overview", "serena_find_symbol", "serena_search_for_pattern"];
+
+		it("extracts symbol from grep -rn command", () => {
+			const result = suggestBestSerenaCommand({ command: "grep -rn \"wrapToolDefinition\" pi-deepseek-tools/" }, tools);
+			assert.ok(result.includes("serena_find_symbol"), "should suggest serena_find_symbol for identifier search");
+			assert.ok(result.includes("wrapToolDefinition"), "should include the symbol name");
+		});
+
+		it("extracts symbol from rg command", () => {
+			const result = suggestBestSerenaCommand({ command: "rg 'DESTRUCTIVE_BASH_PATTERNS'" }, tools);
+			assert.ok(result.includes("serena_find_symbol"));
+			assert.ok(result.includes("DESTRUCTIVE_BASH_PATTERNS"));
+		});
+
+		it("extracts class search", () => {
+			const result = suggestBestSerenaCommand({ command: "grep -rn 'class UserService' src/" }, tools);
+			assert.ok(result.includes("serena_find_symbol"));
+		});
+
+		it("falls back to serena_get_symbols_overview for unrecognized patterns", () => {
+			const result = suggestBestSerenaCommand({ command: "find src -name '*.ts' -exec grep 'something' {} \\;" }, tools);
+			assert.ok(result.includes("serena_get_symbols_overview") || result.includes("serena_search_for_pattern"));
+		});
+
+		it("falls back for non-grep commands", () => {
+			const result = suggestBestSerenaCommand({ command: "ls pi-deepseek-tools" }, tools);
+			assert.ok(result.includes("serena_get_symbols_overview"));
+		});
+
+		it("handles missing command field", () => {
+			const result = suggestBestSerenaCommand({}, tools);
+			assert.ok(result.includes("serena_"), "should suggest some serena tool");
+		});
+
+		it("handles non-object input", () => {
+			const result = suggestBestSerenaCommand("not an object", tools);
+			assert.ok(result.includes("serena_"), "should suggest some serena tool");
+		});
 	});
 });
 

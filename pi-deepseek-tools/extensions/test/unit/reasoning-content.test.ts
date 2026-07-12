@@ -246,9 +246,9 @@ describe("cleanLeakedContent", () => {
 		assert.equal(result, "I need to find the file. Let me read it.");
 	});
 
-	it("strips leaked tool calls without backticks", () => {
+	it("does not strip non-backtick patterns (would cause false positives in bash output)", () => {
 		const result = cleanLeakedContent('Use find("*.ts", "src/") to locate.');
-		assert.equal(result, "Use to locate.");
+		assert.equal(result, 'Use find("*.ts", "src/") to locate.');
 	});
 
 	it("does not strip non-Pi-tool function calls", () => {

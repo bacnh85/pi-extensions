@@ -21,7 +21,11 @@ jobs:
           - package: pi-munin
             test-command: npm ci && npm test
           - package: pi-plan
-            test-command: npm ci && npm test
+            test-command: npm ci && npm test && npm run typecheck
+          - package: pi-subagent
+            test-command: npm ci && npm test && npm run typecheck
+          - package: pi-review
+            test-command: npm ci && npm test && npm run typecheck
           - package: pi-fff
             test-command: npm ci && npm test
           - package: pi-notebooklm

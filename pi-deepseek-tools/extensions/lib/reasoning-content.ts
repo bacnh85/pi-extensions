@@ -117,7 +117,7 @@ const LEAKED_THINKING_HEADER = /^(Reasoning|Thinking|Chain of Thought)\s*:[^\n]*
  * The trailing \\s* consumes whitespace after the call so the gap left by removal
  * doesn't leave a stray space (e.g., `` `grep('foo')` found`` → "found", not " found").
  */
-const LEAKED_TOOL_CALL_RE = /`?([a-z_]+)\(([^)]*)\)`?\s*/g;
+const LEAKED_TOOL_CALL_RE = /`([a-z_]+)\(([^)]*)\)`\s*/g;
 
 const PI_TOOL_NAMES = new Set([
 	"read", "write", "edit", "bash", "grep", "find", "ls",

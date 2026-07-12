@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import {
 	createBashToolDefinition,
 	createEditToolDefinition,
@@ -36,6 +38,8 @@ import {
 	SUPER_POWER_BASE_PROMPT,
 	SERENA_CODE_TOOLS,
 	bashReadCommandPath,
+	suggestBestSerenaCommand,
+	looksLikeCodePath,
 	type ErrorInfo,
 	type ErrorCategory,
 } from "./lib/deepseek-tools";
@@ -68,6 +72,8 @@ export {
 	SUPER_POWER_BASE_PROMPT,
 	SERENA_CODE_TOOLS,
 	bashReadCommandPath,
+	suggestBestSerenaCommand,
+	looksLikeCodePath,
 	type ErrorInfo,
 	type ErrorCategory,
 } from "./lib/deepseek-tools";
@@ -92,7 +98,7 @@ function appendReadNote(result: any, note: unknown) {
 	};
 }
 
-function wrapToolDefinition(base: any, shouldRepair: () => boolean, onRepair: (toolName: string, repairs: readonly RepairKind[]) => void): any {
+function wrapToolDefinition(base: any, factory: (cwd: string) => any, shouldRepair: () => boolean, onRepair: (toolName: string, repairs: readonly RepairKind[]) => void): any {
 	return {
 		...base,
 		prepareArguments(args: unknown) {
@@ -107,9 +113,13 @@ function wrapToolDefinition(base: any, shouldRepair: () => boolean, onRepair: (t
 			return base.name === "read" ? addReadDefaults(prepared) : prepared;
 		},
 		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
+			// ponytail: resolve cwd from execution context — SDK sessions and
+			// session switches may supply a different ctx.cwd than process.cwd().
+			const cwd = ctx?.cwd || process.cwd();
+			const freshDef = factory(cwd);
 			const readNote = base.name === "read" && isRecord(params) ? params.__deepseekReadNote : undefined;
 			if (isRecord(params)) delete params.__deepseekReadNote;
-			const result = await base.execute(toolCallId, params, signal, onUpdate, ctx);
+			const result = await freshDef.execute(toolCallId, params, signal, onUpdate, ctx);
 			return base.name === "read" ? appendReadNote(result, readNote) : result;
 		},
 	};
@@ -137,6 +147,31 @@ export default function (pi: ExtensionAPI) {
 	// ── Config helpers: imported from deepseek-tools.ts ────
 	// autoBlockAfterReminders(), blockDangerousEnabled(), thinkingBudget()
 	// are now exported from ./lib/deepseek-tools.ts and imported above.
+
+	// ── Register wrapped built-in tools at load time (not in session_start)
+	// ponytail: avoids potential registry rebuild race during session_start
+	// that could drop extension-registered tools like serena_*.
+	// Each tool factory takes (cwd) and creates a tool definition bound to that
+	// directory. We store the factory and resolve cwd from ctx at execution time
+	// so SDK sessions and session switches get the correct directory.
+	const toolFactories: Record<string, (cwd: string) => any> = {
+		read: createReadToolDefinition,
+		write: createWriteToolDefinition,
+		edit: createEditToolDefinition,
+		grep: createGrepToolDefinition,
+		find: createFindToolDefinition,
+		ls: createLsToolDefinition,
+		bash: createBashToolDefinition,
+	};
+	// Create template tools just for metadata (parameters, name, description).
+	// The execute method creates a fresh tool from the factory with ctx.cwd.
+	for (const [name, factory] of Object.entries(toolFactories)) {
+		const template = factory(process.cwd());
+		pi.registerTool(wrapToolDefinition(template, factory, () => repairThisTurn, (toolName) => {
+			repairCounts.set(toolName, (repairCounts.get(toolName) ?? 0) + 1);
+			debugLog("repair:", toolName, repairCounts.get(toolName), "total repairs");
+		}));
+	}
 
 	// ── /deepseek-tools-status ──────────────────────────────
 	pi.registerCommand("deepseek-tools-status", {
@@ -186,25 +221,17 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// ── session_start: register wrapped tools + serena_read_file ──
+	// ── session_start: diagnostic logging + eager startup ──
 	pi.on("session_start", (_event, ctx) => {
 		debugLog("session_start:", ctx.model?.provider, ctx.model?.id);
-		const builtins = [
-			createReadToolDefinition(ctx.cwd),
-			createWriteToolDefinition(ctx.cwd),
-			createEditToolDefinition(ctx.cwd),
-			createGrepToolDefinition(ctx.cwd),
-			createFindToolDefinition(ctx.cwd),
-			createLsToolDefinition(ctx.cwd),
-			createBashToolDefinition(ctx.cwd),
-		];
-		for (const tool of builtins) {
-			pi.registerTool(wrapToolDefinition(tool, () => repairThisTurn, (toolName) => {
-				repairCounts.set(toolName, (repairCounts.get(toolName) ?? 0) + 1);
-				debugLog("repair:", toolName, repairCounts.get(toolName), "total repairs");
-			}));
-		}
 
+		// ── Diagnostic: snapshot active tools during session_start ──
+		const toolsNow = pi.getActiveTools();
+		const serenaNow = toolsNow.filter((t: string) => t.startsWith("serena_")).length;
+		debugLog("session_start tools:", toolsNow.length, "total,", serenaNow, "serena");
+		if (serenaNow === 0 && toolsNow.length > 10) {
+			logWarn("SERENA TOOLS MISSING", "session_start has", toolsNow.length, "tools but 0 serena tools");
+		}
 	});
 
 	// ── before_provider_request: clean payload, inject thinking budget ───
@@ -304,6 +331,15 @@ export default function (pi: ExtensionAPI) {
 
 			// Guidance skipped: no relevant tools
 			debugLog("guidance: skipped (no relevant tools)");
+			// ── Diagnostic: warn when serena tools are missing from selectedTools ──
+			const runtimeTools = pi.getActiveTools();
+			const runtimeSerena = runtimeTools.filter((t: string) => t.startsWith("serena_")).length;
+			const selectedSerena = activeTools.filter((t: string) => t.startsWith("serena_")).length;
+			if (runtimeSerena > 0 && selectedSerena === 0) {
+				logWarn("SERENA TOOLS NOT IN SELECTED",
+					"runtime has", runtimeSerena, "serena tools but selectedTools has", selectedSerena,
+					"— model won't see serena tools. Runtime:", runtimeTools.length, "total, Selected:", activeTools.length, "total");
+			}
 			if (prefixParts.length > 0) {
 				return { systemPrompt: `${prefixParts.join("\n\n---\n\n")}\n\n---\n\n${systemPrompt}` };
 			}
@@ -347,6 +383,26 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
+		// ── Block read on guessed code-file paths that don't exist ──
+		// ponytail: one stat per code-file read — saved turn when path is guessed
+		if (event.toolName === "read" && isRecord(event.input) && ctx.cwd) {
+			const filePath = typeof event.input.path === "string" ? event.input.path.trim() : "";
+			if (filePath && looksLikeCodePath(filePath)) {
+				const resolved = resolvePath(ctx.cwd, filePath);
+				if (!existsSync(resolved)) {
+					const filename = filePath.split("/").pop() ?? filePath;
+					// ponytail: relative dir for readable block message
+					const relDir = resolvePath(filePath, "..");
+					const dirPart = relDir !== "." ? ` under ${relDir}/` : "";
+					debugLog("blocked: read guessed path", filePath);
+					return {
+						block: true,
+						reason: `Path not found: "${filePath}". Never guess subdirectories from naming conventions. Discover first: use find to locate "${filename}"${dirPart}, then read the exact path.`,
+					};
+				}
+			}
+		}
+
 		const activeTools = pi.getActiveTools();
 		const serenaActive = activeTools.some((tool) => tool.startsWith("serena_"));
 		const semanticMiss = serenaActive && isSemanticMissToolCall(event.toolName, event.input);
@@ -359,11 +415,13 @@ export default function (pi: ExtensionAPI) {
 
 		// ── Semantic miss (bash code search without Serena) → always block ──
 		if (semanticMiss) {
-			debugLog("blocked: bash code search without Serena");
-			// ponytail: suggest ffgrep (grep replacement) alongside serena when available
-			const pathArg = "the file";
-			const grepAlt = activeTools.includes("ffgrep") ? " or ffgrep" : "";
-			const blockReason = `${reason} Blocked: bash is for executing commands. Use ${SERENA_CODE_TOOLS[0]}(${pathArg})${grepAlt} to search code.`;
+			const isGrep = event.toolName === "grep" || event.toolName === "ffgrep";
+			debugLog("blocked:", isGrep ? "grep code search" : "bash code search", "without Serena");
+			// ponytail: suggest the best serena tool for the specific command/pattern
+			const suggestedSerenaCmd = suggestBestSerenaCommand(event.input, activeTools);
+			const blockReason = isGrep
+				? `${reason} Blocked: ${event.toolName} is for text search in non-code files. ${suggestedSerenaCmd} for code-symbol searches.`
+				: `${reason} Blocked: bash is for executing commands. ${suggestedSerenaCmd}${activeTools.includes("ffgrep") ? " or ffgrep" : ""} to search code.`;
 			return { block: true, reason: blockReason };
 		}
 
@@ -389,10 +447,14 @@ export default function (pi: ExtensionAPI) {
 		// Once-per-turn steer reminder
 		if (remindedThisTurn) return;
 		remindedThisTurn = true;
+		const activeSerena = pi.getActiveTools().filter((t: string) => t.startsWith("serena_"));
+		const serenaHint = activeSerena.length > 0
+			? ` Try ${activeSerena[0]} instead — it understands symbols and references, not just text patterns.`
+			: "";
 		pi.sendMessage(
 			{
 				customType: "deepseek-v4-tool-selection-reminder",
-				content: `${reason} Use bash only for real shell commands such as tests, builds, git, package-manager, or process execution.`,
+				content: `${reason}${serenaHint} Use bash only for real shell commands such as tests, builds, git, package-manager, or process execution.`,
 				display: true,
 			},
 			{ deliverAs: "steer" },

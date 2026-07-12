@@ -7,16 +7,18 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| **pi-deepseek-tools** | 0.12.0 | DeepSeek V4 tool calling fixes, argument repair, reasoning cleanup, thinking level compatibility, Super Power Mode. |
+| **pi-deepseek-tools** | 0.12.4 | DeepSeek V4 tool calling fixes, argument repair, reasoning cleanup, thinking level compatibility, Super Power Mode. |
 | **pi-notebooklm** | 0.1.0 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | **pi-ponytail** | 0.1.4 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
 | **pi-serena** | 0.8.3 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
 | **pi-web** | 0.4.6 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
 | **pi-munin** | 0.4.3 | Munin long-term memory as native Pi tools (search, store, recall, capture, summarize, share, export, E2EE). |
-| **pi-plan** | 0.4.2 | Plan mode with read-only tool gating, Markdown plan files, and approval flow. |
+| **pi-plan** | 0.5.0 | Plan mode with read-only gating and plan → implement → verify → review workflow. |
+| **pi-subagent** | 0.5.0 | Isolated in-process subagents with parallel/chain modes and inspectable threads. |
+| **pi-review** | 0.2.0 | Isolated read-only code review with corrected same-session fallback. |
 | **pi-fff** | 0.7.2 | FFF-powered fuzzy file and content search for Pi. |
 | **pi-obsidian** | 0.6.0 | Obsidian vault integration for Pi. |
-| **pi-rtk** | 0.1.5 | Bash command token rewriting through RTK. |
+| **pi-rtk** | 0.1.8 | Bash command token rewriting through RTK. |
 | **pi-sub** | 0.1.10 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | **pi-windows-tools** | 0.2.0 | Windows-specific tools for Pi. |
 
@@ -29,7 +31,9 @@ pi-extensions/
   pi-serena/            # TS extension + worker + Python bridge
   pi-web/               # TS extension + 9 lib modules + skill
   pi-munin/             # TS extension + lib/helpers + skill + references
-  pi-plan/              # TS extension for plan mode + tool gating
+  pi-plan/              # TS extension for plan mode + workflow integration
+  pi-subagent/          # TS extension for isolated SDK subagents
+  pi-review/            # TS extension for isolated/local code review
   pi-fff/               # TS extension for FFF-powered find/grep/autocomplete
   pi-rtk/               # TS extension for RTK bash command rewriting
   pi-sub/               # TS extension for subscription usage footer
@@ -96,6 +100,8 @@ cd pi-<name> && npm test
 # pi-web:        cd extensions && mocha                (mocha + tsx, ESM)
 # pi-munin:      npx mocha                             (mocha + tsx)
 # pi-plan:       cd extensions && mocha                (mocha + tsx)
+# pi-subagent:   cd extensions && mocha                (mocha + tsx)
+# pi-review:     cd extensions && mocha                (mocha + tsx)
 # pi-rtk:        npm pack --dry-run                    (packaging check)
 # pi-sub:        npm pack --dry-run                    (packaging check)
 ```
@@ -108,7 +114,7 @@ spec). pi-ponytail uses `node --test` with no mocha or tsx dependency at all.
 
 Two GitHub Actions workflows in `.github/workflows/`:
 
-- **test.yml** — runs on push to main and PRs. Matrix across all 12 packages.
+- **test.yml** — runs on push to main and PRs. Matrix across all 14 packages.
   pi-ponytail uses `node --test` directly, pi-rtk and pi-sub use `npm pack --dry-run`, others use `npm ci && npm test`.
 - **publish.yml** — runs on push to main. Checks each package's `package.json`
   version against the npm registry and publishes if different.

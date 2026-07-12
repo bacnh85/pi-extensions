@@ -1,7 +1,7 @@
 {
   "name": "@bacnh85/pi-plan",
-  "version": "0.4.6",
-  "description": "Pi extension that adds a plan mode with workspace markdown plans and thinking-level presets.",
+  "version": "0.5.0",
+  "description": "Plan mode with read-only gating and plan → implement → verify → review workflow for Pi.",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
@@ -33,16 +33,19 @@
     ]
   },
   "scripts": {
-    "test": "cd extensions && npx mocha"
+    "test": "cd extensions && npx mocha",
+    "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.43",
     "chai": "^4.5.0",
     "mocha": "^10.8.2",
-    "tsx": "^4.22.4"
+    "tsx": "^4.22.4",
+    "typescript": "^5.9.3"
   }
 }
