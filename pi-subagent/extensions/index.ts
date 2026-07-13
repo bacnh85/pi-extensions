@@ -44,6 +44,7 @@ import {
 	validateAgentTools,
 	truncateParallelOutput,
 	validateExecutionRequest,
+	READ_ONLY_TOOLS,
 	MAX_CONCURRENCY,
 	MAX_PARALLEL_TASKS,
 	MAX_CHAIN_LENGTH,
@@ -449,7 +450,12 @@ export default function (pi: ExtensionAPI) {
 			// Helper: validate and normalise tools for an agent.
 			function resolveChildTools(agentTools: string[] | undefined, sandbox?: string, readOnly?: boolean): string[] {
 				const defaultTools = ["read", "bash", "edit", "write", "grep", "find", "ls"];
-				const rawTools = agentTools ?? defaultTools;
+				let rawTools = agentTools ?? defaultTools;
+				// sandbox overrides tools: silently strip mutation tools, not an error
+				if (sandbox === "read-only") {
+					rawTools = rawTools.filter(t => READ_ONLY_TOOLS.includes(t));
+					if (rawTools.length === 0) rawTools = [...READ_ONLY_TOOLS];
+				}
 				const effectiveReadOnly = readOnly || sandbox === "read-only";
 				const result = validateAgentTools({ tools: rawTools, readOnly: effectiveReadOnly });
 				if (result.errors.length > 0) {
