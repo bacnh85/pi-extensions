@@ -359,6 +359,7 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 			"  backlinks, outline, links, daily:*,",
 			"  vault, files, history, diff, templates, eval, bookmarks, plugins,",
 			"  frontmatter:wrap.",
+			"move: `destination=<path>` accepted as alias for `to=<path>`.",
 			"Search with replace: `search query=text replace=new regex=true preview=true`",
 			"Files by missing property: `files missing-property=created`",
 			"Property rename: `property:rename from=date to=created`",
@@ -453,6 +454,20 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 				const regex = flags.regex === "true" || flags.regex === "1";
 				const preview = flags.preview === "true" || flags.preview === "1";
 				return searchReplace(flags.query || "", flags.replace, { regex, preview }, v, timeoutMs);
+			}
+
+			// --- search with empty query → match everything ---
+			if (cmd === "search" && !flags.query) {
+				const folder = flags.path || flags.folder || "";
+				if (folder) {
+					const sArgs: string[] = [];
+					if (v) sArgs.push(`vault=${v}`);
+					sArgs.push("files", `folder=${folder}`, "format=json");
+					const r = execObsidian(sArgs, false, timeoutMs);
+					if (r.parsed && typeof r.parsed !== "string") return formatObsidianOutput(raw, r.parsed);
+					return r.stdout.trim() || "No files found.";
+				}
+				return listFilesRecursive("", v, timeoutMs);
 			}
 
 			// --- frontmatter:wrap ---
@@ -562,6 +577,26 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 			for (let i = 1; i < args.length; i++) {
 				if (args[i].startsWith("file=") && args[0] === "delete") {
 					args[i] = "path=" + args[i].slice(5);
+				}
+			}
+			// B9: normalize destination= to to= for move (backward-compatible alias),
+			//     and infer file extension on to= from source filename when missing.
+			//     Obsidian CLI treats to= without extension as a folder (e.g. Dest/Src.md
+			//     instead of Dest.md), so we append the source's extension or default .md.
+			if (cmd === "move") {
+				const di = args.findIndex(a => a.startsWith("destination="));
+				if (di >= 0) args[di] = "to=" + args[di].slice(12);
+				const ti = args.findIndex(a => a.startsWith("to="));
+				const fi = args.findIndex(a => a.startsWith("file=") || a.startsWith("path="));
+				if (ti >= 0 && fi >= 0) {
+					const toVal = args[ti].slice(3);
+					const srcVal = args[fi].slice(5);
+					const toLast = toVal.split("/").pop() || "";
+					const srcLast = srcVal.split("/").pop() || "";
+					if (toLast && !toLast.includes(".")) {
+						const ext = srcLast.includes(".") ? srcLast.slice(srcLast.lastIndexOf(".")) : ".md";
+						args[ti] = "to=" + toVal + ext;
+					}
 				}
 			}
 			if (v) args.unshift(`vault=${v}`);
