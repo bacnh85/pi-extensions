@@ -159,7 +159,7 @@ export default function (pi: ExtensionAPI) {
 	// Inject available agent catalog into system prompt for semantic auto-delegation
 	pi.on("before_agent_start", async (event) => {
 		const ctx = currentCtx;
-		const discovery = discoverAgents(event.cwd ?? ctx?.cwd ?? process.cwd(), "both", bundledAgentsDir);
+		const discovery = discoverAgents(ctx?.cwd ?? process.cwd(), "both", bundledAgentsDir);
 		const catalog = discovery.agents
 			.map((a) => {
 				const modelInfo = a.model ? ` (model: ${a.model})` : " (inherits parent)";
@@ -288,6 +288,15 @@ export default function (pi: ExtensionAPI) {
 			});
 		},
 	});
+
+	/** Look up agent color by name for TUI rendering. */
+	// ponytail: return any for ThemeColor compatibility with Pi TUI
+	const resolveAgentColor = (name: string): any => {
+		const ctx = currentCtx;
+		if (!ctx) return "accent";
+		const found = discoverAgents(ctx.cwd, "both", bundledAgentsDir).agents.find(a => a.name === name);
+		return found?.color ?? "accent";
+	};
 
 	pi.registerTool({
 		name: "subagent",
@@ -438,10 +447,11 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Helper: validate and normalise tools for an agent.
-			function resolveChildTools(agentTools: string[] | undefined, readOnly?: boolean): string[] {
+			function resolveChildTools(agentTools: string[] | undefined, sandbox?: string, readOnly?: boolean): string[] {
 				const defaultTools = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 				const rawTools = agentTools ?? defaultTools;
-				const result = validateAgentTools({ tools: rawTools, readOnly });
+				const effectiveReadOnly = readOnly || sandbox === "read-only";
+				const result = validateAgentTools({ tools: rawTools, readOnly: effectiveReadOnly });
 				if (result.errors.length > 0) {
 					throw new Error(`Tool validation errors: ${result.errors.join("; ")}`);
 				}
@@ -505,7 +515,7 @@ export default function (pi: ExtensionAPI) {
 				try {
 					// Inject parent's API key so --api-key and other runtime overrides work
 					await injectApiKey(resolved.model);
-					tools = resolveChildTools(agent.tools, isReadOnly);
+					tools = resolveChildTools(agent.tools, agent.sandbox, isReadOnly);
 					effectiveTimeoutMs = resolveChildTimeout(timeoutMs, params.timeout);
 					safeCwd = resolveChildCwd(cwd);
 				} catch (err: unknown) {
@@ -813,14 +823,6 @@ export default function (pi: ExtensionAPI) {
 		// ------------------------------------------------------------------
 		// TUI rendering
 		// ------------------------------------------------------------------
-
-		/** Look up agent color by name for TUI rendering. */
-		const resolveAgentColor = (name: string): string => {
-			const ctx = currentCtx;
-			if (!ctx) return "accent";
-			const found = discoverAgents(ctx.cwd, "both", bundledAgentsDir).agents.find(a => a.name === name);
-			return found?.color ?? "accent";
-		};
 
 		renderCall(args, theme, _context) {
 			const scope: AgentScope = args.agentScope ?? "user";

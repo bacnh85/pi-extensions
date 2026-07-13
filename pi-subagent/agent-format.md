@@ -21,8 +21,20 @@ description: ...        # Required. When to use this agent.
 tools: read, grep, ...  # Optional. Comma-separated tool names. Defaults to all.
 model: provider/model     # Optional. Defaults to parent's model.
 thinking: low             # Optional: off|minimal|low|medium|high|xhigh|max.
+sandbox: read-only        # Optional: read-only | workspace-write. Auto-derives tool restrictions.
+color: cyan               # Optional: red|blue|green|yellow|purple|orange|pink|cyan.
 ---
 ```
+
+### `sandbox`
+
+- `read-only`: Restricts tools to `read`, `grep`, `find`, `ls`. Overrides any `tools` field.
+- `workspace-write` (default): Uses the agent's `tools` list or defaults to all tools.
+
+### `color`
+
+Display color for the agent name in the TUI thread picker, viewer, and result summary.
+Accepted values: `red`, `blue`, `green`, `yellow`, `purple`, `orange`, `pink`, `cyan`.
 
 Only `name` and `description` are required.
 
