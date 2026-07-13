@@ -153,20 +153,33 @@ export default function (pi: ExtensionAPI) {
 		threadStore.clear();
 	});
 
-	// Proactively steer agents toward sub-agent delegation when users mention it
-	pi.on("before_agent_start", async (event) => {
-		const prompt = event.prompt.toLowerCase();
-		if (/\b(delegate to|use a subagent|run in parallel|spawn an agent|scout|review this|chain|worker agent)\b/.test(prompt)) {
-			return {
-				systemPrompt:
-					event.systemPrompt +
-					"\n\nThe subagent tool is available for delegating tasks to specialized agents with isolated context. Use /subagent to list available agents. Bundled: scout (fast recon), reviewer (code review), worker (implementation), general-purpose (fallback). Modes: single, parallel (max 8), chain.",
-			};
-		}
-	});
-
 	// Resolve bundled agents directory relative to this extension file
 	const bundledAgentsDir = path.resolve(__dirname, "../agents");
+
+	// Inject available agent catalog into system prompt for semantic auto-delegation
+	pi.on("before_agent_start", async (event) => {
+		const ctx = currentCtx;
+		const discovery = discoverAgents(event.cwd ?? ctx?.cwd ?? process.cwd(), "both", bundledAgentsDir);
+		const catalog = discovery.agents
+			.map((a) => {
+				const modelInfo = a.model ? ` (model: ${a.model})` : " (inherits parent)";
+				const thinkingInfo = a.thinking ? `, thinking: ${a.thinking}` : "";
+				const sandboxInfo = a.sandbox ? `, sandbox: ${a.sandbox}` : "";
+				return `- **${a.name}**: ${a.description}${modelInfo}${thinkingInfo}${sandboxInfo}`;
+			})
+			.join("\n");
+		return {
+			systemPrompt:
+				event.systemPrompt +
+				`\n\n## Available Subagents\n${catalog}\n\n` +
+				"The subagent tool can delegate tasks to these specialized agents with isolated context. " +
+				"Use for read-heavy exploration, parallel analysis, or work that would flood the main context.\n" +
+				"Prefer **scout** for fast read-only exploration. " +
+				"Prefer **reviewer** for code review (high thinking, read-only). " +
+				"Prefer **worker** for implementation (medium thinking, all tools). " +
+				"Modes: single, parallel (max 8 tasks, 4 concurrent), chain.",
+		};
+	});
 
 	// Public one-request/one-response service used by pi-review.
 	pi.events.on(SUBAGENT_REQUEST_EVENT, (raw) => {
@@ -179,7 +192,7 @@ export default function (pi: ExtensionAPI) {
 			request.respond({ id: request.id, ok: false, error: `Unknown agent: ${request.agent}` });
 			return;
 		}
-		const thread = threadStore.createThread({ agentName: agent.name, task: request.task, mode: "single" });
+		const thread = threadStore.createThread({ agentName: agent.name, task: request.task, mode: "single", color: agent.color });
 		void runNamedAgent({
 			agent: request.readOnly ? { ...agent, tools: ["read", "grep", "find", "ls"] } : agent,
 			task: request.task,
@@ -541,6 +554,7 @@ export default function (pi: ExtensionAPI) {
 						task: taskWithContext,
 						mode: "chain-step",
 						toolCallId: _toolCallId,
+						color: agents.find(a => a.name === step.agent)?.color,
 					});
 					const result = await runOne(
 						step.agent, taskWithContext, step.cwd,
@@ -632,6 +646,7 @@ export default function (pi: ExtensionAPI) {
 							task: t.task,
 							mode: "parallel-task",
 							toolCallId: _toolCallId,
+							color: agents.find(a => a.name === t.agent)?.color,
 						}),
 					);
 
@@ -746,6 +761,7 @@ export default function (pi: ExtensionAPI) {
 					task: params.task,
 					mode: "single",
 					toolCallId: _toolCallId,
+					color: agents.find(a => a.name === params.agent)?.color,
 				});
 				const result = await runOne(
 					params.agent, params.task, params.cwd,
@@ -798,6 +814,14 @@ export default function (pi: ExtensionAPI) {
 		// TUI rendering
 		// ------------------------------------------------------------------
 
+		/** Look up agent color by name for TUI rendering. */
+		const resolveAgentColor = (name: string): string => {
+			const ctx = currentCtx;
+			if (!ctx) return "accent";
+			const found = discoverAgents(ctx.cwd, "both", bundledAgentsDir).agents.find(a => a.name === name);
+			return found?.color ?? "accent";
+		};
+
 		renderCall(args, theme, _context) {
 			const scope: AgentScope = args.agentScope ?? "user";
 			const fg = theme.fg.bind(theme);
@@ -816,7 +840,7 @@ export default function (pi: ExtensionAPI) {
 						"\n  " +
 						fg("muted", `${i + 1}.`) +
 						" " +
-						fg("accent", step.agent) +
+						fg(resolveAgentColor(step.agent), step.agent) +
 						fg("dim", ` ${preview}`);
 				}
 				if (args.chain.length > 3)
@@ -832,7 +856,7 @@ export default function (pi: ExtensionAPI) {
 					fg("muted", ` [${scope}]`);
 				for (const t of args.tasks.slice(0, 3)) {
 					const preview = t.task.length > 40 ? `${t.task.slice(0, 40)}...` : t.task;
-					text += `\n  ${fg("accent", t.agent)}${fg("dim", ` ${preview}`)}`;
+					text += `\n  ${fg(resolveAgentColor(t.agent), t.agent)}${fg("dim", ` ${preview}`)}`;
 				}
 				if (args.tasks.length > 3)
 					text += `\n  ${fg("muted", `... +${args.tasks.length - 3} more`)}`;
@@ -848,7 +872,7 @@ export default function (pi: ExtensionAPI) {
 				: "...";
 			let text =
 				fg("toolTitle", theme.bold("subagent ")) +
-				fg("accent", agentName) +
+				fg(resolveAgentColor(agentName), agentName) +
 				fg("muted", ` [${scope}]`);
 			text += `\n  ${fg("dim", preview)}`;
 			return new Text(text, 0, 0);
@@ -895,7 +919,7 @@ export default function (pi: ExtensionAPI) {
 						container.addChild(
 							new Text(
 								fg("muted", `─── Step ${r.exitCode !== -1 ? "" : "?"}: `) +
-									fg("accent", r.agent) +
+									fg(resolveAgentColor(r.agent), r.agent) +
 									` ${stepIcon}`,
 								0,
 								0,
@@ -930,7 +954,8 @@ export default function (pi: ExtensionAPI) {
 					fg("accent", `${successCount}/${details.results.length} steps`);
 				for (const r of details.results) {
 					const stepIcon = isFailedResult(r) ? fg("error", "✗") : fg("success", "✓");
-					text += `\n  ${stepIcon} ${fg("accent", r.agent)}`;
+					const color = resolveAgentColor(r.agent);
+					text += `\n  ${stepIcon} ${fg(color, r.agent)}`;
 				}
 				const totalUsage = formatUsageStats(aggregateUsage(details.results));
 				if (totalUsage) text += `\n${fg("dim", totalUsage)}`;
@@ -973,7 +998,7 @@ export default function (pi: ExtensionAPI) {
 							: fg("success", "✓");
 						container.addChild(
 							new Text(
-								fg("muted", "─── ") + fg("accent", r.agent) + ` ${taskIcon}`,
+								fg("muted", "─── ") + fg(resolveAgentColor(r.agent), r.agent) + ` ${taskIcon}`,
 								0,
 								0,
 							),
@@ -1013,7 +1038,7 @@ export default function (pi: ExtensionAPI) {
 							: isFailedResult(r)
 								? fg("error", "✗")
 								: fg("success", "✓");
-					text += `\n  ${taskIcon} ${fg("accent", r.agent)}`;
+					text += `\n  ${taskIcon} ${fg(resolveAgentColor(r.agent), r.agent)}`;
 				}
 				if (!isRunning) {
 					const totalUsage = formatUsageStats(aggregateUsage(details.results));

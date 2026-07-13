@@ -19,7 +19,7 @@ const PROJECT_PARAM = Type.Optional(Type.String({ description: "Project path or 
 const CONTEXT_PARAM = Type.Optional(Type.String({ description: "Serena context name. Default: ide." }));
 const MAX_CHARS_PARAM = Type.Optional(Type.Number({ description: "Max response chars. Default: Serena config." }));
 const TIMEOUT_MS_PARAM = Type.Optional(Type.Number({ description: "Timeout in ms. Default: 120000." }));
-export const SEMANTIC_MISS_THRESHOLD = 2;
+const SEMANTIC_MISS_THRESHOLD = 2;
 
 const OUTPUT_MAX_BYTES = 50 * 1024;
 const OUTPUT_MAX_LINES = 2_000;

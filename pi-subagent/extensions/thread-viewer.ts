@@ -123,7 +123,8 @@ export class ThreadViewer {
 		else if (this.thread.mode === "chain-step") modeLabel = t.fg("muted", " [chain]");
 
 		// Header
-		let header = `${icon} ${t.fg("toolTitle", t.bold(this.thread.agentName))}${modeLabel}`;
+		const agentColor = this.thread.color ?? "accent";
+		let header = `${icon} ${t.fg(agentColor, t.bold(this.thread.agentName))}${modeLabel}`;
 		if (status === "running") header += ` ${t.fg("warning", "(running...)")}`;
 		else if (status === "aborted") header += ` ${t.fg("error", "[aborted]")}`;
 		if (result && isErr && result.stopReason && result.stopReason !== "error" && result.stopReason !== "aborted") {

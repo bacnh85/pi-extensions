@@ -8,7 +8,7 @@ import {
 	pathLooksNonSemantic,
 	commandLooksLikeSemanticCodeSearch,
 } from "./lib/detect";
-import { SEMANTIC_MISS_THRESHOLD } from "./index";
+import { SEMANTIC_MISS_THRESHOLD } from "./lib/detect";
 import { SERENA_FIRST_GUIDANCE, SERENA_MISS_GUIDANCE, shouldBlockSemanticMiss } from "./lib/guidance";
 import { normalizeTimeoutMs, stripControlParams } from "./lib/normalize";
 

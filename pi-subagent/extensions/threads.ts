@@ -23,6 +23,7 @@ export interface SubagentThread {
 	status: ThreadStatus;
 	result?: SubAgentResult;
 	toolCallId?: string;
+	color?: string;
 	createdAt: number;
 	updatedAt: number;
 }
@@ -53,6 +54,7 @@ export class ThreadStore {
 		task: string;
 		mode: ThreadMode;
 		toolCallId?: string;
+		color?: string;
 	}): SubagentThread {
 		const id = cryptoGenId();
 		const now = Date.now();
@@ -63,6 +65,7 @@ export class ThreadStore {
 			mode: params.mode,
 			status: "running",
 			toolCallId: params.toolCallId,
+			color: params.color,
 			createdAt: now,
 			updatedAt: now,
 		};

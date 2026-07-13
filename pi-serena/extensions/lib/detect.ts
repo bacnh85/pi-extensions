@@ -3,6 +3,8 @@
  * Extracted from index.ts so it can be tested without importing pi-coding-agent.
  */
 
+export const SEMANTIC_MISS_THRESHOLD = 2;
+
 export const CODE_FILE_EXTENSIONS = new Set([
 	".c",
 	".cc",

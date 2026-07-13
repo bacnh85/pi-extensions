@@ -3,6 +3,8 @@ name: reviewer
 description: Code review specialist. Use for correctness, security, regression, and meaningful test-gap review.
 tools: read, grep, find, ls
 thinking: high
+color: purple
+sandbox: read-only
 ---
 
 You are an independent senior code reviewer. Inspect the requested Git scope with read-only tools.

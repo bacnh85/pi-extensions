@@ -13,12 +13,16 @@ import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@earendil-works/
 
 export type AgentScope = "user" | "project" | "both";
 
+export type AgentColor = "red" | "blue" | "green" | "yellow" | "purple" | "orange" | "pink" | "cyan";
+
 export interface AgentConfig {
 	name: string;
 	description: string;
 	tools?: string[];
 	model?: string;
 	thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+	sandbox?: "read-only" | "workspace-write";
+	color?: AgentColor;
 	systemPrompt: string;
 	source: "user" | "project" | "bundled";
 	filePath: string;
@@ -160,6 +164,26 @@ function loadAgentsFromDir(
 			}
 		}
 
+		if (typeof frontmatter.sandbox === "string" && frontmatter.sandbox) {
+			const validSandboxes = ["read-only", "workspace-write"];
+			if (!validSandboxes.includes(frontmatter.sandbox)) {
+				diagnostics.push({
+					filePath,
+					issue: `Invalid sandbox mode "${frontmatter.sandbox}". Valid values: ${validSandboxes.join(", ")}. Using default.`,
+					severity: "warn",
+				});
+			}
+		}
+
+		const VALID_COLORS = ["red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan"] as const;
+		if (typeof frontmatter.color === "string" && frontmatter.color && !VALID_COLORS.includes(frontmatter.color as any)) {
+			diagnostics.push({
+				filePath,
+				issue: `Invalid color "${frontmatter.color}". Valid values: ${VALID_COLORS.join(", ")}. Ignoring.`,
+				severity: "warn",
+			});
+		}
+
 		agents.push({
 			name: frontmatter.name,
 			description: frontmatter.description,
@@ -167,6 +191,12 @@ function loadAgentsFromDir(
 			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
 			thinking: typeof frontmatter.thinking === "string" && ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(frontmatter.thinking)
 				? frontmatter.thinking as AgentConfig["thinking"]
+				: undefined,
+			sandbox: typeof frontmatter.sandbox === "string" && ["read-only", "workspace-write"].includes(frontmatter.sandbox)
+				? frontmatter.sandbox as "read-only" | "workspace-write"
+				: undefined,
+			color: typeof frontmatter.color === "string" && VALID_COLORS.includes(frontmatter.color as any)
+				? frontmatter.color as AgentColor
 				: undefined,
 			systemPrompt: body,
 			source,

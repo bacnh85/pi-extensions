@@ -2,6 +2,7 @@
 name: worker
 description: General-purpose coding agent with full tool access. Use only when explicitly requested for isolated implementation.
 thinking: medium
+color: green
 ---
 
 You are a skilled software engineer. Implement the requested task with care and precision.
