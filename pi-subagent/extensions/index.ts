@@ -25,11 +25,12 @@ import {
 	getAgentDir,
 	getMarkdownTheme,
 	ModelRegistry,
+	type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, SelectList, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
-import { type AgentConfig, type AgentScope, discoverAgents, formatAgentList, invalidateAgentCache } from "./agents.ts";
+import { type AgentColor, type AgentConfig, type AgentScope, discoverAgents, formatAgentList, invalidateAgentCache } from "./agents.ts";
 import {
 	type SubAgentResult,
 	getFinalOutput,
@@ -193,7 +194,7 @@ export default function (pi: ExtensionAPI) {
 			request.respond({ id: request.id, ok: false, error: `Unknown agent: ${request.agent}` });
 			return;
 		}
-		const thread = threadStore.createThread({ agentName: agent.name, task: request.task, mode: "single", color: agent.color });
+		const thread = threadStore.createThread({ agentName: agent.name, task: request.task, mode: "single", color: agent.color ? AGENT_TO_THEME_COLOR[agent.color as AgentColor] : undefined });
 		void runNamedAgent({
 			agent: request.readOnly ? { ...agent, tools: ["read", "grep", "find", "ls"] } : agent,
 			task: request.task,
@@ -290,13 +291,32 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	/** Map AgentColor (from agent frontmatter) to ThemeColor (for pi TUI). */
+	const AGENT_TO_THEME_COLOR: Record<AgentColor, ThemeColor> = {
+		red: "error",
+		blue: "accent",
+		green: "success",
+		yellow: "warning",
+		purple: "syntaxType",
+		orange: "syntaxString",
+		pink: "customMessageLabel",
+		cyan: "syntaxVariable",
+	};
+
+	/** Resolve agent-defined color to a valid ThemeColor for thread creation. */
+	const agentToThemeColor = (agentName: string): ThemeColor | undefined => {
+		const ctx = currentCtx;
+		if (!ctx) return undefined;
+		const agent = discoverAgents(ctx.cwd, "both", bundledAgentsDir).agents.find(a => a.name === agentName);
+		return agent?.color ? AGENT_TO_THEME_COLOR[agent.color] : undefined;
+	};
+
 	/** Look up agent color by name for TUI rendering. */
-	// ponytail: return any for ThemeColor compatibility with Pi TUI
-	const resolveAgentColor = (name: string): any => {
+	const resolveAgentColor = (name: string): ThemeColor => {
 		const ctx = currentCtx;
 		if (!ctx) return "accent";
 		const found = discoverAgents(ctx.cwd, "both", bundledAgentsDir).agents.find(a => a.name === name);
-		return found?.color ?? "accent";
+		return found?.color ? AGENT_TO_THEME_COLOR[found.color] : "accent";
 	};
 
 	pi.registerTool({
@@ -570,7 +590,7 @@ export default function (pi: ExtensionAPI) {
 						task: taskWithContext,
 						mode: "chain-step",
 						toolCallId: _toolCallId,
-						color: agents.find(a => a.name === step.agent)?.color,
+						color: agentToThemeColor(step.agent),
 					});
 					const result = await runOne(
 						step.agent, taskWithContext, step.cwd,
@@ -662,7 +682,7 @@ export default function (pi: ExtensionAPI) {
 							task: t.task,
 							mode: "parallel-task",
 							toolCallId: _toolCallId,
-							color: agents.find(a => a.name === t.agent)?.color,
+							color: agentToThemeColor(t.agent),
 						}),
 					);
 
@@ -777,7 +797,7 @@ export default function (pi: ExtensionAPI) {
 					task: params.task,
 					mode: "single",
 					toolCallId: _toolCallId,
-					color: agents.find(a => a.name === params.agent)?.color,
+					color: agentToThemeColor(params.agent),
 				});
 				const result = await runOne(
 					params.agent, params.task, params.cwd,
@@ -898,7 +918,8 @@ export default function (pi: ExtensionAPI) {
 
 			// --- Single ---
 			if (details.mode === "single" && details.results.length === 1) {
-				return renderSingleResult(details.results[0], expanded, theme);
+				const r = details.results[0];
+				return renderSingleResult(r, expanded, theme, resolveAgentColor(r.agent));
 			}
 
 			// --- Chain ---

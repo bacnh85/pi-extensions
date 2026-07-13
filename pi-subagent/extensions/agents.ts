@@ -169,7 +169,7 @@ function loadAgentsFromDir(
 			if (!validSandboxes.includes(frontmatter.sandbox)) {
 				diagnostics.push({
 					filePath,
-					issue: `Invalid sandbox mode "${frontmatter.sandbox}". Valid values: ${validSandboxes.join(", ")}. Using default.`,
+					issue: `Invalid sandbox mode "${frontmatter.sandbox}". Valid values: ${validSandboxes.join(", ")}. Ignoring.`,
 					severity: "warn",
 				});
 			}

@@ -188,6 +188,7 @@ export function renderSingleResult(
 	result: SubAgentResult,
 	expanded: boolean,
 	theme: { fg: (c: any, t: string) => string; bold: (t: string) => string },
+	agentColor?: string,
 ): Container | Text {
 	const isError = isFailedResult(result);
 	const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
@@ -197,7 +198,7 @@ export function renderSingleResult(
 	if (expanded) {
 		const mdTheme = getMarkdownTheme();
 		const container = new Container();
-		let header = `${icon} ${theme.fg("toolTitle", theme.bold(result.agent))}`;
+		let header = `${icon} ${theme.fg(agentColor ?? "toolTitle", theme.bold(result.agent))}`;
 		if (isError && result.stopReason) {
 			const reasonColor = result.stopReason === "timeout" ? "warning" : "error";
 			header += ` ${theme.fg(reasonColor, `[${result.stopReason}]`)}`;
@@ -239,7 +240,7 @@ export function renderSingleResult(
 	}
 
 	// Collapsed
-	let text = `${icon} ${theme.fg("toolTitle", theme.bold(result.agent))}`;
+	let text = `${icon} ${theme.fg(agentColor ?? "toolTitle", theme.bold(result.agent))}`;
 	if (isError && result.stopReason) {
 		const reasonColor = result.stopReason === "timeout" ? "warning" : "error";
 		text += ` ${theme.fg(reasonColor, `[${result.stopReason}]`)}`;
