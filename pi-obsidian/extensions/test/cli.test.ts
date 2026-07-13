@@ -278,3 +278,25 @@ describe("error message formatting", () => {
 		expect(err.message).to.include("File not found");
 	});
 });
+
+describe("piObsidianExtension tool integration", () => {
+	it("registers obsidian tool and throws error on unsupported daily:today command", async () => {
+		const { default: piObsidianExtension } = await import("../index.ts");
+		let registeredTool: any = null;
+		const mockPi: any = {
+			registerTool(tool: any) {
+				registeredTool = tool;
+			}
+		};
+		piObsidianExtension(mockPi);
+		expect(registeredTool).to.not.be.null;
+		expect(registeredTool.name).to.equal("obsidian");
+
+		try {
+			await registeredTool.execute("test-id", { run: "daily:today" });
+			expect.fail("Should have thrown an error");
+		} catch (err: any) {
+			expect(err.message).to.include("is only available via the Obsidian desktop app");
+		}
+	});
+});

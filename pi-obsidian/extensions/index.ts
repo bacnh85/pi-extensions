@@ -106,9 +106,18 @@ function createFromTemplate(templateName: string, noteName: string, folder: stri
 	const j = JSON.stringify;
 	if (!noteName.includes(".")) noteName += ".md";
 	const notePath = folder ? `${folder}/${noteName}` : noteName;
+	// ponytail: normalize template name, fallback to name-based search
+	const tplName = templateName.endsWith(".md") ? templateName : templateName + ".md";
 	const script = [
-		`const tf=app.vault.getAbstractFileByPath(${j(templateName)});`,
-		`if(!tf)return'Template not found.';`,
+		`const nameToFind=${j(tplName)};`,
+		`let tf=app.vault.getAbstractFileByPath(nameToFind);`,
+		`if(!tf){`,
+		`const all=app.vault.getMarkdownFiles();`,
+		`const matches=all.filter(f=>f.name.toLowerCase()===nameToFind.toLowerCase());`,
+		`if(matches.length===1)tf=matches[0];`,
+		`else if(matches.length>1)return'Multiple templates match \"'+nameToFind+'\". Use full path.';`,
+		`}`,
+		`if(!tf)return'Template not found: '+nameToFind;`,
 		`let c=await app.vault.read(tf);`,
 		`const fl=${JSON.stringify(fill)};`,
 		`for(const[k,v]of Object.entries(fl))c=c.replace(new RegExp('\\\\{\\\\{\\\\s*'+k.replace(/[.*+?^\${}()|[\\]\\\\]/g,'\\\\$&')+'\\\\s*\\\\}\\\\}','g'),v);`,
@@ -124,14 +133,17 @@ function createFromTemplate(templateName: string, noteName: string, folder: stri
 	return execObsidian(args, false, timeoutMs).stdout.trim() || `Created note "${notePath}" from template "${templateName}".`;
 }
 
-
-function propertyRename(from: string, to: string, vault?: string, timeoutMs = 30_000): string {
+function propertyRename(from: string, to: string, filePath?: string, vault?: string, timeoutMs = 30_000): string {
 	const j = JSON.stringify;
+	const scopeFilter = filePath
+		? [`const files=[app.vault.getAbstractFileByPath(${j(filePath)})].filter(Boolean);`]
+		: [`const files=app.vault.getMarkdownFiles();`];
 	const script = [
+		...scopeFilter,
 		`const ff=${j(from)},tt=${j(to)};`,
 		`let u=0,s=0;`,
-		`for(const f of app.vault.getMarkdownFiles()){`,
-		`let c=await app.vault.read(f);const o=c;`,
+		`for(const f of files){`,
+		`let c=await app.vault.read(f);`,
 		`let m=c.match(/^---\\s*\\n([\\s\\S]*?)\\n---/);`,
 		`if(!m){s++;continue;}`,
 		`let fm=m[1];`,
@@ -139,7 +151,8 @@ function propertyRename(from: string, to: string, vault?: string, timeoutMs = 30
 		`if(nfm===fm){s++;continue;}`,
 		`c='---\\n'+nfm+'\\n---'+c.slice(m[0].length);`,
 		`await app.vault.modify(f,c);u++;}`,
-		`return u+' properties renamed ('+s+' skipped).';`,
+		`const scopeMsg=${j(filePath ? `Renamed in "${filePath}".` : "Global rename across all files. Use `file=...` to scope to one file.")};`,
+		`return scopeMsg+' '+u+' properties renamed ('+s+' skipped).';`,
 	].join("");
 	const args: string[] = [];
 	if (vault) args.push(`vault=${vault}`);
@@ -147,10 +160,12 @@ function propertyRename(from: string, to: string, vault?: string, timeoutMs = 30
 	return execObsidian(args, false, timeoutMs).stdout.trim() || "Done.";
 }
 
-function renameTag(from: string, to: string, vault?: string, timeoutMs = 30_000): string {
+function renameTag(from: string, to: string, preview: boolean, vault?: string, timeoutMs = 30_000): string {
 	const script = [
 		`const ff=${JSON.stringify(from)},tt=${JSON.stringify(to)};`,
+		`const preview=${preview ? "true" : "false"};`,
 		`let u=0,s=0;`,
+		`const results=[];`,
 		`for(const f of app.vault.getMarkdownFiles()){`,
 		`let c=await app.vault.read(f);`,
 		`const o=c;`,
@@ -159,9 +174,16 @@ function renameTag(from: string, to: string, vault?: string, timeoutMs = 30_000)
 		`let fm=m[1];`,
 		`let nfm=fm.replace(/\\btags\\b[^]*?(?=\\n---|$)/g,(tl)=>tl.replaceAll(ff,tt));`,
 		`if(nfm===fm){s++;continue;}`,
+		`if(preview){`,
+		`results.push('[DRY-RUN] '+f.path+': would update tag '+ff+' -> '+tt);`,
+		`}else{`,
 		`c='---\\n'+nfm+'\\n---'+c.slice(m[0].length);`,
-		`await app.vault.modify(f,c);u++;}`,
-		`return 'tag-rename: '+u+' updated, '+s+' skipped.';`,
+		`await app.vault.modify(f,c);`,
+		`results.push(f.path);`,
+		`}`,
+		`u++;}`,
+		`const header=preview?'tag-rename dry-run: ':'tag-rename: ';`,
+		`return header+u+' updated, '+s+' skipped.\\n'+results.join('\\n');`,
 	].join("");
 	const args: string[] = [];
 	if (vault) args.push(`vault=${vault}`);
@@ -354,6 +376,9 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 			let raw = (p.run as string).trim();
 			if (!raw) throw new Error("'run' is required.");
 			const cmd = raw.split(/\s+/)[0];
+			if (cmd.startsWith("daily:") && !["daily:read", "daily:append", "daily:prepend"].includes(cmd)) {
+				throw new Error(`Command "${cmd}" is only available via the Obsidian desktop app and is not supported in CLI mode.`);
+			}
 			const v = p.vault as string | undefined;
 			const flags = parseFlags(raw);
 			const timeoutMs = (p.timeout_ms as number) ?? (flags.timeout_ms ? parseInt(flags.timeout_ms) : 30_000);
@@ -399,8 +424,9 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 
 			// --- enhanced note operations ---
 			if (cmd === "task-create") {
-				if (!flags.path || !flags.heading || !flags.text) throw new Error("'path', 'heading' and 'text' required.");
-				return createTaskInNote(flags.path, flags.heading, flags.text, v, timeoutMs);
+				if ((!flags.path && !flags.file) || !flags.heading || !flags.text) throw new Error("'path' (or 'file'), 'heading' and 'text' required.");
+				const notePath = flags.path || flags.file;
+				return createTaskInNote(notePath, flags.heading, flags.text, v, timeoutMs);
 			}
 			if (cmd === "create-from-template") {
 				if (!flags.template || !flags.name) throw new Error("'template' and 'name' required.");
@@ -408,16 +434,18 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 				return createFromTemplate(flags.template, flags.name, flags.folder ?? "", fill, v, timeoutMs);
 			}
 
-			// --- tag-rename ---
+			// --- tag-rename (B4: preview support added) ---
 			if (cmd === "tag-rename") {
 				if (!flags.from || !flags.to) throw new Error("'from' and 'to' required.");
-				return renameTag(flags.from, flags.to, v, timeoutMs);
+				const preview = flags.preview === "true" || flags.preview === "1";
+				return renameTag(flags.from, flags.to, preview, v, timeoutMs);
 			}
 
-			// --- property:rename ---
+			// --- property:rename (B5: optional file/path scoping added) ---
 			if (cmd === "property:rename") {
 				if (!flags.from || !flags.to) throw new Error("'from' and 'to' required.");
-				return propertyRename(flags.from, flags.to, v, timeoutMs);
+				const filePath = flags.file || flags.path || undefined;
+				return propertyRename(flags.from, flags.to, filePath, v, timeoutMs);
 			}
 
 			// --- search with replace ---
@@ -432,7 +460,7 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 				return frontmatterWrap(v, timeoutMs);
 			}
 
-			// --- eval: inline or from note ---
+			// --- eval: inline or from note (B7: auto-add return for bare expressions) ---
 			if (cmd === "eval") {
 				let code = flags.code || "";
 				if (flags.file) {
@@ -442,15 +470,35 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 					code = execObsidian(rArgs, false, timeoutMs).stdout;
 				}
 				if (!code) throw new Error("'code=' or 'file=' required.");
+				// ponytail: auto-add return for simple bare expressions
+				const trimmed = code.trim();
+				if (
+					!trimmed.startsWith("return ") &&
+					!trimmed.startsWith("if") &&
+					!trimmed.startsWith("for") &&
+					!trimmed.startsWith("while") &&
+					!trimmed.startsWith("{") &&
+					!trimmed.startsWith("const ") &&
+					!trimmed.startsWith("let ") &&
+					!trimmed.startsWith("var ") &&
+					!trimmed.startsWith("async") &&
+					!trimmed.startsWith("function") &&
+					!trimmed.startsWith("try") &&
+					!trimmed.startsWith("switch") &&
+					code.length < 200 &&
+					!code.includes(";")
+				) {
+					code = "return " + trimmed;
+				}
 				const eArgs: string[] = [];
 				if (v) eArgs.push(`vault=${v}`);
 				eArgs.push("eval", `code=(async function(){${code}})()`);
 				return execObsidian(eArgs, false, timeoutMs).stdout.trim() || "Done.";
 			}
 
-			// --- create/write with content_from ---
+			// --- create/write (B1: normalize file= to path= for CLI) ---
 			if (cmd === "create" || cmd === "write" || cmd === "overwrite") {
-				const path = flags.path || "";
+				const path = flags.path || flags.file || "";
 				if (flags.content_from && path) {
 					const rArgs: string[] = [];
 					if (v) rArgs.push(`vault=${v}`);
@@ -462,7 +510,26 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 					if (cmd !== "create" || raw.includes("overwrite=true")) cArgs.push("overwrite=true");
 					return execObsidian(cArgs, false, timeoutMs).stdout.trim() || `Created note from "${flags.content_from}".`;
 				}
-				// Obsidian CLI creates missing parent folders for create/write paths.
+				// Normal create/write: rewrite args so CLI gets path= instead of file=
+				if (path) {
+					const cArgs = parseCliString(raw);
+					// Obsidian CLI has no 'write' command — normalize to 'create'
+					if (cArgs[0] === "write" || cArgs[0] === "overwrite") {
+						cArgs[0] = "create";
+					}
+					// Replace any file= or path= arg with the resolved path=
+					for (let i = 1; i < cArgs.length; i++) {
+						if (cArgs[i].startsWith("file=") || cArgs[i].startsWith("path=")) {
+							cArgs[i] = `path=${path}`;
+							break;
+						}
+					}
+					if (cmd !== "create" || raw.includes("overwrite=true")) {
+						if (!cArgs.includes("overwrite=true")) cArgs.push("overwrite=true");
+					}
+					if (v) cArgs.unshift(`vault=${v}`);
+					return execObsidian(cArgs, false, timeoutMs).stdout.trim() || "Done.";
+				}
 			}
 
 			// --- property:set with array values ---
@@ -485,18 +552,18 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 				}
 			}
 
-			// Obsidian exposes overwrite as create + overwrite=true, not a write command.
-			if (cmd === "write" || cmd === "overwrite") {
-				const args = parseCliString(raw);
-				args[0] = "create";
-				if (!args.includes("overwrite=true")) args.push("overwrite=true");
-				if (v) args.unshift(`vault=${v}`);
-				const r = execObsidian(args, false, timeoutMs);
-				return r.stdout.trim() || "Done.";
-			}
-
-			// --- Standard CLI passthrough ---
+			// --- Standard CLI passthrough (B1/B6: normalize file= and bare paths) ---
 			const args = parseCliString(raw);
+			// ponytail: normalize bare positional arg to path= for read/append/prepend
+			if (args.length >= 2 && !args[1].includes("=")) {
+				args[1] = "path=" + args[1];
+			}
+			// R2: normalize file= to path= for delete (create/write handled earlier, this is fallback)
+			for (let i = 1; i < args.length; i++) {
+				if (args[i].startsWith("file=") && args[0] === "delete") {
+					args[i] = "path=" + args[i].slice(5);
+				}
+			}
 			if (v) args.unshift(`vault=${v}`);
 			const r = execObsidian(args, false, timeoutMs);
 			if (r.parsed && typeof r.parsed !== "string") return formatObsidianOutput(raw, r.parsed);

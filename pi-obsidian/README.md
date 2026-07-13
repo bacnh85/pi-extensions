@@ -65,7 +65,7 @@ obsidian run="read file=Meeting Notes" vault="My Vault"
 | **Eval (inline)** | `eval code="app.vault.getFiles().length"` | Run JS inline |
 | **Eval (file)** | `eval file=ScriptNoteName` | Run JS from a vault note (avoids escaping issues) |
 | **Properties** | `property:set file=Note name=status value=active` |
-| **Daily note** | `daily:read`, `daily:append content="- [ ] Task"` |
+| **Daily note** | `daily:read`, `daily:append content="- [ ] Task"` | Note: `daily:read`/`append`/`prepend` are CLI-native. `daily:today`/`daily:open` require the Obsidian desktop app and are not available via CLI.
 | **Backlinks** | `backlinks file=Note format=json` |
 | **Outline** | `outline file=Note` |
 | **History** | `history file=Note`, `diff file=Note from=1 to=3` |
