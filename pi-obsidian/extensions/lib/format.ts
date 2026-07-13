@@ -122,6 +122,7 @@ export function formatTasksFiltered(parsed: unknown, status?: "open" | "done" | 
 	if (!parsed || !Array.isArray(parsed)) return "No tasks found.";
 
 	const filtered = (parsed as Array<Record<string, unknown>>).filter(t => {
+		if (typeof t !== "object" || t === null) return status === "all" || status === "open" || !status;
 		if (!status || status === "all") return true;
 		const isDone = (t.status === "x" || t.completed === true);
 		return status === "done" ? isDone : !isDone;
@@ -135,6 +136,8 @@ export function formatTasksFiltered(parsed: unknown, status?: "open" | "done" | 
  * Format tags list.
  */
 export function formatTags(parsed: unknown): string {
+	if (typeof parsed === "number") return String(parsed);
+	if (typeof parsed === "string") return parsed.trim() || "No tags found.";
 	return formatList(parsed, (t) => `  ${t.tag ?? t.name}: ${t.count ?? t.frequency ?? 1}`, "No tags found.");
 }
 
@@ -149,7 +152,9 @@ export function formatLinks(parsed: unknown, label = "Links"): string {
  * Format outline/headings.
  */
 export function formatOutline(parsed: unknown): string {
-	if (!parsed || (Array.isArray(parsed) && parsed.length === 0)) return "(no headings)";
+	if (parsed == null) return "(no headings)";
+	if (!Array.isArray(parsed)) return String(parsed);
+	if (parsed.length === 0) return "(no headings)";
 	const tree = parsed as Array<{ level?: number; heading?: string; text?: string; children?: unknown[] }>;
 	const lines: string[] = [];
 	function walk(items: typeof tree, depth = 0) {
@@ -175,6 +180,12 @@ export function formatOutgoingLinks(parsed: unknown): string {
 		const lines = parsed.trim().split("\n").filter(Boolean);
 		if (lines.length === 0) return "No outgoing links.";
 		return lines.map((l) => `  ${l}`).join("\n");
+	}
+	// Handle single link object
+	if (typeof parsed === "object" && !Array.isArray(parsed)) {
+		const obj = parsed as Record<string, unknown>;
+		const marker = obj.unresolved ? " (broken)" : "";
+		return `  ${obj.link ?? obj.filename ?? obj.file ?? "(unknown)"}${marker}`;
 	}
 	// Handle JSON array
 	if (Array.isArray(parsed)) {
@@ -227,6 +238,7 @@ export function formatProperties(parsed: unknown): string {
 		return parsed.map((p: Record<string, unknown>) => `  ${p.name ?? "?"}: ${p.count ?? p.type ?? ""}`).join("\n");
 	}
 	// Single-file properties as object
+	if (typeof parsed !== "object") return String(parsed);
 	const obj = parsed as Record<string, unknown>;
 	return Object.entries(obj)
 		.filter(([_, v]) => v !== undefined)

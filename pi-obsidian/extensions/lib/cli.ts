@@ -14,9 +14,13 @@ export function execObsidian(args: string[], formatJson = false, timeoutMs = 30_
 
 	const stdout = (result.stdout ?? "")
 		.split("\n")
-		.filter((line) => !/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d Loading updated app package /.test(line) && line !== "Your Obsidian installer is out of date. Please download the latest installer which includes better CLI support: https://obsidian.md/download")
+		.filter((line) => !/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d Loading updated app package /.test(line) && !line.includes("Your Obsidian installer is out of date. Please download the latest installer which includes better CLI support"))
 		.join("\n");
 	const stderr = result.stderr ?? "";
+
+	if (result.signal) {
+		throw new Error(`obsidian CLI killed by signal ${result.signal}`);
+	}
 	const exitCode = result.status ?? 1;
 
 	if ((result.error as any)?.code === "ENOENT") {

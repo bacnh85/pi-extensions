@@ -23,8 +23,14 @@ import {
 export function readQuotedContent(s: string, pos: number): { value: string; endPos: number } {
 	let val = "";
 	while (pos < s.length && s[pos] !== '"') {
-		if (s[pos] === "\\" && pos + 1 < s.length && (s[pos + 1] === '"' || s[pos + 1] === "\\")) {
-			pos++; val += s[pos++];
+		if (s[pos] === "\\" && pos + 1 < s.length) {
+			const next = s[pos + 1];
+			if (next === '"' || next === "\\") {
+				pos++; val += s[pos++];
+			} else if (next === "n") { pos += 2; val += "\n"; }
+			else if (next === "t") { pos += 2; val += "\t"; }
+			else if (next === "r") { pos += 2; val += "\r"; }
+			else { val += s[pos++]; } // passthrough unknown escapes
 		} else {
 			val += s[pos++];
 		}
@@ -53,11 +59,11 @@ export function parseCliString(s: string): string[] {
 
 export function parseFlags(s: string): Record<string, string> {
 	const flags: Record<string, string> = {};
-	const re = /(\w[\w-]*)=("(?:[^"\\]|\\.)*"|\S+)/g;
+	const re = /(\w[\w-]*)=("(?:[^"\\]|\\.)*"|\S*)/g;
 	let m: RegExpExecArray | null;
 	while ((m = re.exec(s)) !== null) {
 		let val = m[2];
-		if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+		if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1).replace(/\\(["\\])/g, "$1");
 		flags[m[1]] = val;
 	}
 	return flags;
@@ -89,9 +95,9 @@ function createTaskInNote(notePath: string, heading: string, taskText: string, v
 		`let hi=-1;`,
 		`for(let i=0;i<ls.length;i++){const t=ls[i].trim();if(t.startsWith('#')&&t.replace(/^#+\\s*/,'')===${j(heading)}){hi=i;break;}}`,
 		`if(hi<0){await app.vault.modify(f,c+'\\n## '+${j(heading)}+'\\n- [ ] '+${j(taskText)}+'\\n');return'Created heading and task.';}`,
-		`const hl=ls[hi].match(/^(#+)\\s/)[1].length;`,
+		`const hlm=ls[hi].match(/^(#+)\\s*/);const hl=hlm?hlm[1].length:1;`,
 		`let se=ls.length;`,
-		`for(let i=hi+1;i<ls.length;i++){const m=ls[i].match(/^(#+)\\s/);if(m&&m[1].length<=hl){se=i;break;}}`,
+		`for(let i=hi+1;i<ls.length;i++){const m=ls[i].match(/^(#+)\\s*/);if(m&&m[1].length<=hl){se=i;break;}}`,
 		`ls.splice(se,0,'- [ ] '+${j(taskText)});`,
 		`await app.vault.modify(f,ls.join('\\n'));`,
 		`return'Task added.';`,
@@ -297,6 +303,9 @@ function formatObsidianOutput(cmdString: string, parsed: unknown): string {
 		case "search":
 			return formatSearchResults(parsed, flags.group === "file");
 		case "tasks":
+			if (flags.status && !["open", "done", "all"].includes(flags.status)) {
+				return `Invalid status "${flags.status}". Use open, done, or all.`;
+			}
 			if (flags.group === "file" && flags.status) return formatTasksFiltered(parsed, flags.status as "open" | "done" | "all");
 			if (flags.group === "file") return formatTasks(parsed, true);
 			if (flags.status) return formatTasksFiltered(parsed, flags.status as "open" | "done" | "all");
@@ -392,21 +401,6 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 				const folder = flags.folder ?? "";
 				const isRoot = folder === "/" || folder === "";
 				if (isRoot || raw.includes("recursive")) {
-					if (!isRoot && !raw.includes("recursive")) {
-						// Specific non-root, non-recursive — pass through
-						const args: string[] = [];
-						if (v) args.push(`vault=${v}`);
-						args.push("files", `folder=${folder}`, "format=json");
-						try {
-							const r = execObsidian(args, false, timeoutMs);
-							if (typeof r.parsed === "string" && r.parsed.trim()) {
-								const files = r.parsed.trim().split("\n").filter(Boolean).sort();
-								if (files.length > 0) return files.join("\n");
-							}
-							if (r.parsed && Array.isArray(r.parsed) && r.parsed.length > 0) return (r.parsed as string[]).sort().join("\n");
-						} catch { /* fall through */ }
-						return "No files found.";
-					}
 					return listFilesRecursive(isRoot ? "" : folder, v, timeoutMs);
 				}
 				const args: string[] = [];

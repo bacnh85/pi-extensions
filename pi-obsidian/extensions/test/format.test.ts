@@ -134,6 +134,20 @@ describe("formatTasksFiltered", () => {
 		expect(output).to.include("Open");
 		expect(output).to.include("Done");
 	});
+
+	it("returns empty message for null", () => {
+		expect(formatTasksFiltered(null)).to.equal("No tasks found.");
+	});
+
+	it("returns empty message for empty array", () => {
+		expect(formatTasksFiltered([], "open")).to.equal("No tasks found.");
+	});
+
+	it("skips non-object elements in filter", () => {
+		const tasks = ["a string item", { status: " ", text: "Real" }];
+		const output = formatTasksFiltered(tasks, "open");
+		expect(output).to.include("Real");
+	});
 });
 
 describe("formatTags", () => {
@@ -145,6 +159,11 @@ describe("formatTags", () => {
 		const output = formatTags(tags);
 		expect(output).to.include("#project: 5");
 		expect(output).to.include("#meeting: 3");
+	});
+
+	it("returns number string for total=true input", () => {
+		expect(formatTags(44)).to.equal("44");
+		expect(formatTags(0)).to.equal("0");
 	});
 });
 
@@ -181,6 +200,12 @@ describe("formatOutline", () => {
 	it("returns empty message for null", () => {
 		expect(formatOutline(null)).to.equal("(no headings)");
 	});
+
+	it("returns string for non-array object input", () => {
+		const obj = { heading: "Single", level: 1 };
+		const output = formatOutline(obj);
+		expect(output).to.equal("[object Object]");
+	});
 });
 
 describe("formatOutgoingLinks", () => {
@@ -197,6 +222,13 @@ describe("formatOutgoingLinks", () => {
 	it("returns empty message for empty", () => {
 		expect(formatOutgoingLinks([])).to.equal("No outgoing links.");
 	});
+
+	it("handles single link object", () => {
+		const obj = { link: "[[Note]]", unresolved: true };
+		const output = formatOutgoingLinks(obj);
+		expect(output).to.include("[[Note]]");
+		expect(output).to.include("(broken)");
+	});
 });
 
 describe("formatProperties", () => {
@@ -212,6 +244,10 @@ describe("formatProperties", () => {
 
 	it("returns empty message for empty", () => {
 		expect(formatProperties([])).to.equal("No properties found.");
+	});
+
+	it("stringifies non-object types", () => {
+		expect(formatProperties(true)).to.equal("true");
 	});
 });
 

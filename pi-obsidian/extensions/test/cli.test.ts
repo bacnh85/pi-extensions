@@ -18,7 +18,7 @@ const OUTDATED_LINE = "Your Obsidian installer is out of date. Please download t
 function filterStdout(raw: string): string {
 	return raw
 		.split("\n")
-		.filter((line) => !LOADING_LINE.test(line) && line !== OUTDATED_LINE)
+		.filter((line) => !LOADING_LINE.test(line) && !line.includes("Your Obsidian installer is out of date. Please download the latest installer which includes better CLI support"))
 		.join("\n");
 }
 
@@ -33,6 +33,27 @@ describe("readQuotedContent", () => {
 		const r = readQuotedContent('"', 0);
 		expect(r.value).to.equal("");
 		expect(r.endPos).to.equal(0);
+	});
+
+	it("decodes \\n escape", () => {
+		const r = readQuotedContent("line1\\nline2\"", 0);
+		expect(r.value).to.equal("line1\nline2");
+		expect(r.endPos).to.equal(12);
+	});
+
+	it("decodes \\t escape", () => {
+		const r = readQuotedContent("col1\\tcol2\"", 0);
+		expect(r.value).to.equal("col1\tcol2");
+	});
+
+	it("decodes \\r escape", () => {
+		const r = readQuotedContent("line\\r\"", 0);
+		expect(r.value).to.equal("line\r");
+	});
+
+	it("decodes mixed escapes", () => {
+		const r = readQuotedContent("a\\nb\\tc\\\\d\\\"e\"", 0);
+		expect(r.value).to.equal("a\nb\tc\\d\"e");
 	});
 
 	it("handles escaped double quote", () => {
@@ -122,6 +143,14 @@ describe("parseFlags", () => {
 
 	it("handles empty string", () => {
 		expect(parseFlags("")).to.deep.equal({});
+	});
+
+	it("handles empty value (key=)", () => {
+		expect(parseFlags("cmd key=")).to.deep.equal({ key: "" });
+	});
+
+	it("unescapes quoted values", () => {
+		expect(parseFlags('cmd val="a \\"b\\""')).to.deep.equal({ val: 'a "b"' });
 	});
 });
 
