@@ -38,7 +38,6 @@ Provides Windows-native tool manipulation: shell profiles, path conversion, comm
 | `windows_path_to_gitbash` | Convert `C:\` to `/c/` |
 | `windows_path_quote` | Quote a path for a specific shell |
 | `windows_doctor` | Detect installed developer tools |
-| `windows_wsl_exec` | Run a Linux command in WSL |
 | `windows_safety_classify` | Check command for dangerous operations |
 | `windows_tool_discover` | Check if a tool exists in PATH |
 | `windows_wsl_list_distros` | Show installed WSL distros |

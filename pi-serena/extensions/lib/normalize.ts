@@ -12,6 +12,11 @@ export function normalizeContext(context: unknown): string {
 }
 
 export function normalizeTimeoutMs(timeoutMs: unknown): number | undefined {
+	if (typeof timeoutMs === "string") {
+		const parsed = Number(timeoutMs);
+		if (Number.isFinite(parsed) && parsed > 0) return parsed;
+		return undefined;
+	}
 	if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return undefined;
 	return timeoutMs;
 }

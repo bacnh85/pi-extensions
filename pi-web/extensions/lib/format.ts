@@ -36,6 +36,18 @@ export function sanitizeSnippet(text = ""): string {
 		.trim();
 }
 
+/**
+ * Sanitize an error message — redact sensitive tokens and truncate length.
+ */
+export function sanitizeError(error: unknown): string {
+	const raw = error instanceof Error ? error.message : String(error);
+	return raw
+		.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+		.replace(/X-Subscription-Token\s*[:=]\s*[^\s]+/gi, "X-Subscription-Token: [REDACTED]")
+		.replace(/api[_-]?key[=:][^\s&]+/gi, "api_key=[REDACTED]")
+		.slice(0, 500);
+}
+
 export function truncateText(text: string): string {
 	const lines = text.split("\n");
 	let output = lines.slice(0, OUTPUT_MAX_LINES).join("\n");
@@ -46,6 +58,37 @@ export function truncateText(text: string): string {
 		output += `\n\n[Web output truncated to ${OUTPUT_MAX_LINES} lines / ${OUTPUT_MAX_BYTES} bytes.]`;
 	}
 	return output;
+}
+
+// ---------------------------------------------------------------------------
+// Unified search result formatting
+// ---------------------------------------------------------------------------
+
+export interface UnifiedSearchResult {
+	title: string;
+	url: string;
+	snippet: string;
+	age: string;
+	content: string;
+	backend: string;
+}
+
+export function formatUnifiedSearchResults(results: UnifiedSearchResult[]): string {
+	if (!results.length) return "No results found.";
+	return results
+		.map((r, i) =>
+			[
+				`--- Result ${i + 1} (backend: ${r.backend}) ---`,
+				`Title: ${r.title || ""}`,
+				`Link: ${r.url || ""}`,
+				r.age ? `Age: ${r.age}` : "",
+				r.snippet ? `Snippet: ${r.snippet}` : "",
+				r.content ? `Content:\n${r.content}` : "",
+			]
+				.filter(Boolean)
+				.join("\n"),
+		)
+		.join("\n\n");
 }
 
 // ---------------------------------------------------------------------------

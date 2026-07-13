@@ -4,13 +4,13 @@
 
 import { expect } from "chai";
 import {
-	SEMANTIC_MISS_THRESHOLD,
 	pathLooksLikeCode,
 	pathLooksNonSemantic,
 	commandLooksLikeSemanticCodeSearch,
 } from "./lib/detect";
+import { SEMANTIC_MISS_THRESHOLD } from "./index";
 import { SERENA_FIRST_GUIDANCE, SERENA_MISS_GUIDANCE, shouldBlockSemanticMiss } from "./lib/guidance";
-import { stripControlParams } from "./lib/normalize";
+import { normalizeTimeoutMs, stripControlParams } from "./lib/normalize";
 
 describe("Serena tool-selection guidance", () => {
 	it("uses procedural Serena-first wording", () => {
@@ -149,6 +149,41 @@ describe("commandLooksLikeSemanticCodeSearch", () => {
 			expect(commandLooksLikeSemanticCodeSearch(cmd)).to.be.false;
 		});
 	}
+});
+
+describe("normalizeTimeoutMs", () => {
+	it("returns undefined for non-number non-string", () => {
+		expect(normalizeTimeoutMs(null)).to.be.undefined;
+		expect(normalizeTimeoutMs(undefined)).to.be.undefined;
+		expect(normalizeTimeoutMs(true)).to.be.undefined;
+		expect(normalizeTimeoutMs({})).to.be.undefined;
+	});
+
+	it("returns undefined for <= 0 numbers", () => {
+		expect(normalizeTimeoutMs(0)).to.be.undefined;
+		expect(normalizeTimeoutMs(-1)).to.be.undefined;
+	});
+
+	it("returns the number for positive finite numbers", () => {
+		expect(normalizeTimeoutMs(5000)).to.equal(5000);
+		expect(normalizeTimeoutMs(120000)).to.equal(120000);
+	});
+
+	it("parses numeric strings", () => {
+		expect(normalizeTimeoutMs("5000")).to.equal(5000);
+		expect(normalizeTimeoutMs("120000")).to.equal(120000);
+	});
+
+	it("returns undefined for non-numeric strings", () => {
+		expect(normalizeTimeoutMs("abc")).to.be.undefined;
+		expect(normalizeTimeoutMs("")).to.be.undefined;
+		expect(normalizeTimeoutMs("0")).to.be.undefined;
+		expect(normalizeTimeoutMs("-5")).to.be.undefined;
+	});
+
+	it("returns Infinity for Infinity", () => {
+		expect(normalizeTimeoutMs(Infinity)).to.be.undefined;
+	});
 });
 
 describe("stripControlParams", () => {

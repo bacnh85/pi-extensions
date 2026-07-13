@@ -109,7 +109,7 @@ export function stripReasoningContent(payload: unknown): unknown {
  * Strips the entire first line (header + thinking content) because the
  * actual response starts on a new line or after the thinking block.
  */
-const LEAKED_THINKING_HEADER = /^(Reasoning|Thinking|Chain of Thought)\s*:[^\n]*\n?/im;
+const LEAKED_THINKING_HEADER = /^(Reasoning|Thinking|Chain of Thought)\s*:[^\n]*\n?/i;
 
 /**
  * Known Pi tool-name patterns for detecting leaked plain-text tool calls.

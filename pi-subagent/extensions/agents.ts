@@ -27,6 +27,14 @@ export interface AgentConfig {
 export interface AgentDiscoveryResult {
 	agents: AgentConfig[];
 	projectAgentsDir: string | null;
+	diagnostics: AgentDiscoveryDiagnostic[];
+}
+
+export interface AgentDiscoveryDiagnostic {
+	filePath: string;
+	issue: string;
+	/** 'warn' for recoverable issues, 'error' for file-skip issues. */
+	severity: "warn" | "error";
 }
 
 interface AgentCache {
@@ -47,7 +55,11 @@ export function invalidateAgentCache(): void {
 	_cache = null;
 }
 
-function loadAgentsFromDir(dir: string, source: "user" | "project" | "bundled"): AgentConfig[] {
+function loadAgentsFromDir(
+	dir: string,
+	source: "user" | "project" | "bundled",
+	diagnostics: AgentDiscoveryDiagnostic[],
+): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
 	if (!fs.existsSync(dir)) return agents;
@@ -55,25 +67,72 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "bundled"):
 	let entries: fs.Dirent[];
 	try {
 		entries = fs.readdirSync(dir, { withFileTypes: true });
-	} catch {
+	} catch (err) {
+		diagnostics.push({
+			filePath: dir,
+			issue: `Cannot read directory: ${err instanceof Error ? err.message : String(err)}`,
+			severity: "warn",
+		});
 		return agents;
 	}
 
 	for (const entry of entries) {
 		if (!entry.name.endsWith(".md")) continue;
-		if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+		if (!entry.isFile() && !entry.isSymbolicLink()) {
+			diagnostics.push({
+				filePath: path.join(dir, entry.name),
+				issue: `Not a regular file or symlink, skipping.`,
+				severity: "warn",
+			});
+			continue;
+		}
 
 		const filePath = path.join(dir, entry.name);
 		let content: string;
 		try {
 			content = fs.readFileSync(filePath, "utf-8");
-		} catch {
+		} catch (err) {
+			diagnostics.push({
+				filePath,
+				issue: `Cannot read file: ${err instanceof Error ? err.message : String(err)}`,
+				severity: "error",
+			});
 			continue;
 		}
 
 		const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
 
-		if (typeof frontmatter.name !== "string" || typeof frontmatter.description !== "string") continue;
+		if (typeof frontmatter.name !== "string" || typeof frontmatter.description !== "string") {
+			if (typeof frontmatter.name !== "string" && typeof frontmatter.description !== "string") {
+				diagnostics.push({
+					filePath,
+					issue: `Missing both "name" and "description" in frontmatter. Agent file skipped.`,
+					severity: "error",
+				});
+			} else if (typeof frontmatter.name !== "string") {
+				diagnostics.push({
+					filePath,
+					issue: `Missing "name" in frontmatter. Agent file skipped.`,
+					severity: "error",
+				});
+			} else {
+				diagnostics.push({
+					filePath,
+					issue: `Missing "description" in frontmatter. Agent file skipped.`,
+					severity: "error",
+				});
+			}
+			continue;
+		}
+
+		if (!frontmatter.name.trim()) {
+			diagnostics.push({
+				filePath,
+				issue: `"name" in frontmatter is empty. Agent file skipped.`,
+				severity: "error",
+			});
+			continue;
+		}
 
 		const tools =
 			typeof frontmatter.tools === "string"
@@ -81,6 +140,25 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "bundled"):
 				: Array.isArray(frontmatter.tools)
 					? (frontmatter.tools as unknown[]).filter((t): t is string => typeof t === "string")
 					: undefined;
+
+		if (typeof frontmatter.model === "string" && frontmatter.model && !frontmatter.model.includes("/")) {
+			diagnostics.push({
+				filePath,
+				issue: `Model "${frontmatter.model}" does not include a provider prefix (e.g., "anthropic/claude-sonnet-4-20250514"). Resolution may fail.`,
+				severity: "warn",
+			});
+		}
+
+		if (typeof frontmatter.thinking === "string" && frontmatter.thinking) {
+			const validLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+			if (!validLevels.includes(frontmatter.thinking)) {
+				diagnostics.push({
+					filePath,
+					issue: `Invalid thinking level "${frontmatter.thinking}". Valid values: ${validLevels.join(", ")}. Using default.`,
+					severity: "warn",
+				});
+			}
+		}
 
 		agents.push({
 			name: frontmatter.name,
@@ -169,16 +247,18 @@ export function discoverAgents(
 			}
 		}
 		if (!stale) {
-			return { agents: _cache.agents, projectAgentsDir: _cache.projectAgentsDir };
+			return { agents: _cache.agents, projectAgentsDir: _cache.projectAgentsDir, diagnostics: [] };
 		}
 		// Cache is stale — rebuild below
 		_cache = null;
 	}
 
-	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
+	const diagnostics: AgentDiscoveryDiagnostic[] = [];
+
+	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user", diagnostics);
 	const projectAgents =
-		scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
-	const bundledAgents = loadAgentsFromDir(bundledAgentsDir, "bundled");
+		scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project", diagnostics);
+	const bundledAgents = loadAgentsFromDir(bundledAgentsDir, "bundled", diagnostics);
 
 	const agentMap = new Map<string, AgentConfig>();
 
@@ -209,7 +289,7 @@ export function discoverAgents(
 		dirSignatures,
 	};
 
-	return { agents, projectAgentsDir };
+	return { agents, projectAgentsDir, diagnostics };
 }
 
 export function formatAgentList(agents: AgentConfig[], maxItems: number): { text: string; remaining: number } {

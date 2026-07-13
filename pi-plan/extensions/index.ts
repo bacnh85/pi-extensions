@@ -182,7 +182,16 @@ function buildExecutionPrompt(relativePlan: string, mode: "current" | "new", flo
 }
 
 function hasOpenQuestionWarning(content: string): boolean {
-	return /(^|\n)#{1,6}\s+.*open questions?.*\n[\s\S]*\?/i.test(content);
+	const headingRe = /(^|\n)#{1,6}\s+.*open questions?.*\n/gi;
+	let match: RegExpExecArray | null;
+	while ((match = headingRe.exec(content)) !== null) {
+		const rest = content.slice(match.index + match[0].length);
+		// ponytail: scope to same section — stop at the next heading of any level
+		const nextHeading = rest.match(/\n(?=#{1,6}\s)/);
+		const section = nextHeading ? rest.slice(0, nextHeading.index!) : rest;
+		if (/\?/.test(section)) return true;
+	}
+	return false;
 }
 
 function modelKey(model: { provider?: string; id?: string } | undefined): string | undefined {
@@ -193,11 +202,13 @@ function modelKey(model: { provider?: string; id?: string } | undefined): string
 /** Check if a bash command writes to the filesystem. In plan mode, write commands are blocked regardless of confirmation. */
 function isWriteCommand(cmd: string): boolean {
 	const c = cmd.trim();
-	if (!c || /[\r\n;&|`$()<>]/.test(c) || /--output(?:=|\s)/i.test(c)) return true;
+	if (!c || /[\r\n;&|`$<>]/.test(c) || /--output(?:=|\s)/i.test(c)) return true;
 	if (/^git\s+/i.test(c)) {
 		return !(/^git\s+(status|rev-parse|diff|show|log|ls-files)\b/i.test(c)
 			|| /^git\s+branch\s+--(?:list|all|remote|merged|no-merged|contains|show-current)\b/i.test(c));
 	}
+	if (/^sed\b/i.test(c) && /\s-i\b/i.test(c)) return true;
+	if (/^tee\b/i.test(c)) return true;
 	if (/^find\b/i.test(c) && /-(delete|exec|execdir|ok|okdir|fprint[f0]?|fls)\b/i.test(c)) return true;
 	if (/^sort\b/i.test(c) && /\s-o(?:\s|$)/i.test(c)) return true;
 	return !/^(?:rg|grep|find|fd|ls|pwd|cat|head|tail|awk|wc|sort|uniq|cut)\b/i.test(c);
@@ -256,6 +267,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	let flow: FlowState | undefined;
 	let flowController: AbortController | undefined;
 	let preferences: PlanPreferences | undefined;
+	let reviewTimer: ReturnType<typeof setTimeout> | undefined;
+	let writePlanInProgress = false;
 
 	// ── UI helpers ──────────────────────────────────────────────
 
@@ -340,9 +353,12 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 	function applyThinking(level: ThinkingLevel): void {
 		applyingStoredThinking = true;
-		// @ts-expect-error — SDK 0.80.2 ThinkingLevel omits "max", runtime accepts it
-		pi.setThinkingLevel(level);
-		queueMicrotask(() => { applyingStoredThinking = false; });
+		try {
+			// @ts-expect-error — SDK 0.80.2 ThinkingLevel omits "max", runtime accepts it
+			pi.setThinkingLevel(level);
+		} finally {
+			applyingStoredThinking = false;
+		}
 	}
 
 	function recordActiveThinkingLevel(
@@ -540,15 +556,15 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		if (!flow || !lastPlanPath) return { ok: false, error: "Workflow state is incomplete" };
 		try { await access(lastPlanPath); } catch { return { ok: false, error: `Plan file not found: ${lastPlanPath}` }; }
 		const id = crypto.randomUUID();
-		let accepted = false;
-		let settled = false;
+		let reviewState: "IDLE" | "ACCEPTED" | "RESOLVED" | "TIMED_OUT" = "IDLE";
 		let resolve!: (value: { ok: boolean; findings?: ReviewFinding[]; error?: string }) => void;
 		const result = new Promise<{ ok: boolean; findings?: ReviewFinding[]; error?: string }>((done) => { resolve = done; });
 		flowController?.abort();
 		flowController = new AbortController();
-		const timer = setTimeout(() => {
-			if (!settled) {
-				settled = true;
+		if (reviewTimer) clearTimeout(reviewTimer);
+		reviewTimer = setTimeout(() => {
+			if (reviewState === "IDLE" || reviewState === "ACCEPTED") {
+				reviewState = "TIMED_OUT";
 				flowController?.abort();
 				resolve({ ok: false, error: "Reviewer timed out" });
 			}
@@ -575,7 +591,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 				? `\n\nUntracked content changes since start:\n${JSON.stringify(changes, null, 2)}`
 				: "\n\nUntracked files unchanged since start.";
 		} catch (error) {
-			clearTimeout(timer);
+			clearTimeout(reviewTimer);
 			return { ok: false, error: `Current untracked file snapshot failed: ${String(error)}` };
 		}
 
@@ -586,20 +602,21 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			timeout: 180_000,
 			signal: flowController.signal,
 			accept: () => {
-				if (accepted) return false;
-				accepted = true;
+				if (reviewState !== "IDLE") return false;
+				reviewState = "ACCEPTED";
 				return true;
 			},
 			respond: (response: any) => {
-				if (settled || response?.id !== id) return;
-				settled = true;
-				clearTimeout(timer);
+				if ((reviewState !== "IDLE" && reviewState !== "ACCEPTED") || response?.id !== id) return;
+				reviewState = "RESOLVED";
+				clearTimeout(reviewTimer);
 				resolve(response.ok ? { ok: true, findings: response.result?.findings ?? [] } : { ok: false, error: response.error });
 			},
 		});
-		if (!accepted) {
-			settled = true;
-			clearTimeout(timer);
+		await new Promise<void>(r => queueMicrotask(r));
+		if (reviewState === "IDLE") {
+			reviewState = "RESOLVED";
+			clearTimeout(reviewTimer);
 			return { ok: false, error: "pi-review is unavailable" };
 		}
 		return result;
@@ -736,6 +753,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			// ponytail: guard against concurrent write_plan calls
+			if (writePlanInProgress) throw new Error("write_plan is already in progress, wait for completion before calling again.");
+			writePlanInProgress = true;
+			try {
 			// ponytail: write_plan is available in normal mode too — agent updates plans during execution
 			const typedParams = params as WritePlanParams;
 
@@ -800,7 +821,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 					status: lastPlanStatus,
 				},
 			};
-		},
+		} finally {
+			writePlanInProgress = false;
+		}
+	},
 	});
 
 	pi.registerTool({

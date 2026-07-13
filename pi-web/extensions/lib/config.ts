@@ -172,7 +172,7 @@ export function loadFirecrawlConfig(params: Record<string, unknown> = {}, cwd = 
 	const explicitApiKey = (params.firecrawl_api_key as string) || (params.api_key as string);
 	const apiUrl = (params.firecrawl_api_url as string) || (params.api_url as string) || apiUrlLookup.value;
 	const apiKey = explicitApiKey || apiKeyLookup.value || "";
-	const timeoutValue = (params.timeout_ms as number) || findEnvValue("FIRECRAWL_TIMEOUT_MS", cwd).value;
+	const timeoutValue = (params.timeout_ms as number) || findEnvValue("FIRECRAWL_TIMEOUT_MS", cwd, includeCwdEnv).value;
 	const baseUrl = normalizeFirecrawlBaseUrl(apiUrl);
 	const isHosted = !apiUrl || baseUrl.startsWith(HOSTED_FIRECRAWL_BASE_URL);
 	const timeoutMs = timeoutValue ? Number.parseInt(String(timeoutValue), 10) : 60000;

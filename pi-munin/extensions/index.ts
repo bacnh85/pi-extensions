@@ -86,10 +86,9 @@ async function callMunin(
 	} catch (error) {
 		// Let the tool_result event handler classify the error;
 		// avoid double-wrapping by not adding "Munin error:" prefix here.
-		const sanitized = sanitizeErrorMessage(
-			error instanceof Error ? error : new Error(String(error)),
-		);
-		throw new Error(sanitized);
+		const err = error instanceof Error ? error : new Error(String(error));
+		err.message = sanitizeErrorMessage(err);
+		throw err;
 	}
 }
 
@@ -132,7 +131,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 				Type.Boolean({ description: "Include total count.", default: false }),
 			),
 		}),
-		async execute(_id, params, _signal, _onUpdate, _ctx) {
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const { query, topK = 10, tags, tag_mode, since, before, include_total } = params as any;
 			validateSearchQuery(query);
 			const result = await withMuninClient(params, async (client, projectId) => {
@@ -147,7 +146,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 				if (before) searchParams.before = before;
 				if (include_total) searchParams.includeTotal = include_total;
 				return callMunin(client, projectId, "search", searchParams);
-			});
+			}, ctx);
 			return {
 				content: [{ type: "text" as const, text: toTextResult(result) }],
 				details: result,
@@ -168,12 +167,12 @@ export default function muninExtension(pi: ExtensionAPI) {
 			...controlSchema,
 			key: Type.String({ description: "Key to retrieve." }),
 		}),
-		async execute(_id, params, _signal, _onUpdate, _ctx) {
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const { key } = params as any;
 			validateMemoryKey(key);
 			const result = await withMuninClient(params, async (client, projectId) => {
 				return callMunin(client, projectId, "get", { key });
-			});
+			}, ctx);
 			return {
 				content: [{ type: "text" as const, text: toTextResult(result) }],
 				details: result,
@@ -221,7 +220,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 				}),
 			),
 		}),
-		async execute(_id, params, _signal, _onUpdate, _ctx) {
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const { key, title, content, tags, valid_from, valid_to, pinned } = params as any;
 			validateMemoryKey(key);
 			const tagValidation = validateMemoryTags(tags);
@@ -237,7 +236,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 				if (valid_to) payload.validTo = valid_to;
 				if (typeof pinned === "boolean") payload.pinned = pinned;
 				return callMunin(client, projectId, "store", payload);
-			});
+			}, ctx);
 			const keyStr = (result as any)?.key ?? key;
 			return {
 				content: [
@@ -268,11 +267,11 @@ export default function muninExtension(pi: ExtensionAPI) {
 				Type.Number({ description: "Offset.", default: 0 }),
 			),
 		}),
-		async execute(_id, params, _signal, _onUpdate, _ctx) {
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const { limit = 20, offset = 0 } = params as any;
 			const result = await withMuninClient(params, async (client, projectId) => {
 				return callMunin(client, projectId, "list", { limit, offset });
-			});
+			}, ctx);
 			return {
 				content: [{ type: "text" as const, text: toTextResult(result) }],
 				details: result,
@@ -294,11 +293,11 @@ export default function muninExtension(pi: ExtensionAPI) {
 				Type.Number({ description: "Max results. Default 10.", default: 10 }),
 			),
 		}),
-		async execute(_id, params, _signal, _onUpdate, _ctx) {
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const { limit = 10 } = params as any;
 			const result = await withMuninClient(params, async (client, projectId) => {
 				return callMunin(client, projectId, "recent", { limit });
-			});
+			}, ctx);
 			return {
 				content: [{ type: "text" as const, text: toTextResult(result) }],
 				details: result,
@@ -341,7 +340,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 			}
 			const result = await withMuninClient(params, async (client, projectId) => {
 				return callMunin(client, projectId, "delete", { key, force: true });
-			});
+			}, ctx);
 			return {
 				content: [{ type: "text" as const, text: `Deleted memory \`${key}\`.` }],
 				details: result,
@@ -360,10 +359,10 @@ export default function muninExtension(pi: ExtensionAPI) {
 		parameters: Type.Object({
 			...controlSchema,
 		}),
-		async execute(_id, params, _signal, _onUpdate, _ctx) {
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const result = await withMuninClient(params, async (client, projectId) => {
 				return callMunin(client, projectId, "capabilities", {});
-			});
+			}, ctx);
 			return {
 				content: [{ type: "text" as const, text: formatCapabilities(result as Record<string, unknown>) }],
 				details: result,
@@ -385,11 +384,11 @@ export default function muninExtension(pi: ExtensionAPI) {
 			memory_ids: Type.Array(Type.String(), { description: "Memory IDs to share." }),
 			target_project_ids: Type.Array(Type.String(), { description: "Target project IDs." }),
 		}),
-		async execute(_id, params, _signal, _onUpdate, _ctx) {
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const { memory_ids, target_project_ids } = params as any;
 			const result = await withMuninClient(params, async (client, projectId) => {
 				return callMunin(client, projectId, "share", { memoryIds: memory_ids, targetProjectIds: target_project_ids });
-			});
+			}, ctx);
 			return {
 				content: [{ type: "text" as const, text: toTextResult(result) }],
 				details: result,
@@ -442,8 +441,9 @@ export default function muninExtension(pi: ExtensionAPI) {
 		if (!event.toolName.startsWith("munin_") || !event.isError) return;
 		const text = event.content.map((part: any) => part?.text ?? "").join("\n");
 		// Strip any existing "Munin <type> error:" prefix to avoid double-wrapping.
-		// The stale-protocol handler and classifyError both may add this prefix.
-		const classified = classifyError(new Error(text));
+		// classifyError may add this prefix on a previous pass.
+		const cleanText = text.replace(/^Munin \w+ error: /, "");
+		const classified = classifyError(new Error(cleanText));
 		const sanitized = sanitizeErrorMessage(new Error(classified.message));
 		return {
 			content: [

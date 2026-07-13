@@ -21,7 +21,7 @@ function rs(shell?: WindowsShellKind): WindowsShellKind {
 	return getDefaultShell().kind;
 }
 
-// ponytail: in-memory audit log
+// in-memory audit log
 const _log: { shell: string; command: string; exitCode: number | null; timedOut: boolean }[] = [];
 function _fmt() {
 	if (!_log.length) return "No commands executed yet.";

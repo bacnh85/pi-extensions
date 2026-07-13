@@ -30,12 +30,12 @@ export const CODE_FILE_EXTENSIONS = new Set([
 ]);
 
 const NON_SEMANTIC_FILE_EXTENSIONS = new Set([
-	".json", ".jsonl", ".lock", ".md", ".txt", ".yaml", ".yml",
+	".json", ".jsonl", ".jsonc", ".lock", ".md", ".txt", ".yaml", ".yml",
 	".csv", ".log", ".env", ".ini", ".cfg", ".toml",
 	".editorconfig", ".gitignore",
+	".xml", ".graphql", ".svg",
 ]);
 
-export const SEMANTIC_MISS_THRESHOLD = 2;
 
 export function pathLooksLikeCode(value: unknown): boolean {
 	const ext = normalizePathExtension(value);
@@ -59,7 +59,7 @@ function normalizePathExtension(value: unknown): string | undefined {
 const TODO_LIKE_PATTERNS = /\b(TODO|FIXME|HACK|NOTE|XXX|BUG|WORKAROUND|OPTIMIZE|REVIEW|TEMP|WARNING)\b/i;
 
 export function commandLooksLikeSemanticCodeSearch(command: string): boolean {
-	if (!/\b(rg|grep|fd|find)\b/.test(command)) return false;
+	if (!/\b(rg|grep|fd|find|ag|ack|pt)\b/.test(command)) return false;
 	// Non-semantic targets: docs, configs, and project files
 	if (/\b(SKILL\.md|README\.md|AGENTS\.md|package\.json|skill-registry\.json|skill-history\.jsonl)\b/i.test(command)) return false;
 	// Searching for TODO/FIXME/etc. is a non-semantic text search

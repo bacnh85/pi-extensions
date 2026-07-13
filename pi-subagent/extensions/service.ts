@@ -2,6 +2,12 @@ import { AuthStorage, type ExtensionContext } from "@earendil-works/pi-coding-ag
 import type { AgentConfig } from "./agents.ts";
 import { runSubAgent, type SubAgentResult } from "./runner.ts";
 import { resolveModel } from "./model.ts";
+import {
+	validateAgentTools,
+	normalizeTimeout,
+	resolveSafeCwd,
+	MAX_INSTRUCTIONS_LENGTH,
+} from "./security.ts";
 
 export const SUBAGENT_REQUEST_EVENT = "pi-subagent:run";
 
@@ -43,37 +49,42 @@ export async function runNamedAgent(options: {
 		// ponytail: env and headers stay on the parent modelRegistry — reuse it directly.
 	}
 
-	const timeoutController = options.timeout && options.timeout > 0 ? new AbortController() : undefined;
-	const timeoutId = timeoutController ? setTimeout(() => timeoutController.abort(), options.timeout) : undefined;
-	const signals = [options.signal, timeoutController?.signal].filter((value): value is AbortSignal => Boolean(value));
-	const signal = signals.length > 1
-		? typeof (AbortSignal as any).any === "function"
-			? (AbortSignal as any).any(signals)
-			: signals[0]
-		: signals[0];
-	const contract = options.instructions?.slice(0, 16 * 1024);
+	// Security: validate and normalise timeout.
+	const effectiveTimeoutMs = normalizeTimeout({ requested: options.timeout }).timeoutMs;
+
+	// Security: validate tools against allowlist.
+	const rawTools = options.agent.tools ?? ["read", "bash", "edit", "write", "grep", "find", "ls"];
+	const toolValidation = validateAgentTools({ tools: rawTools });
+	if (toolValidation.errors.length > 0) {
+		throw new Error(`Tool validation errors for agent "${options.agent.name}": ${toolValidation.errors.join("; ")}`);
+	}
+
+	// Security: validate cwd (service caller must provide valid cwd).
+	// The service path uses the same policy as the tool path.
+	const safeCwd = resolveSafeCwd({ workspaceRoot: options.ctx.cwd, childCwd: options.cwd });
+	if (safeCwd.error) {
+		throw new Error(safeCwd.error);
+	}
+
+	const contract = options.instructions?.slice(0, MAX_INSTRUCTIONS_LENGTH);
 
 	try {
 		const result = await runSubAgent({
-			cwd: options.cwd,
+			cwd: safeCwd.path,
 			systemPrompt: contract ? `${options.agent.systemPrompt}\n\n## Task Contract\n${contract}` : options.agent.systemPrompt,
 			task: options.task,
-			tools: (options.agent.tools ?? ["read", "bash", "edit", "write", "grep", "find", "ls"]).filter((tool) => tool !== "subagent"),
+			tools: toolValidation.tools,
 			model,
 			authStorage,
 			modelRegistry,
-			signal,
+			signal: options.signal,
+			timeoutMs: effectiveTimeoutMs,
 			agentName: options.agent.name,
 			thinkingLevel: options.agent.thinking,
 			onMessage: options.onMessage,
 		});
-		if (timeoutController?.signal.aborted && !options.signal?.aborted) {
-			result.exitCode = 1;
-			result.stopReason = "timeout";
-			result.errorMessage ||= `Timeout after ${options.timeout}ms`;
-		}
 		return result;
 	} finally {
-		if (timeoutId) clearTimeout(timeoutId);
+		// No manual timeout handling needed — runSubAgent handles timeouts internally.
 	}
 }

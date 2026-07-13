@@ -16,6 +16,7 @@ export async function fetchBraveResults(
 	signal?: AbortSignal,
 ): Promise<BraveResult[]> {
 	return withRetry(async () => {
+		if (signal?.aborted) throw signal.reason ?? new Error("Operation aborted.");
 		const params = new URLSearchParams({ q: query, count: String(count), country });
 		if (freshness) params.append("freshness", freshness);
 		const response = await fetch(`https://api.search.brave.com/res/v1/web/search?${params}`, {
@@ -36,5 +37,5 @@ export async function fetchBraveResults(
 				snippet: sanitizeSnippet(r.description || ""),
 				age: sanitizeSnippet(r.age || r.page_age || ""),
 			}));
-	});
+	}, undefined, signal);
 }

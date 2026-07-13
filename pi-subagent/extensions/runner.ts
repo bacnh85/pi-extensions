@@ -25,6 +25,11 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import {
+	classifyStopReason,
+	createCombinedAbortSignal,
+	type SubagentStatus,
+} from "./security.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,6 +55,8 @@ export interface SubAgentResult {
 	model?: string;
 	stopReason?: string;
 	errorMessage?: string;
+	/** Canonical result status (added in 0.6.0). */
+	status?: SubagentStatus;
 }
 
 // ---------------------------------------------------------------------------
@@ -67,8 +74,9 @@ export async function runSubAgent(options: {
 	signal?: AbortSignal;
 	agentName?: string;
 	thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-	onUpdate?: (text: string) => void;
 	onMessage?: (partialResult: SubAgentResult) => void;
+	/** Pre-validated timeout in ms. When provided, an abort signal will be created. */
+	timeoutMs?: number;
 }): Promise<SubAgentResult> {
 	const {
 		cwd,
@@ -81,8 +89,8 @@ export async function runSubAgent(options: {
 		signal,
 		agentName = "subagent",
 		thinkingLevel = "off",
-		onUpdate,
 		onMessage,
+		timeoutMs,
 	} = options;
 
 	const result: SubAgentResult = {
@@ -93,6 +101,7 @@ export async function runSubAgent(options: {
 		stderr: "",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
 		model: `${model.provider}/${model.id}`,
+		status: undefined,
 	};
 
 	// Build a minimal resource loader. The sub-agent sees ONLY the agent's
@@ -114,11 +123,31 @@ export async function runSubAgent(options: {
 		retry: { enabled: false },
 	});
 
+	// Hoisted so the outer catch can clean up on early failure.
+	let timeoutController: AbortController | undefined;
+	let timeoutId: ReturnType<typeof setTimeout> | undefined;
+	let cleanupCombined: (() => void) | undefined;
+
 	try {
-		if (signal?.aborted) {
+		// Build combined signal from parent signal and timeout
+		const signalsToCombine: (AbortSignal | undefined | null | false)[] = [signal];
+
+		// Create timeout controller
+		if (timeoutMs && timeoutMs > 0) {
+			timeoutController = new AbortController();
+			timeoutId = setTimeout(() => timeoutController!.abort(new Error(`Timeout after ${timeoutMs}ms`)), timeoutMs);
+			signalsToCombine.push(timeoutController.signal);
+		}
+
+		const { signal: combinedSignal, cleanup: cleanupCb } = createCombinedAbortSignal(signalsToCombine);
+		cleanupCombined = cleanupCb;
+
+		if (combinedSignal.aborted) {
 			result.exitCode = 1;
-			result.stopReason = "aborted";
-			result.errorMessage = "Sub-agent aborted before start";
+			const isTimeout = timeoutController?.signal.aborted === true && signal?.aborted !== true;
+			result.stopReason = isTimeout ? "timeout" : "aborted";
+			result.errorMessage = combinedSignal.reason instanceof Error ? combinedSignal.reason.message : "Sub-agent aborted before start";
+			result.status = classifyStopReason(result.stopReason, !isTimeout, isTimeout);
 			return result;
 		}
 
@@ -136,21 +165,22 @@ export async function runSubAgent(options: {
 
 		let cleanupAbort: (() => void) | undefined;
 		let cleanupEventAbort: (() => void) | undefined;
+		let abortedBySignal = false;
+		let timedOut = false;
+
 		try {
-			// Wire abort signal
-			if (signal) {
-				const onAbort = () => session.abort();
-				if (signal.aborted) {
-					// Already aborted — shortcut
-					result.exitCode = 1;
-					result.stopReason = "aborted";
-					result.errorMessage = "Sub-agent aborted before start";
-					onAbort();
-					return result;
-				}
-				signal.addEventListener("abort", onAbort, { once: true });
-				cleanupAbort = () => signal.removeEventListener("abort", onAbort);
+			// Wire combined abort signal to session
+			const onAbort = () => {
+				session.abort();
+			};
+			if (combinedSignal.aborted) {
+				abortedBySignal = true;
+				timedOut = timeoutController?.signal.aborted === true && signal?.aborted !== true;
+				onAbort();
+				return result;
 			}
+			combinedSignal.addEventListener("abort", onAbort, { once: true });
+			cleanupAbort = () => combinedSignal.removeEventListener("abort", onAbort);
 
 			// Collect all messages and usage stats from events
 			const eventPromise = new Promise<void>((resolve, reject) => {
@@ -208,19 +238,16 @@ export async function runSubAgent(options: {
 				});
 
 				// Resolve on abort so the eventPromise doesn't hang
-				if (signal) {
-					const onAbortResolve = () => {
-						finish(() => {
-							result.exitCode = 1;
-							result.stopReason = "aborted";
-							if (!result.errorMessage) result.errorMessage = "Sub-agent aborted";
-							unsubscribe();
-							resolve();
-						});
-					};
-					signal.addEventListener("abort", onAbortResolve, { once: true });
-					cleanupEventAbort = () => signal.removeEventListener("abort", onAbortResolve);
-				}
+				const onAbortResolve = () => {
+					finish(() => {
+						result.exitCode = 1;
+						if (!result.errorMessage) result.errorMessage = "Sub-agent aborted";
+						unsubscribe();
+						resolve();
+					});
+				};
+				combinedSignal.addEventListener("abort", onAbortResolve, { once: true });
+				cleanupEventAbort = () => combinedSignal.removeEventListener("abort", onAbortResolve);
 			});
 
 			await Promise.race([
@@ -228,13 +255,31 @@ export async function runSubAgent(options: {
 				eventPromise,
 			]);
 
-			if (result.stopReason !== "aborted") {
+			// Detect timeout vs. parent abort.
+			timedOut = timeoutController?.signal.aborted === true && signal?.aborted !== true;
+			abortedBySignal = combinedSignal.aborted && !timedOut;
+
+			if (timedOut) {
+				result.exitCode = 1;
+				result.stopReason = "timeout";
+				result.errorMessage ||= `Timeout after ${timeoutMs}ms`;
+			} else if (abortedBySignal) {
+				result.exitCode = 1;
+				result.stopReason = "aborted";
+				result.errorMessage ||= "Sub-agent aborted";
+			} else {
 				result.exitCode = 0;
 			}
+
+			// Classify canonical status.
+			result.status = classifyStopReason(result.stopReason, result.stopReason === "aborted", result.stopReason === "timeout");
+
 			return result;
 		} finally {
 			cleanupAbort?.();
 			cleanupEventAbort?.();
+			cleanupCombined();
+			if (timeoutId) clearTimeout(timeoutId);
 			try {
 				session.dispose();
 			} catch {
@@ -246,6 +291,10 @@ export async function runSubAgent(options: {
 		result.exitCode = 1;
 		result.errorMessage = message;
 		if (!result.stopReason) result.stopReason = "error";
+		result.status = classifyStopReason("error", false, false);
+		// Ensure cleanup runs even when the outer try fails before the inner finally.
+		cleanupCombined?.();
+		if (timeoutId) clearTimeout(timeoutId);
 		return result;
 	}
 }
@@ -255,31 +304,25 @@ export async function runSubAgent(options: {
 // ---------------------------------------------------------------------------
 
 export function getFinalOutput(messages: Message[]): string {
-	// Prefer the last assistant message with non-empty text and NO tool calls (pure final answer).
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
 		if (msg.role !== "assistant") continue;
 		const texts: string[] = [];
-		let hasToolCalls = false;
 		for (const part of msg.content) {
 			if (part.type === "text" && part.text.trim()) texts.push(part.text);
-			else if (part.type === "toolCall") hasToolCalls = true;
 		}
-		if (texts.length > 0 && !hasToolCalls) return texts.join("");
-	}
-	// Fallback: last assistant message with any non-empty text (even if it also has tool calls).
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
-		if (msg.role !== "assistant") continue;
-		const texts = msg.content
-			.filter((p): p is { type: "text"; text: string } => p.type === "text" && p.text.trim().length > 0)
-			.map((p) => p.text);
-		if (texts.length > 0) return texts.join("");
+		if (texts.length === 0) continue;
+		return texts.join("");
 	}
 	return "";
 }
 
 export function isFailedResult(result: SubAgentResult): boolean {
+	// Use canonical status if available.
+	if (result.status) {
+		return result.status === "error" || result.status === "aborted" || result.status === "timeout";
+	}
+	// Fall back to legacy heuristics.
 	return (
 		result.exitCode !== 0 ||
 		result.stopReason === "error" ||

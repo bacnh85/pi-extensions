@@ -1,21 +1,31 @@
 {
   "name": "@bacnh85/pi-subagent",
-  "version": "0.5.0",
-  "description": "Minimal-overhead sub-agents for Pi with isolated SDK sessions, parallel and chained delegation, and inspectable threads.",
+  "version": "0.6.1",
+  "description": "In-process subagents for Pi with isolated SDK sessions, parallel and chained delegation, and inspectable threads.",
   "type": "module",
   "license": "MIT",
   "publishConfig": { "access": "public" },
-  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-subagent",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bacnh85/pi-extensions.git",
     "directory": "pi-subagent"
   },
   "bugs": { "url": "https://github.com/bacnh85/pi-extensions/issues" },
-  "keywords": ["pi-package", "pi-extension", "subagent", "sub-agent", "delegation", "parallel"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "subagent",
+    "sub-agent",
+    "delegation",
+    "parallel",
+    "chain",
+    "security"
+  ],
   "files": [
     "README.md",
     "agent-format.md",
+    "CHANGELOG.md",
     "agents/",
     "extensions/index.ts",
     "extensions/agents.ts",
@@ -25,19 +35,24 @@
     "extensions/render.ts",
     "extensions/threads.ts",
     "extensions/thread-viewer.ts",
+    "extensions/security.ts",
     "extensions/package.json"
   ],
   "pi": { "extensions": ["./extensions/index.ts"] },
+  "engines": {
+    "node": ">=20.18"
+  },
   "scripts": {
-    "test": "cd extensions && npx mocha",
-    "typecheck": "tsc --noEmit"
+    "test": "cd extensions && mocha",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-agent-core": "*",
-    "@earendil-works/pi-tui": "*",
-    "typebox": "*"
+    "@earendil-works/pi-coding-agent": ">=0.80.0 <0.81.0",
+    "@earendil-works/pi-ai": ">=0.80.0 <0.81.0",
+    "@earendil-works/pi-agent-core": ">=0.80.0 <0.81.0",
+    "@earendil-works/pi-tui": ">=0.80.0 <0.81.0",
+    "typebox": ">=1.3.0 <2.0.0"
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "^0.80.2",

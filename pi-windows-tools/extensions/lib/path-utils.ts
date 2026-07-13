@@ -10,6 +10,11 @@ export function toPosixPath(windowsPath: string): string {
 	// Strip \\?\ long-path prefix
 	p = p.replace(/^\/\/\?\/+/, "");
 
+	// Handle \\?\UNC\server\share → //server/share
+	if (p.startsWith("UNC/")) {
+		p = "//" + p.slice(4);
+	}
+
 	// Handle device paths (\\.\COM1 → \\.\COM1, keep as-is)
 	if (p.match(/^\/{2}\.\//)) return p;
 
@@ -58,16 +63,19 @@ export function normalizeWindowsPath(path: string): string {
 	if (!path) return path;
 	const isUnc = path.startsWith("\\\\") || path.startsWith("//");
 	let n = path.replace(/\//g, "\\").replace(/^([a-z]):\\/, (_, d) => `${d.toUpperCase()}:\\`);
-	if (isUnc) n = "\\" + n.slice(2).replace(/\\\\+/g, "\\");
+	if (isUnc) n = "\\\\" + n.slice(2).replace(/\\\\+/g, "\\");
 	else n = n.replace(/\\\\+/g, "\\");
 	const parts = n.split("\\");
 	const r: string[] = [];
+	const minLen = isUnc ? 2 : 1;
 	for (const p of parts) {
 		if (p === "." || p === "") continue;
-		if (p === "..") { if (r.length > 1) r.pop(); continue; }
+		if (p === "..") { if (r.length > minLen) r.pop(); continue; }
 		r.push(p);
 	}
-	return r.join("\\") || (n.endsWith("\\") ? "\\" : "");
+	const joined = r.join("\\");
+	if (isUnc) return "\\\\" + joined;
+	return joined || (n.endsWith("\\") ? "\\" : "");
 }
 
 /**
@@ -83,7 +91,7 @@ export function isWindowsAbsolutePath(path: string): boolean {
  */
 export function quoteForShell(path: string, shell: WindowsShellKind): string {
 	if (!path) return '""';
-	const q = path.includes(" ") || path.includes("\t") || path.includes('"');
+	const q = path.includes(" ") || path.includes("\t") || path.includes('"') || path.includes("'");
 	switch (shell) {
 		case "pwsh":
 		case "powershell":

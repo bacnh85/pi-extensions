@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
+import { dirname, resolve as resolvePath } from "node:path";
 import {
 	createBashToolDefinition,
 	createEditToolDefinition,
@@ -13,11 +13,6 @@ import {
 import {
 	isRecord,
 	deepSeekSelectionGuidance,
-	hasAnyTool,
-	isOpenCodeGoDeepSeekV4FlashModel,
-	isOpenCodeGoDeepSeekV4Model,
-	isOpenCodeGoDeepSeekV4ProModel,
-	DEEPSEEK_V4_PRO_MODEL,
 	isSemanticMissToolCall,
 	missedDedicatedTool,
 	selectionGuidanceEnabled,
@@ -25,7 +20,6 @@ import {
 	reasoningStripEnabled,
 	repairEnabled,
 	isDeepSeekV4ModelByModel,
-	DEEPSEEK_V4_FLASH_MODEL,
 	categorizeToolError,
 	directDeepSeekEnabled,
 	checkDangerousCommand,
@@ -35,11 +29,9 @@ import {
 	blockDangerousEnabled,
 	superPowerModeEnabled,
 	superPowerPromptContent,
-	SUPER_POWER_BASE_PROMPT,
-	SERENA_CODE_TOOLS,
-	bashReadCommandPath,
 	suggestBestSerenaCommand,
 	looksLikeCodePath,
+	clearGuidanceCache,
 	type ErrorInfo,
 	type ErrorCategory,
 } from "./lib/deepseek-tools";
@@ -47,36 +39,7 @@ import { repairDeepSeekToolArguments, type RepairKind } from "./lib/tool-input-r
 import { stripReasoningContent, cleanLeakedContentFromMessages } from "./lib/reasoning-content";
 import { debugLog, logWarn } from "./lib/logger";
 
-export {
-	DEEPSEEK_V4_PRO_MODEL,
-	DEEPSEEK_V4_FLASH_MODEL,
-	deepSeekSelectionGuidance,
-	isOpenCodeGoDeepSeekV4FlashModel,
-	isOpenCodeGoDeepSeekV4Model,
-	isOpenCodeGoDeepSeekV4ProModel,
-	isSemanticMissToolCall,
-	missedDedicatedTool,
-	selectionGuidanceEnabled,
-	strictSerenaEnabled,
-};
 
-export {
-	categorizeToolError,
-	checkDangerousCommand,
-	maxErrorHistory,
-	thinkingBudget,
-	autoBlockAfterReminders,
-	blockDangerousEnabled,
-	superPowerModeEnabled,
-	superPowerPromptContent,
-	SUPER_POWER_BASE_PROMPT,
-	SERENA_CODE_TOOLS,
-	bashReadCommandPath,
-	suggestBestSerenaCommand,
-	looksLikeCodePath,
-	type ErrorInfo,
-	type ErrorCategory,
-} from "./lib/deepseek-tools";
 
 function addReadDefaults(args: unknown): unknown {
 	if (!isRecord(args)) return args;
@@ -225,6 +188,13 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		debugLog("session_start:", ctx.model?.provider, ctx.model?.id);
 
+		// ── Reset guidance cache at session boundary ──
+		clearGuidanceCache();
+
+		// ── Reset error history and turn counter at session boundary ──
+		errorHistory.clear();
+		turnCounter = 0;
+
 		// ── Diagnostic: snapshot active tools during session_start ──
 		const toolsNow = pi.getActiveTools();
 		const serenaNow = toolsNow.filter((t: string) => t.startsWith("serena_")).length;
@@ -288,6 +258,12 @@ export default function (pi: ExtensionAPI) {
 		remindedThisTurn = false;
 		repairThisTurn = isDeepSeekV4 && repairEnabled();
 
+		// ── Reset error state unconditionally (prevent cross-session leaks) ──
+		const hadErrorThisTurn = hasErrorThisTurn;
+		const hadLastErrorInfo = lastErrorInfo;
+		hasErrorThisTurn = false;
+		lastErrorInfo = null;
+
 		// Build prefix from super power + guidance + reinforcement sections
 		const prefixParts: string[] = [];
 
@@ -302,20 +278,18 @@ export default function (pi: ExtensionAPI) {
 			let systemPrompt = event.systemPrompt;
 
 			// Context-aware error-recovery hint — adapts for repeated failures
-			if (hasErrorThisTurn) {
-				const repeatCount = errorHistory.get(lastErrorInfo!.toolName)?.count ?? 0;
-				let hint = lastErrorInfo!.hint;
+			if (hadErrorThisTurn) {
+				const repeatCount = errorHistory.get(hadLastErrorInfo!.toolName)?.count ?? 0;
+				let hint = hadLastErrorInfo!.hint;
 				if (repeatCount >= 2) {
-					hint += ` You have had ${repeatCount} failures on ${lastErrorInfo!.toolName}. Try the simplest possible inputs — shorter paths, fewer options, explicit required fields only.`;
+					hint += ` You have had ${repeatCount} failures on ${hadLastErrorInfo!.toolName}. Try the simplest possible inputs — shorter paths, fewer options, explicit required fields only.`;
 				}
-				debugLog("error hint:", lastErrorInfo!.toolName, repeatCount, "repeats, cat:", lastErrorInfo!.category);
+				debugLog("error hint:", hadLastErrorInfo!.toolName, repeatCount, "repeats, cat:", hadLastErrorInfo!.category);
 				systemPrompt = `${systemPrompt}\n\nNote: ${hint}`;
-				hasErrorThisTurn = false;
-				lastErrorInfo = null;
 			}
 
-			const activeTools = event.systemPromptOptions?.selectedTools ?? [];
-			if (hasAnyTool(activeTools, ["serena_get_symbols_overview", "serena_find_symbol", "serena_find_referencing_symbols", "serena_find_declaration", "serena_find_implementations", "ls", "grep", "find", "read", "edit", "bash"])) {
+			const activeTools = Array.isArray(event.systemPromptOptions?.selectedTools) ? event.systemPromptOptions.selectedTools : [];
+			if (Array.isArray(activeTools) && ["serena_get_symbols_overview", "serena_find_symbol", "serena_find_referencing_symbols", "serena_find_declaration", "serena_find_implementations", "ls", "grep", "find", "read", "edit", "bash"].some((name) => activeTools.includes(name))) {
 				prefixParts.push(deepSeekSelectionGuidance(activeTools));
 				debugLog("guidance: injected for", activeTools.length, "tools");
 
@@ -392,7 +366,7 @@ export default function (pi: ExtensionAPI) {
 				if (!existsSync(resolved)) {
 					const filename = filePath.split("/").pop() ?? filePath;
 					// ponytail: relative dir for readable block message
-					const relDir = resolvePath(filePath, "..");
+					const relDir = dirname(filePath);
 					const dirPart = relDir !== "." ? ` under ${relDir}/` : "";
 					debugLog("blocked: read guessed path", filePath);
 					return {

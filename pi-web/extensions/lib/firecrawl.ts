@@ -1,7 +1,7 @@
 // Firecrawl API client (search, scrape, map, crawl).
 
 import type { FirecrawlConfig } from "./config";
-import { signalWithTimeout, withRetry } from "./retry";
+import { signalWithTimeout, withRetry, HttpError } from "./retry";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -13,18 +13,6 @@ export interface FirecrawlResult {
 	warning?: string;
 	id?: string;
 	[key: string]: unknown;
-}
-
-// ---------------------------------------------------------------------------
-// Error
-// ---------------------------------------------------------------------------
-
-export class FirecrawlHttpError extends Error {
-	status: number;
-	constructor(status: number, statusText: string, text: string) {
-		super(`HTTP ${status}: ${statusText}${text ? `\n${text}` : ""}`);
-		this.status = status;
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -48,7 +36,7 @@ async function firecrawlRequestJson(
 		signal: signalWithTimeout(config.timeoutMs, signal),
 	});
 	const text = await response.text();
-	if (!response.ok) throw new FirecrawlHttpError(response.status, response.statusText, text);
+	if (!response.ok) throw new HttpError(response.status, response.statusText, text);
 	return text ? JSON.parse(text) : { success: true };
 }
 
@@ -62,5 +50,5 @@ export async function firecrawlRequest(
 	body?: unknown,
 	signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
-	return withRetry(() => firecrawlRequestJson(config, method, endpoint, body, signal));
+	return withRetry(() => firecrawlRequestJson(config, method, endpoint, body, signal), undefined, signal);
 }

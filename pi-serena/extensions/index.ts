@@ -3,16 +3,24 @@ import { Type } from "typebox";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { SerenaWorkerClient, type SerenaWorkerResponse } from "./worker";
-import { SEMANTIC_MISS_THRESHOLD } from "./lib/detect";
 import { SERENA_FIRST_GUIDANCE, SERENA_MISS_GUIDANCE, shouldBlockSemanticMiss } from "./lib/guidance";
 import { normalizeProject, normalizeContext, normalizeTimeoutMs, stripControlParams } from "./lib/normalize";
 
 const DEFAULT_CONTEXT = "ide";
 
+/** Set of "provider/modelId" strings that should skip semantic-miss detection (e.g., deepseek-tools handles it). */
+const SKIP_SEMANTIC_MISS_MODELS = new Set(
+	(process.env.PI_SERENA_SKIP_SEMANTIC_MISS_MODELS || "opencode-go/deepseek-v4")
+		.split(",")
+		.map((s) => s.trim()),
+);
+
 const PROJECT_PARAM = Type.Optional(Type.String({ description: "Project path or registered Serena project name. Default: CWD." }));
 const CONTEXT_PARAM = Type.Optional(Type.String({ description: "Serena context name. Default: ide." }));
 const MAX_CHARS_PARAM = Type.Optional(Type.Number({ description: "Max response chars. Default: Serena config." }));
 const TIMEOUT_MS_PARAM = Type.Optional(Type.Number({ description: "Timeout in ms. Default: 120000." }));
+export const SEMANTIC_MISS_THRESHOLD = 2;
+
 const OUTPUT_MAX_BYTES = 50 * 1024;
 const OUTPUT_MAX_LINES = 2_000;
 
@@ -128,7 +136,13 @@ const replaceContentSchema = Type.Object({
 function truncateText(text: string): string {
 	const lines = text.split("\n");
 	if (lines.length <= OUTPUT_MAX_LINES && Buffer.byteLength(text, "utf8") <= OUTPUT_MAX_BYTES) return text;
-	const output = lines.slice(0, OUTPUT_MAX_LINES).join("\n").slice(0, OUTPUT_MAX_BYTES);
+	const truncatedLines = lines.slice(0, OUTPUT_MAX_LINES).join("\n");
+	const buf = Buffer.from(truncatedLines, "utf8");
+	if (buf.length <= OUTPUT_MAX_BYTES) return truncatedLines;
+	// Find a safe split point that doesn't break a multi-byte character
+	let byteLen = OUTPUT_MAX_BYTES;
+	while (byteLen > 0 && (buf[byteLen] & 0xc0) === 0x80) byteLen--;
+	const output = buf.subarray(0, byteLen).toString("utf8");
 	return output + `\n\n[Serena output truncated to ${OUTPUT_MAX_LINES} lines / ${OUTPUT_MAX_BYTES} bytes.]`;
 }
 
@@ -152,11 +166,11 @@ function resultText(response: SerenaWorkerResponse): string {
 	}
 	// For search results, show a friendly empty-state instead of raw "{}".
 	if (response.tool === "search_for_pattern") {
-		if (response.result == null || (typeof response.result === "object" && Object.keys(response.result as object).length === 0)) {
+		if (response.result == null || response.result === '{}' || (typeof response.result === "object" && Object.keys(response.result as object).length === 0)) {
 			return "No results found.";
 		}
 	}
-	return typeof response.result === "string" ? response.result : JSON.stringify(response, null, 2);
+	return typeof response.result === "string" ? response.result : JSON.stringify(response.result, null, 2);
 }
 
 export default function serenaToolsExtension(pi: ExtensionAPI) {
@@ -176,12 +190,12 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 			try {
 				const response = await getWorker(ctx).request(payload, timeoutMs);
 				const errorType = response.errorType as string | undefined;
-				return !response.ok && (errorType === "timeout" || errorType === "language_server_error")
+				return !response.ok && errorType === "timeout"
 					? getWorker(ctx).request(payload, timeoutMs)
 					: response;
 			} catch (error) {
 				const msg = error instanceof Error ? error.message : String(error);
-				if (!/Serena worker request timed out|Serena worker killed due to timeout, restarted|Serena worker exited/.test(msg)) throw error;
+				if (!(msg.includes('timed out') || msg.includes('killed due to timeout') || msg.includes('worker exited') || msg.includes('restarted'))) throw error;
 				return getWorker(ctx).request(payload, timeoutMs);
 			}
 		};
@@ -201,9 +215,11 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
 	const lockPathForRelativeFile = (rawParams: Record<string, unknown>): string | undefined => {
 		const project = normalizeProject(rawParams.project);
-		return typeof rawParams.relative_path === "string" && rawParams.relative_path.trim()
-			? path.resolve(project, rawParams.relative_path)
-			: undefined;
+		if (typeof rawParams.relative_path !== "string" || !rawParams.relative_path.trim()) return undefined;
+		const resolved = path.resolve(project, rawParams.relative_path);
+		const relative = path.relative(project, resolved);
+		if (relative.startsWith("..") || path.isAbsolute(relative)) return undefined;
+		return resolved;
 	};
 
 	const lockPathForProject = (rawParams: Record<string, unknown>): string => path.resolve(normalizeProject(rawParams.project));
@@ -235,7 +251,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 			const context = normalizeContext(params.context);
 			const response = await getWorker(ctx).request({ action: "status", project, context, includeAgent: true }, normalizeTimeoutMs(params.timeout_ms));
 			const tools = Array.isArray(response.activeTools) ? response.activeTools : [];
-			const text = tools.length > 0 ? tools.map((tool) => `- ${tool}`).join("\n") : JSON.stringify(response, null, 2);
+			const text = tools.length > 0 ? tools.map((tool) => `- ${tool}`).join("\n") : 'No active tools found for this project/context.';
 			return { content: [{ type: "text", text: truncateText(text) }], details: response };
 		},
 	});
@@ -272,9 +288,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 		promptGuidelines: ["Use before changing public behavior or renames."],
 		parameters: referencingSchema,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			// ponytail: strip include_body param (not supported by Python backend)
-			const { include_body: _ib, ...findRefParams } = params;
-			return callSerena(ctx, "find_referencing_symbols", findRefParams);
+			return callSerena(ctx, "find_referencing_symbols", params);
 		},
 	});
 
@@ -352,9 +366,9 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 					details: { ok: false, error: "multiline not supported" },
 				};
 			}
-				// ponytail: map pattern→substring_pattern for Python backend
-			const { pattern, multiline: _ml, limit: _limit, ...searchParams } = params;
-			if (pattern) searchParams.substring_pattern = pattern;
+				// ponytail: send both pattern and substring_pattern for Python backend
+			const { multiline: _ml, limit: _limit, ...searchParams } = params;
+			if (searchParams.pattern) searchParams.substring_pattern = searchParams.pattern;
 			const result = await callSerena(ctx, "search_for_pattern", searchParams);
 			if (_limit && result.content?.[0]?.text) {
 				try {
@@ -396,11 +410,12 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 		promptGuidelines: ["Fallback for non-symbol content replacement."],
 		parameters: replaceContentSchema,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			// ponytail: strip legacy params and validate
-			const { old_string: _os, new_string: _ns, content: _c, regex: _r, ...normalized } = params;
+			const normalized = { ...params };
 			if (typeof normalized.needle !== "string") return { content: [{ type: "text" as const, text: "serena_replace_content requires string parameter 'needle'." }], details: { ok: false } };
 			if (typeof normalized.repl !== "string") return { content: [{ type: "text" as const, text: "serena_replace_content requires string parameter 'repl'." }], details: { ok: false } };
-			if (normalized.mode !== "literal" && normalized.mode !== "regex") return { content: [{ type: "text" as const, text: "serena_replace_content requires mode to be 'literal' or 'regex'." }], details: { ok: false } };
+			const mode = normalized.mode ?? "literal";
+			if (mode !== "literal" && mode !== "regex") return { content: [{ type: "text" as const, text: "serena_replace_content requires mode to be 'literal' or 'regex'." }], details: { ok: false } };
+			normalized.mode = mode;
 			return callSerena(ctx, "replace_content", normalized, lockPathForRelativeFile(params));
 		},
 	});
@@ -528,8 +543,9 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 		const activeTools = pi.getActiveTools();
 		if (!activeTools.includes("serena_find_symbol")) return;
 
-		// DeepSeek V4: deepseek-tools handles semantic misses — skip to avoid duplicate steer
-		if (ctx.model?.provider === "opencode-go" && ctx.model?.id?.startsWith("deepseek-v4")) return;
+		// Models whose built-in tool-handling already manages semantic misses — skip to avoid duplicate steer
+		const modelKey = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
+		if (modelKey && SKIP_SEMANTIC_MISS_MODELS.has(modelKey)) return;
 
 		if (event.toolName.startsWith("serena_")) {
 			semanticMissCount = 0;
@@ -546,19 +562,22 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 		if ((semanticMissCount >= SEMANTIC_MISS_THRESHOLD || process.env.PI_SERENA_REMIND_ON_FIRST_MISS === "1") && Date.now() - lastReminderTs > 30_000) {
 			semanticMissCount = 0;
 			lastReminderTs = Date.now();
-			pi.sendMessage(
+			await pi.sendMessage(
 				{
 					customType: "serena-reminder",
 					content: `Reminder: ${SERENA_MISS_GUIDANCE}`,
 					display: true,
 				},
 				{ deliverAs: "steer", triggerTurn: true },
-			);
+			).catch(() => {});
 		}
 	});
 
 	// Eager startup: pre-spawn the worker on session start when SERENA_EAGER_STARTUP=1
 	pi.on("session_start", async (_event, ctx) => {
+		// Reset semantic miss counters on new session
+		semanticMissCount = 0;
+		lastReminderTs = 0;
 		if (process.env.SERENA_EAGER_STARTUP === "1") {
 			// Spawn the worker via a lightweight status request to warm the Python bridge
 			getWorker(ctx).request({ action: "status", project: process.cwd(), context: DEFAULT_CONTEXT }, 30_000).catch(() => {
@@ -568,8 +587,13 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
-		await worker?.stop();
-		worker = undefined;
-		ctx.ui.setStatus("serena", undefined);
+		try {
+			await worker?.stop();
+		} catch {
+			// worker stop failed — proceed with cleanup
+		} finally {
+			worker = undefined;
+			ctx.ui.setStatus("serena", undefined);
+		}
 	});
 }

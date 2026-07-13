@@ -411,6 +411,22 @@ describe("plan path containment", () => {
 		assert.ok(result.details?.path?.includes(".agents/plans/"), `path under .agents/plans/: ${result.details?.path}`);
 	});
 
+	it("rejects path-traversal title", async () => {
+		const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+		const ctx = fakeCtx({ hasUI: true, cwd: TMP });
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const wd = toolDefs.write_plan;
+		assert.ok(wd);
+		const result = await wd.execute("c1", { title: "../../../etc/passwd", content: "# Plan\nMalicious." }, undefined, undefined, ctx);
+		assert.ok(result);
+		// ponytail: slugify strips non-alphanumeric chars, so the path must still be under .agents/plans/
+		assert.ok(result.details?.path?.includes(".agents/plans/"), `path under .agents/plans/: ${result.details?.path}`);
+		// ponytail: the slugified name "etc-passwd" is fine; what matters is no directory traversal
+		assert.ok(!result.details?.path?.includes(".."), "path must not contain directory traversal sequences");
+	});
+
 });
 
 describe("write_plan lifecycle", () => {
@@ -476,6 +492,78 @@ describe("write_plan lifecycle", () => {
 		// ponytail: write_plan is available in any mode
 		const result = await wd.execute("c1", { title: "Test", content: "# Test" }, undefined, undefined, fakeCtx());
 		assert.ok(result);
+	});
+});
+
+describe("open question warning", () => {
+	it("includes warning when plan has 'Open Questions' section with a question mark", async () => {
+		const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+		const ctx = fakeCtx({ hasUI: true, cwd: TMP });
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const wd = toolDefs.write_plan;
+		assert.ok(wd);
+		const result = await wd.execute("c1", {
+			title: "My Plan",
+			content: "## Open Questions\n- What is your preferred approach?\n## Next Steps\n...",
+		}, undefined, undefined, ctx);
+		assert.ok(result);
+		const text = result.content?.[0]?.text ?? "";
+		assert.ok(text.includes("ask_plan_question"), "should warn about open questions");
+	});
+
+	it("excludes warning when 'Open Questions' section has no question mark", async () => {
+		const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+		const ctx = fakeCtx({ hasUI: true, cwd: TMP });
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const wd = toolDefs.write_plan;
+		assert.ok(wd);
+		const result = await wd.execute("c1", {
+			title: "My Plan",
+			content: "## Open Questions\nNone at this time.\n## Next Steps\n...",
+		}, undefined, undefined, ctx);
+		assert.ok(result);
+		const text = result.content?.[0]?.text ?? "";
+		assert.ok(!text.includes("ask_plan_question"), "should not warn when no questions");
+	});
+
+	it("excludes warning when question mark is in a later section, not under 'Open Questions'", async () => {
+		const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+		const ctx = fakeCtx({ hasUI: true, cwd: TMP });
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const wd = toolDefs.write_plan;
+		assert.ok(wd);
+		const result = await wd.execute("c1", {
+			title: "My Plan",
+			content: "## Open Questions\nNone.\n\n## Implementation Details\nShould we use a library?",
+		}, undefined, undefined, ctx);
+		assert.ok(result);
+		const text = result.content?.[0]?.text ?? "";
+		// ponytail: the ? in "Should we use a library?" is under a different heading,
+		// so hasOpenQuestionWarning must NOT fire.
+		assert.ok(!text.includes("ask_plan_question"), "should not cross section boundaries");
+	});
+
+	it("detects question mark in sub-bullets under 'Open Questions'", async () => {
+		const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+		const ctx = fakeCtx({ hasUI: true, cwd: TMP });
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const wd = toolDefs.write_plan;
+		assert.ok(wd);
+		const result = await wd.execute("c1", {
+			title: "My Plan",
+			content: "## Open Questions\n- Main question?\n  - Sub-question?\n## Next Steps",
+		}, undefined, undefined, ctx);
+		assert.ok(result);
+		const text = result.content?.[0]?.text ?? "";
+		assert.ok(text.includes("ask_plan_question"), "should detect questions in sub-items");
 	});
 });
 
@@ -719,5 +807,70 @@ describe("ask_plan_question validation", () => {
 		assert.ok(def);
 		assert.ok(def.parameters?.properties?.options?.minItems === 2);
 		assert.ok(def.parameters?.properties?.options?.maxItems === 4);
+	});
+
+	it("rejects blank label at execute", async () => {
+		const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+		const ctx = fakeCtx({ hasUI: false });
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const qd = toolDefs.ask_plan_question;
+		assert.ok(qd);
+		await assert.rejects(
+			qd.execute("c1", { question: "Q?", options: [{ label: "" }, { label: "Option 2" }] }, undefined, undefined, ctx),
+			/Each option must have a non-blank label\./,
+		);
+	});
+
+	it("rejects duplicate labels at execute", async () => {
+		const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+		const ctx = fakeCtx({ hasUI: false });
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const qd = toolDefs.ask_plan_question;
+		assert.ok(qd);
+		await assert.rejects(
+			qd.execute("c1", { question: "Q?", options: [{ label: "Duplicate" }, { label: "Duplicate" }] }, undefined, undefined, ctx),
+			/Option labels must be unique\./,
+		);
+	});
+
+	it("rejects 'Other' label at execute", async () => {
+		const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+		const ctx = fakeCtx({ hasUI: false });
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const qd = toolDefs.ask_plan_question;
+		assert.ok(qd);
+		await assert.rejects(
+			qd.execute("c1", { question: "Q?", options: [{ label: "Other" }, { label: "Option B" }] }, undefined, undefined, ctx),
+			/Option labels cannot conflict with the "Other" label\./,
+		);
+	});
+
+	it("rejects label starting with 'Other ' at execute", async () => {
+		const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+		const ctx = fakeCtx({ hasUI: false });
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const qd = toolDefs.ask_plan_question;
+		assert.ok(qd);
+		await assert.rejects(
+			qd.execute("c1", { question: "Q?", options: [{ label: "Other (specify)" }, { label: "Option B" }] }, undefined, undefined, ctx),
+			/Option labels cannot conflict with the "Other" label\./,
+		);
+	});
+
+	it("rejects 'other' (case-insensitive) label at execute", async () => {
+		const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+		const ctx = fakeCtx({ hasUI: false });
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+		const qd = toolDefs.ask_plan_question;
+		assert.ok(qd);
+		await assert.rejects(
+			qd.execute("c1", { question: "Q?", options: [{ label: "other" }, { label: "Option B" }] }, undefined, undefined, ctx),
+			/Option labels cannot conflict with the "Other" label\./,
+		);
 	});
 });

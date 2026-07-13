@@ -16,15 +16,15 @@ import { type SubAgentResult, isFailedResult, getResultOutput } from "./runner.t
 // Safe type guards
 // ---------------------------------------------------------------------------
 
-function asString(value: unknown, fallback = "..."): string {
+export function asString(value: unknown, fallback = "..."): string {
 	return typeof value === "string" ? value : fallback;
 }
 
-function asNumber(value: unknown): number | undefined {
+export function asNumber(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
+export function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" && !Array.isArray(value)
 		? (value as Record<string, unknown>)
 		: {};
@@ -59,7 +59,7 @@ export function formatUsageStats(
 	return parts.join(" ");
 }
 
-function formatToolCall(
+export function formatToolCall(
 	toolName: string,
 	args: Record<string, unknown>,
 	themeFg: (color: string, text: string) => string,
@@ -130,16 +130,16 @@ function formatToolCall(
 	}
 }
 
-type DisplayItem =
+export type DisplayItem =
 	| { type: "text"; text: string }
 	| { type: "toolCall"; name: string; args: Record<string, unknown> };
 
-function getDisplayItems(messages: Message[]): DisplayItem[] {
+export function getDisplayItems(messages: Message[]): DisplayItem[] {
 	const items: DisplayItem[] = [];
 	for (const msg of messages) {
 		if (msg.role === "assistant") {
 			for (const part of msg.content) {
-				if (part.type === "text") {
+				if (part.type === "text" && part.text.trim()) {
 					items.push({ type: "text", text: part.text });
 				} else if (part.type === "toolCall") {
 					items.push({

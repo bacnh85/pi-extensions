@@ -4,7 +4,10 @@ export const SERENA_FIRST_GUIDANCE = "Serena-first code navigation: before readi
 
 export const SERENA_MISS_GUIDANCE = "Use serena_get_symbols_overview for source-file outlines or serena_find_symbol for named symbols before reading/searching code. Use read after Serena identifies the relevant region, or for docs/config/non-code files.";
 
+const BLOCKED_TOOLS = new Set(["read", "bash"]);
+
 export function shouldBlockSemanticMiss(toolName: string, input: Record<string, unknown>): boolean {
+	if (!BLOCKED_TOOLS.has(toolName)) return false;
 	if (toolName === "read") return pathLooksLikeCode(input.path) && !pathLooksNonSemantic(input.path);
 	if (toolName === "bash") {
 		const command = input.command;

@@ -103,14 +103,4 @@ export const threadStore = new ThreadStore();
 // ID generation (UUID v4 style, good enough for in-memory use)
 // ---------------------------------------------------------------------------
 
-function cryptoGenId(): string {
-	if (typeof crypto !== "undefined" && crypto.randomUUID) {
-		return crypto.randomUUID();
-	}
-	// Fallback for environments without crypto (very unlikely in Node)
-	return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-		const r = (Math.random() * 16) | 0;
-		const v = c === "x" ? r : (r & 0x3) | 0x8;
-		return v.toString(16);
-	});
-}
+const cryptoGenId = () => crypto.randomUUID();

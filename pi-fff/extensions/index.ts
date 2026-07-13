@@ -116,7 +116,7 @@ function fffFileAnnotation(item: {
 
 function formatGrepOutput(
   result: GrepResult,
-  options?: { outputMode?: GrepOutputMode; explicitContext?: number; limit?: number },
+  options?: { outputMode?: GrepOutputMode; explicitContext?: number },
 ): string {
   if (result.items.length === 0) return "No matches found";
   const outputMode = options?.outputMode ?? "content";
@@ -142,9 +142,9 @@ function formatGrepOutput(
         lines.push(`${match.relativePath}${fffFileAnnotation(match)}`);
         lines.push(` ${match.lineNumber}: ${truncateLine(match.lineContent)}`);
         appendDefContext(lines, match, "|");
+      }
     }
     return lines.join("\n");
-  }
   }
 
   // content mode (default) — with definition auto-expand
@@ -186,7 +186,7 @@ const FIND_WEAK_SAMPLE_SIZE = 5;
 const DEFAULT_RESOLVE_LIMIT = 8;
 
 function weakScoreThreshold(pattern: string): number {
-  const perfect = pattern.length * 12;
+  const perfect = pattern.length * 16;
   return Math.floor((perfect * 50) / 100);
 }
 
@@ -196,7 +196,7 @@ function appendDefContext(lines: string[], match: GrepMatch, prefix: string): vo
   if (!match.isDefinition) return;
   const after = match.contextAfter?.slice(0, 3) ?? [];
   for (let i = 0; i < after.length; i++) {
-    if (after[i].trim()) lines.push(` ${match.lineNumber + 1 + i}${prefix} ${truncateLine(after[i])}`);
+    lines.push(` ${match.lineNumber + 1 + i}${prefix} ${truncateLine(after[i])}`);
   }
 }
 
@@ -211,10 +211,9 @@ function formatGrepResult(
   result: GrepResult,
   outputMode: GrepOutputMode | undefined,
   explicitContext: number,
-  effectiveLimit: number,
   extras?: { regexFallbackError?: string; fuzzyNotice?: string | null },
 ): GrepResultFormat {
-  let output = formatGrepOutput(result, { outputMode, explicitContext, limit: effectiveLimit });
+  let output = formatGrepOutput(result, { outputMode, explicitContext });
   const notices: string[] = [];
   if (extras?.regexFallbackError) notices.push(`Invalid regex: ${extras.regexFallbackError}, used literal match`);
   if (result.nextCursor) notices.push(`Continue with cursor="${cursorStore.store(result.nextCursor)}"`);
@@ -616,6 +615,7 @@ export default function fffExtension(pi: ExtensionAPI) {
       let f;
       try {
         f = await ensureFinder(activeCwd);
+        if (signal?.aborted) throw new Error("Operation aborted");
       } catch {
         return {
           content: [{ type: "text", text: "FFF search unavailable in this directory. Try a different working directory or use built-in find instead." }],
@@ -726,7 +726,7 @@ export default function fffExtension(pi: ExtensionAPI) {
       }
 
       const outputMode = params.outputMode as GrepOutputMode | undefined;
-      return formatGrepResult(result, outputMode, explicitContext, effectiveLimit, { regexFallbackError: result.regexFallbackError, fuzzyNotice });
+      return formatGrepResult(result, outputMode, explicitContext, { regexFallbackError: result.regexFallbackError, fuzzyNotice });
     },
 
     renderCall(args, theme, context) {
@@ -800,6 +800,7 @@ export default function fffExtension(pi: ExtensionAPI) {
       let f;
       try {
         f = await ensureFinder(activeCwd);
+        if (signal?.aborted) throw new Error("Operation aborted");
       } catch {
         return {
           content: [{ type: "text", text: "FFF search unavailable in this directory. Try a different working directory." }],
@@ -942,6 +943,7 @@ export default function fffExtension(pi: ExtensionAPI) {
       let f;
       try {
         f = await ensureFinder(activeCwd);
+        if (signal?.aborted) throw new Error("Operation aborted");
       } catch {
         return {
           content: [{ type: "text", text: "FFF search unavailable in this directory." }],
@@ -1053,6 +1055,12 @@ export default function fffExtension(pi: ExtensionAPI) {
     cursor: Type.Optional(
       Type.String({ description: "Pagination cursor" }),
     ),
+    caseSensitive: Type.Optional(
+      Type.Boolean({
+        description:
+          "caseSensitive=true for exact case (smart-case by default).",
+      }),
+    ),
   });
 
   pi.registerTool({
@@ -1074,6 +1082,7 @@ export default function fffExtension(pi: ExtensionAPI) {
       let f;
       try {
         f = await ensureFinder(activeCwd);
+        if (signal?.aborted) throw new Error("Operation aborted");
       } catch {
         return {
           content: [{ type: "text", text: "FFF search unavailable in this directory." }],
@@ -1101,6 +1110,8 @@ export default function fffExtension(pi: ExtensionAPI) {
           beforeContext: explicitContext,
           afterContext: Math.max(explicitContext, 3),
           maxMatchesPerFile: Math.min(effectiveLimit, 50),
+          smartCase: params.caseSensitive !== true,
+          classifyDefinitions: true,
         });
       } catch (e) {
         return {
@@ -1118,7 +1129,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 
       const result = grepResult.value;
       const outputMode = params.outputMode as GrepOutputMode | undefined;
-      return formatGrepResult(result, outputMode, explicitContext, effectiveLimit);
+      return formatGrepResult(result, outputMode, explicitContext);
     },
   });
 
@@ -1154,6 +1165,7 @@ export default function fffExtension(pi: ExtensionAPI) {
       let f;
       try {
         f = await ensureFinder(activeCwd);
+        if (signal?.aborted) throw new Error("Operation aborted");
       } catch {
         return {
           content: [{ type: "text", text: "FFF search unavailable in this directory." }],
@@ -1187,7 +1199,6 @@ export default function fffExtension(pi: ExtensionAPI) {
 
       const referencePath = refResult.value.items[0].relativePath;
 
-      // Extract stem: strip test/spec/stories/.d/.module suffixes, then extension
       // Extract stem: strip test/spec/stories/.d/.module suffixes, then extension
       const stem = (referencePath.split("/").pop() ?? referencePath)
         .replace(/\.(test|spec|stories)\./g, ".")

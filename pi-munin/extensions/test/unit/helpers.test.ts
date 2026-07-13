@@ -4,8 +4,6 @@
 
 import { expect } from "chai";
 import {
-	stripInlineComment,
-	parseDotenvValue,
 	piConfigDirs,
 	parseTags,
 	validateMemoryTags,
@@ -22,81 +20,7 @@ import {
 	OUTPUT_MAX_LINES,
 } from "../../lib/helpers";
 
-describe("stripInlineComment", () => {
-	it("returns full value when no comment", () => {
-		expect(stripInlineComment("hello")).to.equal("hello");
-		expect(stripInlineComment("")).to.equal("");
-	});
 
-	it("strips comment after space", () => {
-		expect(stripInlineComment("hello # world")).to.equal("hello ");
-		expect(stripInlineComment("value #comment")).to.equal("value ");
-	});
-
-	it("preserves # inside single quotes", () => {
-		expect(stripInlineComment("'hello # world'")).to.equal("'hello # world'");
-	});
-
-	it("preserves # inside double quotes", () => {
-		expect(stripInlineComment('"hello # world"')).to.equal('"hello # world"');
-	});
-
-	it("handles escaped characters inside quotes", () => {
-		expect(stripInlineComment('"hello \\" world" # comment')).to.equal(
-			'"hello \\" world" ',
-		);
-	});
-
-	it("strips comment when # is first character", () => {
-		expect(stripInlineComment("# comment")).to.equal("");
-	});
-
-	it("handles mixed quoted and unquoted content", () => {
-		expect(stripInlineComment("key='val' # comment")).to.equal("key='val' ");
-	});
-
-	it("handles escaped # with backslash", () => {
-		expect(stripInlineComment("hello \\# not a comment")).to.equal(
-			"hello \\# not a comment",
-		);
-	});
-});
-
-describe("parseDotenvValue", () => {
-	it("trims and returns unquoted value", () => {
-		expect(parseDotenvValue("  hello  ")).to.equal("hello");
-	});
-
-	it("strips double quotes", () => {
-		expect(parseDotenvValue('"hello"')).to.equal("hello");
-	});
-
-	it("strips single quotes", () => {
-		expect(parseDotenvValue("'hello'")).to.equal("hello");
-	});
-
-	it("handles escape sequences in double-quoted values", () => {
-		expect(parseDotenvValue('"hello\\nworld"')).to.equal("hello\nworld");
-		expect(parseDotenvValue('"tab\\there"')).to.equal("tab\there");
-		expect(parseDotenvValue('"return\\rhere"')).to.equal("return\rhere");
-	});
-
-	it("processes escape sequences in single-quoted values", () => {
-		expect(parseDotenvValue("'hello\\nworld'")).to.equal("hello\nworld");
-	});
-
-	it("strips inline comments before processing", () => {
-		expect(parseDotenvValue("hello # comment")).to.equal("hello");
-	});
-
-	it("handles empty value", () => {
-		expect(parseDotenvValue("")).to.equal("");
-	});
-
-	it("handles quoted value with inline comment", () => {
-		expect(parseDotenvValue('"hello world" # comment')).to.equal("hello world");
-	});
-});
 
 describe("parseTags", () => {
 	it("parses comma-separated string", () => {

@@ -20,7 +20,7 @@ import {
 // CLI string parser
 // ---------------------------------------------------------------------------
 
-function readQuotedContent(s: string, pos: number): string {
+export function readQuotedContent(s: string, pos: number): { value: string; endPos: number } {
 	let val = "";
 	while (pos < s.length && s[pos] !== '"') {
 		if (s[pos] === "\\" && pos + 1 < s.length && (s[pos + 1] === '"' || s[pos + 1] === "\\")) {
@@ -29,20 +29,20 @@ function readQuotedContent(s: string, pos: number): string {
 			val += s[pos++];
 		}
 	}
-	return val;
+	return { value: val, endPos: pos };
 }
 
-function parseCliString(s: string): string[] {
+export function parseCliString(s: string): string[] {
 	const args: string[] = [];
 	let i = 0;
 	while (i < s.length) {
 		while (i < s.length && /\s/.test(s[i])) i++;
 		if (i >= s.length) break;
 		let val = "";
-		if (s[i] === '"') { i++; val = readQuotedContent(s, i); i += val.length + 1; }
+		if (s[i] === '"') { i++; const r = readQuotedContent(s, i); val = r.value; i = r.endPos + 1; }
 		else {
 			while (i < s.length && !/\s/.test(s[i])) {
-				if (s[i] === '"') { i++; const inner = readQuotedContent(s, i); val += inner; i += inner.length + 1; }
+				if (s[i] === '"') { i++; const r = readQuotedContent(s, i); val += r.value; i = r.endPos + 1; }
 				else { val += s[i++]; }
 			}
 		}
@@ -51,7 +51,7 @@ function parseCliString(s: string): string[] {
 	return args;
 }
 
-function parseFlags(s: string): Record<string, string> {
+export function parseFlags(s: string): Record<string, string> {
 	const flags: Record<string, string> = {};
 	const re = /(\w[\w-]*)=("(?:[^"\\]|\\.)*"|\S+)/g;
 	let m: RegExpExecArray | null;
@@ -63,8 +63,8 @@ function parseFlags(s: string): Record<string, string> {
 	return flags;
 }
 
-function escapeCliValue(s: string): string {
-	return s.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+export function escapeCliValue(s: string): string {
+	return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\t/g, "\\t");
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ function createFromTemplate(templateName: string, noteName: string, folder: stri
 		`if(!tf)return'Template not found.';`,
 		`let c=await app.vault.read(tf);`,
 		`const fl=${JSON.stringify(fill)};`,
-		`for(const[k,v]of Object.entries(fl))c=c.replace(new RegExp('\\\\{\\\\{\\\\s*'+k+'\\\\s*\\\\}\\\\}','g'),v);`,
+		`for(const[k,v]of Object.entries(fl))c=c.replace(new RegExp('\\\\{\\\\{\\\\s*'+k.replace(/[.*+?^\${}()|[\\]\\\\]/g,'\\\\$&')+'\\\\s*\\\\}\\\\}','g'),v);`,
 		`const p=${j(notePath)}.replace(/\\\\/g,'/').split('/').slice(0,-1).join('/');`,
 		`if(p&&!app.vault.getAbstractFileByPath(p))await app.vault.createFolder(p,true);`,
 		`await app.vault.create(${j(notePath)},c);`,
@@ -266,26 +266,36 @@ function frontmatterWrap(vault?: string, timeoutMs = 30_000): string {
 // ---------------------------------------------------------------------------
 
 function formatObsidianOutput(cmdString: string, parsed: unknown): string {
-	if (cmdString.startsWith("search")) {
-		const flags = parseFlags(cmdString);
-		return formatSearchResults(parsed, flags.group === "file");
+	const cmd = cmdString.split(/\s+/)[0];
+	const flags = parseFlags(cmdString);
+	switch (cmd) {
+		case "search":
+			return formatSearchResults(parsed, flags.group === "file");
+		case "tasks":
+			if (flags.group === "file" && flags.status) return formatTasksFiltered(parsed, flags.status as "open" | "done" | "all");
+			if (flags.group === "file") return formatTasks(parsed, true);
+			if (flags.status) return formatTasksFiltered(parsed, flags.status as "open" | "done" | "all");
+			return formatTasks(parsed);
+		case "tag":
+		case "tags":
+			return formatTags(parsed);
+		case "properties":
+			return formatProperties(parsed);
+		case "backlinks":
+			return formatLinks(parsed, "Backlinks");
+		case "links":
+			return formatOutgoingLinks(parsed);
+		case "outline":
+			return formatOutline(parsed);
+		case "aliases":
+			return formatAliases(parsed);
+		case "wordcount":
+			return formatWordCount(parsed);
+		case "file":
+			return formatFileInfo(parsed);
+		default:
+			return JSON.stringify(parsed, null, 2);
 	}
-	if (cmdString.startsWith("tasks ") || cmdString.startsWith("tasks")) {
-		const flags = parseFlags(cmdString);
-		if (flags.group === "file" && flags.status) return formatTasksFiltered(parsed, flags.status as "open" | "done" | "all");
-		if (flags.group === "file") return formatTasks(parsed, true);
-		if (flags.status) return formatTasksFiltered(parsed, flags.status as "open" | "done" | "all");
-		return formatTasks(parsed);
-	}
-	if (cmdString.startsWith("tag ") || cmdString.startsWith("tags")) return formatTags(parsed);
-	if (cmdString.startsWith("property:") || cmdString.startsWith("properties")) return formatProperties(parsed);
-	if (cmdString.startsWith("backlinks")) return formatLinks(parsed, "Backlinks");
-	if (cmdString.startsWith("links")) return formatOutgoingLinks(parsed);
-	if (cmdString.startsWith("outline")) return formatOutline(parsed);
-	if (cmdString.startsWith("aliases")) return formatAliases(parsed);
-	if (cmdString.startsWith("wordcount")) return formatWordCount(parsed);
-	if (cmdString.startsWith("file ")) return formatFileInfo(parsed);
-	return JSON.stringify(parsed, null, 2);
 }
 
 // ---------------------------------------------------------------------------

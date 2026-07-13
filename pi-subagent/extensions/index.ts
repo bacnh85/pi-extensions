@@ -39,37 +39,47 @@ import {
 	runSubAgent,
 } from "./runner.ts";
 import {
+	normalizeTimeout,
+	resolveSafeCwd,
+	validateAgentTools,
+	truncateParallelOutput,
+	validateExecutionRequest,
+	MAX_CONCURRENCY,
+	MAX_PARALLEL_TASKS,
+	MAX_CHAIN_LENGTH,
+	MAX_INSTRUCTIONS_LENGTH,
+} from "./security.ts";
+import {
 	aggregateUsage,
 	formatUsageStats,
 	renderSingleResult,
 } from "./render.ts";
 import { type SubagentThread, threadStore } from "./threads.ts";
 import { SUBAGENT_REQUEST_EVENT, runNamedAgent, type SubagentRunRequest } from "./service.ts";
+import { resolveModel } from "./model.ts";
 import { ThreadViewer, type ThreadViewerCallbacks } from "./thread-viewer.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAX_PARALLEL_TASKS = 8;
-const MAX_CONCURRENCY = 4;
-const PER_TASK_OUTPUT_CAP = 50 * 1024; // 50 KB per parallel task
-
-import { resolveModel } from "./model.ts";
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function truncateParallelOutput(output: string): string {
-	const byteLength = Buffer.byteLength(output, "utf8");
-	if (byteLength <= PER_TASK_OUTPUT_CAP) return output;
-
-	let truncated = output.slice(0, PER_TASK_OUTPUT_CAP);
-	while (Buffer.byteLength(truncated, "utf8") > PER_TASK_OUTPUT_CAP) {
-		truncated = truncated.slice(0, -1);
-	}
-	return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted.]`;
+/** Namespace for trusted configuration loaded from pi settings, never from tool params. */
+function getTrustedConfig(ctx: ExtensionContext): { allowUnconfirmedProjectAgents: boolean; allowExternalCwd: boolean } {
+	// Use pi's settings infrastructure if available; fall back to env vars for testing.
+	// The model cannot influence these values.
+	const settings = (ctx as any).settings ?? {};
+	return {
+		allowUnconfirmedProjectAgents:
+			(settings as Record<string, unknown>).allowUnconfirmedProjectAgents === true ||
+			process.env.PI_SUBAGENT_ALLOW_UNCONFIRMED_PROJECT_AGENTS === "true",
+		allowExternalCwd:
+			(settings as Record<string, unknown>).allowExternalCwd === true ||
+			process.env.PI_SUBAGENT_ALLOW_EXTERNAL_CWD === "true",
+	};
 }
 
 
@@ -109,13 +119,10 @@ const SubagentParams = Type.Object({
 		}),
 	),
 	agentScope: Type.Optional(AgentScopeSchema),
-	confirmProjectAgents: Type.Optional(
-		Type.Boolean({
-			description: "Prompt before running project-local agents. Default: true.",
-			default: true,
-		}),
-	),
-	cwd: Type.Optional(Type.String({ description: "Working directory (single mode)" })),
+	// Security: confirmProjectAgents is NOT exposed as a model-controllable parameter.
+	// Project-agent confirmation is enforced via trusted configuration.
+	// See Security model section in README.
+	cwd: Type.Optional(Type.String({ description: "Working directory (single mode, must be inside workspace)" })),
 	timeout: Type.Optional(Type.Number({ description: "Global timeout in milliseconds for all sub-agents (overridden by per-task/step timeouts)" })),
 	instructions: Type.Optional(Type.String({ description: "Bounded repository/task instructions passed to each child (max 16 KB)" })),
 	abortOnFailure: Type.Optional(Type.Boolean({ description: "In parallel mode, cancel remaining tasks when one fails. Default: false.", default: false })),
@@ -290,7 +297,14 @@ export default function (pi: ExtensionAPI) {
 			const agentScope: AgentScope = params.agentScope ?? "user";
 			const discovery = discoverAgents(ctx.cwd, agentScope, bundledAgentsDir);
 			const agents = discovery.agents;
-			const confirmProjectAgents = params.confirmProjectAgents ?? true;
+
+			// Trusted configuration — never from tool params.
+			const trusted = getTrustedConfig(ctx);
+			const confirmProjectAgents = !trusted.allowUnconfirmedProjectAgents;
+			const allowExternalCwd = trusted.allowExternalCwd;
+
+			// Resolve workspace root for cwd validation.
+			const workspaceRoot = ctx.cwd;
 
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -305,6 +319,23 @@ export default function (pi: ExtensionAPI) {
 					projectAgentsDir: discovery.projectAgentsDir,
 					results,
 				});
+
+			// Validate execution request before any processing.
+			const validationErrors = validateExecutionRequest({
+				agentName: params.agent,
+				task: params.task,
+				tasks: params.tasks,
+				chain: params.chain,
+				timeout: params.timeout,
+			});
+			if (validationErrors.length > 0) {
+				const errorMessages = validationErrors.map((e) => `  • ${e.field}: ${e.message}`).join("\n");
+				return {
+					content: [{ type: "text", text: `Invalid parameters:\n${errorMessages}` }],
+					details: makeDetails("single")([]),
+					isError: true,
+				};
+			}
 
 			// Validate: exactly one mode
 			if (modeCount !== 1) {
@@ -327,6 +358,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Handle project-local agent confirmation
+			// Security: confirmation policy comes from trusted config, never from tool params.
 			if (agentScope === "project" || agentScope === "both") {
 				const requestedAgentNames = new Set<string>();
 				if (params.chain) for (const s of params.chain) requestedAgentNames.add(s.agent);
@@ -337,33 +369,34 @@ export default function (pi: ExtensionAPI) {
 					.map((name) => agents.find((a) => a.name === name))
 					.filter((a): a is AgentConfig => a?.source === "project");
 
-				if (projectAgentsRequested.length > 0 && confirmProjectAgents) {
-					if (ctx.hasUI) {
-						const names = projectAgentsRequested.map((a) => a.name).join(", ");
-						const dir = discovery.projectAgentsDir ?? "(unknown)";
-						const ok = await ctx.ui.confirm(
-							"Run project-local agents?",
-							`Agents: ${names}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
-						);
-						if (!ok) {
+				if (projectAgentsRequested.length > 0) {
+					if (confirmProjectAgents) {
+						if (ctx.hasUI) {
+							const names = projectAgentsRequested.map((a) => a.name).join(", ");
+							const dir = discovery.projectAgentsDir ?? "(unknown)";
+							const ok = await ctx.ui.confirm(
+								"Run project-local agents?",
+								`Agents: ${names}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
+							);
+							if (!ok) {
+								return {
+									content: [{ type: "text", text: "Canceled: project-local agents not approved." }],
+									details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
+								};
+							}
+						} else {
+							// Fail closed in headless sessions.
 							return {
-								content: [{ type: "text", text: "Canceled: project-local agents not approved." }],
+								content: [{
+									type: "text",
+									text: "Project agents require explicit user approval. "
+										+ "Enable the trusted project-agent setting to use them in headless mode.",
+								}],
 								details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
 							};
 						}
-					} else {
-						// ponytail: fail closed in headless sessions — project agent
-						// prompts and tools run without user oversight.
-						return {
-							content: [{
-								type: "text",
-								text: "Cannot run project-local agents without UI confirmation. "
-									+ "Set confirmProjectAgents: false to allow in headless sessions, "
-									+ "or use agentScope: 'user' to skip project agents.",
-							}],
-							details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
-						};
 					}
+					// else: allowUnconfirmedProjectAgents is true — skip confirmation.
 				}
 			}
 
@@ -382,14 +415,45 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 
-			// Helper: run a single agent via SDK
+			// Helper: resolve a safe child working directory.
+			function resolveChildCwd(childCwd: string | undefined): string {
+				const safe = resolveSafeCwd({ workspaceRoot, childCwd, allowExternalCwd });
+				if (safe.error) {
+					throw new Error(safe.error);
+				}
+				return safe.path;
+			}
+
+			// Helper: validate and normalise tools for an agent.
+			function resolveChildTools(agentTools: string[] | undefined, readOnly?: boolean): string[] {
+				const defaultTools = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+				const rawTools = agentTools ?? defaultTools;
+				const result = validateAgentTools({ tools: rawTools, readOnly });
+				if (result.errors.length > 0) {
+					throw new Error(`Tool validation errors: ${result.errors.join("; ")}`);
+				}
+				return result.tools;
+			}
+
+			// Helper: normalise timeout.
+			function resolveChildTimeout(childTimeout: number | undefined, globalTimeout: number | undefined): number | undefined {
+				const effectiveTimeout = childTimeout ?? globalTimeout;
+				const result = normalizeTimeout({ requested: effectiveTimeout });
+				if (result.error) {
+					throw new Error(result.error);
+				}
+				return result.timeoutMs;
+			}
+
+			// Helper: run a single agent via SDK with security validation
 			async function runOne(
 				agentName: string,
 				task: string,
 				cwd: string | undefined,
 				parentSignal?: AbortSignal,
 				timeoutMs?: number,
-			onProgress?: (partial: SubAgentResult) => void,
+				onProgress?: (partial: SubAgentResult) => void,
+				isReadOnly?: boolean,
 			): Promise<SubAgentResult> {
 				const agent = agents.find((a) => a.name === agentName);
 
@@ -421,49 +485,46 @@ export default function (pi: ExtensionAPI) {
 					};
 				}
 
-				// Inject parent's API key so --api-key and other runtime overrides work
-				await injectApiKey(resolved.model);
-
-				// Resolve tools; strip "subagent" to prevent accidental recursion.
-				// Sub-agents cannot spawn further sub-agents (one level of delegation only).
-				const defaultTools = ["read", "bash", "edit", "write", "grep", "find", "ls"];
-				let tools = agent.tools ?? defaultTools;
-				tools = tools.filter((t) => t !== "subagent");
-
-				const timeoutController = timeoutMs && timeoutMs > 0 ? new AbortController() : undefined;
-				const timeoutId = timeoutController ? setTimeout(() => timeoutController.abort(), timeoutMs) : undefined;
-				const signals = [parentSignal, timeoutController?.signal].filter((value): value is AbortSignal => Boolean(value));
-				const combinedSignal = signals.length > 1
-					? typeof (AbortSignal as any).any === "function"
-						? (AbortSignal as any).any(signals)
-						: signals[0]
-					: signals[0];
-
+				// Security: validate tools, timeout, and cwd (wrapped in try/catch).
+				let tools: string[];
+				let effectiveTimeoutMs: number | undefined;
+				let safeCwd: string;
 				try {
-					const result = await runSubAgent({
-						cwd: cwd ?? ctx.cwd,
-						systemPrompt: params.instructions
-						? `${agent.systemPrompt}\n\n## Task Contract\n${params.instructions.slice(0, 16 * 1024)}`
-						: agent.systemPrompt,
+					// Inject parent's API key so --api-key and other runtime overrides work
+					await injectApiKey(resolved.model);
+					tools = resolveChildTools(agent.tools, isReadOnly);
+					effectiveTimeoutMs = resolveChildTimeout(timeoutMs, params.timeout);
+					safeCwd = resolveChildCwd(cwd);
+				} catch (err: unknown) {
+					const errorMsg = err instanceof Error ? err.message : String(err);
+					return {
+						agent: agentName,
 						task,
-						tools,
-						model: resolved.model,
-						authStorage,
-						modelRegistry,
-						signal: combinedSignal,
-						agentName,
-						thinkingLevel: agent.thinking,
-						onMessage: onProgress,
-					});
-					if (timeoutController?.signal.aborted && !parentSignal?.aborted) {
-						result.exitCode = 1;
-						result.stopReason = "timeout";
-						result.errorMessage ||= `Timeout after ${timeoutMs}ms`;
-					}
-					return result;
-				} finally {
-					if (timeoutId) clearTimeout(timeoutId);
+						exitCode: 1,
+						messages: [],
+						stderr: `Validation error: ${errorMsg}`,
+						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+						errorMessage: errorMsg,
+					};
 				}
+
+				const result = await runSubAgent({
+					cwd: safeCwd,
+					systemPrompt: params.instructions
+					? `${agent.systemPrompt}\n\n## Task Contract\n${params.instructions.slice(0, MAX_INSTRUCTIONS_LENGTH)}`
+					: agent.systemPrompt,
+					task,
+					tools,
+					model: resolved.model,
+					authStorage,
+					modelRegistry,
+					signal: parentSignal,
+					timeoutMs: effectiveTimeoutMs,
+					agentName,
+					thinkingLevel: agent.thinking,
+					onMessage: onProgress,
+				});
+				return result;
 			}
 
 			// --- Chain mode ---
@@ -542,149 +603,140 @@ export default function (pi: ExtensionAPI) {
 
 			// --- Parallel mode ---
 			if (params.tasks && params.tasks.length > 0) {
-				if (params.tasks.length > MAX_PARALLEL_TASKS) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`,
-							},
-						],
-						details: makeDetails("parallel")([]),
-					};
-				}
-
 				const abortOnFailure = params.abortOnFailure ?? false;
 				const parallelController = new AbortController();
-				let abortCause: "parent" | "sibling" | undefined;
+				let abortCause: "parent" | "sibling" | "timeout" | undefined;
+				let cleanupParentSignal: (() => void) | undefined;
 
-				// Combine parent signal with parallel abort controller
-				let parallelSignal: AbortSignal = parallelController.signal;
+				// Link parent abort into parallelController so queued tasks see aborted state
 				if (signal) {
-					// Always link parent abort into parallelController so queued tasks see aborted state
 					if (signal.aborted) {
 						abortCause = "parent";
 						parallelController.abort();
 					} else {
-						signal.addEventListener("abort", () => {
+						const onParentAbort = () => {
 							if (!abortCause) abortCause = "parent";
 							parallelController.abort();
-						}, { once: true });
-					}
-					if (typeof (AbortSignal as any).any === "function") {
-						parallelSignal = (AbortSignal as any).any([signal, parallelController.signal]);
-					} else {
-						parallelSignal = parallelController.signal;
+						};
+						signal.addEventListener("abort", onParentAbort, { once: true });
+						cleanupParentSignal = () => signal.removeEventListener("abort", onParentAbort);
 					}
 				}
 
-				// Pre-create threads for all parallel tasks
-				const parallelThreads = params.tasks.map((t) =>
-					threadStore.createThread({
-						agentName: t.agent,
-						task: t.task,
-						mode: "parallel-task",
-						toolCallId: _toolCallId,
-					}),
-				);
+				// Wrap all remaining setup + execution so cleanupParentSignal always runs.
+				try {
+					// Pre-create threads for all parallel tasks
+					const parallelThreads = params.tasks.map((t) =>
+						threadStore.createThread({
+							agentName: t.agent,
+							task: t.task,
+							mode: "parallel-task",
+							toolCallId: _toolCallId,
+						}),
+					);
 
-				const allResults: SubAgentResult[] = new Array(params.tasks.length);
-				// Initialize placeholder results for streaming
-				for (let i = 0; i < params.tasks.length; i++) {
-					allResults[i] = {
-						agent: params.tasks[i].agent,
-						task: params.tasks[i].task,
-						exitCode: -1,
-						messages: [],
-						stderr: "",
-						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+					const allResults: SubAgentResult[] = new Array(params.tasks.length);
+					// Initialize placeholder results for streaming
+					for (let i = 0; i < params.tasks.length; i++) {
+						allResults[i] = {
+							agent: params.tasks[i].agent,
+							task: params.tasks[i].task,
+							exitCode: -1,
+							messages: [],
+							stderr: "",
+							usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+						};
+					}
+
+					const emitParallelUpdate = () => {
+						if (onUpdate) {
+							const running = allResults.filter((r) => r.exitCode === -1).length;
+							const done = allResults.filter((r) => r.exitCode !== -1).length;
+							onUpdate({
+								content: [
+									{
+										type: "text",
+										text: `Parallel: ${done}/${allResults.length} done, ${running} running...`,
+									},
+								],
+								details: makeDetails("parallel")([...allResults]),
+							});
+						}
 					};
-				}
 
-				const emitParallelUpdate = () => {
-					if (onUpdate) {
-						const running = allResults.filter((r) => r.exitCode === -1).length;
-						const done = allResults.filter((r) => r.exitCode !== -1).length;
-						onUpdate({
+					const results = await mapWithConcurrencyLimit(
+							params.tasks,
+							MAX_CONCURRENCY,
+							async (t, index) => {
+								// Skip if already aborted by sibling failure or parent abort
+								if (parallelController.signal.aborted) {
+									const skippedResult: SubAgentResult = {
+										agent: t.agent,
+										task: t.task,
+										exitCode: 1,
+										messages: [],
+										stderr: "",
+										usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+										stopReason: "aborted",
+										errorMessage:
+											abortCause === "sibling"
+											? "Cancelled: sibling task failed"
+											: abortCause === "timeout"
+											? "Cancelled: sibling task timed out"
+											: "Cancelled: parent operation aborted",
+									};
+									allResults[index] = skippedResult;
+									threadStore.updateThread(parallelThreads[index].id, {
+										status: "aborted",
+										result: skippedResult,
+									});
+									emitParallelUpdate();
+									return skippedResult;
+								}
+								const result = await runOne(
+									t.agent, t.task, t.cwd,
+									parallelController.signal, t.timeout ?? params.timeout,
+								(partial) => threadStore.updateThread(parallelThreads[index].id, { result: partial }),
+								);
+								allResults[index] = result;
+								threadStore.updateThread(parallelThreads[index].id, {
+									status: isFailedResult(result) ? (result.stopReason === "aborted" ? "aborted" : "failed") : "completed",
+									result,
+								});
+								// Early-abort: if this task failed and abortOnFailure is set
+								if (abortOnFailure && isFailedResult(result) && !abortCause) {
+									abortCause = result.stopReason === "timeout" ? "timeout" : "sibling";
+									parallelController.abort();
+								}
+								emitParallelUpdate();
+								return result;
+							},
+						);
+
+						const successCount = results.filter((r) => !isFailedResult(r)).length;
+						const cancelCount = results.filter((r) => r.stopReason === "aborted" && r.errorMessage?.includes("Cancelled")).length;
+						const summaries = results.map((r) => {
+							const output = truncateParallelOutput(getResultOutput(r));
+							const status = isFailedResult(r)
+								? `failed${r.stopReason ? ` (${r.stopReason})` : ""}`
+								: "completed";
+							return `### [${r.agent}] ${status}\n\n${output}`;
+						});
+
+						let headerText = `Parallel: ${successCount}/${results.length} succeeded`;
+						if (cancelCount > 0) headerText += ` (${cancelCount} cancelled)`;
+						return {
 							content: [
 								{
 									type: "text",
-									text: `Parallel: ${done}/${allResults.length} done, ${running} running...`,
+									text: `${headerText}\n\n${summaries.join("\n\n---\n\n")}`,
 								},
 							],
-							details: makeDetails("parallel")([...allResults]),
-						});
-					}
-				};
-
-				const results = await mapWithConcurrencyLimit(
-					params.tasks,
-					MAX_CONCURRENCY,
-					async (t, index) => {
-						// Skip if already aborted by sibling failure or parent abort
-						if (parallelSignal.aborted || parallelController.signal.aborted) {
-							const skippedResult: SubAgentResult = {
-								agent: t.agent,
-								task: t.task,
-								exitCode: 1,
-								messages: [],
-								stderr: "",
-								usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-								stopReason: "aborted",
-								errorMessage:
-									abortCause === "sibling"
-									? "Cancelled: sibling task failed"
-									: "Cancelled: parent operation aborted",
-							};
-							allResults[index] = skippedResult;
-							threadStore.updateThread(parallelThreads[index].id, {
-								status: "aborted",
-								result: skippedResult,
-							});
-							emitParallelUpdate();
-							return skippedResult;
-						}
-						const result = await runOne(
-							t.agent, t.task, t.cwd,
-							parallelSignal, t.timeout ?? params.timeout,
-						(partial) => threadStore.updateThread(parallelThreads[index].id, { result: partial }),
-						);
-						allResults[index] = result;
-						threadStore.updateThread(parallelThreads[index].id, {
-							status: isFailedResult(result) ? (result.stopReason === "aborted" ? "aborted" : "failed") : "completed",
-							result,
-						});
-						// Early-abort: if this task failed and abortOnFailure is set
-						if (abortOnFailure && isFailedResult(result)) {
-							abortCause = "sibling";
-							parallelController.abort();
-						}
-						emitParallelUpdate();
-						return result;
-					},
-				);
-
-				const successCount = results.filter((r) => !isFailedResult(r)).length;
-				const cancelCount = results.filter((r) => r.stopReason === "aborted" && r.errorMessage?.includes("Cancelled")).length;
-				const summaries = results.map((r) => {
-					const output = truncateParallelOutput(getResultOutput(r));
-					const status = isFailedResult(r)
-						? `failed${r.stopReason ? ` (${r.stopReason})` : ""}`
-						: "completed";
-					return `### [${r.agent}] ${status}\n\n${output}`;
-				});
-
-				let headerText = `Parallel: ${successCount}/${results.length} succeeded`;
-				if (cancelCount > 0) headerText += ` (${cancelCount} cancelled)`;
-				return {
-					content: [
-						{
-							type: "text",
-							text: `${headerText}\n\n${summaries.join("\n\n---\n\n")}`,
-						},
-					],
-					details: makeDetails("parallel")(results),
-				};
+							details: makeDetails("parallel")(results),
+						};
+				} finally {
+					cleanupParentSignal?.();
+				}
 			}
 
 			// --- Single mode ---
@@ -737,12 +789,9 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			// Should not reach here due to validation above
-			const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
-			return {
-				content: [{ type: "text", text: `Invalid parameters. Available agents: ${available}` }],
-				details: makeDetails("single")([]),
-			};
+			// Exhaustiveness check: the modeCount === 1 validation above ensures
+			// at least one of the three branches is taken, but TS cannot prove it.
+			throw new Error("unreachable");
 		},
 
 		// ------------------------------------------------------------------

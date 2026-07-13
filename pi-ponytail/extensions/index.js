@@ -61,8 +61,6 @@ export default function ponytailExtension(pi) {
   let currentMode = DEFAULT_MODE;
   let configuredDefaultMode = getDefaultMode();
   let hideStatus = getHideStatus();
-  let isActive = false;
-
   // -- Status bar --
   function syncStatus(ctx) {
     if (hideStatus) return;
@@ -71,28 +69,22 @@ export default function ponytailExtension(pi) {
     let theme;
     try { theme = ctx.ui.theme; if (!theme?.fg) return; } catch { return; }
     if (currentMode === "off") {
-      ctx.ui.setStatus("ponytail", "");
+      try { ctx.ui.setStatus("ponytail", ""); } catch { return; }
       return;
     }
-    const levelIcons = { lite: "🌿", full: "⚡", ultra: "🔥" };
+    const levelIcons = { lite: "🌿", full: "⚡", ultra: "🔥", review: "🔍" };
     const icon = levelIcons[currentMode] || "";
     const label = currentMode.toUpperCase();
-    const indicator = isActive ? theme.fg("accent", "●") : theme.fg("dim", "○");
-    ctx.ui.setStatus("ponytail", indicator + " 🐴 " + theme.fg("muted", "ponytail: ") + theme.fg("text", icon + " " + label));
+    try { ctx.ui.setStatus("ponytail", " 🐴 " + theme.fg("muted", "ponytail: ") + theme.fg("text", icon + " " + label)); } catch { return; }
   }
 
   const setMode = (mode, ctx) => {
     const normalized = normalizePersistedMode(mode);
     if (!normalized) return;
 
-    currentMode = normalized;
     pi.appendEntry("ponytail-mode", { mode: normalized });
+    currentMode = normalized;
     syncStatus(ctx);
-    ctx?.ui?.notify?.(`Ponytail mode set to ${normalized}.`, "info");
-  };
-
-  const sendAlias = (skillName) => {
-    pi.sendUserMessage(skillName);
   };
 
   pi.registerCommand("ponytail", {
@@ -114,6 +106,8 @@ export default function ponytailExtension(pi) {
               ? `Default Ponytail mode set to ${written}.`
               : `Saved default ${written}, but env override keeps default at ${configuredDefaultMode}.`;
             ctx?.ui?.notify?.(message, "info");
+          } else {
+            ctx?.ui?.notify?.(`Invalid default mode “${parsed.mode}”. Use: lite, full, ultra, or off.`, "warning");
           }
         } catch (e) {
           ctx?.ui?.notify?.(`Failed to save default mode: ${e.message}`, "error");
@@ -126,6 +120,14 @@ export default function ponytailExtension(pi) {
         return;
       }
 
+      if (parsed.type === "invalid") {
+        const msg = parsed.reason === "invalid-default-mode"
+          ? "Invalid default mode. Use: lite, full, ultra, or off."
+          : `Unknown mode: ${parsed.mode}. Use: lite, full, ultra, off, status, or default <mode>.`;
+        ctx?.ui?.notify?.(msg, "warning");
+        return;
+      }
+
       ctx?.ui?.notify?.("Unknown or unsupported /ponytail mode.", "warning");
     },
   });
@@ -133,17 +135,25 @@ export default function ponytailExtension(pi) {
   ["review", "audit", "gain", "debt", "help"].forEach((name) => {
     pi.registerCommand(`ponytail-${name}`, {
       description: `Run /skill:ponytail-${name}`,
-      handler: () => sendAlias(`/skill:ponytail-${name}`),
+      handler: () => pi.sendUserMessage(`/skill:ponytail-${name}`),
     });
   });
 
-  pi.on("input", async (event) => {
+  pi.on("input", async (event, ctx) => {
     if (event?.source === "extension") return;
 
     const text = String(event?.text || "");
     if (currentMode !== "off" && isDeactivationCommand(text)) {
-      setMode("off");
+      setMode("off", ctx);
     }
+  });
+
+  pi.on("agent_start", async (_event, ctx) => {
+    syncStatus(ctx);
+  });
+
+  pi.on("agent_end", async (_event, ctx) => {
+    syncStatus(ctx);
   });
 
   pi.on("session_start", async (_event, ctx) => {
@@ -155,16 +165,6 @@ export default function ponytailExtension(pi) {
     if (!getQuietStartup()) {
       ctx?.ui?.notify?.(`Ponytail loaded: ${currentMode}`, "info");
     }
-  });
-
-  pi.on("agent_start", async (_event, ctx) => {
-    isActive = true;
-    syncStatus(ctx);
-  });
-
-  pi.on("agent_end", async (_event, ctx) => {
-    isActive = false;
-    syncStatus(ctx);
   });
 
   pi.on("before_agent_start", async (event) => {

@@ -125,7 +125,6 @@ The extension registers these tools:
 | `windows_path_quote` | Quote a path for a specific shell |
 | `windows_safety_classify` | Check command for dangerous patterns |
 | `windows_doctor` | Full doctor report |
-| `windows_wsl_exec` | Execute command inside WSL |
 | `windows_tool_discover` | Check if a tool is in PATH |
 | `windows_wsl_list_distros` | List installed WSL distros |
 

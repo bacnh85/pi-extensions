@@ -58,7 +58,7 @@ export interface ReviewRunRequest {
 const DESTRUCTIVE_BASH_PATTERNS = [
 	/\brm(dir)?\b/i, /\b(mv|cp|mkdir|touch|chmod|chown|tee)\b/i, /(^|[^<])>(?!>)|>>/,
 	/\b(npm|yarn|pnpm|pip)\s+(install|uninstall|update|upgrade|add|remove|ci|link|publish|version)\b/i,
-	/\bgit\s+(add|commit|push|pull|merge|rebase|reset|checkout|switch|stash|cherry-pick|revert|tag|init|clone|clean|restore|notes|config|archive|blame|annotate)\b/i,
+	/\bgit\s+(add|commit|push|pull|merge|rebase|reset|checkout|switch|stash|cherry-pick|revert|tag|init|clone|clean|restore|notes|config)\b/i,
 	/\bgit\s+branch\s+(?!--(?:list|all|remote|merged|no-merged|contains|show-current)\b)/i,
 	/--output(?:=|\s)/i,
 	/\bfind\b[^\n]*-(delete|exec|execdir|ok|okdir|fprint[f0]?|fls)\b/i,
@@ -76,15 +76,10 @@ export function parseReviewArgs(args: string): { thinking: ThinkingLevel; target
 		: { thinking: "high", target: args.trim() };
 }
 
-function inspectionCommand(command: string): string {
-	const trimmed = command.trim();
-	return trimmed.match(/^rtk\s+(.+)$/i)?.[1].trim() ?? trimmed;
-}
-
 export function isReadOnlyBash(command: string): boolean {
 	// Reject multiline commands — the classification regexes are single-line only
 	if (/[\r\n]/.test(command)) return false;
-	const inspection = inspectionCommand(command);
+	const inspection = command.trim().replace(/^rtk\s+/i, "");
 	if (!inspection) return true;
 	if (/[;&|`$()]/.test(inspection) || /\b(python|python3|node|ruby|perl|php|sh|bash|zsh|fish)\b/i.test(inspection)) return false;
 	if (DESTRUCTIVE_BASH_PATTERNS.some((pattern) => pattern.test(inspection))) return false;
@@ -244,12 +239,11 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
 
 	async function runReview(prompt: string, cwd: string, signal?: AbortSignal, gitRange?: string, requireExactRange?: boolean): Promise<ReviewResult | undefined> {
 		const guidance = await readReviewGuidance(cwd);
-		const baseline = prompt.match(/baseline\s+([0-9a-f]{7,40})/i)?.[1];
 		let status, diff, staged, aheadLog, rangeDiff, rangeFailed;
 		try {
 			[status, diff, staged] = await Promise.all([
 				pi.exec("git", ["status", "--short"], { cwd, signal, timeout: 10_000 }),
-				pi.exec("git", ["diff", ...(baseline ? [baseline] : [])], { cwd, signal, timeout: 30_000 }),
+				pi.exec("git", ["diff"], { cwd, signal, timeout: 30_000 }),
 				pi.exec("git", ["diff", "--cached"], { cwd, signal, timeout: 30_000 }),
 			]);
 			// All primary git commands must succeed — nonzero exit produces empty evidence and a false-clean review

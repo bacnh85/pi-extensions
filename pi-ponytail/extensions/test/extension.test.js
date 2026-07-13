@@ -179,8 +179,8 @@ test("status bar renders the mode and flips active on agent_start", async () => 
   await events.get("agent_start")({}, ctx);
 
   assert.equal(statusWrites.at(-2).key, "ponytail");
-  assert.match(statusWrites.at(-2).text, /○.*ULTRA/);
-  assert.match(statusWrites.at(-1).text, /●.*ULTRA/);
+  assert.match(statusWrites.at(-2).text, /ULTRA/);
+  assert.match(statusWrites.at(-1).text, /ULTRA/);
 }));
 
 test("status bar stays silent when ui lacks a theme", async () => withTempConfig(async () => {

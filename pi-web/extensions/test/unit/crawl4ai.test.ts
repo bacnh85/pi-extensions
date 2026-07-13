@@ -3,24 +3,24 @@
  */
 
 import { expect } from "chai";
-import { Crawl4aiHttpError } from "../../lib/crawl4ai";
+import { HttpError } from "../../lib/retry";
 
-describe("Crawl4aiHttpError", () => {
+describe("HttpError", () => {
 	it("formats error message with status and text", () => {
-		const err = new Crawl4aiHttpError(401, "Unauthorized", '{"detail":"bad token"}');
+		const err = new HttpError(401, "Unauthorized", '{"detail":"bad token"}');
 		expect(err.status).to.equal(401);
 		expect(err.message).to.include("HTTP 401: Unauthorized");
 		expect(err.message).to.include('{"detail":"bad token"}');
 	});
 
 	it("handles empty response text", () => {
-		const err = new Crawl4aiHttpError(500, "Internal Server Error", "");
+		const err = new HttpError(500, "Internal Server Error", "");
 		expect(err.status).to.equal(500);
 		expect(err.message).to.equal("HTTP 500: Internal Server Error");
 	});
 
 	it("is instance of Error", () => {
-		const err = new Crawl4aiHttpError(403, "Forbidden", "rate limit");
+		const err = new HttpError(403, "Forbidden", "rate limit");
 		expect(err).to.be.instanceOf(Error);
 	});
 });

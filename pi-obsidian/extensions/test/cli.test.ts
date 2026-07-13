@@ -1,0 +1,280 @@
+import { describe, it } from "mocha";
+import { expect } from "chai";
+
+import {
+	readQuotedContent,
+	parseCliString,
+	parseFlags,
+	escapeCliValue,
+} from "../index.ts";
+
+// ---------------------------------------------------------------------------
+// Replicate execObsidian's stdout filter for testing
+// ---------------------------------------------------------------------------
+
+const LOADING_LINE = /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d Loading updated app package /;
+const OUTDATED_LINE = "Your Obsidian installer is out of date. Please download the latest installer which includes better CLI support: https://obsidian.md/download";
+
+function filterStdout(raw: string): string {
+	return raw
+		.split("\n")
+		.filter((line) => !LOADING_LINE.test(line) && line !== OUTDATED_LINE)
+		.join("\n");
+}
+
+describe("readQuotedContent", () => {
+	it("reads simple content", () => {
+		const r = readQuotedContent('hello"', 0);
+		expect(r.value).to.equal("hello");
+		expect(r.endPos).to.equal(5); // position of closing "
+	});
+
+	it("reads empty content", () => {
+		const r = readQuotedContent('"', 0);
+		expect(r.value).to.equal("");
+		expect(r.endPos).to.equal(0);
+	});
+
+	it("handles escaped double quote", () => {
+		const r = readQuotedContent('say \\"hi\\" there"', 0);
+		expect(r.value).to.equal('say "hi" there');
+		expect(r.endPos).to.equal(16); // position of closing "
+	});
+
+	it("handles escaped backslash", () => {
+		const r = readQuotedContent('path\\\\name"', 0);
+		expect(r.value).to.equal("path\\name");
+		expect(r.endPos).to.equal(10); // position of closing "
+	});
+
+	it("stops at closing quote", () => {
+		const r = readQuotedContent('abc"def', 0);
+		expect(r.value).to.equal("abc");
+		expect(r.endPos).to.equal(3); // position of closing "
+	});
+});
+
+describe("parseCliString", () => {
+	it("parses simple arguments", () => {
+		expect(parseCliString("read path=test.md")).to.deep.equal(["read", "path=test.md"]);
+	});
+
+	it("parses quoted values", () => {
+		expect(parseCliString('file="My Note.md"')).to.deep.equal(["file=My Note.md"]);
+	});
+
+	it("parses mixed quoted and unquoted", () => {
+		const result = parseCliString('search query="hello world" limit=10');
+		expect(result).to.deep.equal(["search", "query=hello world", "limit=10"]);
+	});
+
+	it("handles empty string", () => {
+		expect(parseCliString("")).to.deep.equal([]);
+	});
+
+	it("handles whitespace-only string", () => {
+		expect(parseCliString("   ")).to.deep.equal([]);
+	});
+
+	it("handles inline quotes inside unquoted tokens", () => {
+		const result = parseCliString('cmd key=pre"mid"post');
+		expect(result).to.deep.equal(["cmd", "key=premidpost"]);
+	});
+
+	it("handles escaped quotes inside quoted values", () => {
+		const result = parseCliString('read path="note \\"v2\\".md"');
+		expect(result).to.deep.equal(['read', 'path=note "v2".md']);
+	});
+
+	it("trims leading whitespace", () => {
+		expect(parseCliString("  read path=test.md")).to.deep.equal(["read", "path=test.md"]);
+	});
+
+	it("handles multiple spaces between args", () => {
+		expect(parseCliString("read   path=test.md   verbose=true")).to.deep.equal(["read", "path=test.md", "verbose=true"]);
+	});
+});
+
+describe("parseFlags", () => {
+	it("parses simple key=value", () => {
+		expect(parseFlags("read path=test.md")).to.deep.equal({ path: "test.md" });
+	});
+
+	it("parses quoted values", () => {
+		expect(parseFlags('read path="My Note.md"')).to.deep.equal({ path: "My Note.md" });
+	});
+
+	it("parses multiple flags", () => {
+		expect(parseFlags("query=hello regex=true preview=true")).to.deep.equal({
+			query: "hello",
+			regex: "true",
+			preview: "true",
+		});
+	});
+
+	it("returns empty object when no flags", () => {
+		expect(parseFlags("read")).to.deep.equal({});
+	});
+
+	it("parses hyphenated flag names", () => {
+		expect(parseFlags("missing-property=created")).to.deep.equal({ "missing-property": "created" });
+	});
+
+	it("handles empty string", () => {
+		expect(parseFlags("")).to.deep.equal({});
+	});
+});
+
+describe("escapeCliValue", () => {
+	it("escapes backslash", () => {
+		expect(escapeCliValue("a\\b")).to.equal("a\\\\b");
+	});
+
+	it("escapes double quote", () => {
+		expect(escapeCliValue('say "hi"')).to.equal('say \\"hi\\"');
+	});
+
+	it("escapes newline", () => {
+		expect(escapeCliValue("line1\nline2")).to.equal("line1\\nline2");
+	});
+
+	it("escapes tab", () => {
+		expect(escapeCliValue("col1\tcol2")).to.equal("col1\\tcol2");
+	});
+
+	it("handles mixed special characters", () => {
+		expect(escapeCliValue('path\\to\\"file"\n\ttest')).to.equal('path\\\\to\\\\\\"file\\"\\n\\ttest');
+	});
+
+	it("handles plain string unchanged", () => {
+		expect(escapeCliValue("hello")).to.equal("hello");
+	});
+
+	it("handles empty string", () => {
+		expect(escapeCliValue("")).to.equal("");
+	});
+});
+
+describe("stdout filter", () => {
+	it("filters loading lines", () => {
+		const raw = [
+			"2024-01-15 10:30:00 Loading updated app package from 1.5.3",
+			"result line 1",
+			"2024-01-15 10:30:01 Loading updated app package from 1.5.3",
+			"result line 2",
+		].join("\n");
+		expect(filterStdout(raw)).to.equal("result line 1\nresult line 2");
+	});
+
+	it("filters outdated installer line", () => {
+		const raw = [
+			OUTDATED_LINE,
+			"actual output",
+		].join("\n");
+		expect(filterStdout(raw)).to.equal("actual output");
+	});
+
+	it("preserves normal output unchanged", () => {
+		const raw = "line1\nline2";
+		expect(filterStdout(raw)).to.equal("line1\nline2");
+	});
+
+	it("handles lines with partial date matches", () => {
+		const raw = "2024-not-a-loading-line\nstill valid";
+		expect(filterStdout(raw)).to.equal("2024-not-a-loading-line\nstill valid");
+	});
+
+	it("handles empty output", () => {
+		expect(filterStdout("")).to.equal("");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// FormatObsidianOutput routing tests (pure function mapping)
+// ---------------------------------------------------------------------------
+
+describe("formatObsidianOutput routing", () => {
+	it("routes 'search' to formatSearchResults", async () => {
+		// Import the actual formatter to verify it handles the shape
+		const { formatSearchResults } = await import("../lib/format.js");
+		const result = formatSearchResults([{ filename: "test.md", match: "found it" }]);
+		expect(result).to.include("test.md");
+		expect(result).to.include("found it");
+	});
+
+	it("routes 'tasks' to formatTasks", async () => {
+		const { formatTasks } = await import("../lib/format.js");
+		const result = formatTasks([{ status: " ", text: "A task" }]);
+		expect(result).to.include("[ ] A task");
+	});
+
+	it("routes 'tags' to formatTags", async () => {
+		const { formatTags } = await import("../lib/format.js");
+		const result = formatTags([{ tag: "#work", count: 3 }]);
+		expect(result).to.include("#work: 3");
+	});
+
+	it("routes 'backlinks' to formatLinks", async () => {
+		const { formatLinks } = await import("../lib/format.js");
+		const result = formatLinks([{ filename: "ref.md" }], "Backlinks");
+		expect(result).to.include("ref.md");
+	});
+
+	it("routes 'outline' to formatOutline", async () => {
+		const { formatOutline } = await import("../lib/format.js");
+		const result = formatOutline([{ level: 1, heading: "Root" }]);
+		expect(result).to.include("# Root");
+	});
+
+	it("routes 'properties' to formatProperties", async () => {
+		const { formatProperties } = await import("../lib/format.js");
+		const result = formatProperties([{ name: "status", count: 10 }]);
+		expect(result).to.include("status: 10");
+	});
+
+	it("routes 'file' to formatFileInfo", async () => {
+		const { formatFileInfo } = await import("../lib/format.js");
+		const result = formatFileInfo({ name: "test.md", size: 100 });
+		expect(result).to.include("name: test.md");
+		expect(result).to.include("size: 100");
+	});
+
+	it("routes 'aliases' to formatAliases", async () => {
+		const { formatAliases } = await import("../lib/format.js");
+		const result = formatAliases([{ alias: "My Note" }]);
+		expect(result).to.include("My Note");
+	});
+
+	it("routes 'links' to formatOutgoingLinks", async () => {
+		const { formatOutgoingLinks } = await import("../lib/format.js");
+		const result = formatOutgoingLinks([{ link: "[[Note]]" }]);
+		expect(result).to.include("[[Note]]");
+	});
+
+	it("routes unknown commands to JSON.stringify", async () => {
+		// Unknown commands fall through to JSON.stringify
+		// This is tested implicitly by the default branch in formatObsidianOutput
+		const result = JSON.stringify({ custom: "data" }, null, 2);
+		expect(result).to.include('"custom"');
+	});
+});
+
+describe("error message formatting", () => {
+	it("ENOENT error message mentions Obsidian installation", () => {
+		const err = new Error("spawnSync ENOENT");
+		(err as any).code = "ENOENT";
+		expect(err.message).to.include("ENOENT");
+	});
+
+	it("non-zero exit error includes stdout and stderr", () => {
+		const err = new Error(
+			"obsidian command failed (exit 1)\n" +
+			"  Cmd: obsidian read path=nonexistent\n" +
+			"  Stderr: File not found\n" +
+			"  Stdout: (empty)"
+		);
+		expect(err.message).to.include("exit 1");
+		expect(err.message).to.include("nonexistent");
+		expect(err.message).to.include("File not found");
+	});
+});

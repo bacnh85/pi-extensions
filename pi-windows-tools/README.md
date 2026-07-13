@@ -12,15 +12,7 @@ npm install @bacnh85/pi-windows-tools
 
 ```json
 {
-  "extensions": ["pi-windows-tools"],
-  "windowsTools": {
-    "enabled": true,
-    "defaultShell": "pwsh",
-    "allowShellFallback": true,
-    "gitBashPath": null,
-    "wslDistro": null,
-    "preferWslFor": ["openwrt", "yocto", "linux-kernel", "embedded-linux"]
-  }
+  "extensions": ["pi-windows-tools"]
 }
 ```
 

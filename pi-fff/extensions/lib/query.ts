@@ -5,17 +5,23 @@ export function normalizePathConstraint(
   cwd = process.cwd(),
 ): string | null {
   let trimmed = pathConstraint.trim();
-  if (!trimmed) return trimmed;
+  if (!trimmed) return null;
 
   if (path.isAbsolute(trimmed)) {
     const relative = path.relative(cwd, trimmed).replaceAll(path.sep, "/");
     if (relative === "") return null;
-    if (relative.startsWith("../") || relative === ".." || path.isAbsolute(relative)) {
+    if (relative.split("/").some(s => s === "..") || path.isAbsolute(relative)) {
       throw new Error(
         `Path constraint must be relative to the workspace: ${pathConstraint}`,
       );
     }
     trimmed = relative;
+  }
+
+  if (trimmed.split("/").some(s => s === "..")) {
+    throw new Error(
+      `Path constraint must be relative to the workspace: ${pathConstraint}`,
+    );
   }
 
   if (trimmed === "." || trimmed === "./") return null;
@@ -54,7 +60,35 @@ export function normalizeExcludes(
   cwd = process.cwd(),
 ): string[] {
   if (!exclude) return [];
-  const parts = Array.isArray(exclude) ? exclude : exclude.split(/[,\s]+/);
+  const parts = Array.isArray(exclude)
+    ? exclude
+    : (() => {
+        // Depth-aware split: ignores commas inside {…} groups (brace
+        // patterns like `{src,lib}`) and inside […] character classes
+        // (e.g. `[,a]`). Backslash-escaped characters are skipped.
+        const result: string[] = [];
+        let braceDepth = 0;
+        let bracketDepth = 0;
+        let start = 0;
+        for (let i = 0; i < exclude.length; i++) {
+          const ch = exclude[i];
+          if (ch === "\\") {
+            i++; // skip the escaped character
+            continue;
+          }
+          if (ch === "{" && bracketDepth === 0) braceDepth++;
+          else if (ch === "}" && bracketDepth === 0) braceDepth = Math.max(0, braceDepth - 1);
+          else if (ch === "[") bracketDepth++;
+          else if (ch === "]") bracketDepth = Math.max(0, bracketDepth - 1);
+          else if (ch === "," && braceDepth === 0 && bracketDepth === 0) {
+            result.push(exclude.slice(start, i).trim());
+            start = i + 1;
+          }
+        }
+        const last = exclude.slice(start).trim();
+        if (last) result.push(last);
+        return result;
+      })();
   return parts.flatMap((s) => {
     const normalized = normalizePathConstraint(s.trim().replace(/^!/, ""), cwd);
     return normalized ? [`!${normalized}`] : [];
@@ -74,5 +108,6 @@ export function buildQuery(
   }
   parts.push(...normalizeExcludes(exclude, cwd));
   parts.push(pattern);
-  return parts.join(" ");
+  if (parts.length === 1 && !parts[0]) return "";
+  return parts.filter(Boolean).join(" ");
 }

@@ -236,7 +236,7 @@ Tests use Mocha + tsx with Node.js assert. No test framework mocks — tests use
 - **Exact serena command on block**: When a read-on-code-file is blocked, the reason now includes the exact `serena_get_symbols_overview({relative_path: ...})` call with the file path.
 - **One-shot steer removed**: Deleted redundant serena-tool-list steer message (block reason already prescribes exact tool).
 - **Bash read command detection**: `bashReadCommandPath()` extracts file path from `cat`/`head`/`tail`/`sed -n` commands. `isSemanticMissToolCall()` blocks bash read-commands targeting code files.
-- **SERENA_CODE_TOOLS**: Frozen array of 5 serena tool names exported for use in block messages.
+- **DEFAULT_SERENA_TOOL**: Exported constant `"serena_get_symbols_overview"` for use in block messages (replaced the `SERENA_CODE_TOOLS` array which was only ever accessed at index 0).
 - **Dev discipline (AGENTS.md)**: Embedded ponytail 7-rung ladder + re-read-diff-for-cruft rule in project instructions.
 - **Eval scripts**: `eval-super-power.mjs`, `eval-serena-tools.mjs`, `bench-super-power.mjs` for runtime verification.
 - **New env vars**: `PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE`, `PI_DEEPSEEK_TOOLS_CUSTOM_SUPERPOWER_PROMPT`

@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-sub",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Pi extension showing subscription usage for supported model providers.",
   "type": "module",
   "license": "MIT",

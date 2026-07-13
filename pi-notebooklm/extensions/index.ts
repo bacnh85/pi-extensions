@@ -166,7 +166,11 @@ export function isDestructive(args: string[]): boolean {
 	const { path, rest } = extractCommandPath(args);
 
 	// Safe preview: source clean --dry-run is read-only
-	if (arraysMatch(path, ["source", "clean"]) && rest.includes("--dry-run")) {
+	// Only consider --dry-run before end-of-options marker `--`;
+	// after `--`, flags are positional values, not options.
+	const dryRunDD = rest.indexOf("--");
+	const beforeDryRunDD = dryRunDD === -1 ? rest : rest.slice(0, dryRunDD);
+	if (arraysMatch(path, ["source", "clean"]) && beforeDryRunDD.includes("--dry-run")) {
 		return false;
 	}
 
@@ -231,7 +235,7 @@ export function isBlockedInteractive(args: string[]): { blocked: boolean; messag
 	if (hasHelpFlag(args)) return { blocked: false };
 
 	const { path } = extractCommandPath(args);
-	if (path[0] === "login") {
+	if (path[0] === "login" || arraysMatch(path, ["auth", "login"])) {
 		return {
 			blocked: true,
 			message: "'notebooklm login' requires a terminal for browser login. Run it directly in your terminal.",
@@ -309,7 +313,7 @@ export function truncateOutput(text: string): { text: string; truncated: boolean
 	}
 
 	// Re-check byte limit after line truncation may have restored bytes
-	if (!needByteNotice && result.length > MAX_OUTPUT_BYTES) {
+	if (!needByteNotice && Buffer.byteLength(result, "utf8") > MAX_OUTPUT_BYTES) {
 		const limit = Math.max(0, MAX_OUTPUT_BYTES - suffixBytes);
 		const buf = Buffer.from(result, "utf8");
 		const sliced = buf.slice(0, limit).toString("utf8");
@@ -452,11 +456,19 @@ export default function piNotebooklmExtension(pi: ExtensionAPI) {
 		// -------------------------------------------------------------------
 		// Validate: source add accepts exactly one CONTENT per call
 		// -------------------------------------------------------------------
-		if (args.length >= 3 && args[0] === "source" && args[1] === "add") {
-			const { rest } = extractCommandPath(args.slice(2));
-			const lastIsArg = rest.length > 0 && !rest[rest.length - 1].startsWith("-");
-			const firstContent = rest.find((a) => !a.startsWith("-"));
-			if (firstContent && lastIsArg && rest.indexOf(firstContent) !== rest.length - 1) {
+		const { path: sourceCmdPath, rest: sourceRest } = extractCommandPath(args);
+		if (args.length >= 3 && sourceCmdPath[0] === "source" && sourceCmdPath[1] === "add") {
+			// Count content arguments (non-option items) in rest, skipping option values
+			let contentCount = 0;
+			for (let i = 0; i < sourceRest.length; i++) {
+				if (VALUE_OPTIONS.has(sourceRest[i])) {
+					i++; // skip the following value
+					continue;
+				}
+				if (sourceRest[i].startsWith("-")) continue;
+				contentCount++;
+			}
+			if (contentCount > 1) {
 				throw new Error(
 					"notebooklm source add accepts exactly one source. " +
 						"Add sources one at a time: call notebooklm separately for each URL/file/text.",
@@ -467,9 +479,10 @@ export default function piNotebooklmExtension(pi: ExtensionAPI) {
 		// -------------------------------------------------------------------
 		// Validate: -n/--notebook after download subcommand must precede type
 		// -------------------------------------------------------------------
-		if (args[0] === "download") {
-			const nbIndex = args.indexOf("-n") === -1 ? args.indexOf("--notebook") : args.indexOf("-n");
-			if (nbIndex > 1 && nbIndex < args.length - 1) {
+		const { path: downloadCmdPath, rest: downloadRest } = extractCommandPath(args);
+		if (downloadCmdPath[0] === "download") {
+			const nbIndex = downloadRest.indexOf("-n") === -1 ? downloadRest.indexOf("--notebook") : downloadRest.indexOf("-n");
+			if (nbIndex > 0 && nbIndex < downloadRest.length - 1) {
 				throw new Error(
 					"Place -n/--notebook immediately after 'download', before the artifact type. " +
 						"Example: args: [\"download\", \"-n\", \"NOTEBOOK_ID\", \"audio\", ...]",

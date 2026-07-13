@@ -1,8 +1,6 @@
-// ponytail: duplicated in pi-web/lib/config.ts. Extract when a third package needs it.
-
-import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import dotenv from "dotenv";
 
 // ---------------------------------------------------------------------------
 // Environment loading
@@ -14,51 +12,13 @@ export function piConfigDirs(): string[] {
 		: [path.join(os.homedir(), ".pi", "agent"), path.join(os.homedir(), ".pi", "agents")];
 }
 
-export function envFileCandidates(cwd = process.cwd(), includeCwd = true): string[] {
-	return [
+export function loadEnv(cwd = process.cwd(), includeCwd = true): void {
+	const candidates: string[] = [
 		...(includeCwd ? [path.resolve(cwd, ".env.local"), path.resolve(cwd, ".env")] : []),
 		...piConfigDirs().flatMap((dir) => [path.join(dir, ".env.local"), path.join(dir, ".env")]),
 	];
-}
-
-/**
- * Strip an inline comment from a dotenv value, respecting quoting and escape rules.
- * Covers: # outside quotes, \" inside double quotes, \# escaped, and comment after space.
- */
-export function stripInlineComment(value: string): string {
-	let quote = "";
-	let escaped = false;
-	for (let i = 0; i < value.length; i++) {
-		const char = value[i];
-		if (escaped) { escaped = false; continue; }
-		if (char === "\\") { escaped = true; continue; }
-		if (quote) { if (char === quote) quote = ""; continue; }
-		if (char === "\"" || char === "'") { quote = char; continue; }
-		if (char === "#" && (i === 0 || /\s/.test(value[i - 1]))) return value.slice(0, i);
-	}
-	return value;
-}
-
-export function parseDotenvValue(rawValue: string): string {
-	let value = stripInlineComment(rawValue).trim();
-	if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
-		value = value.slice(1, -1);
-		return value.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "\t");
-	}
-	return value.trim();
-}
-
-export function loadEnv(cwd = process.cwd(), includeCwd = true): void {
-	for (const file of envFileCandidates(cwd, includeCwd)) {
-		let text: string;
-		try { text = fs.readFileSync(file, "utf8"); } catch (error: any) { if (error?.code === "ENOENT") continue; throw error; }
-		for (const rawLine of text.split(/\r?\n/)) {
-			const line = rawLine.trim();
-			if (!line || line.startsWith("#")) continue;
-			const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
-			if (!match || process.env[match[1]] !== undefined) continue;
-			process.env[match[1]] = parseDotenvValue(match[2]);
-		}
+	for (const file of candidates) {
+		dotenv.config({ path: file });
 	}
 }
 
@@ -80,7 +40,7 @@ export function getMuninConfig(
 	cwd = process.cwd(),
 	includeCwdEnv = false
 ): MuninConfig {
-	const cacheKey = `${cwd}|${includeCwdEnv}|${JSON.stringify(params)}`;
+	const cacheKey = `${cwd}|${includeCwdEnv}|${JSON.stringify(params, Object.keys(params).sort())}`;
 	const cached = configCache.get(cacheKey);
 	if (cached) return cached;
 
@@ -157,14 +117,19 @@ export function formatMemories(result: unknown): string {
 	if (data && typeof data === "object" && !Array.isArray(data) && Array.isArray((data as Record<string, unknown>).memories)) {
 		data = (data as Record<string, unknown>).memories as unknown[];
 	}
-	const items = Array.isArray(data) ? data : [data];
-	if (items.length === 0 || (items.length === 1 && !items[0])) return "No memories found.";
-	return items
+	const items = Array.isArray(data) ? data.filter(Boolean) : [data].filter(Boolean);
+	if (items.length === 0) return "No memories found.";
+	const formatted = items
 		.map((item: unknown, index: number) => {
 			const memory = normalizeMemory(item);
-			return `--- Memory ${index + 1} ---\n${formatMemory(memory)}`;
+			const formatted = formatMemory(memory);
+			// Skip items that produced no useful fields (meaningless data)
+			if (!formatted) return null;
+			return `--- Memory ${index + 1} ---\n${formatted}`;
 		})
+		.filter(Boolean)
 		.join("\n\n");
+	return formatted || "No memories found.";
 }
 
 export function toTextResult(result: unknown): string {
@@ -278,7 +243,7 @@ export function classifyError(error: unknown): { type: string; message: string }
 
 // ponytail: only redacts the env-var name, not heuristic base64 (fragile, false positives).
 export function sanitizeErrorMessage(error: Error): string {
-	return error.message.replace(/MUNIN_API_KEY[=\s]*[A-Za-z0-9+/=_-]+/gi, "MUNIN_API_KEY=[REDACTED]");
+	return error.message.replace(/MUNIN_API_KEY[=\s]+[A-Za-z0-9+/=_-]{4,}/gi, "MUNIN_API_KEY=[REDACTED]");
 }
 
 

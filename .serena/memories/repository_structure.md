@@ -1,0 +1,1 @@
+Top-level packages currently include pi-deepseek-tools, pi-fff, pi-munin, pi-notebooklm, pi-obsidian, pi-plan, pi-ponytail, pi-review, pi-rtk, pi-serena, pi-sub, pi-subagent, pi-web, and pi-windows-tools. Most source is under each package's extensions/ directory; skills and hooks are optional. GitHub workflows are under .github/workflows. Evidence: rg --files, README.md.

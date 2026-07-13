@@ -106,7 +106,8 @@ describe("extractWithDiagnostics", () => {
 		installMockFetch((url, init) => {
 			if (url === "http://firecrawl.test/v2/scrape") {
 				const body = JSON.parse(String(init?.body));
-				expect(body.formats).to.deep.include({ type: "json", prompt: "Extract title" });
+				expect(body.formats).to.deep.equal(["markdown", "json"]);
+				expect(body.jsonOptions).to.deep.equal({ prompt: "Extract title" });
 				return jsonResponse({ data: { markdown: "# Dynamic\n\nBody", json: { title: "Structured" }, metadata: { title: "Dynamic" } } });
 			}
 			throw new Error(`unexpected fetch ${url}`);

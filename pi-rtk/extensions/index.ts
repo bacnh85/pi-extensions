@@ -1,8 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createLocalBashOperations, isToolCallEventType } from "@earendil-works/pi-coding-agent";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { hasUnsupportedRtkFind } from "./findFallback.js";
 
 const REWRITE_TIMEOUT_MS = 2_000;
@@ -15,24 +12,6 @@ let sessionEnabled = true;
 let rtkUnavailableNotified = false;
 let rtkAvailable: boolean | undefined;
 let rtkLastCheckedAt = 0;
-
-function piConfigDirs(): string[] {
-	return process.env.PI_CODING_AGENT_DIR ? [process.env.PI_CODING_AGENT_DIR] : [path.join(os.homedir(), ".pi", "agent")];
-}
-
-function loadEnv(cwd = process.cwd()): void {
-	for (const file of [path.resolve(cwd, ".env.local"), path.resolve(cwd, ".env"), ...piConfigDirs().flatMap((dir) => [path.join(dir, ".env.local"), path.join(dir, ".env")])]) {
-		let text: string;
-		try { text = fs.readFileSync(file, "utf8"); } catch (error: any) { if (error?.code === "ENOENT") continue; throw error; }
-		for (const rawLine of text.split(/\r?\n/)) {
-			const line = rawLine.trim();
-			if (!line || line.startsWith("#")) continue;
-			const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
-			if (!match || process.env[match[1]] !== undefined) continue;
-			process.env[match[1]] = match[2].trim().replace(/^[\'\"]|[\'\"]$/g, "");
-		}
-	}
-}
 
 function parseSemver(raw: string): [number, number, number] | null {
 	const match = raw.trim().match(/(\d+)\.(\d+)\.(\d+)/);
@@ -49,11 +28,18 @@ function isAtLeastVersion(current: [number, number, number], minimum: [number, n
 }
 
 function rewritingEnabled(): boolean {
-	return sessionEnabled && process.env.RTK_DISABLED !== "1";
+	return sessionEnabled && !isRtkDisabled();
+}
+
+function isRtkDisabled(): boolean {
+	const val = process.env.RTK_DISABLED;
+	if (!val) return false;
+	const lower = val.trim().toLowerCase();
+	return lower === "1" || lower === "true" || lower === "yes" || lower === "y";
 }
 
 function updateStatus(ctx: ExtensionContext): void {
-	const envDisabled = process.env.RTK_DISABLED === "1";
+	const envDisabled = isRtkDisabled();
 	ctx.ui.setStatus(RTK_STATUS_KEY, sessionEnabled && !envDisabled ? "rtk ✓" : "rtk ✗");
 }
 
@@ -108,6 +94,7 @@ async function rewriteCommand(pi: ExtensionAPI, command: string, signal?: AbortS
 	}).catch(() => undefined);
 
 	if (!result) {
+		if (signal?.aborted) return null;
 		rtkAvailable = false;
 		rtkLastCheckedAt = Date.now();
 		notifyRtkUnavailable(ctx, "[pi-rtk] rtk rewrite failed to start; shell command rewrites will pass through unchanged");
@@ -132,7 +119,7 @@ async function rewriteCommand(pi: ExtensionAPI, command: string, signal?: AbortS
 // ponytail: reject RTK rewrites that change the first word or add shell operators
 // Also reject rewrites of eval/script commands (node -e, python -c, etc.)
 // because RTK cannot safely transform arbitrary inline scripts.
-const SCRIPT_COMMAND_RE = /^(node|python|python3|ruby|perl|php|deno|bun)\s+(-[pec]|--eval|--print)\b/;
+const SCRIPT_COMMAND_RE = /^(?:(?:\/[\w/.-]+)?\b(?:node|python|python3|ruby|perl|php|deno|bun|lua|perl6|raku|tclsh|groovy|julia|Rscript|ghci|dart|swift)\s+)(?:-\S+\s+)*(?:-[pec]{1,3}|--eval|--print)\b/;
 function isEvalCommand(command: string): boolean {
 	return SCRIPT_COMMAND_RE.test(command.trim());
 }
@@ -144,14 +131,14 @@ function isSafeRewrite(original: string, rewritten: string): boolean {
 	// RTK prepends "rtk" as the first token; compare against the original's first token
 	const rtkIdx = rTokens[0] === "rtk" ? 1 : 0;
 	const o = oTokens[0], n = rTokens[rtkIdx] ?? "";
-	return o === n && (/[|><;&`]/.test(original) || !/[|><;&`]/.test(rewritten));
+	return o === n && !/[|><;&`]/.test(rewritten);
 }
 
 async function maybeRewriteCommand(pi: ExtensionAPI, command: string, signal?: AbortSignal, ctx: ExtensionContext): Promise<string | null> {
 	if (!rewritingEnabled()) return null;
 	if (typeof command !== "string" || command.trim() === "") return null;
 	if (command.trimStart().startsWith("rtk ")) return null;
-	var rewritten = await rewriteCommand(pi, command, signal, ctx);
+	const rewritten = await rewriteCommand(pi, command, signal, ctx);
 	if (rewritten && rewritten !== command && !isSafeRewrite(command, rewritten)) return null;
 	return rewritten;
 }
@@ -159,7 +146,7 @@ async function maybeRewriteCommand(pi: ExtensionAPI, command: string, signal?: A
 async function showRtkStatus(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
 	const available = await checkRtkAvailable(pi, ctx);
 	const version = available ? await getRtkVersion(pi) : null;
-	const envDisabled = process.env.RTK_DISABLED === "1";
+	const envDisabled = isRtkDisabled();
 	const cacheState = rtkAvailable === false ? `unavailable (retry in ${Math.max(0, Math.ceil((RTK_UNAVAILABLE_RETRY_MS - (Date.now() - rtkLastCheckedAt)) / 1000))}s)` : "available";
 	const lines = [
 		`Session toggle: ${sessionEnabled ? "enabled" : "disabled"}`,
@@ -195,7 +182,6 @@ async function handleRtkCommand(pi: ExtensionAPI, args: string, ctx: ExtensionCo
 }
 
 export default function piRtkExtension(pi: ExtensionAPI) {
-	loadEnv();
 	const localBashOperations = createLocalBashOperations();
 
 	pi.registerCommand("rtk", {

@@ -81,17 +81,18 @@ describe("review parsing and shell gate", () => {
 		}
 	});
 
-	// All git diff variants are read-only (--output already blocked above)
-	assert.equal(isReadOnlyBash("git diff --name-status @{u}"), true, "diff name-status");
-	assert.equal(isReadOnlyBash("git diff --stat @{u}"), true, "diff stat");
-	assert.equal(isReadOnlyBash("git diff --name-only HEAD~5..HEAD"), true, "diff name-only range");
-	assert.equal(isReadOnlyBash("git diff --cached --name-status"), true, "diff cached name-status");
-	assert.equal(isReadOnlyBash("git diff --diff-filter=M --name-only"), true, "diff filter");
-	assert.equal(isReadOnlyBash("git diff --no-index a b"), true, "diff no-index");
-	// Multiline attempts are rejected
-	assert.equal(isReadOnlyBash("git diff\nrm -rf ."), false, "multiline diff newline");
-	assert.equal(isReadOnlyBash("git diff\r\nrm -rf ."), false, "multiline diff crlf");
-	assert.equal(isReadOnlyBash("rtk git diff --stat\r\ngit reset --hard"), false, "rtk multiline");
+	it('allows read-only git diff variants and rejects multiline commands', () => {
+		assert.equal(isReadOnlyBash("git diff --name-status @{u}"), true, "diff name-status");
+		assert.equal(isReadOnlyBash("git diff --stat @{u}"), true, "diff stat");
+		assert.equal(isReadOnlyBash("git diff --name-only HEAD~5..HEAD"), true, "diff name-only range");
+		assert.equal(isReadOnlyBash("git diff --cached --name-status"), true, "diff cached name-status");
+		assert.equal(isReadOnlyBash("git diff --diff-filter=M --name-only"), true, "diff filter");
+		assert.equal(isReadOnlyBash("git diff --no-index a b"), true, "diff no-index");
+		// Multiline attempts are rejected
+		assert.equal(isReadOnlyBash("git diff\nrm -rf ."), false, "multiline diff newline");
+		assert.equal(isReadOnlyBash("git diff\r\nrm -rf ."), false, "multiline diff crlf");
+		assert.equal(isReadOnlyBash("rtk git diff --stat\r\ngit reset --hard"), false, "rtk multiline");
+	});
 
 	it("resolves git range for branch and custom presets", () => {
 		assert.equal(resolveGitRange("branch", ""), "@{upstream}...HEAD");

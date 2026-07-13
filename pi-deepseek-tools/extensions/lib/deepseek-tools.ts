@@ -68,7 +68,7 @@ export function isDeepSeekV4ModelByModel(model?: { provider?: string; id?: strin
 	return false;
 }
 
-export function hasAnyTool(activeTools: readonly string[] | undefined, names: readonly string[]): boolean {
+function hasAnyTool(activeTools: readonly string[] | undefined, names: readonly string[]): boolean {
 	return Array.isArray(activeTools) && names.some((name) => activeTools.includes(name));
 }
 
@@ -85,13 +85,7 @@ export function looksLikeCodePath(value: unknown): boolean {
 	return /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|py|go|rs|java|kt|kts|scala|rb|php|cs|cpp|cc|cxx|c|h|hpp|swift|sh|bash|zsh|fish|lua|r|jl|ex|exs|erl|hrl|clj|cljs|fs|fsx|ml|mli|dart|vue|svelte)$/i.test(target);
 }
 
-export function looksLikeDocsOrConfigPath(value: unknown): boolean {
-	const target = normalizedTarget(value);
-	return /(^|\/)(readme|changelog|license|copying|package-lock|pnpm-lock|yarn\.lock)(\.[a-z0-9_-]+)?$/.test(target)
-		|| /(^|\/)(package|tsconfig|jsconfig|biome|eslint|prettier|vitest|vite|rollup|webpack|babel|jest|mocha|nyc)\.(json|jsonc|ya?ml|toml|js|cjs|mjs)$/.test(target)
-		|| /(^|\/)\.([a-z0-9_-]+)(rc|ignore)?$/.test(target)
-		|| /\.(md|mdx|txt|json|jsonc|ya?ml|toml|ini|env|lock|csv|tsv|xml|html|css|scss|sass|log)$/i.test(target);
-}
+
 
 export function commandLooksLikeSemanticCodeSearch(command: unknown): boolean {
 	if (typeof command !== "string") return false;
@@ -146,7 +140,6 @@ export function isSemanticMissToolCall(toolName: string, input: unknown): boolea
 		if (commandLooksLikeSemanticCodeSearch(input.command)) return true;
 		return false;
 	}
-	// ponytail: grep/ffgrep on code-symbol searches are also semantic misses
 	if (toolName === "grep" || toolName === "ffgrep") {
 		if (grepLooksLikeSymbolSearch(input)) return true;
 		return false;
@@ -169,10 +162,15 @@ function grepLooksLikeSymbolSearch(input: Record<string, unknown>): boolean {
 
 	// Check if the search targets code files (path or glob implies code)
 	const searchPath = typeof input.path === "string" ? input.path : "";
-	if (searchPath && looksLikeDocsOrConfigPath(searchPath)) return false;
+	if (searchPath) {
+		const target = normalizedTarget(searchPath);
+		if (/(^|\/)(readme|changelog|license|copying|package-lock|pnpm-lock|yarn\.lock)(\.[a-z0-9_-]+)?$/.test(target)
+			|| /(^|\/)(package|tsconfig|jsconfig|biome|eslint|prettier|vitest|vite|rollup|webpack|babel|jest|mocha|nyc)\.(json|jsonc|ya?ml|toml|js|cjs|mjs)$/.test(target)
+			|| /(^|\/)\.([a-z0-9_-]+)(rc|ignore)?$/.test(target)
+			|| /\.(md|mdx|txt|json|jsonc|ya?ml|toml|ini|env|lock|csv|tsv|xml|html|css|scss|sass|log)$/i.test(target)) return false;
+	}
 
 	// Check if the pattern looks like a code symbol (identifier, not a regex or text phrase)
-	// ponytail: exclude ALL_CAPS (env vars, constants) and patterns with underscores
 	const isAllCaps = /^[A-Z_][A-Z_0-9]{3,}$/.test(pattern);
 	if (isAllCaps) return false;
 
@@ -187,13 +185,7 @@ function grepLooksLikeSymbolSearch(input: Record<string, unknown>): boolean {
 /**
  * Serena tool names for use in block messages and suggestions.
  */
-export const SERENA_CODE_TOOLS = [
-	"serena_get_symbols_overview",
-	"serena_find_symbol",
-	"serena_find_declaration",
-	"serena_find_implementations",
-	"serena_find_referencing_symbols",
-] as const;
+export const DEFAULT_SERENA_TOOL = "serena_get_symbols_overview";
 
 export function missedDedicatedTool(toolName: string, input: unknown, activeTools: readonly string[]): string | undefined {
 	if (toolName !== "bash" || !isRecord(input)) return undefined;
@@ -308,11 +300,12 @@ function defaultSerenaSuggest(activeTools: readonly string[]): string {
 	if (activeTools.includes("serena_get_symbols_overview")) {
 		return "Try: serena_get_symbols_overview({relative_path: \"the file\"})";
 	}
-	return `Try: ${SERENA_CODE_TOOLS[0]}`;
+	return `Try: ${DEFAULT_SERENA_TOOL}`;
 }
 
 const guidanceCache = new Map<string, string>();
 
+/** Clear the guidance cache, e.g. at session start. */
 export function clearGuidanceCache(): void {
 	guidanceCache.clear();
 }
@@ -330,7 +323,6 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 			: "find";
 	const lines: string[] = ["OpenCode Go DeepSeek V4 — pick the right tool on the first try:", ""];
 
-	// ponytail: only non-obvious mappings — remote repositories, unverified paths, and serena tools.
 	const lookups: string[] = [
 		`  • File location uncertain → ${workspaceFinder} before read inside the workspace; use find with the checkout root for external temporary clones. Never guess subdirectories from naming conventions — a guessed path that doesn't exist is a wasted turn. Discover first.`,
 		"  • Analyze a GitHub repository/codebase URL → bash git clone to a temporary directory, then inspect the local checkout with Serena/read; use web tools only for webpage content such as issues, PRs, releases, or individual pages",
@@ -344,7 +336,6 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 			"  • serena_find_implementations — find implementations of a class/interface",
 			"  • serena_find_referencing_symbols — find all usages/references of a symbol",
 		);
-		// ponytail: counter the "I know the file → grep is faster" bias
 		lookups.push("  • Serena is ONE call vs multiple read/grep scans — even when you know the file, serena_get_symbols_overview returns all symbols at once, and serena_find_symbol finds definitions grep would miss");
 	}
 	lookups.push("  • Read a file whose exact path is verified → read");
@@ -354,7 +345,6 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 	for (const l of lookups) lines.push(l);
 
 	lines.push("");
-	// ponytail: 2 prohibitions, not 12. The model only needs to know what NOT to do.
 	lines.push("NEVER do these — they are BLOCKED:");
 	lines.push("  • Do NOT use grep or ffgrep for code-symbol searches — use serena_find_symbol. grep/ffgrep are for text search in docs/logs/config, not code symbols.");
 	lines.push("  • Do NOT use bash for file ops (ls, grep, cat, find, head, tail, echo >, printf >) — blocked in strict mode. Use the dedicated tool.");
@@ -362,6 +352,10 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 	lines.push("  • Use bash for real commands: npm/pnpm/yarn, node/npx, git (except git clone for URLs), make/cargo/go, pytest, tsx/tsc, python, awk, sed -n (read-only), xxd, shasum, and pipes/redirects for data processing.");
 
 	const result = lines.join("\n");
+	if (guidanceCache.size >= 100) {
+		const first = guidanceCache.keys().next().value;
+		if (first !== undefined) guidanceCache.delete(first);
+	}
 	guidanceCache.set(cacheKey, result);
 	return result;
 }
@@ -504,7 +498,6 @@ export function checkDangerousCommand(command: unknown): string | undefined {
 
 	const trimmed = command.trim().toLowerCase();
 
-	// ponytail: only 2 patterns that actually happen — rm -rf / (accidental) and dd (hallucination)
 	if (/\brm\s+-rf\s+\//.test(trimmed)) {
 		return "Recursive delete of root filesystem (`rm -rf /`)";
 	}

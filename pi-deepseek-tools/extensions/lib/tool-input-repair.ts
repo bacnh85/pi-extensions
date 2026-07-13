@@ -1,5 +1,4 @@
 import { Compile } from "typebox/compile";
-import type { TSchema } from "typebox";
 import { isRecord } from "./deepseek-tools.ts";
 
 export type RepairKind = "path-markdown-autolink" | "optional-null" | "json-string" | "empty-object-array" | "bare-string-array" | "json-object-wrapped-array";

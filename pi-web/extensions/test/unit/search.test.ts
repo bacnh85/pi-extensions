@@ -135,13 +135,10 @@ describe("searchWithDiagnostics", () => {
 			throw new Error(`unexpected fetch ${url}`);
 		});
 
-		try {
-			await searchWithDiagnostics({ query: "nothing", backend: "searxng" });
-			expect.fail("expected search to fail");
-		} catch (e: any) {
-			expect(e.message).to.include("searxng: empty");
-			expect(calls).to.have.length(1);
-		}
+		const result = await searchWithDiagnostics({ query: "nothing", backend: "searxng" });
+		expect(result.results).to.deep.equal([]);
+		expect(result.attempts).to.deep.include({ backend: "searxng", status: "empty", message: "searxng returned 0 results", resultCount: 0 });
+		expect(calls).to.have.length(1);
 	});
 
 });

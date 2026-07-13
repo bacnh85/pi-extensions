@@ -10,7 +10,7 @@ import { fetchSearxngResults } from "./searxng";
 import { firecrawlRequest, type FirecrawlResult } from "./firecrawl";
 import { loadFirecrawlConfig, loadSearxngConfig, type FirecrawlConfig } from "./config";
 import { fetchReadableContent } from "./content";
-import { sanitizeSnippet } from "./format";
+import { sanitizeSnippet, sanitizeError } from "./format";
 
 export type SearchBackend = "searxng" | "brave" | "firecrawl";
 export type SearchAttemptStatus = "skipped" | "success" | "empty" | "error";
@@ -187,15 +187,6 @@ export function selectSearchBackendOrder(params: SearchParams): SearchBackend[] 
 	return ["searxng", "brave", "firecrawl"];
 }
 
-function sanitizeError(error: unknown): string {
-	const raw = error instanceof Error ? error.message : String(error);
-	return raw
-		.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-		.replace(/X-Subscription-Token\s*[:=]\s*[^\s]+/gi, "X-Subscription-Token: [REDACTED]")
-		.replace(/api[_-]?key[=:][^\s&]+/gi, "api_key=[REDACTED]")
-		.slice(0, 500);
-}
-
 function isConfigured(backend: SearchBackend, backends: BackendConfig): boolean {
 	if (backend === "searxng") return backends.searxng.configured;
 	if (backend === "brave") return backends.brave.configured;
@@ -231,10 +222,6 @@ export async function searchWithDiagnostics(params: SearchParams): Promise<Searc
 		}
 	}
 
-	const diagnostics = attempts.map((a) => `${a.backend}: ${a.status}${a.message ? ` (${a.message})` : ""}`).join("\n");
-	throw new Error(
-		`All web search backends failed or returned no results.\n${diagnostics}\n` +
-		"Use backend to force a provider or check configuration with web_status.",
-	);
+	return { results: [], attempts, selectedBackend: "" as const, backendOrder };
 }
 

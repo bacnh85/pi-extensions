@@ -10,14 +10,16 @@ pi install npm:@bacnh85/pi-subagent
 pi install ./pi-subagent
 ```
 
+Requires Node.js >= 20.18.
+
 ## Bundled roles
 
 | Role | Model | Thinking | Tools |
 | --- | --- | --- | --- |
 | `scout` | parent model | low | read, grep, find, ls |
 | `reviewer` | parent model | high | read, grep, find, ls |
-| `worker` | parent model | medium | standard coding tools |
-| `general-purpose` | parent model | off | standard coding tools |
+| `worker` | parent model | medium | read, bash, edit, write, grep, find, ls |
+| `general-purpose` | parent model | off | read, bash, edit, write, grep, find, ls |
 
 Bundled roles inherit the parent model so they work with the account already active in Pi. User/project agent files may override `model` and `thinking`.
 
@@ -30,14 +32,13 @@ Create `~/.pi/agent/agents/*.md` or `.pi/agents/*.md`:
 name: scout-fast
 description: Locate relevant files and symbols
 tools: read, grep, find, ls
-thinking: low
 model: optional-provider/optional-model
 ---
 
 Return concise evidence with file/symbol anchors.
 ```
 
-Project agents require confirmation when requested through the public tool. Definitions are cached with file-signature invalidation; `/subagent reload` clears the cache.
+Agent definitions are cached with file-signature invalidation; `/subagent reload` clears the cache.
 
 ## Context and limits
 
@@ -45,8 +46,130 @@ Children use in-memory SDK sessions with no extensions, skills, prompt templates
 
 Threads are session-memory only and are cleared when Pi replaces or reloads the session. Timeout and parent cancellation propagate to child sessions. Subagents cannot recursively invoke `subagent`.
 
+## Security model
+
+### Project-local agents
+
+Agent files under `.pi/agents/` are controlled by the current repository. A project agent's system prompt may instruct a child to execute shell commands or modify files.
+
+- **Project-agent approval cannot be disabled by the model.** The `confirmProjectAgents` parameter is not exposed in the tool schema. Confirmation policy comes from trusted user configuration only.
+- **Interactive sessions** prompt the user before executing project agents.
+- **Headless sessions fail closed.** Project agents are not executed without UI confirmation unless the trusted setting `allowUnconfirmedProjectAgents` is enabled (via `PI_SUBAGENT_ALLOW_UNCONFIRMED_PROJECT_AGENTS=true` environment variable or pi settings).
+- **The extension service path** (`pi-subagent:run` event) follows the same policy.
+
+### Child working directories
+
+Child working directories are restricted to the parent session's workspace by default:
+
+- Relative paths are resolved within the workspace.
+- `..` traversal that escapes the workspace is rejected.
+- Absolute paths outside the workspace are rejected.
+- Symlinks are resolved via realpath; symlink escapes are rejected.
+- Non-existent directories and file paths are rejected.
+
+The trusted setting `allowExternalCwd` (via `PI_SUBAGENT_ALLOW_EXTERNAL_CWD=true` env or pi settings) can opt out. This setting cannot be enabled by the model.
+
+### Tool validation
+
+Child agent tools are validated against a fixed allowlist:
+
+- **Allowed:** `read`, `grep`, `find`, `ls`, `bash`, `edit`, `write`
+- **Always rejected:** `subagent` (prevents recursive delegation)
+- **Read-only restriction:** When a service requests read-only execution, only `read`, `grep`, `find`, `ls` are permitted. `bash`, `edit`, and `write` are rejected.
+
+Unknown or misspelled tool names produce clear diagnostics. Duplicate tool names are deduplicated.
+
+### Timeouts
+
+Every child execution receives a timeout:
+
+- **Default:** 10 minutes (`DEFAULT_TIMEOUT_MS`)
+- **Maximum:** 60 minutes (`MAX_TIMEOUT_MS`)
+- Timeout values must be positive integers within the allowed range.
+- Timeout errors are distinguishable from parent cancellation.
+- Parallel tasks and chain steps may have per-item timeouts.
+
+### Output safety
+
+Child output is untrusted data and may contain prompt injection. Treat child results as model-generated content, not as verified facts.
+
+### Cost awareness
+
+Parallel delegation may multiply provider usage and cost. Each parallel task runs as a separate SDK session with its own token consumption.
+
+### Agent file review
+
+User and project agent files should be reviewed before use. Malformed files produce diagnostics but do not prevent valid agents from loading.
+
+## Modes
+
+### Single mode
+
+```ts
+subagent({ agent: "scout", task: "Find auth-related files" })
+```
+
+### Parallel mode
+
+```ts
+subagent({
+  tasks: [
+    { agent: "scout", task: "Find API routes" },
+    { agent: "scout", task: "Find database models" },
+    { agent: "scout", task: "Find test files" },
+  ],
+  abortOnFailure: false
+})
+```
+
+Max 8 tasks, 4 concurrent. Results are returned in input order. When `abortOnFailure` is `true`, the first failed task cancels remaining siblings.
+
+### Chain mode
+
+```ts
+subagent({
+  chain: [
+    { agent: "scout", task: "Find API routes" },
+    { agent: "worker", task: "Based on this, implement the routes: {previous}" },
+  ]
+})
+```
+
+`{previous}` in each step's task is replaced with the previous step's output. The chain stops on the first failed step.
+
+## Result status
+
+Each `SubAgentResult` includes a canonical `status` field:
+
+| Status | Meaning |
+|--------|---------|
+| `success` | Completed normally |
+| `partial` | Truncated (max_tokens, length, context_limit) |
+| `error` | Provider error, tool error, or unknown stop reason |
+| `aborted` | Cancelled by parent or sibling |
+| `timeout` | Exceeded the allowed timeout |
+
+The raw `stopReason` from the Pi SDK is preserved in the result.
+
+## Timeout and cancellation
+
+- **Default timeout:** 10 minutes per child.
+- **Per-task/step override:** Use `timeout` in task/step params.
+- **Parent cancellation:** Aborting the parent tool call cancels all children.
+- **Sibling cancellation:** In parallel mode with `abortOnFailure: true`, the first failed task cancels running siblings.
+- **Timeout vs. abort:** Timeout errors set `status: "timeout"` and `stopReason: "timeout"`; parent cancellation sets `status: "aborted"`.
+
 ## Extension contract
 
 `pi-subagent` owns the `pi-subagent:run` event contract for one named-agent request. `pi-review` uses it for isolated review. Requests use an immediate boolean `accept()` claim and exactly one `respond()` callback; this suppresses duplicate responders while missing services and timeouts remain caller-controlled.
+
+## Compatibility
+
+- Requires `@earendil-works/pi-coding-agent >=0.80.0 <0.81.0`
+- Requires `@earendil-works/pi-ai >=0.80.0 <0.81.0`
+- Requires `@earendil-works/pi-agent-core >=0.80.0 <0.81.0`
+- Requires `@earendil-works/pi-tui >=0.80.0 <0.81.0`
+- Requires `typebox >=1.3.0 <2.0.0`
+- Requires Node.js >= 20.18
 
 See [`agent-format.md`](./agent-format.md) for all frontmatter fields.

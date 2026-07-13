@@ -18,8 +18,9 @@ import {
 	truncateText,
 	formatFirecrawlScrape,
 	formatCrawl4aiResult,
+	formatUnifiedSearchResults,
 } from "./lib/format";
-import { searchWithDiagnostics, type SearchResult as UnifiedSearchResult } from "./lib/search";
+import { searchWithDiagnostics } from "./lib/search";
 import { extractWithDiagnostics, type ExtractMode } from "./lib/extract";
 import { firecrawlRequest, type FirecrawlResult } from "./lib/firecrawl";
 import {
@@ -47,28 +48,6 @@ const crawl4aiControlSchema = {
 	crawl4ai_api_token: Type.Optional(Type.String({ description: "Override $CRAWL4AI_API_TOKEN." })),
 };
 
-
-// ---------------------------------------------------------------------------
-// Helper: format unified search results for text output
-// ---------------------------------------------------------------------------
-
-function formatUnifiedSearchResults(results: UnifiedSearchResult[]): string {
-	if (!results.length) return "No results found.";
-	return results
-		.map((r, i) =>
-			[
-				`--- Result ${i + 1} (backend: ${r.backend}) ---`,
-				`Title: ${r.title || ""}`,
-				`Link: ${r.url || ""}`,
-				r.age ? `Age: ${r.age}` : "",
-				r.snippet ? `Snippet: ${r.snippet}` : "",
-				r.content ? `Content:\n${r.content}` : "",
-			]
-				.filter(Boolean)
-				.join("\n"),
-		)
-		.join("\n\n");
-}
 
 // ---------------------------------------------------------------------------
 // Extension entry point

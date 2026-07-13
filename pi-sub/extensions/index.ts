@@ -66,7 +66,6 @@ interface SubscriptionUsageSnapshot {
 	activeAccount?: SubscriptionAccountSnapshot;
 	fetchedAt: number;
 	error?: string;
-	cost?: number;
 }
 
 type SubscriptionProviderAdapter = {
@@ -89,6 +88,7 @@ interface State {
 	lastTokPerSec?: number;
 	cumulativeOutput: number;
 	cumulativeDurationMs: number;
+	cumulativeCost: number;
 }
 
 function isCodexModel(model: ModelLike): boolean {
@@ -213,9 +213,9 @@ function formatRemainingTime(resetAtSec: number | undefined): string | undefined
 	if (remainingSec <= 0) return "0M";
 	const remainingMin = Math.ceil(remainingSec / 60);
 	if (remainingMin < 60) return `${remainingMin}M`;
-	const remainingH = Math.ceil(remainingMin / 60);
+	const remainingH = Math.ceil(remainingSec / 3600);
 	if (remainingH < 24) return `${remainingH}H`;
-	const remainingD = Math.ceil(remainingH / 24);
+	const remainingD = Math.ceil(remainingSec / 86400);
 	return `${remainingD}D`;
 }
 
@@ -276,7 +276,7 @@ function parseUsageResponse(body: unknown): UsageApiSnapshot | undefined {
 async function readPiCodexAuth(): Promise<PiAuthEntry & { accountId: string }> {
 	const auth = await readJsonFile<PiAuthFile>(piAuthPath());
 	const entry = auth[CODEX_PROVIDER];
-	const accountId = getCodexAccountId(entry!);
+	const accountId = getCodexAccountId(entry);
 	if (!entry?.access || !accountId) throw new Error("Missing openai-codex OAuth entry in Pi auth");
 	return { ...entry, accountId };
 }
@@ -388,7 +388,7 @@ interface ZaiUsageApiResponse {
 interface ZaiUsageApiError {
 	code: number;
 	msg: string;
-	success: boolean;
+	success?: boolean;
 }
 
 function zaiLimitToUsageWindow(limit: ZaiLimitEntry): UsageWindow | undefined {
@@ -430,9 +430,11 @@ async function fetchZaiUsage(signal?: AbortSignal): Promise<SubscriptionUsageSna
 		const body = await response.json();
 
 		// Z.ai returns HTTP 200 even on auth errors: {"code":401,"msg":"...","success":false}
+		// Also handle missing success field, empty msg, or presence of code.
 		const apiError = body as ZaiUsageApiError;
-		if (typeof apiError.success === "boolean" && !apiError.success && apiError.msg) {
-			throw new Error(`Z.ai API error: ${apiError.msg}`);
+		if (apiError.code >= 400 || (typeof apiError.success === "boolean" && !apiError.success) || (apiError.msg && apiError.msg.length > 0 && apiError.success === undefined)) {
+			const message = apiError.msg || `HTTP status ${apiError.code}`;
+			throw new Error(`Z.ai API error: ${message}`);
 		}
 
 		const parsed = body as ZaiUsageApiResponse;
@@ -481,9 +483,8 @@ function supportedAdapter(model: ModelLike): SubscriptionProviderAdapter | undef
 
 function formatRemaining(window: UsageWindow | undefined): string {
 	if (!window) return "?";
-	if (window.remaining !== undefined && window.remainingLabel) return `${window.remaining}%/${window.remainingLabel}`;
+	if (window.remainingLabel) return `${window.remaining}%/${window.remainingLabel}`;
 	if (window.remaining !== undefined) return `${window.remaining}%`;
-	if (window.percent !== undefined && window.remainingLabel) return `${Math.max(0, 100 - window.percent)}%/${window.remainingLabel}`;
 	return "?";
 }
 
@@ -501,16 +502,6 @@ function windowSegments(account: SubscriptionAccountSnapshot | undefined): strin
 	if (account.fiveHour) segments.push(`R:${formatRemaining(account.fiveHour)}`);
 	if (account.weekly) segments.push(`W:${formatRemaining(account.weekly)}`);
 	return segments;
-}
-
-function aggregateSessionCost(ctx: ExtensionContext): number {
-	let total = 0;
-	for (const entry of ctx.sessionManager.getBranch()) {
-		if (entry.type === "message" && entry.message.role === "assistant") {
-			total += (entry.message.usage as any)?.cost?.total ?? 0;
-		}
-	}
-	return total;
 }
 
 function renderSubscriptionLine(ctx: ExtensionContext, state: State): void {
@@ -532,9 +523,9 @@ function renderSubscriptionLine(ctx: ExtensionContext, state: State): void {
 		const windowParts = windowSegments(account);
 		const accountPart = formatFooterAccount(account);
 		const segments = accountPart ? [accountPart, ...windowParts] : [...windowParts];
-		const cost = snapshot.cost;
+		const cost = state.cumulativeCost;
 		const hasWindows = windowParts.length > 0;
-		if (cost !== undefined && cost > 0) segments.push(`$${cost.toFixed(2)}`);
+		if (cost > 0) segments.push(`$${cost.toFixed(2)}`);
 		if (state.lastTokPerSec !== undefined) segments.push(`${state.lastTokPerSec} tok/s`);
 		if (segments.length === 0) {
 			line = `Sub ${state.adapter.displayName}`;
@@ -597,7 +588,6 @@ async function refreshUsage(ctx: ExtensionContext, state: State, force: boolean)
 	renderSubscriptionLine(ctx, state);
 	state.inFlight = adapter.fetchUsage(ctx.signal).then((snapshot) => {
 		if (state.refreshGeneration !== generation) return snapshot;
-		snapshot.cost = aggregateSessionCost(ctx);
 		state.snapshot = snapshot;
 		state.lastRefreshAt = Date.now();
 		renderSubscriptionLine(ctx, state);
@@ -628,7 +618,7 @@ function buildDetails(snapshot: SubscriptionUsageSnapshot | undefined, state: St
 	if (!snapshot) return "Subscription usage has not been loaded yet.";
 	if (snapshot.error) return `${snapshot.providerDisplayName}: ${snapshot.error}`;
 	if (snapshot.accounts.length === 0) {
-		const costLine = snapshot.cost !== undefined && snapshot.cost > 0 ? `\nSession cost: $${snapshot.cost.toFixed(2)}` : "";
+		const costLine = state.cumulativeCost > 0 ? `\nSession cost: $${state.cumulativeCost.toFixed(2)}` : "";
 		const modelInfo = state.model?.id ? ` · Model: ${state.model.id}` : "";
 		return `Provider: ${snapshot.providerDisplayName}${modelInfo} · Fetched: ${new Date(snapshot.fetchedAt).toLocaleTimeString()}\n${snapshot.providerDisplayName} does not expose usage windows.${costLine}`;
 	}
@@ -660,7 +650,7 @@ function buildDetails(snapshot: SubscriptionUsageSnapshot | undefined, state: St
 		return `${row.active} ${cols.join("  ")}  ${row.snapshot.lastActivity ?? ""}`;
 	});
 
-	const costLine = snapshot.cost !== undefined ? `\nSession cost: $${snapshot.cost.toFixed(2)}` : "";
+	const costLine = state.cumulativeCost > 0 ? `\nSession cost: $${state.cumulativeCost.toFixed(2)}` : "";
 	const tokPerSecLine = state.lastTokPerSec !== undefined
 		? `\nLast response: ${state.lastTokPerSec} tok/s` +
 			(state.cumulativeDurationMs > 0
@@ -675,7 +665,7 @@ function buildDetails(snapshot: SubscriptionUsageSnapshot | undefined, state: St
 }
 
 export default function (pi: ExtensionAPI) {
-	const state: State = { lastRefreshAt: 0, refreshGeneration: 0, cumulativeOutput: 0, cumulativeDurationMs: 0 };
+	const state: State = { lastRefreshAt: 0, refreshGeneration: 0, cumulativeOutput: 0, cumulativeDurationMs: 0, cumulativeCost: 0 };
 
 	pi.on("session_start", async (_event, ctx) => {
 		updateActiveAdapter(ctx, state, ctx.model);
@@ -692,20 +682,26 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("message_end", async (event, ctx) => {
-		if (event.message.role === "assistant" && state.responseStartTime) {
-			const output = (event.message.usage as any)?.output ?? 0;
-			const elapsed = Date.now() - state.responseStartTime;
-			state.responseStartTime = undefined;
-			if (elapsed > 0 && output > 0) {
-				state.lastTokPerSec = Math.round(output / (elapsed / 1000));
-				state.cumulativeOutput += output;
-				state.cumulativeDurationMs += elapsed;
-				if (state.adapter) renderSubscriptionLine(ctx, state);
+		if (event.message.role === "assistant") {
+			state.cumulativeCost += (event.message.usage as any)?.cost?.total ?? 0;
+			if (state.responseStartTime) {
+				const output = (event.message.usage as any)?.output ?? 0;
+				const elapsed = Date.now() - state.responseStartTime;
+				state.responseStartTime = undefined;
+				if (elapsed > 0 && output > 0) {
+					state.lastTokPerSec = Math.round(output / (elapsed / 1000));
+					state.cumulativeOutput += output;
+					state.cumulativeDurationMs += elapsed;
+				}
 			}
+			if (state.adapter) renderSubscriptionLine(ctx, state);
 		}
 	});
 
-	pi.on("after_provider_response", async (_event, ctx) => {
+	pi.on("after_provider_response", async (event, ctx) => {
+		if (event.status >= 400) {
+			state.responseStartTime = undefined;
+		}
 		if (state.adapter) scheduleRefresh(ctx, state);
 	});
 

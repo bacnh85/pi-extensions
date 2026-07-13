@@ -59,5 +59,5 @@ export async function fetchSearxngResults(
 				publishedDate: r.publishedDate || r.published_date || "",
 			}));
 		return { ...data, results };
-	});
+	}, undefined, signal);
 }

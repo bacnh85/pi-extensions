@@ -3,19 +3,7 @@
 // Endpoints: /crawl, /crawl/stream, /md, /screenshot, /pdf, /health
 
 import type { Crawl4aiConfig } from "./config";
-import { signalWithTimeout } from "./retry";
-
-// ---------------------------------------------------------------------------
-// Error
-// ---------------------------------------------------------------------------
-
-export class Crawl4aiHttpError extends Error {
-	status: number;
-	constructor(status: number, statusText: string, text: string) {
-		super(`HTTP ${status}: ${statusText}${text ? `\n${text}` : ""}`);
-		this.status = status;
-	}
-}
+import { signalWithTimeout, withRetry, HttpError } from "./retry";
 
 // ---------------------------------------------------------------------------
 // Low-level HTTP helpers
@@ -38,7 +26,7 @@ async function crawl4aiRequestJson(
 		signal: signalWithTimeout(config.timeoutMs, signal),
 	});
 	const text = await response.text();
-	if (!response.ok) throw new Crawl4aiHttpError(response.status, response.statusText, text);
+	if (!response.ok) throw new HttpError(response.status, response.statusText, text);
 	return text ? JSON.parse(text) : { success: true };
 }
 
@@ -52,15 +40,7 @@ export async function crawl4aiRequest(
 	body?: unknown,
 	signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
-	for (let attempt = 0; attempt < 3; attempt++) {
-		try {
-			return await crawl4aiRequestJson(config, method, endpoint, body, signal);
-		} catch (e) {
-			if (attempt === 2) throw e;
-			await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
-		}
-	}
-	throw new Error("unreachable");
+	return withRetry(() => crawl4aiRequestJson(config, method, endpoint, body, signal), 3, signal);
 }
 
 // ---------------------------------------------------------------------------

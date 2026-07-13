@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "mocha";
-import extension, {
+import extension from "../../index";
+import {
 	deepSeekSelectionGuidance,
 	isOpenCodeGoDeepSeekV4FlashModel,
 	isOpenCodeGoDeepSeekV4Model,
@@ -11,18 +12,15 @@ import extension, {
 	selectionGuidanceEnabled,
 	strictSerenaEnabled,
 	bashReadCommandPath,
-	SERENA_CODE_TOOLS,
+	DEFAULT_SERENA_TOOL,
 	DEEPSEEK_V4_FLASH_MODEL,
 	superPowerModeEnabled,
 	superPowerPromptContent,
 	SUPER_POWER_BASE_PROMPT,
 	suggestBestSerenaCommand,
-} from "../../index";
-import {
 	dedicatedToolForShellCommand,
 	isDeepSeekV4Model,
 	isOpenCodeGoDeepSeekV4Model as isOpenCodeGoDeepSeekV4ModelAlias,
-	looksLikeDocsOrConfigPath,
 	OPENCODE_GO_PROVIDER,
 	reasoningStripEnabled,
 	directDeepSeekEnabled,
@@ -254,7 +252,6 @@ describe("semantic miss detection", () => {
 		assert.equal(isSemanticMissToolCall("read", { path: "package.json" }), false);
 		assert.equal(isSemanticMissToolCall("read", { path: ".gitignore" }), false);
 		assert.equal(isSemanticMissToolCall("read", { path: "notes.txt" }), false);
-		assert.equal(looksLikeDocsOrConfigPath("tsconfig.json"), true);
 	});
 
 	it("flags shell semantic code searches", () => {
@@ -527,11 +524,9 @@ describe("bashReadCommandPath", () => {
 	});
 });
 
-describe("SERENA_CODE_TOOLS", () => {
-	it("has 5 entries including overview and find", () => {
-		assert.equal(SERENA_CODE_TOOLS.length, 5);
-		assert.ok(SERENA_CODE_TOOLS.includes("serena_get_symbols_overview"));
-		assert.ok(SERENA_CODE_TOOLS.includes("serena_find_symbol"));
+describe("DEFAULT_SERENA_TOOL", () => {
+	it("is serena_get_symbols_overview", () => {
+		assert.equal(DEFAULT_SERENA_TOOL, "serena_get_symbols_overview");
 	});
 	it("bash cat/head/tail on code files no longer flagged by isSemanticMissToolCall", () => {
 		// Simple reads via bash are handled by missedDedicatedTool → steer reminder, not hard block

@@ -10,7 +10,7 @@ import { loadFirecrawlConfig, loadCrawl4aiConfig, type FirecrawlConfig, type Cra
 import { fetchReadableContent } from "./content";
 import { firecrawlRequest, type FirecrawlResult } from "./firecrawl";
 import { fetchCrawl4aiMarkdown } from "./crawl4ai";
-import { formatFirecrawlScrape } from "./format";
+import { formatFirecrawlScrape, sanitizeError } from "./format";
 
 export type ExtractMode = "auto" | "static" | "dynamic" | "full";
 export type ExtractAttemptStatus = "success" | "empty" | "error";
@@ -56,14 +56,6 @@ export interface ExtractDiagnostics {
 
 const MIN_USEFUL_MARKDOWN_CHARS = 120;
 
-function sanitizeError(error: unknown): string {
-	const raw = error instanceof Error ? error.message : String(error);
-	return raw
-		.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-		.replace(/api[_-]?key[=:][^\s&]+/gi, "api_key=[REDACTED]")
-		.slice(0, 500);
-}
-
 function isUseful(result: ExtractResult | null, mode: ExtractMode, explicit: boolean): result is ExtractResult {
 	if (!result) return false;
 	const length = result.markdown.trim().length;
@@ -99,12 +91,9 @@ async function extractDynamic(params: ExtractParams, ctx?: Record<string, unknow
 		throw new Error(`Firecrawl configuration unavailable: ${sanitizeError(e)}`);
 	}
 
-	const formats: unknown[] = ["markdown"];
+	const formats: string[] = ["markdown"];
 	if (params.prompt || params.schema) {
-		const jsonEntry: Record<string, unknown> = { type: "json" };
-		if (params.prompt) jsonEntry.prompt = params.prompt;
-		if (params.schema) jsonEntry.schema = params.schema;
-		formats.push(jsonEntry);
+		formats.push("json");
 	}
 	const body: Record<string, unknown> = {
 		url: params.url,
@@ -113,6 +102,12 @@ async function extractDynamic(params: ExtractParams, ctx?: Record<string, unknow
 		...(params.wait_for ? { waitFor: params.wait_for } : {}),
 		...(params.mobile ? { mobile: true } : {}),
 	};
+	if (params.prompt || params.schema) {
+		const jsonOptions: Record<string, unknown> = {};
+		if (params.prompt) jsonOptions.prompt = params.prompt;
+		if (params.schema) jsonOptions.schema = params.schema;
+		body.jsonOptions = jsonOptions;
+	}
 	const result = await firecrawlRequest(fcConfig, "POST", "/scrape", body, params.signal) as FirecrawlResult;
 	const structured = findStructuredPayload(result);
 	const raw = `${formatFirecrawlScrape(result as Record<string, unknown>, params.content_chars ?? 20000)}${structuredSection(structured)}`;
@@ -129,7 +124,7 @@ async function extractFull(params: ExtractParams, ctx?: Record<string, unknown>)
 	let c4aiConfig: Crawl4aiConfig;
 	try {
 		c4aiConfig = loadCrawl4aiConfig(
-		{ crawl4ai_api_token: params.crawl4ai_api_token, crawl4ai_api_url: params.crawl4ai_api_url },
+		{ crawl4ai_api_token: params.crawl4ai_api_token, crawl4ai_api_url: params.crawl4ai_api_url, timeout_ms: params.timeout_ms },
 		cwdFromContext(ctx ?? {}),
 		includeProjectEnv(ctx ?? {}),
 	);

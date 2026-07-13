@@ -32,11 +32,21 @@ The body after frontmatter becomes the agent's **entire system prompt**. No pi d
 
 ## Available Tools
 
-Built-in pi tool names: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`
+Child agent tools are validated against a fixed allowlist:
 
-The `subagent` tool is never available to sub-agents (prevents accidental recursion). Sub-agents run at one level of delegation only; they cannot spawn further sub-agents.
+| Category | Tools |
+|----------|-------|
+| Read-only | `read`, `grep`, `find`, `ls` |
+| Mutation | `edit`, `write` |
+| Execution | `bash` |
+
+The `subagent` tool is always rejected to prevent recursive delegation.
+Unknown or misspelled tool names produce a clear error.
+Duplicate names are deduplicated automatically.
 
 Custom/extension tools are NOT available to sub-agents by default (each runs in an isolated in-memory session with no extensions).
+
+Read-only service execution (used by `pi-review`) restricts tools to the read-only category.
 
 ## Model Resolution
 

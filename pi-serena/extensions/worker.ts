@@ -77,8 +77,6 @@ def classify_error(message: str) -> str:
         return "project_error"
     if "Cannot extract symbols" in message or "Active languages" in message or "language server" in message or "LSP" in message:
         return "language_server_error"
-    if "Timeout" in message or "timed out" in message:
-        return "timeout"
     return "serena_error"
 
 def respond(payload: dict[str, Any]) -> None:
@@ -236,7 +234,13 @@ def _handle_find_symbol_action(req_id, action: str, req: dict[str, Any]) -> dict
 
     agent = get_agent(project, context)
     project_obj, retriever = _get_symbol_retriever(agent)
-    symbol = _find_symbol_or_raise(retriever, name_path, relative_path)
+    try:
+        symbol = _find_symbol_or_raise(retriever, name_path, relative_path)
+    except Exception as exc:
+        return {"id": req_id, "ok": False, "tool": action, "error": f"Error finding symbol {name_path}: {type(exc).__name__}: {exc}"}
+
+    if symbol is None:
+        return {"id": req_id, "ok": False, "tool": action, "error": f"Symbol {name_path} not found in {relative_path}"}
 
     sym_rel_path = symbol.relative_path
     sym_line = symbol.line
@@ -246,6 +250,8 @@ def _handle_find_symbol_action(req_id, action: str, req: dict[str, Any]) -> dict
 
     ls_manager = project_obj.get_language_server_manager_or_raise()
     lang_server = ls_manager.get_language_server(sym_rel_path)
+    if lang_server is None:
+        return {"id": req_id, "ok": False, "tool": action, "error": f"No language server available for {sym_rel_path}. The language server may not be active for this file type."}
 
     if action == "find_declaration":
         locations = lang_server.request_definition(sym_rel_path, sym_line, sym_col)
@@ -266,6 +272,8 @@ def _handle_diagnostics(req_id, req: dict[str, Any]) -> dict[str, Any]:
     relative_path = params.get("relative_path")
     if not isinstance(relative_path, str) or not relative_path:
         return {"id": req_id, "ok": False, "tool": "get_diagnostics_for_file", "error": "get_diagnostics_for_file requires string parameter 'relative_path'"}
+    if os.path.isabs(relative_path):
+        return {"id": req_id, "ok": False, "tool": "get_diagnostics_for_file", "error": "relative_path must be a relative path, not absolute"}
 
     import json as _json
     import pathlib
@@ -275,9 +283,16 @@ def _handle_diagnostics(req_id, req: dict[str, Any]) -> dict[str, Any]:
     project_obj = agent.get_active_project_or_raise()
     ls_manager = project_obj.get_language_server_manager_or_raise()
     lang_server = ls_manager.get_language_server(relative_path)
+    if lang_server is None:
+        return {"id": req_id, "ok": False, "tool": "get_diagnostics_for_file", "error": f"No language server available for {relative_path}"}
 
     try:
-        uri = pathlib.Path(str(PurePath(lang_server.repository_root_path, relative_path))).as_uri()
+        # Resolve full path and verify it does not escape the repository root
+        repo_root = str(pathlib.Path(lang_server.repository_root_path).resolve())
+        full_path = str(pathlib.Path(str(PurePath(lang_server.repository_root_path, relative_path))).resolve())
+        if not str(pathlib.Path(repo_root) / '') == os.path.commonpath([repo_root, full_path]):
+            return {"id": req_id, "ok": False, "tool": "get_diagnostics_for_file", "error": f"Path traversal detected: {relative_path} escapes the repository root"}
+        uri = pathlib.Path(full_path).as_uri()
         result = lang_server.server.send.text_document_diagnostic({
             "textDocument": {"uri": uri},
         })
@@ -285,7 +300,7 @@ def _handle_diagnostics(req_id, req: dict[str, Any]) -> dict[str, Any]:
     except AttributeError:
         return {"id": req_id, "ok": True, "tool": "get_diagnostics_for_file", "result": _json.dumps({"note": "Language server does not support textDocument/diagnostic"})}
     except Exception as exc:
-        return {"id": req_id, "ok": True, "tool": "get_diagnostics_for_file", "result": _json.dumps({"note": "Diagnostics request completed with no issues or language server does not support textDocument/diagnostic", "detail": str(exc)})}
+        return {"id": req_id, "ok": False, "tool": "get_diagnostics_for_file", "result": _json.dumps({"note": "Diagnostics request completed with an error or language server does not support textDocument/diagnostic", "detail": str(exc)})}
 
 
 
@@ -364,6 +379,7 @@ export class SerenaWorkerClient {
 	private processing = false;
 	private stopping = false;
 	private generation = 0;
+	private spawning = false;
 
 	constructor(private readonly onStatus?: (text: string | undefined) => void) {}
 
@@ -386,6 +402,10 @@ export class SerenaWorkerClient {
 			this.stopping = true;
 			this.rejectQueued(new Error("Serena worker stopped"));
 			proc.kill();
+			// If a new process was spawned concurrently, kill it too to prevent leaks
+			if (this.process && this.process !== proc) {
+				this.process.kill();
+			}
 			this.process = undefined;
 			this.processing = false;
 			this.stopping = false;
@@ -403,33 +423,52 @@ export class SerenaWorkerClient {
 	}
 
 	private ensureStarted(): void {
-		if (this.process && !this.process.killed) return;
-		const python = findSerenaPython();
-		if (!python) {
-			const checked = serenaPythonCandidates().map((candidate) => `- ${candidate}`).join("\n") || "- none";
-			throw new Error(
-				`Could not find Serena Python. Install with: uv tool install -p 3.13 serena-agent && serena init, or set SERENA_PYTHON to the serena-agent Python executable. Checked:\n${checked}`
-			);
-		}
-
-		this.generation += 1;
-		const proc = spawn(python, ["-u", "-c", PYTHON_BRIDGE], {
-			env: { ...process.env, SERENA_USAGE_REPORTING: process.env.SERENA_USAGE_REPORTING ?? "false" },
-			stdio: "pipe",
-		});
-		this.process = proc;
-		this.buffer = "";
-		this.onStatus?.(`Serena worker pid ${proc.pid} gen ${this.generation}`);
-
-		proc.stdout.on("data", (chunk) => this.onStdout(String(chunk)));
-		proc.stderr.on("data", (chunk) => process.stderr.write(`[serena-worker] ${String(chunk)}`));
-		proc.on("exit", (code, signal) => {
-			if (this.process === proc) {
-				this.process = undefined;
-				this.onStatus?.(undefined);
+		if (this.spawning) return;
+		if (this.process && !this.process.killed && this.process.exitCode === null && this.process.signalCode === null) return;
+		this.spawning = true;
+		try {
+			const python = findSerenaPython();
+			if (!python) {
+				const checked = serenaPythonCandidates().map((candidate) => `- ${candidate}`).join("\n") || "- none";
+				throw new Error(
+					`Could not find Serena Python. Install with: uv tool install -p 3.13 serena-agent && serena init, or set SERENA_PYTHON to the serena-agent Python executable. Checked:\n${checked}`
+				);
 			}
-			this.failAll(new Error(`Serena worker exited code=${code} signal=${signal}`));
-		});
+
+			this.generation += 1;
+			const proc = spawn(python, ["-u", "-c", PYTHON_BRIDGE], {
+				env: { ...process.env, SERENA_USAGE_REPORTING: process.env.SERENA_USAGE_REPORTING ?? "false" },
+				stdio: "pipe",
+			});
+			this.process = proc;
+			this.buffer = "";
+			this.onStatus?.(`Serena worker pid ${proc.pid} gen ${this.generation}`);
+			this.spawning = false;
+
+			proc.stdout.setEncoding('utf8');
+			proc.stdout.on("data", (chunk) => this.onStdout(String(chunk)));
+			proc.stderr.on("data", (chunk) => process.stderr.write(`[serena-worker] ${String(chunk)}`));
+			proc.stdin.on('error', () => {});
+			proc.on('error', (err) => {
+				if (this.process === proc) {
+					this.process = undefined;
+					this.onStatus?.(undefined);
+					this.processing = false;
+					this.failAll(new Error(`Serena worker process error: ${err.message}`));
+				}
+			});
+			proc.on("exit", (code, signal) => {
+				if (this.process === proc) {
+					this.process = undefined;
+					this.onStatus?.(undefined);
+					this.processing = false;
+					this.failAll(new Error(`Serena worker exited code=${code} signal=${signal}`));
+				}
+			});
+		} catch (error) {
+			this.spawning = false;
+			throw error;
+		}
 	}
 
 	private processQueue(): void {
@@ -471,7 +510,15 @@ export class SerenaWorkerClient {
 			},
 			timer,
 		});
-		this.process?.stdin.write(`${JSON.stringify(request)}\n`);
+		try {
+			this.process?.stdin.write(`${JSON.stringify(request)}\n`);
+		} catch (err) {
+			clearTimeout(timer);
+			this.pending.delete(id);
+			this.processing = false;
+			item.reject(err instanceof Error ? err : new Error(String(err)));
+			queueMicrotask(() => this.processQueue());
+		}
 	}
 
 	private onStdout(chunk: string): void {
@@ -489,7 +536,14 @@ export class SerenaWorkerClient {
 				continue;
 			}
 			const id = response.id;
-			if (!id) continue;
+			if (!id) {
+				// Responses with null/undefined id are not tied to a pending request.
+				// Surface errors (e.g. Python bridge import failures) so they aren't silently lost.
+				if (response.ok === false && response.error) {
+					process.stderr.write(`[serena-worker] error (no id): ${response.error}\n`);
+				}
+				continue;
+			}
 			const pending = this.pending.get(id);
 			if (!pending) continue;
 			this.pending.delete(id);
@@ -504,7 +558,10 @@ export class SerenaWorkerClient {
 			this.process = undefined;
 			this.onStatus?.(undefined);
 		}
-		if (rejectPending) this.failAll(new Error("Serena worker killed due to timeout, restarted"));
+		if (rejectPending) {
+			this.processing = false;
+			this.failAll(new Error("Serena worker killed due to timeout, restarted"));
+		}
 		this.buffer = "";
 	}
 
@@ -513,6 +570,7 @@ export class SerenaWorkerClient {
 	}
 
 	private failAll(error: Error): void {
+		this.processing = false;
 		for (const [id, pending] of this.pending) {
 			clearTimeout(pending.timer);
 			pending.reject(error);
