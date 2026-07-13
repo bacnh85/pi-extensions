@@ -6,7 +6,7 @@ import {
 	parseCliString,
 	parseFlags,
 	escapeCliValue,
-} from "../index.ts";
+} from "../index.js";
 
 // ---------------------------------------------------------------------------
 // Replicate execObsidian's stdout filter for testing
@@ -310,7 +310,7 @@ describe("error message formatting", () => {
 
 describe("piObsidianExtension tool integration", () => {
 	it("registers obsidian tool and throws error on unsupported daily:today command", async () => {
-		const { default: piObsidianExtension } = await import("../index.ts");
+		const { default: piObsidianExtension } = await import("../index.js");
 		let registeredTool: any = null;
 		const mockPi: any = {
 			registerTool(tool: any) {

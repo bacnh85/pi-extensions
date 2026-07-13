@@ -59,12 +59,13 @@ export function parseCliString(s: string): string[] {
 
 export function parseFlags(s: string): Record<string, string> {
 	const flags: Record<string, string> = {};
-	const re = /(\w[\w-]*)=("(?:[^"\\]|\\.)*"|\S*)/g;
-	let m: RegExpExecArray | null;
-	while ((m = re.exec(s)) !== null) {
-		let val = m[2];
-		if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1).replace(/\\(["\\])/g, "$1");
-		flags[m[1]] = val;
+	// Use parseCliString so escape sequences (\n, \t) are handled consistently
+	const args = parseCliString(s);
+	for (const arg of args) {
+		const eqIdx = arg.indexOf("=");
+		if (eqIdx > 0) {
+			flags[arg.slice(0, eqIdx)] = arg.slice(eqIdx + 1);
+		}
 	}
 	return flags;
 }
@@ -178,7 +179,7 @@ function renameTag(from: string, to: string, preview: boolean, vault?: string, t
 		`let m=c.match(/^---\\s*\\n([\\s\\S]*?)\\n---/);`,
 		`if(!m){s++;continue;}`,
 		`let fm=m[1];`,
-		`let nfm=fm.replace(/\\btags\\b[^]*?(?=\\n---|$)/g,(tl)=>tl.replaceAll(ff,tt));`,
+		`let nfm=fm.replace(/\\btags\\b[^]*?(?=\\n---|$)/g,(tl)=>tl.replace(new RegExp('\\\\b'+ff.replace(/[.*+?^\x24{}()|[\\]\\\\]/g,'\\\\$&')+'\\\\b','g'),tt));`,
 		`if(nfm===fm){s++;continue;}`,
 		`if(preview){`,
 		`results.push('[DRY-RUN] '+f.path+': would update tag '+ff+' -> '+tt);`,

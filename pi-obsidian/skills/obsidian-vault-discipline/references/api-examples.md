@@ -135,12 +135,11 @@ return "Updated " + n + " files.";
 ### Find files without frontmatter
 
 ```javascript
-const missing = app.vault.getMarkdownFiles()
-  .filter(f => {
-    const c = await app.vault.read(f);
-    return !c.startsWith("---");
-  })
-  .map(f => f.path);
+const missing = [];
+for (const f of app.vault.getMarkdownFiles()) {
+  const c = await app.vault.read(f);
+  if (!c.startsWith("---")) missing.push(f.path);
+}
 return missing.length + " files without frontmatter:\n" + missing.join("\n");
 ```
 
