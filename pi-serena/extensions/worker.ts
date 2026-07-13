@@ -300,7 +300,8 @@ def _handle_diagnostics(req_id, req: dict[str, Any]) -> dict[str, Any]:
     except AttributeError:
         return {"id": req_id, "ok": True, "tool": "get_diagnostics_for_file", "result": _json.dumps({"note": "Language server does not support textDocument/diagnostic"})}
     except Exception as exc:
-        return {"id": req_id, "ok": False, "tool": "get_diagnostics_for_file", "result": _json.dumps({"note": "Diagnostics request completed with an error or language server does not support textDocument/diagnostic", "detail": str(exc)})}
+        err_msg = f"Diagnostics error for {relative_path}: {exc}"
+        return {"id": req_id, "ok": False, "tool": "get_diagnostics_for_file", "error": err_msg, "errorType": "language_server_error", "result": _json.dumps({"note": err_msg})}
 
 
 

@@ -162,7 +162,10 @@ function errorSuggestion(errorType: string | undefined, tool: string | undefined
 function resultText(response: SerenaWorkerResponse): string {
 	if (!response.ok) {
 		const suggestion = errorSuggestion(response.errorType as string | undefined, response.tool as string | undefined);
-		return `Error: ${response.error ?? "Unknown Serena error"}${suggestion}`;
+		const errorDetail = response.error
+			?? (typeof response.result === "string" ? response.result : undefined)
+			?? "Unknown Serena error";
+		return `Error: ${errorDetail}${suggestion}`;
 	}
 	// For search results, show a friendly empty-state instead of raw "{}".
 	if (response.tool === "search_for_pattern") {
