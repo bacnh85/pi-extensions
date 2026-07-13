@@ -16,7 +16,7 @@ const SKIP_SEMANTIC_MISS_MODELS = new Set(
 );
 
 const PROJECT_PARAM = Type.Optional(Type.String({ description: "Project path or registered Serena project name. Default: CWD." }));
-const CONTEXT_PARAM = Type.Optional(Type.String({ description: "Serena context name. Default: ide." }));
+const CONTEXT_PARAM = Type.Optional(Type.String({ description: "Serena context name. Default: ide. Available: agent, chatgpt, claude-code, codex, copilot-cli, desktop-app, ide, jb-ai-assistant, junie, oaicompat-agent, vscode." }));
 const MAX_CHARS_PARAM = Type.Optional(Type.Number({ description: "Max response chars. Default: Serena config." }));
 const TIMEOUT_MS_PARAM = Type.Optional(Type.Number({ description: "Timeout in ms. Default: 120000." }));
 const SEMANTIC_MISS_THRESHOLD = 2;
@@ -431,10 +431,26 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 		label: "Serena Restart Language Server",
 		description: "Restart the language server when diagnostics are stale.",
 		promptSnippet: "Restart the Serena language server",
-		promptGuidelines: ["Use when symbol retrieval or diagnostics appear stale."],
+		promptGuidelines: ["Use when symbol retrieval or diagnostics appear stale.", "For a full worker restart (Python bridge), use serena_restart_worker instead."],
 		parameters: emptyToolSchema,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return callWorkerAction(ctx, "restart_language_server", params);
+		},
+	});
+
+	pi.registerTool({
+		name: "serena_restart_worker",
+		label: "Serena Restart Worker",
+		description: "Restart the persistent Serena Python worker process. Use when diagnostics seem stale or after configuration changes.",
+		promptSnippet: "Restart the persistent Serena worker (Python bridge)",
+		promptGuidelines: ["Use when the worker is unresponsive or after serena configuration changes.", "This kills and re-spawns the Python bridge process. Equivalent to /serena-restart."],
+		parameters: emptyToolSchema,
+		async execute(_id, _params, _signal, _onUpdate, ctx) {
+			getWorker(ctx).restart();
+			return {
+				content: [{ type: "text" as const, text: "Serena worker restarted." }],
+				details: { ok: true, result: "Worker restarted" },
+			};
 		},
 	});
 
@@ -446,7 +462,17 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 		promptGuidelines: ["Check project activation, contexts, modes, or tool availability."],
 		parameters: emptyToolSchema,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return callWorkerAction(ctx, "config", params);
+			const resp = await callWorkerAction(ctx, "config", params);
+			if (resp.details?.ok && typeof resp.details.result === "string") {
+				// Strip the "Available but not active" section — those are backend-only tools
+				// not callable as Pi tools, and listing them misleads the model.
+				const text = resp.details.result;
+				const cutoff = text.indexOf("\nAvailable but not active tools:");
+				if (cutoff >= 0) {
+					resp.content[0].text = text.slice(0, cutoff);
+				}
+			}
+			return resp;
 		},
 	});
 
