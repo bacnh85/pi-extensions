@@ -366,9 +366,12 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 					details: { ok: false, error: "multiline not supported" },
 				};
 			}
-				// ponytail: send both pattern and substring_pattern for Python backend
+			// ponytail: rename pattern → substring_pattern for Python backend
 			const { multiline: _ml, limit: _limit, ...searchParams } = params;
-			if (searchParams.pattern) searchParams.substring_pattern = searchParams.pattern;
+			if (searchParams.pattern) {
+				searchParams.substring_pattern = searchParams.pattern;
+				delete searchParams.pattern;
+			}
 			const result = await callSerena(ctx, "search_for_pattern", searchParams);
 			if (_limit && result.content?.[0]?.text) {
 				try {

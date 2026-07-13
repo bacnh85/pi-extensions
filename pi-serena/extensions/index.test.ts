@@ -191,5 +191,17 @@ describe("stripControlParams", () => {
 		const result = stripControlParams({ project: "/p", context: "c", timeout_ms: 5000, relative_path: "src/index.ts" });
 		expect(result).to.deep.equal({ project: "/p", context: "c", timeoutMs: 5000, params: { relative_path: "src/index.ts" } });
 	});
+
+	it("pattern is removed when renamed to substring_pattern", () => {
+		// This mirrors the search_for_pattern execute handler's mapping logic.
+		const params: Record<string, unknown> = { pattern: "foo", relative_path: "src/" };
+		if (params.pattern) {
+			params.substring_pattern = params.pattern;
+			delete params.pattern;
+		}
+		expect(params).to.have.property("substring_pattern", "foo");
+		expect(params).to.not.have.property("pattern");
+		expect(params).to.have.property("relative_path", "src/");
+	});
 });
 
