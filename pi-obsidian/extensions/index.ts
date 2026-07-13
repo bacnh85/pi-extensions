@@ -104,6 +104,7 @@ function createTaskInNote(notePath: string, heading: string, taskText: string, v
 
 function createFromTemplate(templateName: string, noteName: string, folder: string, fill: Record<string, string>, vault?: string, timeoutMs = 30_000): string {
 	const j = JSON.stringify;
+	if (!noteName.includes(".")) noteName += ".md";
 	const notePath = folder ? `${folder}/${noteName}` : noteName;
 	const script = [
 		`const tf=app.vault.getAbstractFileByPath(${j(templateName)});`,
@@ -111,6 +112,7 @@ function createFromTemplate(templateName: string, noteName: string, folder: stri
 		`let c=await app.vault.read(tf);`,
 		`const fl=${JSON.stringify(fill)};`,
 		`for(const[k,v]of Object.entries(fl))c=c.replace(new RegExp('\\\\{\\\\{\\\\s*'+k.replace(/[.*+?^\${}()|[\\]\\\\]/g,'\\\\$&')+'\\\\s*\\\\}\\\\}','g'),v);`,
+		`c=c.replace(/\\{\\{date:([^}]+)\\}\\}/g,(_,f)=>{const d=new Date();return f.replace(/YYYY/g,d.getFullYear()).replace(/MM/g,('0'+(d.getMonth()+1)).slice(-2)).replace(/DD/g,('0'+d.getDate()).slice(-2)).replace(/HH/g,('0'+d.getHours()).slice(-2)).replace(/mm/g,('0'+d.getMinutes()).slice(-2));});`,
 		`const p=${j(notePath)}.replace(/\\\\/g,'/').split('/').slice(0,-1).join('/');`,
 		`if(p&&!app.vault.getAbstractFileByPath(p))await app.vault.createFolder(p,true);`,
 		`await app.vault.create(${j(notePath)},c);`,
@@ -121,6 +123,7 @@ function createFromTemplate(templateName: string, noteName: string, folder: stri
 	args.push("eval", `code=(async function(){${script}})()`);
 	return execObsidian(args, false, timeoutMs).stdout.trim() || `Created note "${notePath}" from template "${templateName}".`;
 }
+
 
 function propertyRename(from: string, to: string, vault?: string, timeoutMs = 30_000): string {
 	const j = JSON.stringify;
@@ -370,6 +373,10 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 						args.push("files", `folder=${folder}`, "format=json");
 						try {
 							const r = execObsidian(args, false, timeoutMs);
+							if (typeof r.parsed === "string" && r.parsed.trim()) {
+								const files = r.parsed.trim().split("\n").filter(Boolean).sort();
+								if (files.length > 0) return files.join("\n");
+							}
 							if (r.parsed && Array.isArray(r.parsed) && r.parsed.length > 0) return (r.parsed as string[]).sort().join("\n");
 						} catch { /* fall through */ }
 						return "No files found.";
@@ -381,6 +388,10 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 				args.push("files", `folder=${folder}`, "format=json");
 				try {
 					const r = execObsidian(args, false, timeoutMs);
+					if (typeof r.parsed === "string" && r.parsed.trim()) {
+						const files = r.parsed.trim().split("\n").filter(Boolean).sort();
+						if (files.length > 0) return files.join("\n");
+					}
 					if (r.parsed && Array.isArray(r.parsed) && r.parsed.length > 0) return (r.parsed as string[]).sort().join("\n");
 				} catch { /* fall through */ }
 				return "No files found.";
