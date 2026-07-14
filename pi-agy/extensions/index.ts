@@ -1,0 +1,126 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
+import { stat } from "node:fs/promises";
+import * as path from "node:path";
+import { checkAgyHealth, checkAgyConnectivity, spawnAgy } from "./lib/cli.js";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const MAX_OUTPUT_CHARS = 8000;
+const DEFAULT_TIMEOUT_MS = 300_000;
+const MAX_TIMEOUT_MS = 600_000;
+
+// ---------------------------------------------------------------------------
+// Extension entry point
+// ---------------------------------------------------------------------------
+
+export default function piAgyExtension(pi: ExtensionAPI) {
+	pi.registerTool({
+		name: "agy_execute",
+		label: "Antigravity CLI",
+		description:
+			"Run a task through the Antigravity CLI (agy) for bulk implementation, scaffolding, or test generation.",
+		promptSnippet: "Run a task through the Antigravity CLI (agy)",
+		promptGuidelines: [
+			"Always review the git diff after agy runs with mode=accept-edits.",
+			"Never use agy for irreversible production changes.",
+			"Prefer mode=plan for exploration, then switch to accept-edits for implementation.",
+			"Set an appropriate timeout_ms for large tasks (default 5m).",
+		],
+		parameters: Type.Object({
+			prompt: Type.String({
+				description: "The task instruction for agy.",
+				minLength: 1,
+			}),
+			tier: Type.Optional(
+				Type.Union(
+					[Type.Literal("flash"), Type.Literal("flash-lo"), Type.Literal("pro")],
+					{ description: "'flash' (default), 'flash-lo', or 'pro'.", default: "flash" },
+				),
+			),
+			mode: Type.Optional(
+				Type.Union(
+					[Type.Literal("accept-edits"), Type.Literal("plan"), Type.Literal("sandbox")],
+					{ description: "'accept-edits' (default), 'plan', or 'sandbox'.", default: "accept-edits" },
+				),
+			),
+			dir: Type.Optional(
+				Type.String({
+					description: "Working directory. Defaults to current project root.",
+				}),
+			),
+			digest: Type.Optional(
+				Type.Boolean({
+					description: "Request compact digests instead of full output. Defaults on for plan/sandbox and off for accept-edits.",
+				}),
+			),
+			timeout_ms: Type.Optional(
+				Type.Number({
+					description: "Timeout in milliseconds (default 300000 = 5m, max 600000).",
+					minimum: 1000,
+					maximum: MAX_TIMEOUT_MS,
+				}),
+			),
+		}),
+
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const cwd = params.dir ? path.resolve(ctx.cwd, params.dir) : ctx.cwd;
+			const prompt = params.prompt;
+			const abortSignal = signal ?? new AbortController().signal;
+			const timeoutMs = Math.min(
+				params.timeout_ms ?? DEFAULT_TIMEOUT_MS,
+				MAX_TIMEOUT_MS,
+			);
+
+			try {
+				if (!(await stat(cwd)).isDirectory()) throw new Error(`Working directory is not a directory: ${cwd}`);
+
+				// Pre-flight checks (parallel)
+				await Promise.all([
+					checkAgyHealth(cwd, abortSignal),
+					checkAgyConnectivity(cwd, abortSignal),
+				]);
+
+				// Build the prompt — compact output is safe by default only in non-write modes
+				const mode = params.mode ?? "accept-edits";
+				const useDigest = params.digest ?? mode !== "accept-edits";
+				const finalPrompt = useDigest
+					? `(Use compact digests, not full file contents.)\n${prompt}`
+					: prompt;
+
+				const output = await spawnAgy(
+					{
+						prompt: finalPrompt,
+						tier: params.tier ?? "flash",
+						mode,
+						dir: cwd,
+						timeout_ms: timeoutMs,
+					},
+					abortSignal,
+				);
+
+				// Truncation guard for Pi's context window
+				if (output.length > MAX_OUTPUT_CHARS) {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: output.slice(0, MAX_OUTPUT_CHARS) + "\n\n(Output truncated to 8000 chars)",
+							},
+						],
+						details: {},
+					};
+				}
+
+				return {
+					content: [{ type: "text" as const, text: output || "(empty response)" }],
+					details: {},
+				};
+			} catch (err) {
+				throw new Error(`agy failed: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		},
+	});
+}

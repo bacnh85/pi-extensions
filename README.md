@@ -60,6 +60,7 @@ Packages are standalone npm packages. Most TypeScript packages use Mocha + `tsx`
 
 ```bash
 # Package tests
+npm test --prefix pi-agy
 npm test --prefix pi-web
 npm test --prefix pi-serena
 npm test --prefix pi-munin
@@ -86,6 +87,7 @@ npm pack --dry-run ./pi-sub
 
 ```text
 pi-extensions/
+  pi-agy/
   pi-ponytail/
   pi-serena/
   pi-web/

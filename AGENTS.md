@@ -7,6 +7,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 
 | Package | Version | Description |
 |---------|---------|-------------|
+| **pi-agy** | 0.1.0 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
 | **pi-deepseek-tools** | 0.12.4 | DeepSeek V4 tool calling fixes, argument repair, reasoning cleanup, thinking level compatibility, Super Power Mode. |
 | **pi-notebooklm** | 0.1.0 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | **pi-ponytail** | 0.1.4 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
@@ -26,6 +27,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 
 ```
 pi-extensions/
+  pi-agy/               # TS extension + skill for Antigravity CLI bridge
   pi-notebooklm/        # TS extension + skill for NotebookLM CLI bridge
   pi-ponytail/          # JS extension + hooks + 6 sub-skills
   pi-serena/            # TS extension + worker + Python bridge
@@ -94,6 +96,7 @@ npm test
 cd pi-<name> && npm test
 
 # Test runners (follow package conventions):
+# pi-agy:        cd extensions && mocha                (mocha + tsx)
 # pi-notebooklm: cd extensions && mocha                (mocha + tsx)
 # pi-ponytail:   node --test extensions/test/*.test.js (no framework, plain JS)
 # pi-serena:     cd extensions && mocha                (mocha + tsx)
@@ -114,7 +117,7 @@ spec). pi-ponytail uses `node --test` with no mocha or tsx dependency at all.
 
 Two GitHub Actions workflows in `.github/workflows/`:
 
-- **test.yml** — runs on push to main and PRs. Matrix across all 14 packages.
+- **test.yml** — runs on push to main and PRs. Matrix across all 15 packages.
   pi-ponytail uses `node --test` directly, pi-rtk and pi-sub use `npm pack --dry-run`, others use `npm ci && npm test`.
 - **publish.yml** — runs on push to main. Checks each package's `package.json`
   version against the npm registry and publishes if different.

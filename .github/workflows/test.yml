@@ -12,6 +12,8 @@ jobs:
     strategy:
       matrix:
         include:
+          - package: pi-agy
+            test-command: npm ci && npm test && npm run typecheck
           - package: pi-ponytail
             test-command: node --test extensions/test/*.test.js
           - package: pi-serena
