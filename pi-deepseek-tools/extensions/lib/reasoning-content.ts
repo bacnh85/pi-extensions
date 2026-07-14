@@ -15,7 +15,7 @@
  * very long reasoning fields but short ones are fine.
  *
  * Leaked content cleaning (always applied): strips leaked thinking headers and
- * plain-text tool-call syntax that some V4 variants emit in message content.
+ * registered plain-text tool calls from assistant message content only.
  */
 
 import { isRecord } from "./deepseek-tools.ts";
@@ -111,35 +111,8 @@ export function stripReasoningContent(payload: unknown): unknown {
  */
 const LEAKED_THINKING_HEADER = /^(Reasoning|Thinking|Chain of Thought)\s*:[^\n]*\n?/i;
 
-/**
- * Known Pi tool-name patterns for detecting leaked plain-text tool calls.
- * These look like `read("file.ts")` or `` `read(path="file.ts")` `` in content.
- * The trailing \\s* consumes whitespace after the call so the gap left by removal
- * doesn't leave a stray space (e.g., `` `grep('foo')` found`` → "found", not " found").
- */
+/** Backtick-wrapped call syntax emitted as plain text instead of a real tool call. */
 const LEAKED_TOOL_CALL_RE = /`([a-z_]+)\(([^)]*)\)`\s*/g;
-
-const PI_TOOL_NAMES = new Set([
-	"read", "write", "edit", "bash", "grep", "find", "ls",
-	"serena_find_symbol", "serena_get_symbols_overview",
-	"serena_find_referencing_symbols", "serena_find_declaration",
-	"serena_find_implementations", "serena_replace_symbol_body",
-	"serena_insert_before_symbol", "serena_insert_after_symbol",
-	"serena_rename_symbol", "serena_safe_delete_symbol",
-	"serena_search_for_pattern", "serena_replace_content",
-	"serena_restart_language_server", "serena_get_diagnostics_for_file",
-	"munin_search", "munin_get", "munin_store", "munin_list",
-	"munin_recent", "munin_delete", "munin_capabilities",
-	"web_search", "web_extract", "web_map", "web_crawl",
-	"web_screenshot", "web_pdf", "web_status",
-]);
-
-/**
- * Check if a string looks like a known Pi tool name.
- */
-function isPiToolName(name: string): boolean {
-	return PI_TOOL_NAMES.has(name);
-}
 
 /**
  * Clean leaked thinking content from a single message content string.
@@ -149,73 +122,62 @@ function isPiToolName(name: string): boolean {
  *
  * Returns the cleaned content, or the original if nothing changed.
  */
-export function cleanLeakedContent(content: unknown): unknown {
+export function cleanLeakedContent(content: unknown, activeTools: ReadonlySet<string>): unknown {
 	if (typeof content !== "string") return content;
 
 	let cleaned = content;
-
-	// Step 1: Strip leaked thinking header at start of content
 	if (LEAKED_THINKING_HEADER.test(cleaned)) {
 		cleaned = cleaned.replace(LEAKED_THINKING_HEADER, "").trimStart();
 	}
 
-	// Step 2: Strip leaked backtick-wrapped tool calls (inline only, not code blocks)
-	cleaned = cleaned.replace(LEAKED_TOOL_CALL_RE, (match, toolName: string) => {
-		if (isPiToolName(toolName)) {
-			return ""; // remove the leaked call, keep surrounding text
-		}
-		return match; // leave non-tool calls alone
-	});
-
+	cleaned = cleaned.replace(LEAKED_TOOL_CALL_RE, (match, toolName: string) => activeTools.has(toolName) ? "" : match);
 	return cleaned !== content ? cleaned : content;
 }
 
 /**
- * Walk all messages and clean leaked content from string content fields.
- * Also handles array-of-string content (multi-modal messages).
+ * Walk assistant messages and clean leaked content from string content fields.
+ * Also handles text parts in multi-modal content arrays.
  * Returns cloned payload only when at least one message was changed.
  */
-export function cleanLeakedContentFromMessages(payload: unknown): unknown {
+export function cleanLeakedContentFromMessages(payload: unknown, activeTools: readonly string[]): unknown {
 	if (!isRecord(payload)) return payload;
 
 	const messages = findMessagesArray(payload);
 	if (!messages || messages.length === 0) return payload;
 
+	const toolNames = new Set(activeTools);
 	let cloned: Record<string, unknown> | undefined;
 	let clonedMessages: Array<Record<string, unknown>> | undefined;
 
 	for (let i = 0; i < messages.length; i++) {
 		const msg = messages[i];
-		const cleanedContent = cleanMessageContent(msg.content);
+		if (msg.role !== "assistant") continue;
+		const cleanedContent = cleanMessageContent(msg.content, toolNames);
 		if (cleanedContent === msg.content) continue;
 
 		if (!cloned) {
 			cloned = structuredClone(payload);
 			clonedMessages = findMessagesArray(cloned)!;
 		}
-		(clonedMessages![i] as Record<string, unknown>).content = cleanedContent;
+		clonedMessages![i].content = cleanedContent;
 	}
 
 	return cloned ?? payload;
 }
 
-function cleanMessageContent(content: unknown): unknown {
-	if (typeof content === "string") {
-		return cleanLeakedContent(content);
-	}
-	if (Array.isArray(content)) {
-		let changed = false;
-		const cleaned = content.map((part: unknown) => {
-			if (isRecord(part) && typeof part.text === "string") {
-				const cleanedText = cleanLeakedContent(part.text);
-				if (cleanedText !== part.text) changed = true;
-				return cleanedText !== part.text ? { ...part, text: cleanedText } : part;
-			}
-			return part;
-		});
-		return changed ? cleaned : content;
-	}
-	return content;
+function cleanMessageContent(content: unknown, activeTools: ReadonlySet<string>): unknown {
+	if (typeof content === "string") return cleanLeakedContent(content, activeTools);
+	if (!Array.isArray(content)) return content;
+
+	let changed = false;
+	const cleaned = content.map((part: unknown) => {
+		if (!isRecord(part) || typeof part.text !== "string") return part;
+		const cleanedText = cleanLeakedContent(part.text, activeTools);
+		if (cleanedText === part.text) return part;
+		changed = true;
+		return { ...part, text: cleanedText };
+	});
+	return changed ? cleaned : content;
 }
 
 // --- internal helpers ---

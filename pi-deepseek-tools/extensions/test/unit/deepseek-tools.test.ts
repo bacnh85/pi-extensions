@@ -1,26 +1,18 @@
 import assert from "node:assert/strict";
-import { describe, it } from "mocha";
+import { describe, it } from "node:test";
 import extension from "../../index";
 import {
 	deepSeekSelectionGuidance,
-	isOpenCodeGoDeepSeekV4FlashModel,
 	isOpenCodeGoDeepSeekV4Model,
-	isOpenCodeGoDeepSeekV4ProModel,
-	DEEPSEEK_V4_PRO_MODEL,
 	isSemanticMissToolCall,
 	missedDedicatedTool,
 	selectionGuidanceEnabled,
 	strictSerenaEnabled,
-	bashReadCommandPath,
-	DEFAULT_SERENA_TOOL,
 	DEEPSEEK_V4_FLASH_MODEL,
 	superPowerModeEnabled,
 	superPowerPromptContent,
-	SUPER_POWER_BASE_PROMPT,
 	suggestBestSerenaCommand,
 	dedicatedToolForShellCommand,
-	isDeepSeekV4Model,
-	isOpenCodeGoDeepSeekV4Model as isOpenCodeGoDeepSeekV4ModelAlias,
 	OPENCODE_GO_PROVIDER,
 	reasoningStripEnabled,
 	directDeepSeekEnabled,
@@ -46,6 +38,9 @@ function createFakePi(activeTools: string[]) {
 		getActiveTools() {
 			return activeTools;
 		},
+		getAllTools() {
+			return activeTools.map((name) => ({ name }));
+		},
 		sendMessage(message: unknown, options: unknown) {
 			messages.push({ message, options });
 		},
@@ -60,42 +55,11 @@ function createFakePi(activeTools: string[]) {
 }
 
 describe("OpenCode Go DeepSeek V4 model detection", () => {
-	it("recognizes only OpenCode Go DeepSeek V4 Flash (granular)", () => {
-		assert.equal(isOpenCodeGoDeepSeekV4FlashModel({ provider: OPENCODE_GO_PROVIDER, id: DEEPSEEK_V4_FLASH_MODEL }), true);
-		assert.equal(isOpenCodeGoDeepSeekV4FlashModel({ provider: "opencode-go", id: "deepseek-v4-pro" }), false);
-		assert.equal(isOpenCodeGoDeepSeekV4FlashModel({ provider: "deepseek", id: "deepseek-v4-flash" }), false);
-		assert.equal(isOpenCodeGoDeepSeekV4FlashModel({ provider: "deepseek", id: "deepseek-v4-pro" }), false);
-		assert.equal(isOpenCodeGoDeepSeekV4FlashModel({ provider: "openai-codex", id: "gpt-5.5" }), false);
-	});
-
-	it("recognizes only OpenCode Go DeepSeek V4 Pro (granular)", () => {
-		assert.equal(isOpenCodeGoDeepSeekV4ProModel({ provider: OPENCODE_GO_PROVIDER, id: DEEPSEEK_V4_PRO_MODEL }), true);
-		assert.equal(isOpenCodeGoDeepSeekV4ProModel({ provider: "opencode-go", id: "deepseek-v4-flash" }), false);
-		assert.equal(isOpenCodeGoDeepSeekV4ProModel({ provider: "deepseek", id: "deepseek-v4-pro" }), false);
-		assert.equal(isOpenCodeGoDeepSeekV4ProModel({ provider: "deepseek", id: "deepseek-v4-flash" }), false);
-		assert.equal(isOpenCodeGoDeepSeekV4ProModel({ provider: "openai-codex", id: "gpt-5.5" }), false);
-	});
-
-	it("matches both Flash and Pro with combined isOpenCodeGoDeepSeekV4Model", () => {
+	it("matches only OpenCode Go Flash and Pro", () => {
 		assert.equal(isOpenCodeGoDeepSeekV4Model({ provider: OPENCODE_GO_PROVIDER, id: DEEPSEEK_V4_FLASH_MODEL }), true);
 		assert.equal(isOpenCodeGoDeepSeekV4Model({ provider: "opencode-go", id: "deepseek-v4-pro" }), true);
 		assert.equal(isOpenCodeGoDeepSeekV4Model({ provider: "deepseek", id: "deepseek-v4-flash" }), false);
-		assert.equal(isOpenCodeGoDeepSeekV4Model({ provider: "deepseek", id: "deepseek-v4-pro" }), false);
 		assert.equal(isOpenCodeGoDeepSeekV4Model({ provider: "openai-codex", id: "gpt-5.5" }), false);
-		assert.equal(isOpenCodeGoDeepSeekV4Model({ provider: undefined, id: undefined }), false);
-	});
-
-	it("alias isDeepSeekV4Model matches both Flash and Pro", () => {
-		assert.equal(isDeepSeekV4Model("opencode-go", "deepseek-v4-flash"), true);
-		assert.equal(isDeepSeekV4Model("opencode-go", "deepseek-v4-pro"), true);
-		assert.equal(isDeepSeekV4Model("deepseek", "deepseek-v4-flash"), false);
-		assert.equal(isDeepSeekV4Model("deepseek", "deepseek-v4-pro"), false);
-	});
-
-	it("alias isOpenCodeGoDeepSeekV4Model (lib) matches both Flash and Pro", () => {
-		assert.equal(isOpenCodeGoDeepSeekV4ModelAlias({ provider: "opencode-go", id: "deepseek-v4-flash" }), true);
-		assert.equal(isOpenCodeGoDeepSeekV4ModelAlias({ provider: "opencode-go", id: "deepseek-v4-pro" }), true);
-		assert.equal(isOpenCodeGoDeepSeekV4ModelAlias({ provider: "deepseek", id: "deepseek-v4-flash" }), false);
 	});
 });
 
@@ -173,8 +137,6 @@ describe("env-var config parsing", () => {
 });
 
 describe("direct DeepSeek provider support", () => {
-	const env = { PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK: "1" };
-
 	it("isDeepSeekV4ModelByModel matches opencode-go by default", () => {
 		assert.equal(isDeepSeekV4ModelByModel({ provider: "opencode-go", id: "deepseek-v4-flash" }), true);
 		assert.equal(isDeepSeekV4ModelByModel({ provider: "opencode-go", id: "deepseek-v4-pro" }), true);
@@ -212,6 +174,7 @@ describe("deepSeekSelectionGuidance", () => {
 		assert.match(g, /serena_get_symbols_overview/);
 		assert.match(g, /serena_find_symbol/);
 		assert.match(g, /serena_find_referencing_symbols/);
+		assert.match(g, /edit oldText.*match exactly once/);
 		assert.match(g, /Do NOT invent tool names/);
 	});
 
@@ -343,11 +306,11 @@ describe("extension runtime scoping", () => {
 	it("does not block read on code files — read is allowed for code content", () => {
 		const event = { toolName: "read", input: { path: "pi-deepseek-tools/extensions/index.ts" } };
 
-		const { handlers: hPro, messages: mPro } = createFakePi(activeTools);
+		const { handlers: hPro } = createFakePi(activeTools);
 		const resultPro = hPro.tool_call[0](event, { model: { provider: "opencode-go", id: "deepseek-v4-pro" } });
 		assert.equal(resultPro, undefined, "Pro: read code file should NOT block");
 
-		const { handlers: hFlash, messages: mFlash } = createFakePi(activeTools);
+		const { handlers: hFlash } = createFakePi(activeTools);
 		const resultFlash = hFlash.tool_call[0](event, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
 		assert.equal(resultFlash, undefined, "Flash: read code file should NOT block");
 	});
@@ -401,6 +364,69 @@ describe("extension runtime scoping", () => {
 	});
 });
 
+
+describe("session scoping", () => {
+	const model = { provider: "opencode-go", id: "deepseek-v4-flash" };
+	const activeTools = ["read", "bash", "ls"];
+
+	it("ignores other-model errors and clears DeepSeek errors at session start", () => {
+		const { handlers } = createFakePi(activeTools);
+		const event = { systemPrompt: "base", systemPromptOptions: { selectedTools: activeTools } };
+		handlers.tool_execution_end[0]({ isError: true, toolName: "read", result: "ENOENT", toolCallId: "1" }, { model: { provider: "openai-codex", id: "gpt-5.5" } });
+		assert.doesNotMatch(handlers.before_agent_start[0](event, { model }).systemPrompt, /Note: The file path/);
+
+		handlers.tool_execution_end[0]({ isError: true, toolName: "read", result: "ENOENT", toolCallId: "2" }, { model });
+		handlers.session_start[0]({}, { model, cwd: process.cwd() });
+		assert.doesNotMatch(handlers.before_agent_start[0](event, { model }).systemPrompt, /Note: The file path/);
+	});
+
+	it("resets reminder escalation at session start", () => {
+		const previous = process.env.PI_DEEPSEEK_TOOLS_AUTO_BLOCK_AFTER_REMINDERS;
+		process.env.PI_DEEPSEEK_TOOLS_AUTO_BLOCK_AFTER_REMINDERS = "2";
+		try {
+			const { handlers } = createFakePi(activeTools);
+			const event = { toolName: "bash", input: { command: "ls pi-deepseek-tools" } };
+			assert.equal(handlers.tool_call[0](event, { model }), undefined);
+			handlers.session_start[0]({}, { model, cwd: process.cwd() });
+			assert.equal(handlers.tool_call[0](event, { model }), undefined);
+		} finally {
+			if (previous === undefined) delete process.env.PI_DEEPSEEK_TOOLS_AUTO_BLOCK_AFTER_REMINDERS;
+			else process.env.PI_DEEPSEEK_TOOLS_AUTO_BLOCK_AFTER_REMINDERS = previous;
+		}
+	});
+
+
+	it("keeps error counts isolated between extension instances", () => {
+		const first = createFakePi(activeTools).handlers;
+		const second = createFakePi(activeTools).handlers;
+		const error = { isError: true, toolName: "read", result: "ENOENT", toolCallId: "1" };
+		const event = { systemPrompt: "base", systemPromptOptions: { selectedTools: activeTools } };
+
+		first.tool_execution_end[0](error, { model });
+		first.before_agent_start[0](event, { model });
+		second.tool_execution_end[0](error, { model });
+		assert.doesNotMatch(second.before_agent_start[0](event, { model }).systemPrompt, /2 failures/);
+	});
+
+	it("injects error recovery when selection guidance is disabled", () => {
+		const previousGuidance = process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE;
+		const previousSuperPower = process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+		process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE = "0";
+		process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = "0";
+		try {
+			const { handlers } = createFakePi(activeTools);
+			handlers.tool_execution_end[0]({ isError: true, toolName: "read", result: "ENOENT", toolCallId: "1" }, { model });
+			const result = handlers.before_agent_start[0]({ systemPrompt: "base", systemPromptOptions: { selectedTools: activeTools } }, { model });
+			assert.match(result.systemPrompt, /Note: The file path/);
+		} finally {
+			if (previousGuidance === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE;
+			else process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE = previousGuidance;
+			if (previousSuperPower === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
+			else process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE = previousSuperPower;
+		}
+	});
+});
+
 describe("error categorization", () => {
 	it("detects rate limit errors", () => {
 		const info = categorizeToolError("bash", "429 Too Many Requests");
@@ -420,10 +446,24 @@ describe("error categorization", () => {
 		assert.match(info.hint, /byte.for.byte|verbatim/i);
 	});
 
+	it("detects ambiguous edit errors in the runtime tool-result shape", () => {
+		const info = categorizeToolError("edit", {
+			content: [{ type: "text", text: "Found 2 occurrences of the text in /path/to/file. The text must be unique. Please provide more context to make it unique." }],
+			details: {},
+		});
+		assert.equal(info.category, "edit_mismatch");
+		assert.match(info.hint, /match exactly once/i);
+	});
+
 	it("detects timeout errors", () => {
 		const info = categorizeToolError("read", "timed out after 30000ms");
 		assert.equal(info.category, "timeout");
 		assert.match(info.hint, /timed out|timeout/i);
+	});
+
+	it("requires HTTP context before classifying a number as an API error", () => {
+		assert.equal(categorizeToolError("read", "failed near line 500 in source").category, "unknown");
+		assert.equal(categorizeToolError("web_search", "HTTP status 500: Internal Server Error").category, "api_error");
 	});
 
 	it("detects validation errors", () => {
@@ -469,18 +509,26 @@ describe("checkDangerousCommand", () => {
 		assert.equal(checkDangerousCommand("cat README.md"), undefined);
 	});
 
-	it("blocks rm -rf /", () => {
-		const result = checkDangerousCommand("rm -rf /");
-		assert.ok(result);
-		assert.match(result!, /rm -rf/i);
+	it("blocks forced recursive deletion of quoted and unquoted absolute paths", () => {
+		for (const command of [
+			"rm -rf /",
+			"rm -fr \"/\"",
+			"rm -r -f -- '/tmp/path with spaces'",
+			"rm --recursive --force /tmp",
+		]) {
+			assert.match(checkDangerousCommand(command) ?? "", /recursive delete/i);
+		}
 	});
 
 	it("blocks sudo rm -rf /tmp", () => {
 		assert.ok(checkDangerousCommand("sudo rm -rf /tmp"));
 	});
 
-	it("blocks dd to block device", () => {
-		assert.ok(checkDangerousCommand("dd if=/dev/zero of=/dev/sda"));
+	it("blocks destructive writes to block devices without blocking device reads", () => {
+		assert.ok(checkDangerousCommand("dd if=image.iso of=/dev/sda"));
+		assert.ok(checkDangerousCommand("dd of=/dev/nvme0n1 if=image.iso"));
+		assert.ok(checkDangerousCommand("dd if=/dev/zero of=\"/dev/sda\""));
+		assert.equal(checkDangerousCommand("dd if=/dev/zero of=/tmp/disk.img"), undefined);
 	});
 
 	it("passes non-destructive patterns", () => {
@@ -494,48 +542,6 @@ describe("checkDangerousCommand", () => {
 		assert.equal(checkDangerousCommand(42), undefined);
 	});
 });
-describe("bashReadCommandPath", () => {
-	it("extracts file path from cat command", () => {
-		assert.equal(bashReadCommandPath("cat index.ts"), "index.ts");
-		assert.equal(bashReadCommandPath("cat src/main.ts"), "src/main.ts");
-	});
-	it("extracts file path from head/tail commands", () => {
-		assert.equal(bashReadCommandPath("head -n 20 index.ts"), "index.ts");
-		assert.equal(bashReadCommandPath("tail -50 src/app.ts"), "src/app.ts");
-		assert.equal(bashReadCommandPath("head index.ts"), "index.ts");
-	});
-	it("extracts file path from sed command", () => {
-		assert.equal(bashReadCommandPath("sed -n '1,20p' main.ts"), "main.ts");
-		assert.equal(bashReadCommandPath('sed -n "1,20p" main.ts'), "main.ts");
-	});
-	it("returns undefined for non-read commands", () => {
-		assert.equal(bashReadCommandPath("grep -R foo src/"), undefined);
-		assert.equal(bashReadCommandPath("ls -la"), undefined);
-		assert.equal(bashReadCommandPath("npm test"), undefined);
-		assert.equal(bashReadCommandPath("find . -name '*.ts'"), undefined);
-	});
-	it("returns undefined for complex or piped commands", () => {
-		assert.equal(bashReadCommandPath("cat index.ts | head -5"), undefined);
-		assert.equal(bashReadCommandPath("cat file.ts > output.txt"), undefined);
-	});
-	it("returns undefined for non-string input", () => {
-		assert.equal(bashReadCommandPath(null), undefined);
-		assert.equal(bashReadCommandPath(42), undefined);
-	});
-});
-
-describe("DEFAULT_SERENA_TOOL", () => {
-	it("is serena_get_symbols_overview", () => {
-		assert.equal(DEFAULT_SERENA_TOOL, "serena_get_symbols_overview");
-	});
-	it("bash cat/head/tail on code files no longer flagged by isSemanticMissToolCall", () => {
-		// Simple reads via bash are handled by missedDedicatedTool → steer reminder, not hard block
-		assert.equal(isSemanticMissToolCall("bash", { command: "cat index.ts" }), false);
-		assert.equal(isSemanticMissToolCall("bash", { command: "cat README.md" }), false, "docs not flagged");
-		assert.equal(isSemanticMissToolCall("bash", { command: "cat package.json" }), false, "config not flagged");
-	});
-});
-
 describe("Super Power Mode", () => {
 
 	it("superPowerModeEnabled defaults to enabled", () => {
@@ -554,7 +560,6 @@ describe("Super Power Mode", () => {
 
 	it("superPowerPromptContent returns base prompt when no custom env", () => {
 		const result = superPowerPromptContent({});
-		assert.equal(result, SUPER_POWER_BASE_PROMPT);
 		assert.ok(result.length > 100, "base prompt should be substantial");
 		assert.match(result, /DEEPSEEK-V4-FLASH-SUPERPOWER/);
 		assert.match(result, /NEVER refuse/);

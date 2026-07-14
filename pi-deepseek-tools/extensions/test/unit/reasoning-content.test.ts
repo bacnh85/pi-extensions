@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
-import { describe, it } from "mocha";
+import { describe, it } from "node:test";
 import { stripReasoningContent, cleanLeakedContent, cleanLeakedContentFromMessages } from "../../lib/reasoning-content";
+
+const activeTools = ["read", "find", "grep"];
+const clean = (content: unknown) => cleanLeakedContent(content, new Set(activeTools));
+const cleanMessages = (payload: unknown) => cleanLeakedContentFromMessages(payload, activeTools);
 
 describe("stripReasoningContent", () => {
 	it("leaves payloads without messages unchanged", () => {
@@ -220,57 +224,57 @@ describe("stripReasoningContent", () => {
 
 describe("cleanLeakedContent", () => {
 	it("leaves normal content unchanged", () => {
-		assert.equal(cleanLeakedContent("Hello world"), "Hello world");
-		assert.equal(cleanLeakedContent("Use the read tool"), "Use the read tool");
+		assert.equal(clean("Hello world"), "Hello world");
+		assert.equal(clean("Use the read tool"), "Use the read tool");
 	});
 
 	it("strips leading Reasoning: header and its entire line", () => {
-		assert.equal(cleanLeakedContent("Reasoning: I need to find the file first.\nLet me search."), "Let me search.");
+		assert.equal(clean("Reasoning: I need to find the file first.\nLet me search."), "Let me search.");
 	});
 
 	it("strips leading Thinking: header and its entire line", () => {
-		assert.equal(cleanLeakedContent("Thinking: plan the edit.\nNow applying changes."), "Now applying changes.");
+		assert.equal(clean("Thinking: plan the edit.\nNow applying changes."), "Now applying changes.");
 	});
 
 	it("strips leading Chain of Thought: header and its entire line", () => {
-		assert.equal(cleanLeakedContent("Chain of Thought: step 1.\nstep 2."), "step 2.");
+		assert.equal(clean("Chain of Thought: step 1.\nstep 2."), "step 2.");
 	});
 
 	it("strips case-insensitive thinking headers", () => {
-		assert.equal(cleanLeakedContent("REASONING: analyze source.\nresult."), "result.");
-		assert.equal(cleanLeakedContent("thinking: deeply.\noutput."), "output.");
+		assert.equal(clean("REASONING: analyze source.\nresult."), "result.");
+		assert.equal(clean("thinking: deeply.\noutput."), "output.");
 	});
 
 	it("strips leaked backtick tool calls with known Pi tool names", () => {
-		const result = cleanLeakedContent('I need to find the file. `read("README.md")` Let me read it.');
+		const result = clean('I need to find the file. `read("README.md")` Let me read it.');
 		assert.equal(result, "I need to find the file. Let me read it.");
 	});
 
 	it("does not strip non-backtick patterns (would cause false positives in bash output)", () => {
-		const result = cleanLeakedContent('Use find("*.ts", "src/") to locate.');
+		const result = clean('Use find("*.ts", "src/") to locate.');
 		assert.equal(result, 'Use find("*.ts", "src/") to locate.');
 	});
 
 	it("does not strip non-Pi-tool function calls", () => {
 		const content = 'Call helperFunction("arg") to proceed.';
-		assert.equal(cleanLeakedContent(content), content);
+		assert.equal(clean(content), content);
 	});
 
 	it("handles non-string input gracefully", () => {
-		assert.strictEqual(cleanLeakedContent(null), null);
-		assert.strictEqual(cleanLeakedContent(42), 42);
-		assert.deepStrictEqual(cleanLeakedContent(["a"]), ["a"]);
+		assert.strictEqual(clean(null), null);
+		assert.strictEqual(clean(42), 42);
+		assert.deepStrictEqual(clean(["a"]), ["a"]);
 	});
 
 	it("combines header strip and tool-call strip", () => {
-		const result = cleanLeakedContent("Reasoning: search the codebase.\n`grep('foo', 'src/')` found.");
+		const result = clean("Reasoning: search the codebase.\n`grep('foo', 'src/')` found.");
 		assert.equal(result, "found.");
 	});
 
 	it("does not modify content with no leaked patterns", () => {
 		const content = "Read the file and check the content.";
 		// Should return the same reference
-		assert.equal(cleanLeakedContent(content), content);
+		assert.equal(clean(content), content);
 	});
 });
 
@@ -282,19 +286,20 @@ describe("cleanLeakedContentFromMessages", () => {
 				{ role: "assistant", content: "hello" },
 			],
 		};
-		assert.equal(cleanLeakedContentFromMessages(payload), payload);
+		assert.equal(cleanMessages(payload), payload);
 	});
 
-	it("cleans leaked content in assistant messages", () => {
+	it("cleans leaked content only in assistant messages", () => {
 		const payload = {
 			messages: [
-				{ role: "user", content: "find the file" },
+				{ role: "user", content: "Explain `read('file.ts')` and Reasoning: headers" },
 				{ role: "assistant", content: "Reasoning: search for the file.\n`find('*.ts')` found it." },
 			],
 		};
-		const result = cleanLeakedContentFromMessages(payload) as typeof payload;
+		const result = cleanMessages(payload) as typeof payload;
 		assert.notEqual(result, payload);
-		assert.equal((result.messages[1] as any).content, "found it.");
+		assert.equal(result.messages[0].content, payload.messages[0].content);
+		assert.equal(result.messages[1].content, "found it.");
 	});
 
 	it("cleans leaked content across multiple messages", () => {
@@ -305,18 +310,18 @@ describe("cleanLeakedContentFromMessages", () => {
 				{ role: "assistant", content: "Reasoning: about the implementation.\nResult B." },
 			],
 		};
-		const result = cleanLeakedContentFromMessages(payload) as typeof payload;
+		const result = cleanMessages(payload) as typeof payload;
 		assert.equal((result.messages[0] as any).content, "Result A.");
 		assert.equal((result.messages[2] as any).content, "Result B.");
 	});
 
 	it("handles empty messages array", () => {
-		assert.deepStrictEqual(cleanLeakedContentFromMessages({ messages: [] }), { messages: [] });
+		assert.deepStrictEqual(cleanMessages({ messages: [] }), { messages: [] });
 	});
 
 	it("handles non-object payload", () => {
-		assert.equal(cleanLeakedContentFromMessages(null), null);
-		assert.equal(cleanLeakedContentFromMessages("str"), "str");
+		assert.equal(cleanMessages(null), null);
+		assert.equal(cleanMessages("str"), "str");
 	});
 
 	it("handles array content parts (multimodal)", () => {
@@ -326,7 +331,7 @@ describe("cleanLeakedContentFromMessages", () => {
 				{ role: "assistant", content: [{ type: "text", text: "Reasoning: think about approach.\n`read('x')` done." }] },
 			],
 		};
-		const result = cleanLeakedContentFromMessages(payload) as typeof payload;
+		const result = cleanMessages(payload) as typeof payload;
 		assert.notEqual(result, payload);
 		const cleanedParts = (result.messages[1] as any).content as Array<{ type: string; text: string }>;
 		assert.equal(cleanedParts[0].text, "done.");
@@ -339,6 +344,6 @@ describe("cleanLeakedContentFromMessages", () => {
 				{ role: "assistant", content: "hello" },
 			],
 		};
-		assert.equal(cleanLeakedContentFromMessages(payload), payload);
+		assert.equal(cleanMessages(payload), payload);
 	});
 });

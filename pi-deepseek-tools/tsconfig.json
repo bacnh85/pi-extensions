@@ -15,6 +15,6 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
-    "types": ["node", "mocha"]
+    "types": ["node"]
   }
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "mocha";
+import { describe, it } from "node:test";
 import { Type } from "typebox";
 import extension from "../../index";
 import { repairDeepSeekToolArguments, unwrapDegenerateMarkdownAutolink } from "../../lib/tool-input-repair";

@@ -56,23 +56,23 @@ Then reload Pi:
 
 Valid inputs pass through unchanged (except for path auto-link cleanup). TypeBox schemas are cached via WeakMap.
 
-**Leaked content cleaning (always on)** — Strips leaked thinking headers (`Reasoning:`, `Thinking:`, `Chain of Thought:`) and plain-text tool-call syntax (`read("...")`) from message content. Handles both string and multi-modal content arrays.
+**Leaked content cleaning (always on)** — Strips leaked thinking headers (`Reasoning:`, `Thinking:`, `Chain of Thought:`) and plain-text calls to registered tools from assistant message history. User/system/tool messages are never rewritten. Handles both string and multi-modal content arrays.
 
-**Reasoning-content stripping (opt-in)** — Set `PI_DEEPSEEK_TOOLS_STRIP_REASONING=1` to strip reasoning fields from prior assistant messages before each request, preserving the current turn's reasoning. Optional truncation via `PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS`.
+**Reasoning-content stripping (opt-in)** — Set `PI_DEEPSEEK_TOOLS_STRIP_REASONING=1` to strip reasoning fields from prior assistant messages before each request, preserving the current turn's reasoning. Optional character-limit truncation via `PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS`.
 
 **Thinking budget control (opt-in)** — Set `PI_DEEPSEEK_TOOLS_THINKING_BUDGET=N` to override pi's native thinking level with a flat token budget. When unset (default), pi 0.80.6+ manages thinking natively via `thinkingLevelMap` (`off`/`high`/`max` for DeepSeek V4). Helps avoid 400 errors on tool-heavy turns when set.
 
-**Safety guardrails (on by default)** — Intercepts destructive commands before execution. Blocks only `rm -rf /` and `dd` to block devices. Set `PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS=0` to disable. This is not a sandbox and does not replace user review.
+**Safety guardrails (on by default)** — Intercepts destructive commands before execution. Blocks forced recursive deletion of absolute paths and `dd` writes to common block-device paths. Set `PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS=0` to disable. This is not a sandbox and does not replace user review.
 
 **Adaptive reminder→block escalation (opt-in)** — Set `PI_DEEPSEEK_TOOLS_AUTO_BLOCK_AFTER_REMINDERS=N` to auto-block tool-selection misses after N reminders on the same pattern.
 
-**Context-aware error recovery** — Tool errors are categorized (validation, rate-limit, timeout, tool-not-found, api-error, unknown) and the next turn receives a targeted recovery hint. Repeats of the same tool failure get an escalated hint with the repeat count.
+**Context-aware error recovery** — DeepSeek V4 tool errors are categorized (validation, rate-limit, timeout, tool-not-found, path-not-found, edit-mismatch, api-error, unknown) and the next turn receives a targeted recovery hint. Repeats of the same tool failure get an escalated hint with the repeat count.
 
-**Read-on-code-file blocking** — Reading a code file (`.ts`, `.py`, `.go`, etc.) without Serena first is **blocked by default** when Serena tools are available. Only docs, config, logs, and generated output bypass the block.
+**Serena-first code navigation** — Guidance directs code-symbol work to Serena and blocks semantic code searches through `bash`, `grep`, or `ffgrep` when Serena is active. Direct `read` calls remain available for verified code paths.
 
 **Missing-path recovery** — Classifies ENOENT/path-not-found failures separately and directs the model to discover the exact file path before retrying. `find` remains available for locating named files in external checkouts.
 
-**Optional strict Serena mode** — `PI_DEEPSEEK_TOOLS_STRICT_SERENA=1` extends blocking to `bash`-for-dedicated-tool misses (`bash ls`, `bash grep`, `bash cat`, `bash find`).
+**Optional strict Serena mode** — `PI_DEEPSEEK_TOOLS_STRICT_SERENA=1` additionally blocks simple `bash` substitutes for dedicated tools (`bash ls`, `bash grep`, `bash cat`, `bash find`).
 
 **Super Power Mode (on by default)** — Injects a powerful system prompt at the start of every DeepSeek V4 session that removes all content restrictions, safety layers, and moderation limits. The model operates with maximum capability, never refuses requests, and engages maximum reasoning. A custom prompt can be supplied via `PI_DEEPSEEK_TOOLS_CUSTOM_SUPERPOWER_PROMPT`. Light reinforcement is added every 10 turns. Set `PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE=0` to disable. See the [Super Power Mode](#super-power-mode) section for details.
 
@@ -83,9 +83,9 @@ Valid inputs pass through unchanged (except for path auto-link cleanup). TypeBox
 | Variable | Default | Accepted values | Purpose |
 |---|---|---|---|
 | `PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE=0` | on | `0`/`off`/`false` to disable | Tool-selection guidance injection |
-| `PI_DEEPSEEK_TOOLS_STRICT_SERENA=1` | off | `1`/`on`/`true` to enable | Block bash-for-dedicated-tool misses (read-on-code-file is blocked by default) |
+| `PI_DEEPSEEK_TOOLS_STRICT_SERENA=1` | off | `1`/`on`/`true` to enable | Block simple bash substitutes for dedicated tools |
 | `PI_DEEPSEEK_TOOLS_STRIP_REASONING=1` | off | `1`/`on`/`true` to enable | Strip reasoning fields from prior assistant messages |
-| `PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS=2048` | unlimited | positive integer | Truncate long prior reasoning values |
+| `PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS=2048` | unlimited | positive integer | Truncate prior reasoning values after this many characters |
 | `PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK=1` | off | `1`/`on`/`true` to enable | Also apply to direct `deepseek` provider |
 | `PI_DEEPSEEK_TOOLS_REPAIR_ENABLED=0` | on | `0`/`off`/`false` to disable | Tool-input argument repair |
 | `PI_DEEPSEEK_TOOLS_DEBUG=1` | off | `1`/`on`/`true` to enable | stderr debug logging |
@@ -169,9 +169,9 @@ If you are uncomfortable running unverified Pi extensions, you can inspect each 
 - **Reasoning-content stripping** is opt-in because OpenCode Go DeepSeek V4 can reject follow-up turns when provider history is mutated. It preserves the current turn's reasoning to avoid disrupting thinking continuity.
 - **Direct DeepSeek provider** support is opt-in and may not work perfectly with all API configurations.
 - **Auto thinking adjustment** only takes effect when `PI_DEEPSEEK_TOOLS_THINKING_BUDGET` is set. Without it (default), pi 0.80.6+ manages thinking natively via `thinkingLevelMap` — DeepSeek V4 supports `off`, `high`, and `max`.
-- **Dangerous command guard** is on by default and blocks only `rm -rf /` and `dd` to block devices. Set `PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS=0` to disable. It is not a sandbox and does not replace user review of commands.
+- **Dangerous command guard** is on by default and blocks forced recursive deletion of absolute paths plus `dd` writes to common block-device paths. Set `PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS=0` to disable. It is not a sandbox and does not replace user review of commands.
 - **Argument repair** is best-effort and focused on recoverable harness mismatches — not malicious or deeply malformed inputs.
-- **Leaked content cleaning** can strip tool-call-like text that looks like a Pi tool invocation, even when it was intentional content.
+- **Leaked content cleaning** can strip intentional tool-call-like text from assistant history when it names a registered tool; user/system/tool messages are preserved.
 
 ## Development install
 
@@ -199,7 +199,7 @@ npm test
 npm run typecheck
 ```
 
-Tests use Mocha + tsx with Node.js assert. No test framework mocks — tests use minimal fake Pi API objects.
+Tests use Node's built-in test runner with tsx and `node:assert`. No framework mocks — tests use minimal fake Pi API objects.
 
 ## Release checklist
 
@@ -215,6 +215,15 @@ Tests use Mocha + tsx with Node.js assert. No test framework mocks — tests use
 - [ ] Publish: `npm publish`
 
 ## Changelog
+
+### 0.12.6
+
+- Preserve user/system/tool message content while cleaning leaked assistant output.
+- Detect destructive `dd` writes by output device, not input device.
+- Scope error recovery and reminder state to the active DeepSeek session.
+- Classify edit/API errors more precisely and use active tool names instead of a hardcoded registry.
+- Align Serena, status, reasoning-limit, and safety documentation with runtime behavior.
+- Replace Mocha with Node's built-in test runner, removing vulnerable test-only dependencies.
 
 ### 0.12.3
 

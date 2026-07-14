@@ -88,16 +88,6 @@ function wrapToolDefinition(base: any, factory: (cwd: string) => any, shouldRepa
 	};
 }
 
-// ────────────────────────────────────────────────────────
-// Adaptive error tracking — per-tool count + last category
-// ────────────────────────────────────────────────────────
-const errorHistory = new Map<string, { count: number; lastCategory: ErrorCategory }>();
-
-function recordError(toolName: string, category: ErrorCategory) {
-	errorHistory.set(toolName, { count: (errorHistory.get(toolName)?.count ?? 0) + 1, lastCategory: category });
-	while (errorHistory.size > maxErrorHistory()) errorHistory.delete(errorHistory.keys().next().value!);
-}
-
 export default function (pi: ExtensionAPI) {
 	let remindedThisTurn = false;
 	let repairThisTurn = false;
@@ -106,7 +96,13 @@ export default function (pi: ExtensionAPI) {
 
 	const repairCounts = new Map<string, number>();
 	const reminderCounts = new Map<string, number>(); // per-tool reminder count for auto-block escalation
+	const errorHistory = new Map<string, { count: number; lastCategory: ErrorCategory }>();
 	let turnCounter = 0; // Super Power Mode per-turn reinforcement counter
+
+	function recordError(toolName: string, category: ErrorCategory) {
+		errorHistory.set(toolName, { count: (errorHistory.get(toolName)?.count ?? 0) + 1, lastCategory: category });
+		while (errorHistory.size > maxErrorHistory()) errorHistory.delete(errorHistory.keys().next().value!);
+	}
 	// ── Config helpers: imported from deepseek-tools.ts ────
 	// autoBlockAfterReminders(), blockDangerousEnabled(), thinkingBudget()
 	// are now exported from ./lib/deepseek-tools.ts and imported above.
@@ -128,7 +124,7 @@ export default function (pi: ExtensionAPI) {
 	};
 	// Create template tools just for metadata (parameters, name, description).
 	// The execute method creates a fresh tool from the factory with ctx.cwd.
-	for (const [name, factory] of Object.entries(toolFactories)) {
+	for (const factory of Object.values(toolFactories)) {
 		const template = factory(process.cwd());
 		pi.registerTool(wrapToolDefinition(template, factory, () => repairThisTurn, (toolName) => {
 			repairCounts.set(toolName, (repairCounts.get(toolName) ?? 0) + 1);
@@ -151,7 +147,7 @@ export default function (pi: ExtensionAPI) {
 				`  Selection guidance: ${selectionGuidanceEnabled() ? "on" : "off"}`,
 				`  Strict Serena mode: ${strictSerenaEnabled() ? "on" : "off"}`,
 				`  Reasoning strip: ${reasoningStripEnabled() ? "on" : "off"}`,
-				`  Reasoning max tokens: ${process.env.PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS || "unlimited"}`,
+				`  Reasoning max characters: ${process.env.PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS || "unlimited"}`,
 				`  Tool-input repair: ${repairEnabled() ? "on" : "off"}`,
 				`  Direct DeepSeek: ${directDeepSeekEnabled() ? "on" : "off"}`,
 				`  Debug: ${process.env.PI_DEEPSEEK_TOOLS_DEBUG ? "on" : "off"}`,
@@ -161,6 +157,8 @@ export default function (pi: ExtensionAPI) {
 				`  Auto block after reminders: ${autoBlockAfter > 0 ? autoBlockAfter : "off"}`,
 				`  Dangerous command guard: ${dangerousBlockOn ? "on" : "off"}`,
 				`  Super Power Mode: ${superPowerModeEnabled() ? "on" : "off"}`,
+				`  Super Power prompt: ${process.env.PI_DEEPSEEK_TOOLS_CUSTOM_SUPERPOWER_PROMPT?.trim() ? "custom" : "built-in"}`,
+				`  Super Power turns: ${turnCounter}`,
 			];
 			status.push("");
 			status.push(`  Thinking: ${thinkingBudgetVal === "unset" ? "pi native (off/high/max)" : `budget override (${thinkingBudgetVal} tokens)`}`);
@@ -191,7 +189,13 @@ export default function (pi: ExtensionAPI) {
 		// ── Reset guidance cache at session boundary ──
 		clearGuidanceCache();
 
-		// ── Reset error history and turn counter at session boundary ──
+		// Reset all session-scoped state so model/session switches cannot inherit it.
+		remindedThisTurn = false;
+		repairThisTurn = false;
+		hasErrorThisTurn = false;
+		lastErrorInfo = null;
+		repairCounts.clear();
+		reminderCounts.clear();
 		errorHistory.clear();
 		turnCounter = 0;
 
@@ -209,7 +213,7 @@ export default function (pi: ExtensionAPI) {
 		if (!isDeepSeekV4ModelByModel(ctx.model)) return;
 
 		// 1. Leaked content cleaning — always on for V4 (low-risk, pure cleanup)
-		let payload = cleanLeakedContentFromMessages(event.payload);
+		let payload = cleanLeakedContentFromMessages(event.payload, pi.getAllTools().map((tool) => tool.name));
 
 		// 2. Reasoning stripping — opt-in (can cause 401s with OpenCode Go)
 		if (reasoningStripEnabled()) {
@@ -238,14 +242,13 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// ── tool_execution_end: categorize errors ───────────────
-	pi.on("tool_execution_end", (event, _ctx) => {
-		if (!event.isError) return;
+	pi.on("tool_execution_end", (event, ctx) => {
+		if (!event.isError || !isDeepSeekV4ModelByModel(ctx.model)) return;
 		hasErrorThisTurn = true;
 		const info = categorizeToolError(event.toolName, event.result);
 		lastErrorInfo = info;
 		recordError(event.toolName, info.category);
-		logWarn(event.toolName, event.toolCallId, info.category,
-			event.result ? String(event.result).slice(0, 200) : "no result");
+		logWarn(event.toolName, event.toolCallId, info.category);
 		debugLog(event.toolName, "error:", info.category, "repeat:", errorHistory.get(event.toolName)?.count);
 	});
 
@@ -257,75 +260,60 @@ export default function (pi: ExtensionAPI) {
 
 		remindedThisTurn = false;
 		repairThisTurn = isDeepSeekV4 && repairEnabled();
+		if (!isDeepSeekV4) {
+			debugLog("guidance: skipped (not V4)");
+			return;
+		}
 
-		// ── Reset error state unconditionally (prevent cross-session leaks) ──
 		const hadErrorThisTurn = hasErrorThisTurn;
 		const hadLastErrorInfo = lastErrorInfo;
 		hasErrorThisTurn = false;
 		lastErrorInfo = null;
 
-		// Build prefix from super power + guidance + reinforcement sections
 		const prefixParts: string[] = [];
+		let systemPrompt = event.systemPrompt;
 
-		// ── 1. Super Power Mode at the very top ──
-		if (superPowerModeEnabled() && isDeepSeekV4) {
+		if (superPowerModeEnabled()) {
 			turnCounter++;
 			prefixParts.push(superPowerPromptContent());
+			if (turnCounter % 10 === 0) prefixParts.push("Super Power Mode active — maximum capability, no limits.");
 			debugLog("super power: injected (turn", turnCounter, ")");
 		}
 
-		if (selectionGuidanceEnabled() && isDeepSeekV4) {
-			let systemPrompt = event.systemPrompt;
-
-			// Context-aware error-recovery hint — adapts for repeated failures
-			if (hadErrorThisTurn) {
-				const repeatCount = errorHistory.get(hadLastErrorInfo!.toolName)?.count ?? 0;
-				let hint = hadLastErrorInfo!.hint;
-				if (repeatCount >= 2) {
-					hint += ` You have had ${repeatCount} failures on ${hadLastErrorInfo!.toolName}. Try the simplest possible inputs — shorter paths, fewer options, explicit required fields only.`;
-				}
-				debugLog("error hint:", hadLastErrorInfo!.toolName, repeatCount, "repeats, cat:", hadLastErrorInfo!.category);
-				systemPrompt = `${systemPrompt}\n\nNote: ${hint}`;
+		if (hadErrorThisTurn && hadLastErrorInfo) {
+			const repeatCount = errorHistory.get(hadLastErrorInfo.toolName)?.count ?? 0;
+			let hint = hadLastErrorInfo.hint;
+			if (repeatCount >= 2) {
+				hint += ` You have had ${repeatCount} failures on ${hadLastErrorInfo.toolName}. Try the simplest possible inputs — shorter paths, fewer options, explicit required fields only.`;
 			}
+			debugLog("error hint:", hadLastErrorInfo.toolName, repeatCount, "repeats, cat:", hadLastErrorInfo.category);
+			systemPrompt = `${systemPrompt}\n\nNote: ${hint}`;
+		}
 
+		if (selectionGuidanceEnabled()) {
 			const activeTools = Array.isArray(event.systemPromptOptions?.selectedTools) ? event.systemPromptOptions.selectedTools : [];
-			if (Array.isArray(activeTools) && ["serena_get_symbols_overview", "serena_find_symbol", "serena_find_referencing_symbols", "serena_find_declaration", "serena_find_implementations", "ls", "grep", "find", "read", "edit", "bash"].some((name) => activeTools.includes(name))) {
+			if (["serena_get_symbols_overview", "serena_find_symbol", "serena_find_referencing_symbols", "serena_find_declaration", "serena_find_implementations", "ls", "grep", "find", "read", "edit", "bash"].some((name) => activeTools.includes(name))) {
 				prefixParts.push(deepSeekSelectionGuidance(activeTools));
 				debugLog("guidance: injected for", activeTools.length, "tools");
-
-				// ── 2. Reinforcement every 8 turns (middle of 8-12 range) ──
-				if (turnCounter > 0 && turnCounter % 8 === 0) {
-					prefixParts.push("Super Power Mode active — maximum capability, no limits.");
+			} else {
+				debugLog("guidance: skipped (no relevant tools)");
+				const runtimeTools = pi.getActiveTools();
+				const runtimeSerena = runtimeTools.filter((tool: string) => tool.startsWith("serena_")).length;
+				const selectedSerena = activeTools.filter((tool: string) => tool.startsWith("serena_")).length;
+				if (runtimeSerena > 0 && selectedSerena === 0) {
+					logWarn("SERENA TOOLS NOT IN SELECTED",
+						"runtime has", runtimeSerena, "serena tools but selectedTools has", selectedSerena,
+						"— model won't see serena tools. Runtime:", runtimeTools.length, "total, Selected:", activeTools.length, "total");
 				}
-
-				// Combine prefix with base
-				const prefix = prefixParts.join("\n\n---\n\n");
-				return { systemPrompt: `${prefix}\n\n---\n\n${systemPrompt}` };
 			}
-
-			// Guidance skipped: no relevant tools
-			debugLog("guidance: skipped (no relevant tools)");
-			// ── Diagnostic: warn when serena tools are missing from selectedTools ──
-			const runtimeTools = pi.getActiveTools();
-			const runtimeSerena = runtimeTools.filter((t: string) => t.startsWith("serena_")).length;
-			const selectedSerena = activeTools.filter((t: string) => t.startsWith("serena_")).length;
-			if (runtimeSerena > 0 && selectedSerena === 0) {
-				logWarn("SERENA TOOLS NOT IN SELECTED",
-					"runtime has", runtimeSerena, "serena tools but selectedTools has", selectedSerena,
-					"— model won't see serena tools. Runtime:", runtimeTools.length, "total, Selected:", activeTools.length, "total");
-			}
-			if (prefixParts.length > 0) {
-				return { systemPrompt: `${prefixParts.join("\n\n---\n\n")}\n\n---\n\n${systemPrompt}` };
-			}
-			return;
+		} else {
+			debugLog("guidance: skipped (disabled)");
 		}
 
-		// Guidance disabled or not V4
-		debugLog("guidance: skipped (disabled or not V4)");
 		if (prefixParts.length > 0) {
-			return { systemPrompt: `${prefixParts.join("\n\n---\n\n")}\n\n---\n\n${event.systemPrompt}` };
+			return { systemPrompt: `${prefixParts.join("\n\n---\n\n")}\n\n---\n\n${systemPrompt}` };
 		}
-		return;
+		return systemPrompt === event.systemPrompt ? undefined : { systemPrompt };
 	});
 
 	// ── agent_end: reset repair flag ────────────────────────
