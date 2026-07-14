@@ -9,8 +9,8 @@ import path from "node:path";
 // ---------------------------------------------------------------------------
 
 export const HOSTED_FIRECRAWL_BASE_URL = "https://api.firecrawl.dev/v2";
-export const DEFAULT_SEARXNG_BASE_URL = "http://172.30.55.22:8888";
-export const DEFAULT_CRAWL4AI_API_URL = "http://172.30.55.22:11235";
+export const DEFAULT_SEARXNG_BASE_URL = "http://127.0.0.1:8888";
+export const DEFAULT_CRAWL4AI_API_URL = "http://127.0.0.1:11235";
 
 // ---------------------------------------------------------------------------
 // Environment loading
@@ -54,7 +54,7 @@ export function parseDotenvValue(rawValue: string): string {
 
 export function parseDotenvFile(file: string): Record<string, string> | null {
 	let text: string;
-	try { text = fs.readFileSync(file, "utf8"); } catch (e: any) { if (e?.code === "ENOENT") return null; throw e; }
+	try { text = fs.readFileSync(file, "utf8"); } catch { return null; }
 	const values: Record<string, string> = {};
 	for (const rawLine of text.split(/\r?\n/)) {
 		const line = rawLine.trim();
@@ -142,7 +142,10 @@ export function loadCrawl4aiConfig(params: Record<string, unknown> = {}, cwd = p
 	const explicitApiUrl = params.crawl4ai_api_url as string | undefined;
 	const explicitApiToken = params.crawl4ai_api_token as string | undefined;
 	const baseUrl = normalizeCrawl4aiApiUrl(explicitApiUrl || apiUrlLookup.value);
-	const apiToken = explicitApiToken || apiTokenLookup.value || "";
+	// Security: only use env-var API token when URL is default or also from env var.
+	// If the URL is overridden via params but no explicit token was provided, don't send
+	// the env-var token to a potentially attacker-controlled URL.
+	const apiToken = explicitApiToken || (explicitApiUrl ? "" : apiTokenLookup.value) || "";
 	const timeoutValue = (params.timeout_ms as number) || findEnvValue("CRAWL4AI_API_TIMEOUT_MS", cwd, includeCwdEnv).value;
 	const timeoutMs = timeoutValue ? Number.parseInt(String(timeoutValue), 10) : 60000;
 	if (!Number.isInteger(timeoutMs) || timeoutMs < 1000) throw new Error("CRAWL4AI_API_TIMEOUT_MS/timeout_ms must be an integer >= 1000.");
@@ -171,7 +174,10 @@ export function loadFirecrawlConfig(params: Record<string, unknown> = {}, cwd = 
 	const apiKeyLookup = findEnvValue("FIRECRAWL_API_KEY", cwd, includeCwdEnv);
 	const explicitApiKey = (params.firecrawl_api_key as string) || (params.api_key as string);
 	const apiUrl = (params.firecrawl_api_url as string) || (params.api_url as string) || apiUrlLookup.value;
-	const apiKey = explicitApiKey || apiKeyLookup.value || "";
+	// Security: only use env-var API key when URL is default or also from env var.
+	// If the URL is overridden via params but no explicit key was provided, don't send
+	// the env-var key to a potentially attacker-controlled URL.
+	const apiKey = explicitApiKey || (apiUrl !== apiUrlLookup.value && apiUrl ? "" : apiKeyLookup.value) || "";
 	const timeoutValue = (params.timeout_ms as number) || findEnvValue("FIRECRAWL_TIMEOUT_MS", cwd, includeCwdEnv).value;
 	const baseUrl = normalizeFirecrawlBaseUrl(apiUrl);
 	const isHosted = !apiUrl || baseUrl.startsWith(HOSTED_FIRECRAWL_BASE_URL);

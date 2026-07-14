@@ -62,17 +62,25 @@ export async function fetchReadableContent(
 	const html = await response.text();
 	const deps = loadReadableContentDependencies();
 	const dom = new deps.JSDOM(html, { url });
-	const article = new deps.Readability(dom.window.document).parse();
-	if (article?.content) {
-		return { title: article.title || "", markdown: htmlToMarkdown(article.content, deps) };
+	try {
+		const article = new deps.Readability(dom.window.document).parse();
+		if (article?.content) {
+			return { title: article.title || "", markdown: htmlToMarkdown(article.content, deps) };
+		}
+	} finally {
+		dom.window.close();
 	}
 	// Fallback: strip non-content elements and use main/article/body
 	const fallbackDoc = new deps.JSDOM(html, { url });
-	const doc = fallbackDoc.window.document;
-	doc.querySelectorAll("script, style, noscript, nav, header, footer, aside").forEach((el: any) => el.remove());
-	const title = doc.querySelector("title")?.textContent?.trim() || "";
-	const main = doc.querySelector("main, article, [role='main'], .content, #content") || doc.body;
-	const fallbackHtml = main?.innerHTML || "";
-	if (fallbackHtml.trim().length <= 100) throw new Error("Could not extract readable content from this page.");
-	return { title, markdown: htmlToMarkdown(fallbackHtml, deps) };
+	try {
+		const doc = fallbackDoc.window.document;
+		doc.querySelectorAll("script, style, noscript, nav, header, footer, aside").forEach((el: any) => el.remove());
+		const title = doc.querySelector("title")?.textContent?.trim() || "";
+		const main = doc.querySelector("main, article, [role='main'], .content, #content") || doc.body;
+		const fallbackHtml = main?.innerHTML || "";
+		if (fallbackHtml.trim().length <= 100) throw new Error("Could not extract readable content from this page.");
+		return { title, markdown: htmlToMarkdown(fallbackHtml, deps) };
+	} finally {
+		fallbackDoc.window.close();
+	}
 }

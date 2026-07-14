@@ -50,14 +50,11 @@ export function sanitizeError(error: unknown): string {
 
 export function truncateText(text: string): string {
 	const lines = text.split("\n");
-	let output = lines.slice(0, OUTPUT_MAX_LINES).join("\n");
-	while (Buffer.byteLength(output, "utf8") > OUTPUT_MAX_BYTES) {
-		output = output.slice(0, Math.max(0, output.length - 1024));
-	}
-	if (lines.length > OUTPUT_MAX_LINES || output.length < text.length) {
-		output += `\n\n[Web output truncated to ${OUTPUT_MAX_LINES} lines / ${OUTPUT_MAX_BYTES} bytes.]`;
-	}
-	return output;
+	const lineTruncated = lines.slice(0, OUTPUT_MAX_LINES).join("\n");
+	const buf = Buffer.from(lineTruncated, "utf8");
+	if (buf.length <= OUTPUT_MAX_BYTES && lines.length <= OUTPUT_MAX_LINES) return text;
+	const truncated = buf.slice(0, OUTPUT_MAX_BYTES).toString("utf8").replace(/\uFFFD+$/g, "");
+	return truncated + `\n\n[Web output truncated to ${OUTPUT_MAX_LINES} lines / ${OUTPUT_MAX_BYTES} bytes.]`;
 }
 
 // ---------------------------------------------------------------------------

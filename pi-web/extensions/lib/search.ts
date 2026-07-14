@@ -128,16 +128,22 @@ async function searchBrave(params: SearchParams, backends: BackendConfig): Promi
 	}));
 	if (params.include_content && results.length > 0) {
 		const maxChars = params.content_chars ?? 5000;
-		await Promise.all(
-			results.map(async (r) => {
-				try {
-					const article = await fetchReadableContent(r.url, params.timeout_ms ?? 10000, params.signal);
-					r.content = article.markdown.slice(0, maxChars);
-				} catch (e: any) {
-					r.content = `(Fetch error for ${r.url}: ${sanitizeError(e)})`;
-				}
-			}),
-		);
+		// Cap concurrent content fetches to avoid OOM from parallel JSDOM parsing
+		const MAX_CONCURRENT_FETCHES = 5;
+		const batchSize = Math.min(results.length, MAX_CONCURRENT_FETCHES);
+		for (let i = 0; i < results.length; i += batchSize) {
+			const batch = results.slice(i, i + batchSize);
+			await Promise.all(
+				batch.map(async (r) => {
+					try {
+						const article = await fetchReadableContent(r.url, params.timeout_ms ?? 10000, params.signal);
+						r.content = article.markdown.slice(0, maxChars);
+					} catch (e: any) {
+						r.content = `(Fetch error for ${r.url}: ${sanitizeError(e)})`;
+					}
+				}),
+			);
+		}
 	}
 	return results;
 }
