@@ -281,7 +281,7 @@ def _handle_diagnostics(req_id, req: dict[str, Any]) -> dict[str, Any]:
 
     agent = get_agent(project, context)
     project_obj = agent.get_active_project_or_raise()
-    ls_manager = project_obj.get_language_server_manager_or_raise()
+    ls_manager = agent.execute_task(project_obj.get_language_server_manager_or_raise, name="GetDiagnosticsLanguageServerManager")
     lang_server = ls_manager.get_language_server(relative_path)
     if lang_server is None:
         return {"id": req_id, "ok": False, "tool": "get_diagnostics_for_file", "error": f"No language server available for {relative_path}"}
@@ -297,9 +297,9 @@ def _handle_diagnostics(req_id, req: dict[str, Any]) -> dict[str, Any]:
             "textDocument": {"uri": uri},
         })
         return {"id": req_id, "ok": True, "tool": "get_diagnostics_for_file", "result": _json.dumps(result, indent=2, default=str)}
-    except AttributeError:
-        return {"id": req_id, "ok": True, "tool": "get_diagnostics_for_file", "result": _json.dumps({"note": "Language server does not support textDocument/diagnostic"})}
     except Exception as exc:
+        if isinstance(exc, AttributeError) or getattr(getattr(exc, "cause", None), "code", None) == -32601:
+            return {"id": req_id, "ok": True, "tool": "get_diagnostics_for_file", "result": _json.dumps({"note": "Language server does not support textDocument/diagnostic"})}
         err_msg = f"Diagnostics error for {relative_path}: {exc}"
         return {"id": req_id, "ok": False, "tool": "get_diagnostics_for_file", "error": err_msg, "errorType": "language_server_error", "result": _json.dumps({"note": err_msg})}
 
