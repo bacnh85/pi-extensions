@@ -209,11 +209,15 @@ export default function (pi: ExtensionAPI) {
 				status: isFailedResult(result) ? (result.stopReason === "aborted" ? "aborted" : "failed") : "completed",
 				result,
 			});
-			if (isFailedResult(result)) request.respond({ id: request.id, ok: false, error: getResultOutput(result) });
-			else request.respond({ id: request.id, ok: true, result });
+			try {
+				if (isFailedResult(result)) request.respond({ id: request.id, ok: false, error: getResultOutput(result) });
+				else request.respond({ id: request.id, ok: true, result });
+			} catch { /* respond channel closed */ }
 		}, (error) => {
 			threadStore.updateThread(thread.id, { status: "failed" });
-			request.respond({ id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) });
+			try {
+				request.respond({ id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) });
+			} catch { /* respond channel closed */ }
 		});
 	});
 
@@ -230,9 +234,12 @@ export default function (pi: ExtensionAPI) {
 				const list = formatAgentList(fresh.agents, 20);
 				const extra = list.remaining > 0 ? `\n  ... +${list.remaining} more` : "";
 				const dirs = fresh.projectAgentsDir ? `project: ${fresh.projectAgentsDir}` : "no project agents dir";
+				const diagText = fresh.diagnostics.length > 0
+					? "\n\nWarnings:\n" + fresh.diagnostics.map(d => `  - [${d.severity}] ${d.filePath}: ${d.issue}`).join("\n")
+					: "";
 				pi.sendMessage({
 					customType: "pi-subagent",
-					content: `Agent definitions reloaded.\n\nAvailable agents (${fresh.agents.length}):\n  ${list.text}${extra}\n\nDirectories searched:\n  user: ${path.join(getAgentDir(), "agents")}\n  ${dirs}\n  bundled: ${bundledAgentsDir}`,
+					content: `Agent definitions reloaded.\n\nAvailable agents (${fresh.agents.length}):\n  ${list.text}${extra}${diagText}\n\nDirectories searched:\n  user: ${path.join(getAgentDir(), "agents")}\n  ${dirs}\n  bundled: ${bundledAgentsDir}`,
 					display: true,
 				});
 				ctx.ui.notify("Agent definitions reloaded", "info");
@@ -244,9 +251,12 @@ export default function (pi: ExtensionAPI) {
 				const list = formatAgentList(discovery.agents, 20);
 				const extra = list.remaining > 0 ? `\n  ... +${list.remaining} more` : "";
 				const dirs = discovery.projectAgentsDir ? `\n  project: ${discovery.projectAgentsDir}` : "";
+				const diagText = discovery.diagnostics.length > 0
+					? "\n\nWarnings:\n" + discovery.diagnostics.map(d => `  - [${d.severity}] ${d.filePath}: ${d.issue}`).join("\n")
+					: "";
 				pi.sendMessage({
 					customType: "pi-subagent",
-					content: `Available agents (${discovery.agents.length}):\n  ${list.text}${extra}\n\nScopes searched:\n  user: ${path.join(getAgentDir(), "agents")}${dirs}\n  bundled: ${bundledAgentsDir}\n\nUse /subagent <name> for agent details, /subagent reload to refresh.`,
+					content: `Available agents (${discovery.agents.length}):\n  ${list.text}${extra}${diagText}\n\nScopes searched:\n  user: ${path.join(getAgentDir(), "agents")}${dirs}\n  bundled: ${bundledAgentsDir}\n\nUse /subagent <name> for agent details, /subagent reload to refresh.`,
 					display: true,
 				});
 				return;
@@ -283,9 +293,12 @@ export default function (pi: ExtensionAPI) {
 			const list = formatAgentList(discovery.agents, 20);
 			const extra = list.remaining > 0 ? `\n  ... +${list.remaining} more` : "";
 			const dirs = discovery.projectAgentsDir ? `\n  project: ${discovery.projectAgentsDir}` : "";
+			const diagText = discovery.diagnostics.length > 0
+				? "\n\nWarnings:\n" + discovery.diagnostics.map(d => `  - [${d.severity}] ${d.filePath}: ${d.issue}`).join("\n")
+				: "";
 			pi.sendMessage({
 				customType: "pi-subagent",
-				content: `Available agents (${discovery.agents.length}):\n  ${list.text}${extra}\n\nScopes searched:\n  user: ${path.join(getAgentDir(), "agents")}${dirs}\n  bundled: ${bundledAgentsDir}\n\nUse /subagent <name> for agent details, /subagent reload to refresh.`,
+				content: `Available agents (${discovery.agents.length}):\n  ${list.text}${extra}${diagText}\n\nScopes searched:\n  user: ${path.join(getAgentDir(), "agents")}${dirs}\n  bundled: ${bundledAgentsDir}\n\nUse /subagent <name> for agent details, /subagent reload to refresh.`,
 				display: true,
 			});
 		},
@@ -512,6 +525,8 @@ export default function (pi: ExtensionAPI) {
 						agent: agentName,
 						task,
 						exitCode: 1,
+						status: "error",
+						stopReason: "error",
 						messages: [],
 						stderr: `Unknown agent: "${agentName}". Available: ${available}.`,
 						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
@@ -527,6 +542,8 @@ export default function (pi: ExtensionAPI) {
 						agent: agentName,
 						task,
 						exitCode: 1,
+						status: "error",
+						stopReason: "error",
 						messages: [],
 						stderr: `Model not found for agent "${agentName}". Tried: ${tried}. Parent model: ${parentInfo}. Check agent definition and pi model configuration.`,
 						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
@@ -550,6 +567,8 @@ export default function (pi: ExtensionAPI) {
 						agent: agentName,
 						task,
 						exitCode: 1,
+						status: "error",
+						stopReason: "error",
 						messages: [],
 						stderr: `Validation error: ${errorMsg}`,
 						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
@@ -583,7 +602,7 @@ export default function (pi: ExtensionAPI) {
 
 				for (let i = 0; i < params.chain.length; i++) {
 					const step = params.chain[i];
-					const taskWithContext = step.task.replace(/\{previous\}/g, previousOutput);
+					const taskWithContext = step.task.replace(/\{previous\}/g, () => previousOutput);
 
 					const thread = threadStore.createThread({
 						agentName: step.agent,
@@ -725,6 +744,7 @@ export default function (pi: ExtensionAPI) {
 										agent: t.agent,
 										task: t.task,
 										exitCode: 1,
+										status: "error",
 										messages: [],
 										stderr: "",
 										usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },

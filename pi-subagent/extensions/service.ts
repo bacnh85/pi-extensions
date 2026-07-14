@@ -7,6 +7,7 @@ import {
 	normalizeTimeout,
 	resolveSafeCwd,
 	MAX_INSTRUCTIONS_LENGTH,
+	READ_ONLY_TOOLS,
 } from "./security.ts";
 
 export const SUBAGENT_REQUEST_EVENT = "pi-subagent:run";
@@ -53,8 +54,13 @@ export async function runNamedAgent(options: {
 	const effectiveTimeoutMs = normalizeTimeout({ requested: options.timeout }).timeoutMs;
 
 	// Security: validate tools against allowlist.
-	const rawTools = options.agent.tools ?? ["read", "bash", "edit", "write", "grep", "find", "ls"];
-	const toolValidation = validateAgentTools({ tools: rawTools });
+	let rawTools = options.agent.tools ?? ["read", "bash", "edit", "write", "grep", "find", "ls"];
+	// Enforce read-only sandbox: strip mutating and execution tools
+	if (options.agent.sandbox === "read-only") {
+		rawTools = rawTools.filter(t => READ_ONLY_TOOLS.includes(t));
+		if (rawTools.length === 0) rawTools = [...READ_ONLY_TOOLS];
+	}
+	const toolValidation = validateAgentTools({ tools: rawTools, readOnly: options.agent.sandbox === "read-only" });
 	if (toolValidation.errors.length > 0) {
 		throw new Error(`Tool validation errors for agent "${options.agent.name}": ${toolValidation.errors.join("; ")}`);
 	}

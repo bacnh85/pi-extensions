@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-subagent",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "In-process subagents for Pi with isolated SDK sessions, parallel and chained delegation, and inspectable threads.",
   "type": "module",
   "license": "MIT",

@@ -226,6 +226,7 @@ export class ThreadViewer {
 				? Math.max(0, total - (maxVisible - 1))
 				: 0;
 		const offset = Math.max(0, Math.min(this.scrollOffset, maxOffset));
+		this.scrollOffset = offset;
 
 		// Reserve space for scroll indicators
 		const aboveShown = offset > 0;

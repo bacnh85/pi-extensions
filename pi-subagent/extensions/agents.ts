@@ -48,6 +48,7 @@ interface AgentCache {
 	scope: AgentScope;
 	agents: AgentConfig[];
 	projectAgentsDir: string | null;
+	diagnostics: AgentDiscoveryDiagnostic[];
 	/** File-level signature per directory (name:mtime:size for each .md file) */
 	dirSignatures: Map<string, string>;
 }
@@ -104,7 +105,22 @@ function loadAgentsFromDir(
 			continue;
 		}
 
-		const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
+
+
+		let frontmatter: Record<string, unknown>;
+		let body: string;
+		try {
+			const parsed = parseFrontmatter<Record<string, unknown>>(content);
+			frontmatter = parsed.frontmatter;
+			body = parsed.body;
+		} catch (err) {
+			diagnostics.push({
+				filePath,
+				issue: `Failed to parse YAML frontmatter: ${err instanceof Error ? err.message : String(err)}`,
+				severity: "error",
+			});
+			continue;
+		}
 
 		if (typeof frontmatter.name !== "string" || typeof frontmatter.description !== "string") {
 			if (typeof frontmatter.name !== "string" && typeof frontmatter.description !== "string") {
@@ -225,8 +241,12 @@ function dirSignature(dir: string): string {
 			.filter((e) => e.name.endsWith(".md") && (e.isFile() || e.isSymbolicLink()))
 			.map((e) => {
 				const file = path.join(dir, e.name);
-				const st = fs.statSync(file);
-				return `${e.name}:${st.mtimeMs}:${st.size}`;
+				try {
+					const st = fs.statSync(file);
+					return `${e.name}:${st.mtimeMs}:${st.size}`;
+				} catch {
+					return `${e.name}:broken`;
+				}
 			})
 			.sort();
 		return `exists:${entries.join("|")}`;
@@ -277,7 +297,7 @@ export function discoverAgents(
 			}
 		}
 		if (!stale) {
-			return { agents: _cache.agents, projectAgentsDir: _cache.projectAgentsDir, diagnostics: [] };
+			return { agents: _cache.agents, projectAgentsDir: _cache.projectAgentsDir, diagnostics: _cache.diagnostics };
 		}
 		// Cache is stale — rebuild below
 		_cache = null;
@@ -316,6 +336,7 @@ export function discoverAgents(
 		scope,
 		agents,
 		projectAgentsDir,
+		diagnostics,
 		dirSignatures,
 	};
 

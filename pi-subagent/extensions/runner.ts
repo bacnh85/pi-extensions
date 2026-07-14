@@ -148,6 +148,8 @@ export async function runSubAgent(options: {
 			result.stopReason = isTimeout ? "timeout" : "aborted";
 			result.errorMessage = combinedSignal.reason instanceof Error ? combinedSignal.reason.message : "Sub-agent aborted before start";
 			result.status = classifyStopReason(result.stopReason, !isTimeout, isTimeout);
+			cleanupCombined?.();
+			if (timeoutId) clearTimeout(timeoutId);
 			return result;
 		}
 
@@ -167,6 +169,7 @@ export async function runSubAgent(options: {
 		let cleanupEventAbort: (() => void) | undefined;
 		let abortedBySignal = false;
 		let timedOut = false;
+		let eventUnsubscribe: (() => void) | undefined;
 
 		try {
 			// Wire combined abort signal to session
@@ -191,7 +194,8 @@ export async function runSubAgent(options: {
 					fn();
 				};
 
-				const unsubscribe = session.subscribe((event) => {
+				let unsubscribe: (() => void) | undefined;
+				unsubscribe = session.subscribe((event) => {
 					try {
 						switch (event.type) {
 							case "message_end": {
@@ -223,7 +227,7 @@ export async function runSubAgent(options: {
 									result.messages = event.messages as unknown as Message[];
 								}
 								finish(() => {
-									unsubscribe();
+									unsubscribe?.();
 									resolve();
 								});
 								break;
@@ -231,18 +235,19 @@ export async function runSubAgent(options: {
 						}
 					} catch (err) {
 						finish(() => {
-							unsubscribe();
+							unsubscribe?.();
 							reject(err);
 						});
 					}
 				});
+				eventUnsubscribe = unsubscribe;
 
 				// Resolve on abort so the eventPromise doesn't hang
 				const onAbortResolve = () => {
 					finish(() => {
 						result.exitCode = 1;
 						if (!result.errorMessage) result.errorMessage = "Sub-agent aborted";
-						unsubscribe();
+						unsubscribe?.();
 						resolve();
 					});
 				};
@@ -279,6 +284,7 @@ export async function runSubAgent(options: {
 			cleanupAbort?.();
 			cleanupEventAbort?.();
 			cleanupCombined();
+			eventUnsubscribe?.();
 			if (timeoutId) clearTimeout(timeoutId);
 			try {
 				session.dispose();
