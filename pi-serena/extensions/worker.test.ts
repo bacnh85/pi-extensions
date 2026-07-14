@@ -203,11 +203,55 @@ describe("SerenaWorkerClient", () => {
 	});
 
 	describe("lifecycle", () => {
+		it("stop() does not hang behind an active queued request", async () => {
+			const { worker, mockProcess, mockStdout } = createMockedWorker();
+			// Start a request that will hang
+			const p1 = worker.request({ action: "hang" }, 5000);
+			p1.catch(() => {}); // prevent unhandled rejection warning
+			let writtenToStdin = false;
+			mockProcess.stdin.write = (data: string) => {
+				if (data.includes("shutdown")) {
+					writtenToStdin = true;
+					try {
+						const parsed = JSON.parse(data);
+						setTimeout(() => mockStdout.emit("data", JSON.stringify({ id: parsed.id, ok: true, shutdown: true }) + "\n"), 1);
+					} catch {}
+				}
+				return true;
+			};
+			// Call stop() while the request is still pending
+			const stopPromise = worker.stop();
+			await stopPromise;
+			expect(writtenToStdin).to.be.true; // Shutdown should be sent immediately bypassing queue
+			expect(mockProcess.killed).to.be.true;
+			try {
+				await p1;
+				expect.fail("Should have thrown");
+			} catch (err: any) {
+				expect(err.message).to.include("Serena worker stopped");
+			}
+		});
+
+		it("stop() rejects queued requests promptly", async () => {
+			const { worker, mockProcess } = createMockedWorker();
+			// One active request
+			const p1 = worker.request({ action: "active" }, 5000);
+			p1.catch(() => {});
+			// One queued request
+			const p2 = worker.request({ action: "queued" }, 5000);
+			p2.catch(() => {});
+			// Should be in queue
+			expect((worker as any).queue.length).to.equal(1);
+
+			await worker.stop();
+
+			try { await p1; expect.fail(); } catch (e: any) { expect(e.message).to.include("Serena worker stopped"); }
+			try { await p2; expect.fail(); } catch (e: any) { expect(e.message).to.include("Serena worker stopped"); }
+		});
+
 		it("stop() kills the process and clears state", async () => {
 			const { worker, mockProcess } = createMockedWorker();
-			// stop() calls request() internally to send "shutdown".
-			// After the request times out (caught by .catch(() => undefined)),
-			// it kills the process in the finally block.
+			// stop() sends "shutdown", waits 2000ms max, kills the process in finally block.
 			await worker.stop();
 			expect((worker as any).process).to.be.undefined;
 			expect(mockProcess.killed).to.be.true;
@@ -250,6 +294,60 @@ describe("SerenaWorkerClient", () => {
 			// was never called (we injected process directly). Fire the handler manually.
 			mockProcess._exitHandler?.(1, null);
 			expect((worker as any).pending.size).to.equal(0);
+		});
+
+		it("stop() cleans up pending entry on timeout", async () => {
+			const { worker, mockProcess } = createMockedWorker();
+			const originalSetTimeout = global.setTimeout;
+			let capturedCallback: (() => void) | undefined;
+			(global as any).setTimeout = (cb: () => void, ms: number) => {
+				if (ms === 2000) {
+					capturedCallback = cb;
+					return 123;
+				}
+				return originalSetTimeout(cb, ms);
+			};
+			try {
+				mockProcess.stdin.write = () => true;
+				const stopPromise = worker.stop();
+				if (capturedCallback) {
+					capturedCallback();
+				}
+				await stopPromise;
+				expect((worker as any).pending.size).to.equal(0);
+			} finally {
+				global.setTimeout = originalSetTimeout;
+			}
+		});
+
+		it("stop() unconditionally resets stopping and never kills a replacement process", async () => {
+			const { worker, mockProcess } = createMockedWorker();
+			const originalSetTimeout = global.setTimeout;
+			let capturedCallback: (() => void) | undefined;
+			(global as any).setTimeout = (cb: () => void, ms: number) => {
+				if (ms === 2000) {
+					capturedCallback = cb;
+					return 123;
+				}
+				return originalSetTimeout(cb, ms);
+			};
+			try {
+				mockProcess.stdin.write = () => true;
+				const stopPromise = worker.stop();
+				const newProc = { kill: () => {} };
+				let newProcKilled = false;
+				newProc.kill = () => { newProcKilled = true; };
+				(worker as any).process = newProc;
+				if (capturedCallback) {
+					capturedCallback();
+				}
+				await stopPromise;
+				expect((worker as any).stopping).to.be.false;
+				expect(newProcKilled).to.be.false;
+				expect((worker as any).process).to.equal(newProc);
+			} finally {
+				global.setTimeout = originalSetTimeout;
+			}
 		});
 	});
 });

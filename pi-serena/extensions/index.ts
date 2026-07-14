@@ -10,7 +10,7 @@ const DEFAULT_CONTEXT = "ide";
 
 /** Set of "provider/modelId" strings that should skip semantic-miss detection (e.g., deepseek-tools handles it). */
 const SKIP_SEMANTIC_MISS_MODELS = new Set(
-	(process.env.PI_SERENA_SKIP_SEMANTIC_MISS_MODELS || "opencode-go/deepseek-v4")
+	(process.env.PI_SERENA_SKIP_SEMANTIC_MISS_MODELS || "opencode-go/deepseek-v4,opencode-go/deepseek-v4-flash,opencode-go/deepseek-v4-pro")
 		.split(",")
 		.map((s) => s.trim()),
 );
@@ -370,10 +370,10 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 				};
 			}
 			// ponytail: rename pattern → substring_pattern for Python backend
-			const { multiline: _ml, limit: _limit, ...searchParams } = params;
-			if (searchParams.pattern) {
-				searchParams.substring_pattern = searchParams.pattern;
-				delete searchParams.pattern;
+			const { multiline: _ml, limit: _limit, pattern, ...restParams } = params;
+			const searchParams: Record<string, unknown> = { ...restParams };
+			if (pattern) {
+				searchParams.substring_pattern = pattern;
 			}
 			const result = await callSerena(ctx, "search_for_pattern", searchParams);
 			if (_limit && result.content?.[0]?.text) {
@@ -594,14 +594,14 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 		if ((semanticMissCount >= SEMANTIC_MISS_THRESHOLD || process.env.PI_SERENA_REMIND_ON_FIRST_MISS === "1") && Date.now() - lastReminderTs > 30_000) {
 			semanticMissCount = 0;
 			lastReminderTs = Date.now();
-			await pi.sendMessage(
+			pi.sendMessage(
 				{
 					customType: "serena-reminder",
 					content: `Reminder: ${SERENA_MISS_GUIDANCE}`,
 					display: true,
 				},
 				{ deliverAs: "steer", triggerTurn: true },
-			).catch(() => {});
+			);
 		}
 	});
 

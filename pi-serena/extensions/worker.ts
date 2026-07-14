@@ -49,6 +49,21 @@ try:
 except Exception:
     serena_version = lambda: "unknown"  # type: ignore
 
+# Guarded monkeypatch to enable textDocument/publishDiagnostics in solidlsp
+try:
+    from solidlsp.language_servers.typescript_language_server import TypeScriptLanguageServer
+    _orig_get_initialize_params = TypeScriptLanguageServer._get_initialize_params
+    def _patched_get_initialize_params(self, repository_absolute_path: str):
+        params = _orig_get_initialize_params(self, repository_absolute_path)
+        try:
+            params.setdefault("capabilities", {}).setdefault("textDocument", {}).setdefault("publishDiagnostics", {"relatedInformation": True, "versionSupport": True})
+        except Exception:
+            pass
+        return params
+    TypeScriptLanguageServer._get_initialize_params = _patched_get_initialize_params
+except Exception:
+    pass
+
 agents: dict[str, SerenaAgent] = {}
 dashboard_opened: bool = False
 
@@ -293,13 +308,45 @@ def _handle_diagnostics(req_id, req: dict[str, Any]) -> dict[str, Any]:
         if not str(pathlib.Path(repo_root) / '') == os.path.commonpath([repo_root, full_path]):
             return {"id": req_id, "ok": False, "tool": "get_diagnostics_for_file", "error": f"Path traversal detected: {relative_path} escapes the repository root"}
         uri = pathlib.Path(full_path).as_uri()
-        result = lang_server.server.send.text_document_diagnostic({
-            "textDocument": {"uri": uri},
-        })
-        return {"id": req_id, "ok": True, "tool": "get_diagnostics_for_file", "result": _json.dumps(result, indent=2, default=str)}
+
+        import threading
+        captured = None
+        event = threading.Event()
+
+        def on_publish(params: dict[str, Any]) -> None:
+            nonlocal captured
+            if prev_handler:
+                try:
+                    prev_handler(params)
+                except Exception:
+                    pass
+            if params.get("uri") == uri:
+                captured = params
+                event.set()
+
+        prev_handler = lang_server.server.on_notification_handlers.get("textDocument/publishDiagnostics")
+        lang_server.server.on_notification("textDocument/publishDiagnostics", on_publish)
+
+        try:
+            with lang_server.open_file(relative_path):
+                event.wait(timeout=3.0)
+                if captured is not None:
+                    res_val = _json.dumps(captured, indent=2, default=str)
+                    return {"id": req_id, "ok": True, "tool": "get_diagnostics_for_file", "result": res_val}
+
+            # Fallback to pull diagnostics
+            result = lang_server.server.send.text_document_diagnostic({
+                "textDocument": {"uri": uri},
+            })
+            return {"id": req_id, "ok": True, "tool": "get_diagnostics_for_file", "result": _json.dumps(result, indent=2, default=str)}
+        finally:
+            if prev_handler:
+                lang_server.server.on_notification("textDocument/publishDiagnostics", prev_handler)
+            else:
+                lang_server.server.on_notification_handlers.pop("textDocument/publishDiagnostics", None)
     except Exception as exc:
         if isinstance(exc, AttributeError) or getattr(getattr(exc, "cause", None), "code", None) == -32601:
-            return {"id": req_id, "ok": True, "tool": "get_diagnostics_for_file", "result": _json.dumps({"note": "Language server does not support textDocument/diagnostic"})}
+            return {"id": req_id, "ok": True, "tool": "get_diagnostics_for_file", "result": _json.dumps({"note": "Language server does not support pull diagnostics (textDocument/diagnostic) and did not push them within timeout"})}
         err_msg = f"Diagnostics error for {relative_path}: {exc}"
         return {"id": req_id, "ok": False, "tool": "get_diagnostics_for_file", "error": err_msg, "errorType": "language_server_error", "result": _json.dumps({"note": err_msg})}
 
@@ -392,25 +439,44 @@ export class SerenaWorkerClient {
 	}
 
 	async stop(): Promise<void> {
+		this.stopping = true;
+		this.rejectQueued(new Error("Serena worker stopped"));
+		this.failAll(new Error("Serena worker stopped"));
 		const proc = this.process;
 		if (!proc) {
-			this.rejectQueued(new Error("Serena worker stopped"));
+			this.stopping = false;
 			return;
 		}
 		try {
-			await this.request({ action: "shutdown" }, 10_000).catch(() => undefined);
+			await new Promise<void>((resolve) => {
+				const id = String(this.nextId++);
+				const timer = setTimeout(() => {
+					this.pending.delete(id);
+					resolve();
+				}, 2000);
+				this.pending.set(id, {
+					resolve: () => { clearTimeout(timer); this.pending.delete(id); resolve(); },
+					reject: () => { clearTimeout(timer); this.pending.delete(id); resolve(); },
+					timer,
+				});
+				try {
+					proc.stdin.write(`${JSON.stringify({ id, action: "shutdown" })}\n`);
+				} catch {
+					clearTimeout(timer);
+					this.pending.delete(id);
+					resolve();
+				}
+			});
+		} catch {
+			// ignore
 		} finally {
-			this.stopping = true;
-			this.rejectQueued(new Error("Serena worker stopped"));
 			proc.kill();
-			// If a new process was spawned concurrently, kill it too to prevent leaks
-			if (this.process && this.process !== proc) {
-				this.process.kill();
+			if (this.process === proc) {
+				this.process = undefined;
+				this.processing = false;
+				this.onStatus?.(undefined);
 			}
-			this.process = undefined;
-			this.processing = false;
 			this.stopping = false;
-			this.onStatus?.(undefined);
 		}
 	}
 
