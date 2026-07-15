@@ -7,7 +7,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| **pi-agy** | 0.1.0 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
+| **pi-agy** | 0.2.0 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
 | **pi-deepseek-tools** | 0.12.4 | DeepSeek V4 tool calling fixes, argument repair, reasoning cleanup, thinking level compatibility, Super Power Mode. |
 | **pi-notebooklm** | 0.1.0 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | **pi-ponytail** | 0.1.4 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |

@@ -36,22 +36,43 @@ describe("buildAgyArgs", () => {
 		expect(args).not.to.include("--mode");
 	});
 
-	it("maps tier: flash-lo correctly", () => {
-		const args = buildAgyArgs({ prompt: "test", tier: "flash-lo", dir: "/tmp", timeout_ms: 60_000 });
-		const modelIndex = args.indexOf("--model");
-		expect(args[modelIndex + 1]).to.equal("Gemini 3.5 Flash (Low)");
+	const models = [
+		["flash-low", "Gemini 3.5 Flash (Low)"],
+		["flash-medium", "Gemini 3.5 Flash (Medium)"],
+		["flash-high", "Gemini 3.5 Flash (High)"],
+		["pro-low", "Gemini 3.1 Pro (Low)"],
+		["pro-high", "Gemini 3.1 Pro (High)"],
+		["sonnet", "Claude Sonnet 4.6 (Thinking)"],
+		["opus", "Claude Opus 4.6 (Thinking)"],
+		["gpt-oss", "GPT-OSS 120B (Medium)"],
+	] as const;
+
+	for (const [model, displayName] of models) {
+		it(`maps model: ${model} correctly`, () => {
+			const args = buildAgyArgs({ prompt: "test", model, dir: "/tmp", timeout_ms: 60_000 });
+			expect(args[args.indexOf("--model") + 1]).to.equal(displayName);
+		});
+	}
+
+	for (const [tier, displayName] of [
+		["flash", "Gemini 3.5 Flash (High)"],
+		["flash-lo", "Gemini 3.5 Flash (Low)"],
+		["pro", "Gemini 3.1 Pro (High)"],
+	] as const) {
+		it(`keeps legacy tier: ${tier}`, () => {
+			const args = buildAgyArgs({ prompt: "test", tier, dir: "/tmp", timeout_ms: 60_000 });
+			expect(args[args.indexOf("--model") + 1]).to.equal(displayName);
+		});
+	}
+
+	it("prefers model over legacy tier", () => {
+		const args = buildAgyArgs({ prompt: "test", model: "sonnet", tier: "pro", dir: "/tmp", timeout_ms: 60_000 });
+		expect(args[args.indexOf("--model") + 1]).to.equal("Claude Sonnet 4.6 (Thinking)");
 	});
 
-	it("maps tier: pro correctly", () => {
-		const args = buildAgyArgs({ prompt: "test", tier: "pro", dir: "/tmp", timeout_ms: 60_000 });
-		const modelIndex = args.indexOf("--model");
-		expect(args[modelIndex + 1]).to.equal("Gemini 3.1 Pro (High)");
-	});
-
-	it("maps tier: flash by default", () => {
+	it("defaults to flash-medium when model and tier are omitted", () => {
 		const args = buildAgyArgs({ prompt: "test", dir: "/tmp", timeout_ms: 60_000 });
-		const modelIndex = args.indexOf("--model");
-		expect(args[modelIndex + 1]).to.equal("Gemini 3.5 Flash (High)");
+		expect(args[args.indexOf("--model") + 1]).to.equal("Gemini 3.5 Flash (Medium)");
 	});
 
 	it("calculates --print-timeout from timeout_ms (rounded up)", () => {
@@ -69,7 +90,7 @@ describe("buildAgyArgs", () => {
 	it("builds args in correct order: model, print-timeout, add-dir, mode, -p, prompt", () => {
 		const args = buildAgyArgs({ prompt: "go", dir: "/x", timeout_ms: 30_000 });
 		expect(args).to.deep.equal([
-			"--model", "Gemini 3.5 Flash (High)",
+			"--model", "Gemini 3.5 Flash (Medium)",
 			"--print-timeout", "30s",
 			"--add-dir", "/x",
 			"--mode", "accept-edits",

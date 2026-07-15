@@ -6,8 +6,19 @@ const _require = createRequire(import.meta.url);
 // Types
 // ---------------------------------------------------------------------------
 
+export type AgyModel =
+	| "flash-low"
+	| "flash-medium"
+	| "flash-high"
+	| "pro-low"
+	| "pro-high"
+	| "sonnet"
+	| "opus"
+	| "gpt-oss";
+
 export interface AgyOptions {
 	prompt: string;
+	model?: AgyModel;
 	tier?: "flash" | "flash-lo" | "pro";
 	mode?: "plan" | "accept-edits" | "sandbox";
 	dir: string;
@@ -21,10 +32,21 @@ export interface AgyOptions {
 const PREFLIGHT_TIMEOUT_MS = 10_000;
 const MAX_CAPTURE_BYTES = 64 * 1024;
 
-const TIER_MAP: Record<string, string> = {
-	flash: "Gemini 3.5 Flash (High)",
-	"flash-lo": "Gemini 3.5 Flash (Low)",
-	pro: "Gemini 3.1 Pro (High)",
+const MODEL_MAP: Record<AgyModel, string> = {
+	"flash-low": "Gemini 3.5 Flash (Low)",
+	"flash-medium": "Gemini 3.5 Flash (Medium)",
+	"flash-high": "Gemini 3.5 Flash (High)",
+	"pro-low": "Gemini 3.1 Pro (Low)",
+	"pro-high": "Gemini 3.1 Pro (High)",
+	sonnet: "Claude Sonnet 4.6 (Thinking)",
+	opus: "Claude Opus 4.6 (Thinking)",
+	"gpt-oss": "GPT-OSS 120B (Medium)",
+};
+
+const TIER_MAP: Record<NonNullable<AgyOptions["tier"]>, string> = {
+	flash: MODEL_MAP["flash-high"],
+	"flash-lo": MODEL_MAP["flash-low"],
+	pro: MODEL_MAP["pro-high"],
 };
 
 // ---------------------------------------------------------------------------
@@ -32,7 +54,11 @@ const TIER_MAP: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 export function buildAgyArgs(options: AgyOptions): string[] {
-	const model = TIER_MAP[options.tier ?? "flash"] ?? TIER_MAP.flash;
+	const model = options.model
+		? MODEL_MAP[options.model]
+		: options.tier
+			? TIER_MAP[options.tier]
+			: MODEL_MAP["flash-medium"];
 	const timeoutSec = Math.ceil(options.timeout_ms / 1000);
 
 	return [

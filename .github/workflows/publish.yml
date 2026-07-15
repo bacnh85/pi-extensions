@@ -7,7 +7,7 @@ on:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     strategy:
       matrix:
         package: [pi-agy, pi-notebooklm, pi-ponytail, pi-serena, pi-web, pi-munin, pi-plan, pi-subagent, pi-review, pi-fff, pi-rtk, pi-sub, pi-deepseek-tools, pi-obsidian, pi-windows-tools]

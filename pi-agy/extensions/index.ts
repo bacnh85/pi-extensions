@@ -24,9 +24,16 @@ export default function piAgyExtension(pi: ExtensionAPI) {
 			"Run a task through the Antigravity CLI (agy) for bulk implementation, scaffolding, or test generation.",
 		promptSnippet: "Run a task through the Antigravity CLI (agy)",
 		promptGuidelines: [
-			"Always review the git diff after agy runs with mode=accept-edits.",
+			"Plan or research with one family only when needed; implement with flash-medium or sonnet according to which quota group should carry the work.",
+			"Use flash-medium by default for bulk coding, exploration, tests, and repetitive work.",
+			"Use flash-low for trivial few-step or high-volume work, and flash-high for difficult agentic work.",
+			"Use pro-low or pro-high only when advanced reasoning needs escalation within the Gemini quota group.",
+			"Use sonnet for normal coding or review in the Claude quota group; reserve opus for the hardest architecture, root-cause, or adversarial review.",
+			"Use gpt-oss when an open-model alternative is specifically desired.",
+			"For consequential work, use one family to produce and the opposite family to cross-review in mode=plan; do not spend both quota groups on trivial tasks.",
+			"Batch related work, prefer digest output for non-write calls, and avoid parallel calls within one shared-quota group.",
+			"Always review the git diff and run verification after agy runs with mode=accept-edits.",
 			"Never use agy for irreversible production changes.",
-			"Prefer mode=plan for exploration, then switch to accept-edits for implementation.",
 			"Set an appropriate timeout_ms for large tasks (default 5m).",
 		],
 		parameters: Type.Object({
@@ -34,10 +41,25 @@ export default function piAgyExtension(pi: ExtensionAPI) {
 				description: "The task instruction for agy.",
 				minLength: 1,
 			}),
+			model: Type.Optional(
+				Type.Union(
+					[
+						Type.Literal("flash-low"),
+						Type.Literal("flash-medium"),
+						Type.Literal("flash-high"),
+						Type.Literal("pro-low"),
+						Type.Literal("pro-high"),
+						Type.Literal("sonnet"),
+						Type.Literal("opus"),
+						Type.Literal("gpt-oss"),
+					],
+					{ description: "Model alias. Defaults to 'flash-medium'.", default: "flash-medium" },
+				),
+			),
 			tier: Type.Optional(
 				Type.Union(
 					[Type.Literal("flash"), Type.Literal("flash-lo"), Type.Literal("pro")],
-					{ description: "'flash' (default), 'flash-lo', or 'pro'.", default: "flash" },
+					{ description: "Legacy Gemini tier. Ignored when model is set." },
 				),
 			),
 			mode: Type.Optional(
@@ -93,7 +115,8 @@ export default function piAgyExtension(pi: ExtensionAPI) {
 				const output = await spawnAgy(
 					{
 						prompt: finalPrompt,
-						tier: params.tier ?? "flash",
+						model: params.model,
+						tier: params.tier,
 						mode,
 						dir: cwd,
 						timeout_ms: timeoutMs,
