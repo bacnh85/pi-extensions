@@ -1,9 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { MuninClient } from "@kalera/munin-sdk";
 import { Type } from "typebox";
 
 import {
 	formatCapabilities,
+	parseTags,
 	toTextResult,
+	truncateText,
 	validateMemoryTags,
 	validateMemoryKey,
 	validateSearchQuery,
@@ -12,9 +15,6 @@ import {
 	getMuninConfig,
 } from "./lib/helpers";
 import { withRetry } from "./lib/retry";
-
-// ponytail: @kalera/munin-sdk is a hard dependency, no reason to lazy-load it
-const { MuninClient: MuninClientClass } = require("@kalera/munin-sdk");
 
 // Shared schemas
 const projectParam = Type.Optional(
@@ -50,7 +50,7 @@ function withMuninClient<T extends Record<string, unknown>>(
 		ctx?.cwd,
 		ctx?.isProjectTrusted?.() === true,
 	);
-	const client = new MuninClientClass({ apiKey, baseUrl });
+	const client = new MuninClient({ apiKey, baseUrl });
 	return callback(client, projectId);
 }
 
@@ -74,6 +74,7 @@ async function callMunin(
 
 	try {
 		return await withRetry(async () => {
+			if (directAction === "capabilities") return client.capabilities(true);
 			// ponytail: share() has different signature — skip direct call, use invoke
 			if (typeof client[directAction] === "function" && directAction !== "share") {
 				return client[directAction](projectId, payload);
@@ -107,9 +108,9 @@ export default function muninExtension(pi: ExtensionAPI) {
 		description: "BEFORE work: SEARCH for relevant past fixes, decisions, context.",
 		promptSnippet: "BEFORE work: search memory for relevant context",
 		promptGuidelines: [
-			"Search before non-trivial work when prior context matters.",
-			"Query: exact errors, subsystem names, file paths, deps.",
-			"--tags for targeting, --topK 5-20.",
+			"Use munin_search before non-trivial work when prior context matters.",
+			"Give munin_search exact errors, subsystem names, file paths, and dependencies.",
+			"Use munin_search tags for targeting and topK 5-20.",
 		],
 		parameters: Type.Object({
 			...controlSchema,
@@ -136,11 +137,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 			validateSearchQuery(query);
 			const result = await withMuninClient(params, async (client, projectId) => {
 				const searchParams: Record<string, unknown> = { query, topK };
-				if (tags)
-					searchParams.tags = tags
-						.split(",")
-						.map((t: string) => t.trim())
-						.filter(Boolean);
+				if (tags) searchParams.tags = parseTags(tags);
 				if (tag_mode) searchParams.tagMode = tag_mode;
 				if (since) searchParams.since = since;
 				if (before) searchParams.before = before;
@@ -160,8 +157,8 @@ export default function muninExtension(pi: ExtensionAPI) {
 		description: "AFTER search: retrieve full memory by key.",
 		promptSnippet: "After search, get full content by key",
 		promptGuidelines: [
-			"After search, retrieve full content of promising results.",
-			"Verify against current repo evidence before using.",
+			"Use munin_get after search to retrieve full content of promising results.",
+			"Verify munin_get results against current repository evidence before using them.",
 		],
 		parameters: Type.Object({
 			...controlSchema,
@@ -187,10 +184,10 @@ export default function muninExtension(pi: ExtensionAPI) {
 			"AT SESSION END (or after fix): STORE verified durable knowledge.",
 		promptSnippet: "Store durable knowledge in long-term memory",
 		promptGuidelines: [
-			"Store at end of session for future sessions.",
-			"Require: one type:(decision|bug-fix|fact|dependency) + one domain:(auth|frontend|backend|infra|memory).",
-			"Include: conclusion, why it matters, evidence, anchors.",
-			"Never store secrets, credentials, raw logs, or TODOs.",
+			"Use munin_store at the end of a session for future sessions.",
+			"Give munin_store one type:(decision|bug-fix|fact|dependency) tag and one domain:(auth|frontend|backend|infra|memory) tag.",
+			"Include a conclusion, why it matters, evidence, and anchors in munin_store content.",
+			"Never use munin_store for secrets, credentials, raw logs, or TODOs.",
 		],
 		parameters: Type.Object({
 			...controlSchema,
@@ -224,12 +221,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 			const { key, title, content, tags, valid_from, valid_to, pinned } = params as any;
 			validateMemoryKey(key);
 			const tagValidation = validateMemoryTags(tags);
-			if (!tagValidation.ok) {
-				return {
-					content: [{ type: "text" as const, text: tagValidation.message }],
-					details: null,
-				};
-			}
+			if (!tagValidation.ok) throw new Error(tagValidation.message);
 			const result = await withMuninClient(params, async (client, projectId) => {
 				const payload: Record<string, unknown> = { key, title, content, tags: tagValidation.tags };
 				if (valid_from) payload.validFrom = valid_from;
@@ -256,7 +248,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 		description: "LIST all stored memories.",
 		promptSnippet: "List available memories",
 		promptGuidelines: [
-			"Explore what knowledge is stored. Good for planning.",
+			"Use munin_list to explore stored knowledge while planning.",
 		],
 		parameters: Type.Object({
 			...controlSchema,
@@ -285,7 +277,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 		description: "CHECK recently updated memories.",
 		promptSnippet: "Show recent updates",
 		promptGuidelines: [
-			"See what was added or modified recently.",
+			"Use munin_recent to see what was added or modified recently.",
 		],
 		parameters: Type.Object({
 			...controlSchema,
@@ -312,31 +304,26 @@ export default function muninExtension(pi: ExtensionAPI) {
 			"DELETE memory — only when user explicitly asks.",
 		promptSnippet: "Delete a memory from storage",
 		promptGuidelines: [
-			"Only delete when user explicitly asks. Confirm first.",
+			"Use munin_delete only when the user explicitly asks; it always requires confirmation.",
 		],
 		parameters: Type.Object({
 			...controlSchema,
 			key: Type.String({ description: "Key to delete." }),
-			force: Type.Optional(
-				Type.Boolean({ description: "Skip confirm.", default: false }),
-			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const { key, force } = params as any;
+			const { key } = params as any;
 			validateMemoryKey(key);
-			if (force !== true) {
-				const confirmed = await ctx.ui.confirm(
-					"Delete Munin memory?",
-					`Delete memory \`${key}\` from long-term storage? This cannot be undone.`,
-				);
-				if (!confirmed) {
-					return {
-						content: [
-							{ type: "text" as const, text: `Delete cancelled for memory \`${key}\`.` },
-						],
-						details: { cancelled: true, key },
-					};
-				}
+			const confirmed = await ctx.ui.confirm(
+				"Delete Munin memory?",
+				`Delete memory \`${key}\` from long-term storage? This cannot be undone.`,
+			);
+			if (!confirmed) {
+				return {
+					content: [
+						{ type: "text" as const, text: `Delete cancelled for memory \`${key}\`.` },
+					],
+					details: { cancelled: true, key },
+				};
 			}
 			const result = await withMuninClient(params, async (client, projectId) => {
 				return callMunin(client, projectId, "delete", { key, force: true });
@@ -354,7 +341,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 		description: "CHECK available Munin server features.",
 		promptSnippet: "Show Munin capabilities",
 		promptGuidelines: [
-			"Check what server features are available.",
+			"Use munin_capabilities to check which server features are available.",
 		],
 		parameters: Type.Object({
 			...controlSchema,
@@ -364,7 +351,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 				return callMunin(client, projectId, "capabilities", {});
 			}, ctx);
 			return {
-				content: [{ type: "text" as const, text: formatCapabilities(result as Record<string, unknown>) }],
+				content: [{ type: "text" as const, text: truncateText(formatCapabilities(result as Record<string, unknown>)) }],
 				details: result,
 			};
 		},
@@ -376,8 +363,8 @@ export default function muninExtension(pi: ExtensionAPI) {
 		description: "SHARE memories between projects.",
 		promptSnippet: "Share memories between projects",
 		promptGuidelines: [
-			"Share memories between projects.",
-			"Source and target must be accessible with API key.",
+			"Use munin_share to share memories between projects; it always requires confirmation.",
+			"The munin_share source and target projects must be accessible with the API key.",
 		],
 		parameters: Type.Object({
 			...controlSchema,
@@ -386,6 +373,16 @@ export default function muninExtension(pi: ExtensionAPI) {
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const { memory_ids, target_project_ids } = params as any;
+			const confirmed = await ctx.ui.confirm(
+				"Share Munin memories?",
+				`Share ${memory_ids.length} memories with ${target_project_ids.length} target projects?`,
+			);
+			if (!confirmed) {
+				return {
+					content: [{ type: "text" as const, text: "Memory sharing cancelled." }],
+					details: { cancelled: true },
+				};
+			}
 			const result = await withMuninClient(params, async (client, projectId) => {
 				return callMunin(client, projectId, "share", { memoryIds: memory_ids, targetProjectIds: target_project_ids });
 			}, ctx);
@@ -408,7 +405,11 @@ export default function muninExtension(pi: ExtensionAPI) {
 			"Show Munin configuration status (API key present, project, base URL)",
 		handler: async (_args, ctx) => {
 			try {
-				const { apiKey, projectId, baseUrl } = getMuninConfig({});
+				const { apiKey, projectId, baseUrl } = getMuninConfig(
+					{},
+					ctx.cwd,
+					ctx.isProjectTrusted() === true,
+				);
 				ctx.ui.notify(
 					`Munin Status:\n  API Key: ${apiKey ? "present" : "missing"}\n  Project: ${projectId}\n  Base URL: ${baseUrl}`,
 					"info",
@@ -426,9 +427,9 @@ export default function muninExtension(pi: ExtensionAPI) {
 	// Event hooks
 	// ====================================================================
 
-	pi.on("before_agent_start", async (event) => {
+	pi.on("before_agent_start", async (event, ctx) => {
 		try {
-			getMuninConfig({});
+			getMuninConfig({}, ctx.cwd, ctx.isProjectTrusted() === true);
 		} catch {
 			return; // skip header if Munin not configured
 		}

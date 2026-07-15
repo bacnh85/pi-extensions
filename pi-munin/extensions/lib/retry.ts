@@ -4,19 +4,15 @@ import { classifyError } from "./helpers";
 
 /** Retry with exponential backoff. Never retries auth, not_found, or validation errors. */
 export async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
-	const nonRetryableTypes = ["auth", "e2ee", "stale_protocol", "not_found"];
-	const retryableTypes = ["timeout", "network"];
-	let last: Error | undefined;
+	const retryableTypes = new Set(["timeout", "network", "rate_limit"]);
 	for (let i = 0; i <= 3; i++) {
-		try { return await fn(); }
-		catch (e) {
-			last = e as Error;
-			if (i === 3) throw e;
-			const classified = classifyError(e);
-			if (nonRetryableTypes.includes(classified.type)) throw e;
-			if (!retryableTypes.includes(classified.type)) throw e;
-			const delay = Math.min(1000 * Math.pow(2, i) + Math.random() * 100 * Math.pow(2, i), 10000);
-			await new Promise(r => setTimeout(r, delay));
+		try {
+			return await fn();
+		} catch (error) {
+			if (i === 3 || !retryableTypes.has(classifyError(error).type)) throw error;
+			const delay = Math.min(1000 * 2 ** i + Math.random() * 100 * 2 ** i, 10000);
+			await new Promise((resolve) => setTimeout(resolve, delay));
 		}
 	}
+	throw new Error("Munin retry loop exhausted");
 }

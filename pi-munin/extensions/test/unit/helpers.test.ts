@@ -2,8 +2,13 @@
  * Unit tests for pi-munin helpers module.
  */
 
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect } from "chai";
 import {
+	getMuninConfig,
+	loadEnv,
 	piConfigDirs,
 	parseTags,
 	validateMemoryTags,
@@ -20,7 +25,72 @@ import {
 	OUTPUT_MAX_LINES,
 } from "../../lib/helpers";
 
+const CONFIG_ENV_KEYS = ["MUNIN_API_KEY", "MUNIN_PROJECT", "MUNIN_BASE_URL", "PI_CODING_AGENT_DIR"] as const;
 
+describe("getMuninConfig", () => {
+	let dirs: string[];
+	let originalEnv: Record<string, string | undefined>;
+
+	beforeEach(() => {
+		dirs = [];
+		originalEnv = Object.fromEntries(CONFIG_ENV_KEYS.map((key) => [key, process.env[key]]));
+		for (const key of CONFIG_ENV_KEYS) delete process.env[key];
+		process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-munin-global-"));
+		dirs.push(process.env.PI_CODING_AGENT_DIR);
+	});
+
+	afterEach(() => {
+		for (const key of CONFIG_ENV_KEYS) {
+			if (originalEnv[key] === undefined) delete process.env[key];
+			else process.env[key] = originalEnv[key];
+		}
+		for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+	});
+
+	function projectEnv(apiKey: string, project: string): string {
+		const dir = mkdtempSync(join(tmpdir(), "pi-munin-project-"));
+		dirs.push(dir);
+		writeFileSync(join(dir, ".env.local"), `MUNIN_API_KEY=${apiKey}\nMUNIN_PROJECT=${project}\n`);
+		return dir;
+	}
+
+	it("isolates trusted project env without mutating process.env", () => {
+		const first = getMuninConfig({}, projectEnv("first-key", "first-project"), true);
+		const second = getMuninConfig({}, projectEnv("second-key", "second-project"), true);
+		expect(first).to.include({ apiKey: "first-key", projectId: "first-project" });
+		expect(second).to.include({ apiKey: "second-key", projectId: "second-project" });
+		expect(process.env.MUNIN_API_KEY).to.equal(undefined);
+		expect(process.env.MUNIN_PROJECT).to.equal(undefined);
+	});
+
+	it("keeps first-file precedence while parsing env files", () => {
+		const dir = projectEnv("local-key", "local-project");
+		writeFileSync(join(dir, ".env"), "MUNIN_API_KEY=fallback-key\nMUNIN_PROJECT=fallback-project\n");
+		expect(loadEnv(dir, true)).to.include({
+			MUNIN_API_KEY: "local-key",
+			MUNIN_PROJECT: "local-project",
+		});
+	});
+
+	it("does not pair an ambient key with an endpoint override", () => {
+		process.env.MUNIN_API_KEY = "ambient-key";
+		process.env.MUNIN_PROJECT = "ambient-project";
+		expect(() => getMuninConfig({ base_url: "https://example.test" })).to.throw("explicit api_key");
+		expect(getMuninConfig({ base_url: "https://example.test/api/", api_key: "explicit-key" })).to.deep.equal({
+			apiKey: "explicit-key",
+			projectId: "ambient-project",
+			baseUrl: "https://example.test/api",
+		});
+	});
+
+	it("validates endpoint URLs", () => {
+		process.env.MUNIN_API_KEY = "key";
+		process.env.MUNIN_PROJECT = "project";
+		for (const base_url of ["not a url", "ftp://example.test", "https://user:pass@example.test", "https://example.test?q=1"]) {
+			expect(() => getMuninConfig({ base_url, api_key: "explicit-key" })).to.throw("Munin base URL");
+		}
+	});
+});
 
 describe("parseTags", () => {
 	it("parses comma-separated string", () => {
@@ -184,6 +254,22 @@ describe("classifyError", () => {
 		);
 	});
 
+	it("uses structured SDK error codes and names", () => {
+		const cases = [
+			["AUTH_INVALID", "auth"],
+			["VALIDATION_ERROR", "validation"],
+			["FEATURE_DISABLED", "feature_disabled"],
+			["RATE_LIMITED", "rate_limit"],
+			["ERR_STALE_PROTOCOL", "stale_protocol"],
+			["NOT_FOUND", "not_found"],
+		] as const;
+		for (const [code, type] of cases) {
+			expect(classifyError(Object.assign(new Error(code), { code })).type).to.equal(type);
+		}
+		expect(classifyError(Object.assign(new Error("fetch failed"), { name: "MuninTransportError" })).type).to.equal("network");
+		expect(classifyError(Object.assign(new Error("aborted"), { name: "AbortError" })).type).to.equal("timeout");
+	});
+
 	it("handles non-Error input", () => {
 		expect(classifyError("string error").type).to.equal("unknown");
 	});
@@ -282,6 +368,14 @@ describe("formatMemories", () => {
 		expect(result).to.include("Key: b");
 	});
 
+	it("preserves search scores and totals", () => {
+		const result = formatMemories({
+			data: { memories: [{ memory: { key: "a" }, score: 0.91 }], total: 42 },
+		});
+		expect(result).to.include("Score: 0.91");
+		expect(result).to.include("Total: 42");
+	});
+
 	it("handles result wrapper", () => {
 		const result = formatMemories({ result: { key: "k" } });
 		expect(result).to.include("Key: k");
@@ -349,7 +443,7 @@ describe("truncateText", () => {
 		const lines = Array.from({ length: OUTPUT_MAX_LINES + 10 }, (_, i) => `line ${i}`);
 		const text = lines.join("\n");
 		const result = truncateText(text);
-		expect(result).to.include("[Munin output truncated to");
+		expect(result).to.include("[Munin output truncated:");
 	});
 
 	it("truncates when over byte limit", () => {
@@ -359,6 +453,12 @@ describe("truncateText", () => {
 		expect(Buffer.byteLength(result, "utf8")).to.be.lte(
 			OUTPUT_MAX_BYTES + 1024,
 		);
+	});
+
+	it("truncates UTF-8 output only at complete lines", () => {
+		const result = truncateText("🙂🙂🙂\n".repeat(OUTPUT_MAX_LINES + 1));
+		expect(result).to.include("[Munin output truncated:");
+		expect(result).to.not.include("�");
 	});
 
 	it("does not add truncation notice when exact", () => {

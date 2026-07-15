@@ -13,7 +13,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-ponytail** | 0.1.4 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
 | **pi-serena** | 0.8.3 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
 | **pi-web** | 0.5.3 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
-| **pi-munin** | 0.4.3 | Munin long-term memory as native Pi tools (search, store, recall, capture, summarize, share, export, E2EE). |
+| **pi-munin** | 0.4.7 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and confirmed cross-project sharing. |
 | **pi-plan** | 0.5.0 | Plan mode with read-only gating and plan → implement → verify → review workflow. |
 | **pi-subagent** | 0.5.0 | Isolated in-process subagents with parallel/chain modes and inspectable threads. |
 | **pi-review** | 0.2.0 | Isolated read-only code review with corrected same-session fallback. |

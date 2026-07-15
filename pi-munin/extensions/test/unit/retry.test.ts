@@ -125,4 +125,35 @@ describe("withRetry", () => {
 		}
 		expect(attempts).to.equal(1);
 	});
+
+	it("retries structured transport and rate-limit errors", async () => {
+		for (const error of [
+			Object.assign(new Error("fetch failed"), { name: "MuninTransportError" }),
+			Object.assign(new Error("slow down"), { code: "RATE_LIMITED" }),
+		]) {
+			let attempts = 0;
+			await withRetry(async () => {
+				attempts++;
+				if (attempts === 1) throw error;
+				return "ok";
+			});
+			expect(attempts).to.equal(2);
+		}
+	});
+
+	it("does not retry structured auth, validation, or feature errors", async () => {
+		for (const code of ["AUTH_INVALID", "VALIDATION_ERROR", "FEATURE_DISABLED"]) {
+			let attempts = 0;
+			try {
+				await withRetry(async () => {
+					attempts++;
+					throw Object.assign(new Error(code), { code });
+				});
+				expect.fail("Should have thrown");
+			} catch (error) {
+				expect((error as Error).message).to.equal(code);
+			}
+			expect(attempts).to.equal(1);
+		}
+	});
 });

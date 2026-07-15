@@ -1,5 +1,11 @@
+import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {
+	DEFAULT_MAX_BYTES,
+	DEFAULT_MAX_LINES,
+	truncateHead,
+} from "@earendil-works/pi-coding-agent";
 import dotenv from "dotenv";
 
 // ---------------------------------------------------------------------------
@@ -12,14 +18,22 @@ export function piConfigDirs(): string[] {
 		: [path.join(os.homedir(), ".pi", "agent"), path.join(os.homedir(), ".pi", "agents")];
 }
 
-export function loadEnv(cwd = process.cwd(), includeCwd = true): void {
-	const candidates: string[] = [
+export function loadEnv(cwd = process.cwd(), includeCwd = true): Record<string, string> {
+	const env: Record<string, string> = {};
+	const candidates = [
 		...(includeCwd ? [path.resolve(cwd, ".env.local"), path.resolve(cwd, ".env")] : []),
 		...piConfigDirs().flatMap((dir) => [path.join(dir, ".env.local"), path.join(dir, ".env")]),
 	];
 	for (const file of candidates) {
-		dotenv.config({ path: file });
+		try {
+			for (const [key, value] of Object.entries(dotenv.parse(readFileSync(file)))) {
+				if (env[key] === undefined) env[key] = value;
+			}
+		} catch {
+			// Missing or unreadable env files are optional.
+		}
 	}
+	return env;
 }
 
 // ---------------------------------------------------------------------------
@@ -32,24 +46,43 @@ export interface MuninConfig {
 	baseUrl: string;
 }
 
-// ponytail: simple module-level cache, no TTL — config doesn't change mid-process.
-const configCache = new Map<string, MuninConfig>();
+function normalizeBaseUrl(value: string): string {
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		throw new Error("Munin base URL must be a valid HTTP(S) URL");
+	}
+	if (!["http:", "https:"].includes(url.protocol)) {
+		throw new Error("Munin base URL must use HTTP or HTTPS");
+	}
+	if (url.username || url.password) {
+		throw new Error("Munin base URL must not contain credentials");
+	}
+	if (url.search || url.hash) {
+		throw new Error("Munin base URL must not contain a query or fragment");
+	}
+	return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
 
 export function getMuninConfig(
 	params: Record<string, unknown>,
 	cwd = process.cwd(),
-	includeCwdEnv = false
+	includeCwdEnv = false,
 ): MuninConfig {
-	const cacheKey = `${cwd}|${includeCwdEnv}|${JSON.stringify(params, Object.keys(params).sort())}`;
-	const cached = configCache.get(cacheKey);
-	if (cached) return cached;
-
-	loadEnv(cwd, includeCwdEnv);
-	const explicitApiKey = params.api_key as string | undefined;
-	const explicitBaseUrl = params.base_url as string | undefined;
-	const apiKey = explicitApiKey || process.env.MUNIN_API_KEY;
-	const projectId = (params.project as string) || process.env.MUNIN_PROJECT;
-	const baseUrl = explicitBaseUrl || process.env.MUNIN_BASE_URL || "https://munin.kalera.ai";
+	const fileEnv = loadEnv(cwd, includeCwdEnv);
+	const explicitApiKey = typeof params.api_key === "string" && params.api_key ? params.api_key : undefined;
+	const explicitBaseUrl = typeof params.base_url === "string" && params.base_url ? params.base_url : undefined;
+	if (explicitBaseUrl && !explicitApiKey) {
+		throw new Error("An explicit api_key is required when overriding base_url");
+	}
+	const apiKey = explicitApiKey || process.env.MUNIN_API_KEY || fileEnv.MUNIN_API_KEY;
+	const projectId = (typeof params.project === "string" && params.project)
+		|| process.env.MUNIN_PROJECT
+		|| fileEnv.MUNIN_PROJECT;
+	const baseUrl = normalizeBaseUrl(
+		explicitBaseUrl || process.env.MUNIN_BASE_URL || fileEnv.MUNIN_BASE_URL || "https://munin.kalera.ai",
+	);
 
 	if (!apiKey) {
 		throw new Error("MUNIN_API_KEY is required. Set it in your environment, .env.local/.env, or pass api_key.");
@@ -57,28 +90,23 @@ export function getMuninConfig(
 	if (!projectId) {
 		throw new Error("MUNIN_PROJECT is required. Set it in your environment, .env.local/.env, or pass project.");
 	}
-	const config: MuninConfig = { apiKey, projectId, baseUrl };
-	configCache.set(cacheKey, config);
-	return config;
+	return { apiKey, projectId, baseUrl };
 }
 
 // ---------------------------------------------------------------------------
 // Output helpers
 // ---------------------------------------------------------------------------
 
-export const OUTPUT_MAX_BYTES = 50 * 1024;
-export const OUTPUT_MAX_LINES = 2_000;
+export const OUTPUT_MAX_BYTES = DEFAULT_MAX_BYTES;
+export const OUTPUT_MAX_LINES = DEFAULT_MAX_LINES;
 
 export function truncateText(text: string): string {
-	const lines = text.split("\n");
-	let output = lines.slice(0, OUTPUT_MAX_LINES).join("\n");
-	while (Buffer.byteLength(output, "utf8") > OUTPUT_MAX_BYTES) {
-		output = output.slice(0, Math.max(0, output.length - 1024));
-	}
-	if (lines.length > OUTPUT_MAX_LINES || output.length < text.length) {
-		output += `\n\n[Munin output truncated to ${OUTPUT_MAX_LINES} lines / ${OUTPUT_MAX_BYTES} bytes.]`;
-	}
-	return output;
+	const result = truncateHead(text, {
+		maxLines: OUTPUT_MAX_LINES,
+		maxBytes: OUTPUT_MAX_BYTES,
+	});
+	if (!result.truncated) return result.content;
+	return `${result.content}\n\n[Munin output truncated: showing ${result.outputLines} of ${result.totalLines} lines / ${result.outputBytes} of ${result.totalBytes} bytes.]`;
 }
 
 export function normalizeMemory(item: unknown): Record<string, unknown> {
@@ -94,6 +122,7 @@ export function formatMemory(memory: Record<string, unknown>): string {
 	if (memory.key) parts.push(`Key: ${memory.key}`);
 	if (memory.id && memory.id !== memory.key) parts.push(`ID: ${memory.id}`);
 	if (memory.title) parts.push(`Title: ${memory.title}`);
+	if (memory.score !== undefined) parts.push(`Score: ${memory.score}`);
 	if (memory.tags) {
 		const tags = Array.isArray(memory.tags) ? memory.tags.join(", ") : String(memory.tags);
 		parts.push(`Tags: ${tags}`);
@@ -114,9 +143,11 @@ export function formatMemories(result: unknown): string {
 	if (!result || typeof result !== "object") return String(result);
 	const container = result as Record<string, unknown>;
 	let data = container.data ?? container.items ?? container.result ?? result;
-	if (data && typeof data === "object" && !Array.isArray(data) && Array.isArray((data as Record<string, unknown>).memories)) {
-		data = (data as Record<string, unknown>).memories as unknown[];
-	}
+	const nested = data && typeof data === "object" && !Array.isArray(data)
+		? data as Record<string, unknown>
+		: undefined;
+	const total = container.total ?? nested?.total;
+	if (Array.isArray(nested?.memories)) data = nested.memories;
 	const items = Array.isArray(data) ? data.filter(Boolean) : [data].filter(Boolean);
 	if (items.length === 0) return "No memories found.";
 	const formatted = items
@@ -129,7 +160,8 @@ export function formatMemories(result: unknown): string {
 		})
 		.filter(Boolean)
 		.join("\n\n");
-	return formatted || "No memories found.";
+	if (!formatted) return "No memories found.";
+	return total !== undefined ? `${formatted}\n\nTotal: ${total}` : formatted;
 }
 
 export function toTextResult(result: unknown): string {
@@ -219,25 +251,32 @@ export function validateSearchQuery(query: unknown): string {
 
 export function classifyError(error: unknown): { type: string; message: string } {
 	const err = error instanceof Error ? error : new Error(String(error));
+	const code = String((err as Error & { code?: unknown }).code ?? "").toUpperCase();
+	const structuredTypes: Record<string, string> = {
+		AUTH_INVALID: "auth",
+		VALIDATION_ERROR: "validation",
+		FEATURE_DISABLED: "feature_disabled",
+		RATE_LIMITED: "rate_limit",
+		ERR_STALE_PROTOCOL: "stale_protocol",
+		NOT_FOUND: "not_found",
+	};
+	if (structuredTypes[code]) return { type: structuredTypes[code], message: err.message };
+
 	const message = err.message.toLowerCase().replace(/_/g, " ");
-	if (message.includes("unauthorized") || message.includes("invalid api key")) {
-		return { type: "auth", message: err.message };
-	}
-	if (message.includes("e2ee") || message.includes("encryption")) {
-		return { type: "e2ee", message: err.message };
-	}
-	if (message.includes("stale protocol")) {
-		return { type: "stale_protocol", message: err.message };
-	}
-	if (message.includes("not found")) {
-		return { type: "not_found", message: err.message };
-	}
-	if (message.includes("timeout") || message.includes("etimed")) {
+	const name = err.name.toLowerCase();
+	if (name === "aborterror" || message.includes("timeout") || message.includes("timed out") || message.includes("etimed") || message.includes("aborterror")) {
 		return { type: "timeout", message: err.message };
 	}
-	if (message.includes("network") || message.includes("econn") || message.includes("socket")) {
+	if (name === "munintransporterror" || message.includes("network") || message.includes("econn") || message.includes("socket") || message.includes("fetch failed")) {
 		return { type: "network", message: err.message };
 	}
+	if (message.includes("unauthorized") || message.includes("invalid api key")) return { type: "auth", message: err.message };
+	if (message.includes("validation") || message.includes("invalid request")) return { type: "validation", message: err.message };
+	if (message.includes("feature disabled") || message.includes("not supported")) return { type: "feature_disabled", message: err.message };
+	if (message.includes("rate limit") || message.includes("too many requests") || /\b429\b/.test(message)) return { type: "rate_limit", message: err.message };
+	if (message.includes("e2ee") || message.includes("encryption")) return { type: "e2ee", message: err.message };
+	if (message.includes("stale protocol")) return { type: "stale_protocol", message: err.message };
+	if (message.includes("not found")) return { type: "not_found", message: err.message };
 	return { type: "unknown", message: err.message };
 }
 
