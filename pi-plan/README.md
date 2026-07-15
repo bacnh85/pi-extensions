@@ -47,8 +47,10 @@ pi --plan
 6. After the plan is written, Pi prefills `/plan-approve` in the TUI. Press Enter, then choose:
    - **Implement in current session** — exits plan mode, restores tools, sends an execution prompt.
    - **Implement in new session** — starts a fresh session with the plan as handoff.
-   - **Implement, verify, and review** — captures the Git baseline, implements in fresh context, invokes `pi-review` through `pi-subagent`, feeds blocking findings back, and stops clean or after three review passes.
+   - **Implement, verify, and review** — captures the Git baseline, implements in fresh context, invokes `pi-review` through `pi-subagent`, feeds blocking findings back as actionable issues with expected behavior and acceptance criteria, and stops clean or after three review passes.
    - **Stay in Plan mode** — continue refining the plan.
+
+Non-blocking review findings do not enter the fix loop, but remain available in the workflow result details instead of being reported as a clean review.
 
 Fresh-session replacement is intentionally initiated by `/plan-approve`: extension-originated messages bypass Pi's slash-command router and cannot call command-only session APIs. The automated choice requires `pi-review` and `pi-subagent`. It never resets files or Git state; initial dirty paths are recorded for reviewer context. Untracked content snapshots are lossless up to the same 50 KB evidence limit as tracked dirty patches and fail closed above it. The implementer must report exact checks with `[verification: pass]` or `[verification: fail]`.
 

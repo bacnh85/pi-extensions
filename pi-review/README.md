@@ -30,7 +30,7 @@ In TUI mode, bare `/review` asks for uncommitted, branch, or custom scope. Witho
 
 - Parent gathers compact read-only Git status/diff evidence.
 - Isolated review runs in a lean child with read/search tools but no mutators or shell.
-- Results use a structured contract: severity, file/line, issue, evidence, suggested fix, and `blocking`.
+- Each confirmed finding is a structured actionable issue with severity, file/line, reproduction or evidence, expected behavior, suggested fix, acceptance criteria, and `blocking`.
 - Only compact findings return to the parent; `/agent` retains the child thread.
 - `REVIEW.md`, when present, is passed as bounded review guidance.
 

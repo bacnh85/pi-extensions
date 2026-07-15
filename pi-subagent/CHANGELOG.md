@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.1 (2026-07-15)
+
+### Review handoff
+
+- Reviewer findings now require reproduction or evidence, expected behavior, and acceptance criteria so implementation agents receive self-contained actionable issues.
+
 ## 0.6.0 (2026-07-12)
 
 ### Security (breaking changes)

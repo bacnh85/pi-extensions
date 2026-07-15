@@ -7,7 +7,17 @@ async function flush(): Promise<void> {
 	await new Promise((r) => setTimeout(r, 20));
 }
 
-function harness(subagent = false) {
+const ACTIONABLE_REVIEW = JSON.stringify({
+	summary: "one confirmed issue",
+	findings: [{
+		severity: "high", file: "src/auth.ts", line: 42, issue: "Expired sessions remain valid.",
+		evidence: "The expiry branch returns the session at src/auth.ts:42.",
+		expectedBehavior: "Expired sessions are rejected.", suggestedFix: "Return null from the expiry branch.",
+		acceptanceCriteria: "The expired-session regression test passes.", blocking: true,
+	}],
+});
+
+function harness(subagent = false, reviewOutput = '{"summary":"clean","findings":[]}', reviewEventResult?: unknown) {
 	const handlers: Record<string, Function[]> = {};
 	const commands: Record<string, any> = {};
 	const sent: any[] = [];
@@ -29,10 +39,11 @@ function harness(subagent = false) {
 		events: {
 			on(name: string, fn: Function) { const list = bus.get(name) ?? []; list.push(fn); bus.set(name, list); },
 			emit(name: string, value: any) {
+				if (name === "pi-review:run" && reviewEventResult !== undefined && value.accept()) value.respond({ id: value.id, ok: true, result: reviewEventResult });
 				if (name === "pi-subagent:run") subagentRequests.push(value);
 				if (subagent && name === "pi-subagent:run") {
 					value.accept();
-					value.respond({ id: value.id, ok: true, result: { messages: [{ role: "assistant", content: [{ type: "text", text: '{"summary":"clean","findings":[]}' }] }] } });
+					value.respond({ id: value.id, ok: true, result: { messages: [{ role: "assistant", content: [{ type: "text", text: reviewOutput }] }] } });
 				}
 				for (const fn of bus.get(name) ?? []) fn(value);
 			},
@@ -108,6 +119,23 @@ describe("review parsing and shell gate", () => {
 		assert.equal(resolveGitRange("uncommitted", ""), undefined);
 		assert.equal(resolveGitRange("custom", "auth bug"), undefined);
 	});
+	it("requires the actionable finding contract", () => {
+		assert.equal(parseReviewResult(ACTIONABLE_REVIEW).findings[0].expectedBehavior, "Expired sessions are rejected.");
+		for (const field of ["file", "issue", "evidence", "expectedBehavior", "suggestedFix", "acceptanceCriteria"]) {
+			const incomplete = JSON.parse(ACTIONABLE_REVIEW);
+			incomplete.findings[0][field] = " ";
+			assert.equal(parseReviewResult(JSON.stringify(incomplete)).summary, "Reviewer returned malformed structured output", field);
+		}
+		for (const line of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+			const invalid = JSON.parse(ACTIONABLE_REVIEW);
+			invalid.findings[0].line = line;
+			assert.equal(parseReviewResult(JSON.stringify(invalid)).summary, "Reviewer returned malformed structured output", String(line));
+		}
+		assert.equal(parseReviewResult("").findings[0].evidence, "Reviewer returned no textual output.");
+		assert.equal(parseReviewResult("").findings[0].line, 1);
+		assert.equal(parseReviewResult('{"summary":"   ","findings":[]}').summary, "Reviewer returned malformed structured output");
+		assert.match(parseReviewResult(`${" ".repeat(1000)}not json`).findings[0].evidence, /not json/);
+	});
 	it("treats malformed reviewer output as blocking", () => assert.equal(parseReviewResult("not json").findings[0].blocking, true));
 });
 
@@ -137,6 +165,29 @@ describe("review lifecycle", () => {
 		assert.equal(h.sent.length, 1, "result via sendUserMessage");
 		assert.equal(h.sent[0].content.startsWith("No findings"), true);
 		assert.deepEqual(h.tools(), ["read", "edit", "ffgrep", "serena_find_symbol"]);
+	});
+
+	it("formats actionable findings for the parent", async () => {
+		const h = harness(true, ACTIONABLE_REVIEW);
+		await h.commands.review.handler("changes", h.ctx);
+		await flush();
+		assert.match(h.sent[0].content, /high · blocking/);
+		assert.match(h.sent[0].content, /Expected: Expired sessions are rejected\./);
+		assert.match(h.sent[0].content, /Acceptance: The expired-session regression test passes\./);
+	});
+
+	it("shows non-blocking status and fails closed on invalid review-event results", async () => {
+		const nonBlocking = JSON.parse(ACTIONABLE_REVIEW);
+		nonBlocking.findings[0].blocking = false;
+		const formatted = harness(true, JSON.stringify(nonBlocking));
+		await formatted.commands.review.handler("changes", formatted.ctx);
+		await flush();
+		assert.match(formatted.sent[0].content, /high · non-blocking/);
+
+		const malformed = harness(false, undefined, { summary: " ", findings: [] });
+		await malformed.commands.review.handler("changes", malformed.ctx);
+		await flush();
+		assert.match(malformed.sent[0].content, /The independent review result could not be parsed/);
 	});
 
 	it("falls back locally, composes one-turn prompt, and restores once on agent_settled", async () => {

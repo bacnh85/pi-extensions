@@ -968,9 +968,11 @@ describe("flow loop regression coverage", () => {
 			if (event === "pi-review:run") {
 				reviewEventEmitted = true;
 				assert.equal(data.timeout, 10 * 60 * 1000);
+				assert.equal(data.gitRange, "abc...HEAD");
+				assert.equal(data.requireExactRange, true);
 				const accepted = data.accept();
 				assert.ok(accepted);
-				data.respond({ id: data.id, ok: true, result: { findings: [] } });
+				data.respond({ id: data.id, ok: true, result: { summary: "clean", findings: [] } });
 			}
 		};
 
@@ -1023,26 +1025,105 @@ describe("flow loop regression coverage", () => {
 		assert.equal(state.customMessages[0].message?.customType, "pi-flow-result");
 	});
 
-	it("sends fix prompt when reviewer returns blocking findings", async () => {
+	it("preserves non-blocking findings across a blocking fix pass", async () => {
+		const finding = {
+			severity: "low",
+			file: "index.ts",
+			line: 10,
+			issue: "test issue",
+			evidence: "xxx",
+			expectedBehavior: "the issue is gone",
+			suggestedFix: "fix it",
+			acceptanceCriteria: "the regression check passes",
+			blocking: false,
+		};
+		const blocker = { ...finding, severity: "high", issue: "blocking issue", blocking: true };
+		const state = createFakePi(["read"], { plan: false });
+		let reviewPass = 0;
+		state.onEmit = (event, data) => {
+			if (event === "pi-review:run") {
+				assert.ok(data.accept());
+				data.respond({ id: data.id, ok: true, result: { summary: "reviewed", findings: reviewPass++ === 0 ? [finding, blocker] : [] } });
+			}
+		};
+
+		const flowCwd = createGitRepo("pi-plan-flow-mixed-");
+		const planPath = path.join(flowCwd, "plan.md");
+		writeFileSync(planPath, "# Plan");
+		const ctx = fakeCtx({
+			cwd: flowCwd,
+			sessionManager: {
+				getBranch: () => [
+					{
+						type: "custom",
+						customType: "pi-plan",
+						data: {
+							enabled: false,
+							lastPlanPath: planPath,
+							lastPlanTitle: "Some Plan",
+							flow: {
+								phase: "implement",
+								reviewPass: 0,
+								baseline: "abc",
+								initialDirty: "none",
+								initialDirtyPatch: "",
+								initialUntrackedSnapshot: "[]",
+							},
+						},
+					},
+					{
+						type: "message",
+						message: {
+							role: "assistant",
+							content: [{ type: "text", text: "Checks run. [verification: pass]" }],
+						},
+					},
+				],
+			},
+		});
+
+		await state.handlers.session_tree?.[0]({}, ctx);
+		const settled = state.handlers.agent_settled?.[0];
+		assert.ok(settled);
+		await settled({}, ctx);
+		let lastEntry = state.entries[state.entries.length - 1];
+		assert.equal(lastEntry?.data?.flow?.phase, "fix");
+		assert.match(state.sentMessages[0].content, /blocking issue/);
+		assert.doesNotMatch(state.sentMessages[0].content, /"issue": "test issue"/);
+
+		await settled({}, ctx);
+		lastEntry = state.entries[state.entries.length - 1];
+		assert.equal(lastEntry?.data?.flow?.phase, "done");
+		assert.deepEqual(lastEntry?.data?.flow?.reviewFindings, [finding]);
+		assert.match(state.customMessages[0].message?.content, /1 non-blocking review finding/);
+		assert.doesNotMatch(state.customMessages[0].message?.content, /review clean/);
+	});
+
+	it("sends valid blocking findings then fails closed on malformed review output", async () => {
 		const state = createFakePi(["read"], { plan: false });
 		let reviewEventEmitted = false;
+		let reviewPass = 0;
 		state.onEmit = (event, data) => {
 			if (event === "pi-review:run") {
 				reviewEventEmitted = true;
 				const accepted = data.accept();
 				assert.ok(accepted);
+				if (reviewPass++ > 0) return data.respond({ id: data.id, ok: true, result: { findings: [] } });
 				data.respond({
 					id: data.id,
 					ok: true,
 					result: {
+						summary: "blocking issue",
 						findings: [
 							{
-								severity: "error",
+								severity: "high",
 								file: "index.ts",
 								line: 10,
 								issue: "test issue",
 								evidence: "xxx",
+								expectedBehavior: "the issue is gone",
 								suggestedFix: "fix it",
+								acceptanceCriteria: "the regression check passes",
 								blocking: true,
 							},
 						],
@@ -1098,5 +1179,12 @@ describe("flow loop regression coverage", () => {
 		assert.equal(lastEntry?.data?.flow?.phase, "fix", "phase transitions to fix");
 		assert.equal(state.sentMessages.length, 1);
 		assert.ok(state.sentMessages[0].content?.includes("Independent review found blocking issues"), "sent fix prompt to user");
+		assert.ok(state.sentMessages[0].content?.includes('"expectedBehavior": "the issue is gone"'), "preserves expected behavior");
+		assert.ok(state.sentMessages[0].content?.includes('"acceptanceCriteria": "the regression check passes"'), "preserves acceptance criteria");
+
+		await settled({}, ctx);
+		const stoppedEntry = state.entries[state.entries.length - 1];
+		assert.equal(stoppedEntry?.data?.flow?.phase, "stopped");
+		assert.equal(state.customMessages.length, 0, "malformed review never reports clean completion");
 	});
 });

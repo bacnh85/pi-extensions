@@ -32,7 +32,9 @@ export interface ReviewFinding {
 	line: number;
 	issue: string;
 	evidence: string;
+	expectedBehavior: string;
 	suggestedFix: string;
+	acceptanceCriteria: string;
 	blocking: boolean;
 }
 
@@ -105,7 +107,7 @@ export function buildReviewPrompt(preset: ReviewPreset, target: string): string 
 	const rangeHint = preset === "branch" ? "\n\nCompare against upstream/base branch (commits ahead plus local changes)."
 		: preset === "uncommitted" ? "\n\nStaged, unstaged, and untracked changes only."
 		: "";
-	return `${reviewPresetPrompt(preset)}${target ? `\n\nTarget or additional instructions:\n${target}` : ""}${rangeHint}\n\nInspect Git state and relevant source with read-only tools. Focus on correctness, security, data loss, regressions, API compatibility, and meaningful test gaps. Avoid style-only findings. Return the structured JSON contract from the reviewer role; every finding needs file/line evidence.`;
+	return `${reviewPresetPrompt(preset)}${target ? `\n\nTarget or additional instructions:\n${target}` : ""}${rangeHint}\n\nInspect Git state and relevant source with read-only tools. Focus on correctness, security, data loss, regressions, API compatibility, and meaningful test gaps. Avoid style-only findings. Return the structured JSON contract from the reviewer role; every confirmed finding must be a self-contained actionable issue with severity, file/line, reproduction or evidence, expected behavior, suggested fix, acceptance/verification criteria, and blocking status.`;
 }
 
 /** Resolve the git diff range for a review preset and target. */
@@ -133,26 +135,48 @@ function finalOutput(messages: any[]): string {
 	return "";
 }
 
+function malformedReviewResult(evidence: string): ReviewResult {
+	return {
+		summary: "Reviewer returned malformed structured output",
+		findings: [{
+			severity: "high",
+			file: "(reviewer)",
+			line: 1,
+			issue: "The independent review result could not be parsed.",
+			evidence: evidence.trim().slice(0, 1000) || "Reviewer returned no textual output.",
+			expectedBehavior: "The reviewer returns the complete actionable-finding JSON contract.",
+			suggestedFix: "Re-run the review.",
+			acceptanceCriteria: "The rerun parses with every required finding field present and non-empty.",
+			blocking: true,
+		}],
+	};
+}
+
+function validateReviewResult(value: unknown, evidence: string): ReviewResult {
+	const result = value as ReviewResult;
+	if (result && typeof result.summary === "string" && result.summary.trim().length > 0 && Array.isArray(result.findings) && result.findings.every((finding) =>
+		finding && typeof finding.file === "string" && finding.file.trim().length > 0 && Number.isInteger(finding.line) && finding.line > 0 &&
+		typeof finding.issue === "string" && finding.issue.trim().length > 0 && typeof finding.evidence === "string" && finding.evidence.trim().length > 0 &&
+		typeof finding.expectedBehavior === "string" && finding.expectedBehavior.trim().length > 0 &&
+		typeof finding.suggestedFix === "string" && finding.suggestedFix.trim().length > 0 &&
+		typeof finding.acceptanceCriteria === "string" && finding.acceptanceCriteria.trim().length > 0 &&
+		typeof finding.blocking === "boolean" && ["critical", "high", "medium", "low"].includes(finding.severity)
+	)) return result;
+	return malformedReviewResult(evidence);
+}
+
 export function parseReviewResult(output: string): ReviewResult {
 	const candidate = output.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] ?? output;
 	try {
-		const value = JSON.parse(candidate.trim()) as ReviewResult;
-		if (typeof value.summary === "string" && Array.isArray(value.findings) && value.findings.every((finding) =>
-			finding && typeof finding.file === "string" && finding.file.trim().length > 0 && typeof finding.line === "number" &&
-			typeof finding.issue === "string" && finding.issue.trim().length > 0 && typeof finding.evidence === "string" && finding.evidence.trim().length > 0 &&
-			typeof finding.suggestedFix === "string" && typeof finding.blocking === "boolean" &&
-			["critical", "high", "medium", "low"].includes(finding.severity)
-		)) return value;
-	} catch { /* handled below */ }
-	return {
-		summary: "Reviewer returned malformed structured output",
-		findings: [{ severity: "high", file: "(reviewer)", line: 0, issue: "The independent review result could not be parsed.", evidence: output.slice(0, 1000), suggestedFix: "Re-run the review.", blocking: true }],
-	};
+		return validateReviewResult(JSON.parse(candidate.trim()), output);
+	} catch {
+		return malformedReviewResult(output);
+	}
 }
 
 function formatReview(result: ReviewResult): string {
 	if (!result.findings.length) return `No findings\n\n${result.summary}`;
-	return result.findings.map((finding) => `- **${finding.severity}${finding.blocking ? " · blocking" : ""}** ${finding.file}:${finding.line} — ${finding.issue}\n  Evidence: ${finding.evidence}\n  Fix: ${finding.suggestedFix}`).join("\n");
+	return result.findings.map((finding) => `- **${finding.severity} · ${finding.blocking ? "blocking" : "non-blocking"}** ${finding.file}:${finding.line} — ${finding.issue}\n  Evidence: ${finding.evidence}\n  Expected: ${finding.expectedBehavior}\n  Fix: ${finding.suggestedFix}\n  Acceptance: ${finding.acceptanceCriteria}`).join("\n");
 }
 
 async function isolatedReview(pi: ExtensionAPI, request: Omit<ReviewRunRequest, "id" | "respond" | "accept">): Promise<ReviewResult | undefined> {
@@ -180,7 +204,7 @@ async function isolatedReview(pi: ExtensionAPI, request: Omit<ReviewRunRequest, 
 			if (settled || response?.id !== id) return;
 			settled = true;
 			clearTimeout(timer);
-			resolve(response.ok ? parseReviewResult(finalOutput(response.result?.messages ?? [])) : undefined);
+			resolve(response.ok === true ? parseReviewResult(finalOutput(response.result?.messages ?? [])) : undefined);
 		},
 	});
 	if (!accepted) { settled = true; clearTimeout(timer); return undefined; }
@@ -339,10 +363,10 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
 				respond: (response: any) => {
 					if (settled || response?.id !== id) return;
 					settled = true;
-					if (response.ok && response.result) {
+					if (response.ok === true && response.result) {
 						// Isolated review succeeded — leave review mode, show readable result
 						leaveLocalReview(ctx);
-						pi.sendUserMessage(formatReview(response.result), { deliverAs: "followUp" });
+						pi.sendUserMessage(formatReview(validateReviewResult(response.result, "Review event returned malformed structured output.")), { deliverAs: "followUp" });
 					} else {
 						// Fall back to local review — keep review mode, send prompt
 						pi.sendUserMessage(prompt, { deliverAs: "followUp" });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmdirSync, unlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmdirSync, unlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "mocha";
@@ -32,6 +32,17 @@ import {
 // ===========================================================================
 
 describe("agent discovery", () => {
+	it("ships an actionable reviewer handoff contract", () => {
+		const prompt = readFileSync(new URL("../../agents/reviewer.md", import.meta.url), "utf8");
+		for (const requirement of [
+			"sandbox: read-only", "Return JSON only", "Focus only on actionable issues introduced by the reviewed change",
+			"Avoid style noise, praise, and speculative redesign", "Use an empty `findings` array", "Do not modify files or Git state",
+			'"summary"', '"findings"', '"severity": "critical|high|medium|low"', '"file"', '"line"', '"issue"', '"evidence"',
+			"reproduction steps", '"expectedBehavior"',
+			'"suggestedFix"', '"acceptanceCriteria"', '"blocking"',
+		]) assert.ok(prompt.includes(requirement), `missing reviewer requirement: ${requirement}`);
+	});
+
 	it("parses thinking and gives project definitions precedence", () => {
 		const root = mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
 		const projectDir = path.join(root, ".pi", "agents");

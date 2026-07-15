@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-review",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Pi extension for isolated or local read-only code review.",
   "type": "module",
   "license": "MIT",

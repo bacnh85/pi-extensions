@@ -49,7 +49,9 @@ interface ReviewFinding {
 	line: number;
 	issue: string;
 	evidence: string;
+	expectedBehavior: string;
 	suggestedFix: string;
+	acceptanceCriteria: string;
 	blocking: boolean;
 }
 
@@ -62,6 +64,7 @@ interface FlowState {
 	phase: FlowPhase;
 	reviewPass: number;
 	verificationSummary?: string;
+	reviewFindings?: ReviewFinding[];
 	blockingFindings?: ReviewFinding[];
 }
 
@@ -256,6 +259,24 @@ async function savePreferences(preferences: PlanPreferences): Promise<void> {
 	const tmp = `${PREFERENCES_FILE}.${process.pid}.tmp`;
 	await writeFile(tmp, `${JSON.stringify(preferences, null, 2)}\n`, "utf8");
 	await rename(tmp, PREFERENCES_FILE);
+}
+
+function isReviewFinding(value: unknown): value is ReviewFinding {
+	const finding = value as ReviewFinding;
+	return !!finding && ["critical", "high", "medium", "low"].includes(finding.severity) &&
+		typeof finding.file === "string" && finding.file.trim().length > 0 && Number.isInteger(finding.line) && finding.line > 0 &&
+		typeof finding.issue === "string" && finding.issue.trim().length > 0 &&
+		typeof finding.evidence === "string" && finding.evidence.trim().length > 0 &&
+		typeof finding.expectedBehavior === "string" && finding.expectedBehavior.trim().length > 0 &&
+		typeof finding.suggestedFix === "string" && finding.suggestedFix.trim().length > 0 &&
+		typeof finding.acceptanceCriteria === "string" && finding.acceptanceCriteria.trim().length > 0 &&
+		typeof finding.blocking === "boolean";
+}
+
+function isReviewResult(value: unknown): value is { summary: string; findings: ReviewFinding[] } {
+	const result = value as { summary: string; findings: ReviewFinding[] };
+	return !!result && typeof result.summary === "string" && result.summary.trim().length > 0 &&
+		Array.isArray(result.findings) && result.findings.every(isReviewFinding);
 }
 
 export default function piPlanExtension(pi: ExtensionAPI): void {
@@ -630,6 +651,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			id,
 			cwd: ctx.cwd,
 			prompt: `Review implementation of ${relativeToCwd(ctx.cwd, lastPlanPath)} against Git baseline ${flow.baseline}. Initial dirty paths at workflow start (exclude unless changed by this implementation):\n${(flow.initialDirty || "(none)").slice(0, MAX_DIRTY_PATCH_BYTES)}\n\nInitial dirty patch (all tracked changes, staged + unstaged from git diff HEAD, 50 KB max):\n${flow.initialDirtyPatch || "(none)"}${untrackedDelta}\n\nCompare the current diff against the initial patch above. Report only regressions introduced by this implementation, not pre-existing dirt.`,
+			gitRange: `${flow.baseline}...HEAD`,
+			requireExactRange: true,
 			timeout: REVIEW_TIMEOUT_MS,
 			signal: controller.signal,
 			accept: () => {
@@ -641,7 +664,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 				if ((reviewState !== "IDLE" && reviewState !== "ACCEPTED") || response?.id !== id) return;
 				reviewState = "RESOLVED";
 				cleanup();
-				resolve(response.ok ? { ok: true, findings: response.result?.findings ?? [] } : { ok: false, error: response.error });
+				if (response?.ok !== true) resolve({ ok: false, error: response?.error ?? "Reviewer failed" });
+				else if (!isReviewResult(response.result)) resolve({ ok: false, error: "Reviewer returned malformed result" });
+				else resolve({ ok: true, findings: response.result.findings });
 			},
 		});
 		await new Promise<void>(r => queueMicrotask(r));
@@ -682,7 +707,11 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			return;
 		}
 
-		const blocking = (review.findings ?? []).filter((finding) => finding.blocking);
+		const currentFindings = review.findings ?? [];
+		const carried = flow.reviewFindings?.filter((finding) => !finding.blocking) ?? [];
+		const findings = [...new Map([...carried, ...currentFindings].map((finding) => [`${finding.file}:${finding.line}:${finding.issue}`, finding])).values()];
+		const blocking = findings.filter((finding) => finding.blocking);
+		flow.reviewFindings = findings;
 		flow.blockingFindings = blocking;
 		if (blocking.length === 0) {
 			flow.phase = "done";
@@ -690,7 +719,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			updateFooter(ctx);
 			pi.sendMessage({
 				customType: "pi-flow-result",
-				content: `Workflow complete. Verification recorded; independent review clean on pass ${flow.reviewPass}.`,
+				content: findings.length === 0
+					? `Workflow complete. Verification recorded; independent review clean on pass ${flow.reviewPass}.`
+					: `Workflow complete. Verification recorded; ${findings.length} non-blocking review finding(s) preserved in result details on pass ${flow.reviewPass}.`,
 				display: true,
 				details: flow,
 			});
@@ -707,7 +738,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		flow.phase = "fix";
 		persistState();
 		updateFooter(ctx);
-		pi.sendUserMessage(`Independent review found blocking issues:\n${JSON.stringify(blocking, null, 2)}\n\nFix only these evidenced issues, rerun affected checks, and finish with [verification: pass] or [verification: fail].`, { deliverAs: "followUp" });
+		pi.sendUserMessage(`Independent review found blocking issues:\n${JSON.stringify(blocking, null, 2)}\n\nFix only these evidenced issues to their expected behavior and acceptance criteria, rerun affected checks, and finish with [verification: pass] or [verification: fail].`, { deliverAs: "followUp" });
 	}
 
 
