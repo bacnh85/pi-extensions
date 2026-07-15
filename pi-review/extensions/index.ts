@@ -237,7 +237,7 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
 		return { preset: "uncommitted", target: "" };
 	}
 
-	async function runReview(prompt: string, cwd: string, signal?: AbortSignal, gitRange?: string, requireExactRange?: boolean): Promise<ReviewResult | undefined> {
+	async function runReview(prompt: string, cwd: string, signal?: AbortSignal, gitRange?: string, requireExactRange?: boolean, timeout?: number): Promise<ReviewResult | undefined> {
 		const guidance = await readReviewGuidance(cwd);
 		let status, diff, staged, aheadLog, rangeDiff, rangeFailed;
 		try {
@@ -291,7 +291,7 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
 		const stagedSection = `\n\nStaged diff:\n${staged.stdout}`;
 		const evidence = `${rangeEvidence}${statusSection}${diffSection}${stagedSection}`;
 		const task = `${prompt}${guidance ? `\n\nREVIEW.md guidance:\n${guidance.slice(0, 16 * 1024)}` : ""}${evidence}`;
-		return isolatedReview(pi, { cwd, prompt: task, signal });
+		return isolatedReview(pi, { cwd, prompt: task, signal, timeout });
 	}
 
 	pi.registerCommand("review", {
@@ -361,7 +361,7 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
 		const request = raw as ReviewRunRequest;
 		if (!request?.id || typeof request.respond !== "function") return;
 		if (request.accept && !request.accept()) return;
-		void runReview(request.prompt, request.cwd, request.signal, request.gitRange, request.requireExactRange).then(
+		void runReview(request.prompt, request.cwd, request.signal, request.gitRange, request.requireExactRange, request.timeout).then(
 			(result) => request.respond(result ? { id: request.id, ok: true, result } : { id: request.id, ok: false, error: "Isolated reviewer unavailable" }),
 			(error) => request.respond({ id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) }),
 		);

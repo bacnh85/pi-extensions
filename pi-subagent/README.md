@@ -87,6 +87,7 @@ Every child execution receives a timeout:
 - **Maximum:** 60 minutes (`MAX_TIMEOUT_MS`)
 - Timeout values must be positive integers within the allowed range.
 - Timeout errors are distinguishable from parent cancellation.
+- Progress heartbeats keep the parent transport active during quiet model work; explicit timeouts remain hard deadlines.
 - Parallel tasks and chain steps may have per-item timeouts.
 
 ### Output safety
@@ -158,6 +159,7 @@ The raw `stopReason` from the Pi SDK is preserved in the result.
 - **Parent cancellation:** Aborting the parent tool call cancels all children.
 - **Sibling cancellation:** In parallel mode with `abortOnFailure: true`, the first failed task cancels running siblings.
 - **Timeout vs. abort:** Timeout errors set `status: "timeout"` and `stopReason: "timeout"`; parent cancellation sets `status: "aborted"`.
+- **Transport idle:** The parent tool receives periodic progress heartbeats while a child runs; these do not extend its timeout.
 
 ## Extension contract
 

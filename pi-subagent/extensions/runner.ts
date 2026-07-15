@@ -63,6 +63,12 @@ export interface SubAgentResult {
 // Public API
 // ---------------------------------------------------------------------------
 
+export function startHeartbeat(onHeartbeat: () => void, intervalMs = 30_000): () => void {
+	const timer = setInterval(onHeartbeat, intervalMs);
+	timer.unref?.();
+	return () => clearInterval(timer);
+}
+
 export async function runSubAgent(options: {
 	cwd: string;
 	systemPrompt: string;

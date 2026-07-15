@@ -25,8 +25,9 @@ const PLAN_EXECUTE_COMMAND = "plan-execute";
 // ponytail: keep in sync with pi-review/extensions/index.ts REVIEW_EVENT
 const REVIEW_EVENT = "pi-review:run";
 const MAX_REVIEW_PASSES = 3;
+const REVIEW_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_DIRTY_PATCH_BYTES = 50 * 1024;
-const MAX_UNTRACKED_SNAPSHOT_BYTES = 10 * 1024;
+const MAX_UNTRACKED_SNAPSHOT_BYTES = MAX_DIRTY_PATCH_BYTES;
 const PREFERENCES_FILE = path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "pi-plan", "preferences.json");
 const THINKING_LEVELS = [
 	"off",
@@ -157,7 +158,7 @@ export async function snapshotUntrackedFiles(cwd: string): Promise<string> {
 		const content = await readFile(path.join(cwd, file));
 		totalBytes += content.length;
 		if (totalBytes > MAX_UNTRACKED_SNAPSHOT_BYTES) {
-			throw new Error(`untracked content exceeds ${MAX_UNTRACKED_SNAPSHOT_BYTES / 1024} KB`);
+			throw new Error(`untracked content exceeds ${MAX_UNTRACKED_SNAPSHOT_BYTES / 1024} KB; commit, stage, or ignore unrelated untracked files before retrying`);
 		}
 		entries.push({
 			path: file,
@@ -199,19 +200,25 @@ function modelKey(model: { provider?: string; id?: string } | undefined): string
 	return `${model.provider}/${model.id}`;
 }
 
-/** Check if a bash command writes to the filesystem. In plan mode, write commands are blocked regardless of confirmation. */
-function isWriteCommand(cmd: string): boolean {
+type CommandDisposition = "read" | "write" | "confirm";
+
+/** Classify one shell command for plan mode without attempting to interpret arbitrary executables. */
+function classifyCommand(cmd: string): CommandDisposition {
 	const c = cmd.trim();
-	if (!c || /[\r\n;&|`$<>]/.test(c) || /--output(?:=|\s)/i.test(c)) return true;
-	if (/^git\s+/i.test(c)) {
-		return !(/^git\s+(status|rev-parse|diff|show|log|ls-files)\b/i.test(c)
-			|| /^git\s+branch\s+--(?:list|all|remote|merged|no-merged|contains|show-current)\b/i.test(c));
+	if (!c) return "confirm";
+	if (/[\r\n;&|`$<>()]/.test(c) || /--output(?:=|\s)/i.test(c)) return "write";
+	const inspection = c.replace(/^\S*\/(?=[^/\s]+(?:\s|$))/, "");
+	if (/^git\s+/i.test(inspection)) {
+		const read = /^git\s+(status|rev-parse|diff|show|log|ls-files)\b/i.test(inspection)
+			|| /^git\s+branch\s+--(?:list|all|remote|merged|no-merged|contains|show-current)\b/i.test(inspection);
+		return read ? (inspection === c ? "read" : "confirm") : "write";
 	}
-	if (/^sed\b/i.test(c) && /\s-i\b/i.test(c)) return true;
-	if (/^tee\b/i.test(c)) return true;
-	if (/^find\b/i.test(c) && /-(delete|exec|execdir|ok|okdir|fprint[f0]?|fls)\b/i.test(c)) return true;
-	if (/^sort\b/i.test(c) && /\s-o(?:\s|$)/i.test(c)) return true;
-	return !/^(?:rg|grep|find|fd|ls|pwd|cat|head|tail|awk|wc|sort|uniq|cut)\b/i.test(c);
+	if (/^(?:(?:rm|rmdir|mv|cp|mkdir|touch|chmod|chown|ln|install|truncate|dd|mktemp)|sudo|env|command|time|nohup)\b/i.test(inspection)) return "write";
+	if (/^sed\b/i.test(inspection) && (/\s(?:-i\S*|--in-place(?:=\S*)?)(?:\s|$)/i.test(inspection) || /\b(?:\d+)?w\s+/i.test(inspection) || /\/w\s/i.test(inspection))) return "write";
+	if (/^tee\b/i.test(inspection)) return "write";
+	if (/^find\b/i.test(inspection) && /-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)\b/i.test(inspection)) return "write";
+	if (/^sort\b/i.test(inspection) && /\s-o(?:\s|$)/i.test(inspection)) return "write";
+	return /^(?:rg|grep|find|fd|ls|pwd|cat|head|tail|awk|wc|sort|uniq|cut)\b/i.test(c) ? "read" : "confirm";
 }
 
 function getEffectiveThinking(prefs: PlanPreferences, model: { provider?: string; id?: string } | undefined): { plan: ThinkingLevel; normal: ThinkingLevel } {
@@ -591,7 +598,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 				cleanup();
 				resolve({ ok: false, error: "Reviewer timed out" });
 			}
-		}, 180_000);
+		}, REVIEW_TIMEOUT_MS);
 		reviewTimer = timer;
 
 		let untrackedDelta = "";
@@ -623,7 +630,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			id,
 			cwd: ctx.cwd,
 			prompt: `Review implementation of ${relativeToCwd(ctx.cwd, lastPlanPath)} against Git baseline ${flow.baseline}. Initial dirty paths at workflow start (exclude unless changed by this implementation):\n${(flow.initialDirty || "(none)").slice(0, MAX_DIRTY_PATCH_BYTES)}\n\nInitial dirty patch (all tracked changes, staged + unstaged from git diff HEAD, 50 KB max):\n${flow.initialDirtyPatch || "(none)"}${untrackedDelta}\n\nCompare the current diff against the initial patch above. Report only regressions introduced by this implementation, not pre-existing dirt.`,
-			timeout: 180_000,
+			timeout: REVIEW_TIMEOUT_MS,
 			signal: controller.signal,
 			accept: () => {
 				if (reviewState !== "IDLE") return false;
@@ -1160,7 +1167,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	 * Tool gating in plan mode:
 	 *   - Blocked tools → deny with error
 	 *   - Bash (write commands) → hard-blocked (no file mutations via bash)
-	 *   - Bash (read commands) → require user confirmation
+	 *   - Bash (strict read commands) → auto-allowed
+	 *   - Bash (unknown executables) → require confirmation
 	 *   - Baseline tools NOT on the known-read list → require confirmation
 	 *   - Unknown tools (outside baseline) → require confirmation
 	 *   - Known-read tools → auto-allowed
@@ -1179,17 +1187,18 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		// Plan-only tools are always allowed
 		if (PLAN_ONLY_TOOLS.has(event.toolName)) return;
 
-		// Bash always requires confirmation
 		if (isToolCallEventType("bash", event)) {
-			// ponytail: block write commands outright — confirmation doesn't override read-only plan mode
-			if (isWriteCommand(event.input.command || "")) {
+			const disposition = classifyCommand(event.input.command || "");
+			if (disposition === "read") return;
+			// ponytail: block explicit writers outright — confirmation doesn't override read-only plan mode
+			if (disposition === "write") {
 				return {
 					block: true,
-					reason: `pi-plan: writing to the filesystem is not allowed in plan mode. "${event.input.command}" modifies files. Exit plan mode to run this command, or use ${PLAN_TOOL} to add file content to the plan.`,
+					reason: `pi-plan: writing to the filesystem is not allowed in plan mode. "${event.input.command}" may modify files. Exit plan mode to run this command, or use ${PLAN_TOOL} to add file content to the plan.`,
 				};
 			}
-			if (!ctx.hasUI) return { block: true, reason: `pi-plan: bash requires confirmation but UI is not available.\nCommand: ${event.input.command}` };
-			if (!await ctx.ui.confirm("Allow bash command in plan mode?", `Command: ${event.input.command}`)) {
+			if (!ctx.hasUI) return { block: true, reason: `pi-plan: this command requires confirmation but UI is not available.\nCommand: ${event.input.command}` };
+			if (!await ctx.ui.confirm("Allow command with possible side effects?", `This command may execute repository-controlled code or modify files.\n\nCommand: ${event.input.command}`)) {
 				return { block: true, reason: `pi-plan: bash command rejected by user.\nCommand: ${event.input.command}` };
 			}
 			return;
@@ -1218,7 +1227,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			return {
 				systemPrompt:
 					_event.systemPrompt +
-					`\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- Bash commands that write to files (redirect, heredoc, sed -i, tee, cp/mv/rm, etc.) or contain command chaining/pipelines (| && ; & \` \$) are hard-blocked. Read-only bash commands (ls, grep, find, git status) require user confirmation.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${PLAN_QUESTION_TOOL} for consequential open decisions with 2-4 clear options and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${PLAN_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${PLAN_DIR}/. Current/next plan path: ${relativePlan}\n- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
+					`\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- Bash commands that write to files (redirect, heredoc, sed -i, tee, cp/mv/rm, etc.) or contain command chaining/pipelines (| && ; & \` \$) are hard-blocked. Strict single read-only bash commands (ls, grep, find, git status) run automatically; test/build/package scripts and other unknown executables require confirmation.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${PLAN_QUESTION_TOOL} for consequential open decisions with 2-4 clear options and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${PLAN_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${PLAN_DIR}/. Current/next plan path: ${relativePlan}\n- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
 			};
 		}
 	});

@@ -38,6 +38,7 @@ import {
 	isFailedResult,
 	mapWithConcurrencyLimit,
 	runSubAgent,
+	startHeartbeat,
 } from "./runner.ts";
 import {
 	normalizeTimeout,
@@ -515,6 +516,7 @@ export default function (pi: ExtensionAPI) {
 				parentSignal?: AbortSignal,
 				timeoutMs?: number,
 				onProgress?: (partial: SubAgentResult) => void,
+				heartbeatDetails?: () => SubagentDetails,
 				isReadOnly?: boolean,
 			): Promise<SubAgentResult> {
 				const agent = agents.find((a) => a.name === agentName);
@@ -576,23 +578,30 @@ export default function (pi: ExtensionAPI) {
 					};
 				}
 
-				const result = await runSubAgent({
-					cwd: safeCwd,
-					systemPrompt: params.instructions
-					? `${agent.systemPrompt}\n\n## Task Contract\n${params.instructions.slice(0, MAX_INSTRUCTIONS_LENGTH)}`
-					: agent.systemPrompt,
-					task,
-					tools,
-					model: resolved.model,
-					authStorage,
-					modelRegistry,
-					signal: parentSignal,
-					timeoutMs: effectiveTimeoutMs,
-					agentName,
-					thinkingLevel: agent.thinking,
-					onMessage: onProgress,
-				});
-				return result;
+				const stopHeartbeat = onUpdate ? startHeartbeat(() => onUpdate({
+					content: [{ type: "text", text: `Subagent ${agentName} is still running…` }],
+					details: heartbeatDetails?.() ?? makeDetails("single")([]),
+				})) : undefined;
+				try {
+					return await runSubAgent({
+						cwd: safeCwd,
+						systemPrompt: params.instructions
+						? `${agent.systemPrompt}\n\n## Task Contract\n${params.instructions.slice(0, MAX_INSTRUCTIONS_LENGTH)}`
+						: agent.systemPrompt,
+						task,
+						tools,
+						model: resolved.model,
+						authStorage,
+						modelRegistry,
+						signal: parentSignal,
+						timeoutMs: effectiveTimeoutMs,
+						agentName,
+						thinkingLevel: agent.thinking,
+						onMessage: onProgress,
+					});
+				} finally {
+					stopHeartbeat?.();
+				}
 			}
 
 			// --- Chain mode ---
@@ -615,6 +624,7 @@ export default function (pi: ExtensionAPI) {
 						step.agent, taskWithContext, step.cwd,
 						signal, step.timeout ?? params.timeout,
 						(partial) => threadStore.updateThread(thread.id, { result: partial }),
+						() => makeDetails("chain")(results),
 					);
 					threadStore.updateThread(thread.id, {
 						status: isFailedResult(result) ? (result.stopReason === "aborted" ? "aborted" : "failed") : "completed",
@@ -767,7 +777,8 @@ export default function (pi: ExtensionAPI) {
 								const result = await runOne(
 									t.agent, t.task, t.cwd,
 									parallelController.signal, t.timeout ?? params.timeout,
-								(partial) => threadStore.updateThread(parallelThreads[index].id, { result: partial }),
+									(partial) => threadStore.updateThread(parallelThreads[index].id, { result: partial }),
+									() => makeDetails("parallel")([...allResults]),
 								);
 								allResults[index] = result;
 								threadStore.updateThread(parallelThreads[index].id, {
@@ -823,6 +834,7 @@ export default function (pi: ExtensionAPI) {
 					params.agent, params.task, params.cwd,
 					signal, params.timeout,
 					(partial) => threadStore.updateThread(thread.id, { result: partial }),
+					() => makeDetails("single")([]),
 				);
 				threadStore.updateThread(thread.id, {
 					status: isFailedResult(result) ? (result.stopReason === "aborted" ? "aborted" : "failed") : "completed",

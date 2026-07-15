@@ -42,8 +42,10 @@ describe("workflow snapshots", () => {
 		writeFileSync(path.join(cwd, names[0]), "changed");
 		const second = new Map<string, Entry>((JSON.parse(await snapshotUntrackedFiles(cwd)) as Entry[]).map((entry) => [entry.path, entry]));
 		assert.notEqual(second.get(names[0])?.hash, first.get(names[0])?.hash);
-		writeFileSync(path.join(cwd, "large.txt"), "x".repeat(11 * 1024));
-		await assert.rejects(snapshotUntrackedFiles(cwd), /untracked content exceeds 10 KB/);
+		writeFileSync(path.join(cwd, "large.txt"), "x".repeat(14 * 1024));
+		assert.ok(JSON.parse(await snapshotUntrackedFiles(cwd)).some((entry: Entry) => entry.path === "large.txt"));
+		writeFileSync(path.join(cwd, "large.txt"), "x".repeat(51 * 1024));
+		await assert.rejects(snapshotUntrackedFiles(cwd), /untracked content exceeds 50 KB; commit, stage, or ignore/);
 	});
 });
 
@@ -178,13 +180,15 @@ describe("plan-mode guidance", () => {
 		assert.ok(PLAN_MODE_SERENA_GUIDANCE.includes("serena_get_symbols_overview"));
 		assert.ok(PLAN_MODE_SERENA_GUIDANCE.includes("serena_find_symbol"));
 		assert.ok(PLAN_MODE_SERENA_GUIDANCE.includes("Use read for docs/config/non-code files"));
+		assert.ok(PLAN_MODE_SERENA_GUIDANCE.includes("Prefer the dedicated ls/grep/find tools"));
+		assert.ok(PLAN_MODE_SERENA_GUIDANCE.includes("test, build, and package scripts require confirmation"));
 	});
 });
 
 describe("plan-mode tool lists", () => {
 	it("includes all known read/research tools", () => {
-		for (const tool of ["read", "ffgrep", "fffind", "web_search", "web_extract",
-			"serena_find_symbol", "serena_get_symbols_overview",
+		for (const tool of ["read", "grep", "find", "ls", "ffgrep", "fffind", "web_search", "web_extract",
+			"serena_check_onboarding_performed", "serena_find_symbol", "serena_get_symbols_overview",
 			"munin_search", "munin_get", "munin_list",
 		]) {
 			assert.ok(READ_ONLY_TOOLS.has(tool), `${tool} in known-read set`);
@@ -228,6 +232,8 @@ describe("plan mode prompt composition", () => {
 		assert.ok(result.systemPrompt.includes("## Plan Mode"), "plan mode header added");
 		assert.ok(result.systemPrompt.includes("smallest complete"), "smallest complete change rule");
 		assert.ok(result.systemPrompt.includes("read-only planning mode"), "read-only mode stated");
+		assert.ok(result.systemPrompt.includes("Strict single read-only bash commands"), "safe bash auto-run stated");
+		assert.ok(!result.systemPrompt.includes("Read-only bash commands (ls, grep, find, git status) require user confirmation"));
 	});
 
 	it("does not inject plan prompt when not in plan mode", async () => {
@@ -245,7 +251,8 @@ describe("plan mode prompt composition", () => {
 
 describe("tool gating in plan mode", () => {
 	it("auto-allows known read/research tools in baseline", async () => {
-		const { handlers } = createFakePi(["read", "ffgrep", "web_search", "serena_find_symbol"], { plan: true });
+		const tools = ["read", "grep", "find", "ls", "ffgrep", "web_search", "serena_check_onboarding_performed", "serena_find_symbol"];
+		const { handlers } = createFakePi(tools, { plan: true });
 		const ctx = fakeCtx({ hasUI: true });
 
 		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
@@ -253,7 +260,7 @@ describe("tool gating in plan mode", () => {
 		const tc = handlers.tool_call?.[0];
 		assert.ok(tc);
 
-		for (const tool of ["read", "ffgrep", "web_search", "serena_find_symbol"]) {
+		for (const tool of tools) {
 			const r = await tc({ toolName: tool, input: {} }, ctx);
 			assert.equal(r, undefined, `${tool} auto-allowed`);
 		}
@@ -305,13 +312,14 @@ describe("tool gating in plan mode", () => {
 		assert.ok(r2?.block, "write blocked");
 	});
 
-	it("requires confirmation for bash commands", async () => {
-		let confirmed = false;
+	it("requires confirmation for unknown executables and honors approval or rejection", async () => {
+		const decisions = [true, false];
+		const confirmations: string[] = [];
 		const { handlers } = createFakePi(["read", "bash"], { plan: true });
 		const ctx = fakeCtx({
 			hasUI: true,
 			ui: {
-				confirm: async () => { confirmed = true; return true; },
+				confirm: async (_title: string, body: string) => { confirmations.push(body); return decisions.shift()!; },
 				select: async () => null, editor: async () => "",
 				setStatus: () => {}, setWidget: () => {}, notify: () => {},
 				theme: { fg: (_s: string, t: string) => t },
@@ -322,12 +330,14 @@ describe("tool gating in plan mode", () => {
 
 		const tc = handlers.tool_call?.[0];
 		assert.ok(tc);
-		const r = await tc({ toolName: "bash", input: { command: "ls -la" } }, ctx);
-		assert.equal(r, undefined, "bash passes when confirmed");
-		assert.ok(confirmed, "confirm called");
+		assert.equal(await tc({ toolName: "bash", input: { command: "npm test" } }, ctx), undefined, "approved command allowed");
+		const rejected = await tc({ toolName: "bash", input: { command: "npm test" } }, ctx);
+		assert.ok(rejected?.block, "declined command blocked");
+		assert.equal(confirmations.length, 2);
+		assert.ok(confirmations.every((body) => body.includes("may execute repository-controlled code or modify files")));
 	});
 
-	it("denies bash when UI is not available", async () => {
+	it("denies confirmation-required commands when UI is not available", async () => {
 		const { handlers } = createFakePi(["read", "bash"], { plan: true });
 		const ctx = fakeCtx({ hasUI: false });
 
@@ -335,9 +345,9 @@ describe("tool gating in plan mode", () => {
 
 		const tc = handlers.tool_call?.[0];
 		assert.ok(tc);
-		const r = await tc({ toolName: "bash", input: { command: "find . -delete" } }, ctx);
+		const r = await tc({ toolName: "bash", input: { command: "npm test" } }, ctx);
 		assert.ok(r?.block);
-		assert.ok(r?.reason?.includes("writing to the filesystem"));
+		assert.ok(r?.reason?.includes("requires confirmation"));
 	});
 
 	const WRITE_CASES = [
@@ -345,12 +355,22 @@ describe("tool gating in plan mode", () => {
 		["redirect", "echo hello > output.txt"],
 		["redirect without spaces", "echo hello>output.txt"],
 		["sed -i", "sed -i 's/foo/bar/g' file.txt"],
+		["sed backup", "sed -i.bak 's/foo/bar/g' file.txt"],
+		["sed long option", "sed --in-place 's/foo/bar/g' file.txt"],
+		["sed write", "sed -n '1w output.txt' input.txt"],
 		["tee", "echo data | tee output.txt"],
+		["find delete", "find . -delete"],
+		["find exec", "find . -exec touch marker +"],
+		["find output", "find . -fprint output.txt"],
+		["sort output", "sort -o output.txt input.txt"],
 		["git mutation", "git reset --hard"],
 		["git output", "git show --output=patch HEAD"],
-		["package script", "npm test"],
+		["known writer", "cp source target"],
+		["absolute writer", "/bin/rm output.txt"],
+		["wrapped writer", "sudo rm output.txt"],
 		["read pipeline", "cat file.txt | grep foo"],
 		["command chaining", "ls -la; pwd"],
+		["command substitution", "echo $(touch marker)"],
 	];
 
 	for (const [label, cmd] of WRITE_CASES) {
@@ -366,13 +386,13 @@ describe("tool gating in plan mode", () => {
 		});
 	}
 
-	it("allows read-only bash commands in plan mode", async () => {
-		let confirmed = false;
+	it("auto-allows strict read-only bash commands without prompting", async () => {
+		let confirmations = 0;
 		const { handlers } = createFakePi(["read", "bash"], { plan: true });
 		const ctx = fakeCtx({
 			hasUI: true,
 			ui: {
-				confirm: async () => { confirmed = true; return true; },
+				confirm: async () => { confirmations++; return false; },
 				select: async () => null, editor: async () => "",
 				setStatus: () => {}, setWidget: () => {}, notify: () => {},
 				theme: { fg: (_s: string, t: string) => t },
@@ -384,13 +404,10 @@ describe("tool gating in plan mode", () => {
 		const tc = handlers.tool_call?.[0];
 		assert.ok(tc);
 
-		// Read-only commands still pass confirmation
 		for (const cmd of ["ls -la", "grep -R foo src/", "find . -name '*.ts'", "git status --short", "cat index.ts"]) {
-			confirmed = false;
-			const r = await tc({ toolName: "bash", input: { command: cmd } }, ctx);
-			assert.equal(r, undefined, `${cmd} must pass when confirmed`);
-			assert.ok(confirmed, `confirm called for ${cmd}`);
+			assert.equal(await tc({ toolName: "bash", input: { command: cmd } }, ctx), undefined, `${cmd} auto-allowed`);
 		}
+		assert.equal(confirmations, 0);
 	});
 
 	it("denies non-read baseline tools without UI", async () => {
@@ -950,6 +967,7 @@ describe("flow loop regression coverage", () => {
 		state.onEmit = (event, data) => {
 			if (event === "pi-review:run") {
 				reviewEventEmitted = true;
+				assert.equal(data.timeout, 10 * 60 * 1000);
 				const accepted = data.accept();
 				assert.ok(accepted);
 				data.respond({ id: data.id, ok: true, result: { findings: [] } });

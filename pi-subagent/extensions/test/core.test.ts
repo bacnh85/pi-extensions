@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "mocha";
 import { discoverAgents, invalidateAgentCache } from "../agents.ts";
-import { mapWithConcurrencyLimit, isFailedResult, getResultOutput, getFinalOutput } from "../runner.ts";
+import { mapWithConcurrencyLimit, isFailedResult, getResultOutput, getFinalOutput, startHeartbeat } from "../runner.ts";
 import { ThreadStore } from "../threads.ts";
 import {
 	resolveSafeCwd,
@@ -235,6 +235,19 @@ describe("agent discovery", () => {
 // ===========================================================================
 
 describe("runner helpers", () => {
+	it("emits heartbeats until cleanup and cleanup is idempotent", async () => {
+		let beats = 0;
+		let reachedTwo!: () => void;
+		const twoBeats = new Promise<void>((resolve) => { reachedTwo = resolve; });
+		const cleanup = startHeartbeat(() => { if (++beats === 2) reachedTwo(); }, 5);
+		await twoBeats;
+		cleanup();
+		cleanup();
+		const stoppedAt = beats;
+		await new Promise((resolve) => setTimeout(resolve, 15));
+		assert.equal(beats, stoppedAt);
+	});
+
 	it("enforces the concurrency ceiling and preserves result order", async () => {
 		let active = 0;
 		let peak = 0;

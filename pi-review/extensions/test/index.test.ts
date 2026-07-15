@@ -12,6 +12,7 @@ function harness(subagent = false) {
 	const commands: Record<string, any> = {};
 	const sent: any[] = [];
 	const messages: any[] = [];
+	const subagentRequests: any[] = [];
 	let activeTools = ["read", "edit", "ffgrep", "serena_find_symbol"];
 	let thinking = "medium";
 	const bus = new Map<string, Function[]>();
@@ -28,6 +29,7 @@ function harness(subagent = false) {
 		events: {
 			on(name: string, fn: Function) { const list = bus.get(name) ?? []; list.push(fn); bus.set(name, list); },
 			emit(name: string, value: any) {
+				if (name === "pi-subagent:run") subagentRequests.push(value);
 				if (subagent && name === "pi-subagent:run") {
 					value.accept();
 					value.respond({ id: value.id, ok: true, result: { messages: [{ role: "assistant", content: [{ type: "text", text: '{"summary":"clean","findings":[]}' }] }] } });
@@ -42,7 +44,12 @@ function harness(subagent = false) {
 		waitForIdle: async () => {},
 		ui: { theme: { fg: (_: string, text: string) => text }, setStatus() {}, notify() {}, select: async () => undefined, editor: async () => undefined },
 	};
-	return { handlers, commands, sent, messages, ctx, tools: () => activeTools, thinking: () => thinking };
+	return {
+		handlers, commands, sent, messages, subagentRequests, ctx,
+		emit: (name: string, value: any) => pi.events.emit(name, value),
+		tools: () => activeTools,
+		thinking: () => thinking,
+	};
 }
 
 describe("review parsing and shell gate", () => {
@@ -105,6 +112,23 @@ describe("review parsing and shell gate", () => {
 });
 
 describe("review lifecycle", () => {
+	it("forwards review event timeouts to the isolated subagent", async () => {
+		const h = harness(true);
+		let response: any;
+		h.emit("pi-review:run", {
+			id: "review-1",
+			cwd: process.cwd(),
+			prompt: "Review this change",
+			timeout: 600_000,
+			accept: () => true,
+			respond: (value: any) => { response = value; },
+		});
+		await flush();
+		assert.equal(h.subagentRequests.length, 1);
+		assert.equal(h.subagentRequests[0].timeout, 600_000);
+		assert.equal(response?.ok, true);
+	});
+
 	it("uses isolated review when available without changing parent tools", async () => {
 		const h = harness(true);
 		await h.commands.review.handler("changes", h.ctx);
