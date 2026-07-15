@@ -468,6 +468,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		const planTitleToExecute = lastPlanTitle;
 		const relativePlan = relativeToCwd(ctx.cwd, planPathToExecute);
 		const parentSession = ctx.sessionManager.getSessionFile();
+		const priorFlow = flow;
 		if (withFlow) {
 			const [head, dirty, dirtyPatch, untracked] = await Promise.all([
 				pi.exec("git", ["rev-parse", "HEAD"], { timeout: 5_000 }),
@@ -533,6 +534,12 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 				if (flow) flow.phase = "stopped";
 				ctx.ui.notify("New-session execution cancelled.", "info");
 			}
+		} catch (error) {
+			if (withFlow) {
+				flow = priorFlow;
+				persistState();
+			}
+			throw error;
 		} finally {
 			executionHandoff = false;
 		}
@@ -560,15 +567,32 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		let resolve!: (value: { ok: boolean; findings?: ReviewFinding[]; error?: string }) => void;
 		const result = new Promise<{ ok: boolean; findings?: ReviewFinding[]; error?: string }>((done) => { resolve = done; });
 		flowController?.abort();
-		flowController = new AbortController();
+		const controller = new AbortController();
+		flowController = controller;
 		if (reviewTimer) clearTimeout(reviewTimer);
-		reviewTimer = setTimeout(() => {
+
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const cleanup = () => {
+			if (timer) clearTimeout(timer);
+			if (reviewTimer === timer) reviewTimer = undefined;
+			if (flowController === controller) flowController = undefined;
+		};
+		controller.signal.addEventListener("abort", () => {
+			if (reviewState !== "IDLE" && reviewState !== "ACCEPTED") return;
+			reviewState = "RESOLVED";
+			cleanup();
+			resolve({ ok: false, error: "Reviewer cancelled" });
+		}, { once: true });
+
+		timer = setTimeout(() => {
 			if (reviewState === "IDLE" || reviewState === "ACCEPTED") {
 				reviewState = "TIMED_OUT";
-				flowController?.abort();
+				controller.abort();
+				cleanup();
 				resolve({ ok: false, error: "Reviewer timed out" });
 			}
 		}, 180_000);
+		reviewTimer = timer;
 
 		let untrackedDelta = "";
 		try {
@@ -591,7 +615,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 				? `\n\nUntracked content changes since start:\n${JSON.stringify(changes, null, 2)}`
 				: "\n\nUntracked files unchanged since start.";
 		} catch (error) {
-			clearTimeout(reviewTimer);
+			cleanup();
 			return { ok: false, error: `Current untracked file snapshot failed: ${String(error)}` };
 		}
 
@@ -600,7 +624,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			cwd: ctx.cwd,
 			prompt: `Review implementation of ${relativeToCwd(ctx.cwd, lastPlanPath)} against Git baseline ${flow.baseline}. Initial dirty paths at workflow start (exclude unless changed by this implementation):\n${(flow.initialDirty || "(none)").slice(0, MAX_DIRTY_PATCH_BYTES)}\n\nInitial dirty patch (all tracked changes, staged + unstaged from git diff HEAD, 50 KB max):\n${flow.initialDirtyPatch || "(none)"}${untrackedDelta}\n\nCompare the current diff against the initial patch above. Report only regressions introduced by this implementation, not pre-existing dirt.`,
 			timeout: 180_000,
-			signal: flowController.signal,
+			signal: controller.signal,
 			accept: () => {
 				if (reviewState !== "IDLE") return false;
 				reviewState = "ACCEPTED";
@@ -609,14 +633,14 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			respond: (response: any) => {
 				if ((reviewState !== "IDLE" && reviewState !== "ACCEPTED") || response?.id !== id) return;
 				reviewState = "RESOLVED";
-				clearTimeout(reviewTimer);
+				cleanup();
 				resolve(response.ok ? { ok: true, findings: response.result?.findings ?? [] } : { ok: false, error: response.error });
 			},
 		});
 		await new Promise<void>(r => queueMicrotask(r));
 		if (reviewState === "IDLE") {
 			reviewState = "RESOLVED";
-			clearTimeout(reviewTimer);
+			cleanup();
 			return { ok: false, error: "pi-review is unavailable" };
 		}
 		return result;
@@ -1036,6 +1060,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const command = args.trim() || "status";
 			if (command === "stop" && flow && !["done", "stopped"].includes(flow.phase)) {
+				// abort listener resolves the pending review and cleans up its timer/controller
 				flowController?.abort();
 				flow.phase = "stopped";
 				persistState();
@@ -1170,8 +1195,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			return;
 		}
 
-		// ponytail: even baseline custom tools (e.g. obsidian) need confirm unless known-read
-		if (toolsBeforePlan && !READ_ONLY_TOOLS.has(event.toolName)) {
+		// ponytail: even baseline/unknown custom tools (e.g. obsidian) need confirm unless known-read
+		if (!READ_ONLY_TOOLS.has(event.toolName)) {
 			if (!ctx.hasUI) return { block: true, reason: `pi-plan: ${event.toolName} requires confirmation but UI is not available.` };
 			if (!await ctx.ui.confirm(`Allow ${event.toolName} in plan mode?`, `Tool: ${event.toolName}`)) {
 				return { block: true, reason: `pi-plan: ${event.toolName} rejected by user.` };
@@ -1193,7 +1218,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			return {
 				systemPrompt:
 					_event.systemPrompt +
-					`\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- Bash commands that write to files (redirect, heredoc, sed -i, tee, cp/mv/rm, etc.) are hard-blocked. Read-only bash commands (ls, grep, find, git status) require user confirmation.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${PLAN_QUESTION_TOOL} for consequential open decisions with 2-4 clear options and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${PLAN_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${PLAN_DIR}/. Current/next plan path: ${relativePlan}\n- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
+					`\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- Bash commands that write to files (redirect, heredoc, sed -i, tee, cp/mv/rm, etc.) or contain command chaining/pipelines (| && ; & \` \$) are hard-blocked. Read-only bash commands (ls, grep, find, git status) require user confirmation.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${PLAN_QUESTION_TOOL} for consequential open decisions with 2-4 clear options and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${PLAN_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${PLAN_DIR}/. Current/next plan path: ${relativePlan}\n- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
 			};
 		}
 	});

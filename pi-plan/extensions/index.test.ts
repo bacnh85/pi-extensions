@@ -17,6 +17,17 @@ import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
 const TMP = path.join(os.tmpdir(), "pi-plan-test-" + process.pid);
 before(() => { mkdirSync(TMP, { recursive: true }); });
 
+function createGitRepo(prefix: string): string {
+	const cwd = mkdtempSync(path.join(os.tmpdir(), prefix));
+	execFileSync("git", ["init", "--quiet"], { cwd });
+	execFileSync("git", ["config", "user.email", "test@test"], { cwd });
+	execFileSync("git", ["config", "user.name", "Test"], { cwd });
+	writeFileSync(path.join(cwd, "README.md"), "# test");
+	execFileSync("git", ["add", "-A"], { cwd });
+	execFileSync("git", ["commit", "-m", "initial"], { cwd });
+	return cwd;
+}
+
 describe("workflow snapshots", () => {
 	it("snapshots untracked paths losslessly and detects content changes", async () => {
 		const cwd = mkdtempSync(path.join(os.tmpdir(), "pi-plan-hash-"));
@@ -52,6 +63,8 @@ interface FakePi {
 	sentMessages: any[];
 	customMessages: any[];
 	flagValues: Record<string, any>;
+	eventEmits?: any[];
+	onEmit?: (event: string, data: any) => void;
 }
 
 function createFakePi(
@@ -109,6 +122,13 @@ function createFakePi(
 		getSessionName() { return undefined; },
 		sendMessage(message: any, options?: any) {
 			state.customMessages.push({ message, options });
+		},
+		events: {
+			emit(event: string, data: any) {
+				state.eventEmits ??= [];
+				state.eventEmits.push({ event, data });
+				state.onEmit?.(event, data);
+			},
 		},
 		exec: async (_cmd: string, _args: string[], _options?: any) => ({
 			code: 0,
@@ -329,6 +349,8 @@ describe("tool gating in plan mode", () => {
 		["git mutation", "git reset --hard"],
 		["git output", "git show --output=patch HEAD"],
 		["package script", "npm test"],
+		["read pipeline", "cat file.txt | grep foo"],
+		["command chaining", "ls -la; pwd"],
 	];
 
 	for (const [label, cmd] of WRITE_CASES) {
@@ -439,7 +461,7 @@ describe("write_plan lifecycle", () => {
 			hasUI: true, cwd: TMP,
 			getContextUsage: () => ({ percent: 50 }),
 			ui: {
-				select: async () => "No, stay in Plan mode",
+				select: async () => "Stay in Plan mode",
 				confirm: async () => false, editor: async () => "",
 				setStatus: () => {}, setWidget: () => {}, notify: () => { notifyCalled = true; },
 				setEditorText: (text: string) => { prefillText = text; },
@@ -615,14 +637,7 @@ describe("execution handoff", () => {
 	it("fresh-session execution with flow through /plan-approve flow command", async () => {
 		const { commands, sentMessages, toolDefs, handlers } = createFakePi(["read"], { plan: true });
 
-		// Set up a git repo for the workflow path
-		const flowCwd = mkdtempSync(path.join(os.tmpdir(), "pi-plan-flow-"));
-		execFileSync("git", ["init", "--quiet"], { cwd: flowCwd });
-		execFileSync("git", ["config", "user.email", "test@test"], { cwd: flowCwd });
-		execFileSync("git", ["config", "user.name", "Test"], { cwd: flowCwd });
-		writeFileSync(path.join(flowCwd, "README.md"), "# test");
-		execFileSync("git", ["add", "-A"], { cwd: flowCwd });
-		execFileSync("git", ["commit", "-m", "initial"], { cwd: flowCwd });
+		const flowCwd = createGitRepo("pi-plan-flow-");
 
 		let newSessionCalled = false;
 		const ctx = fakeCtx({
@@ -648,6 +663,25 @@ describe("execution handoff", () => {
 		assert.ok(sentMessages.length >= 1, "sent at least one message");
 	});
 
+	it("rolls back flow state when fresh-session handoff throws", async () => {
+		const { commands, entries, toolDefs, handlers } = createFakePi(["read"], { plan: true });
+		const flowCwd = createGitRepo("pi-plan-flow-error-");
+		const ctx = fakeCtx({
+			cwd: flowCwd,
+			newSession: async (options: any) => {
+				await options.setup({ appendCustomEntry: (customType: string, data?: any) => entries.push({ customType, data }) });
+				throw new Error("handoff failed");
+			},
+		});
+
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+		await toolDefs.write_plan.execute("c1", { title: "Plan", content: "# Plan\nWork." }, undefined, undefined, ctx);
+		await assert.rejects(commands["plan-approve"].handler("flow", ctx), /handoff failed/);
+
+		assert.ok(entries.some((entry) => entry.data?.flow?.phase === "implement"), "handoff captured new flow state");
+		assert.equal(entries.at(-1)?.data?.flow, undefined, "failed handoff restores prior flow state");
+	});
+
 	it("calls appendEntry when plan mode is toggled", async () => {
 		const { handlers, entries, commands } = createFakePi(["read"], {});
 
@@ -668,14 +702,7 @@ describe("execution handoff", () => {
 	it("switching to an empty branch clears workflow state", async () => {
 		const { handlers, commands, entries, toolDefs } = createFakePi(["read"], { plan: true });
 
-		// Set up a git repo for the workflow path
-		const flowCwd = mkdtempSync(path.join(os.tmpdir(), "pi-plan-branch-"));
-		execFileSync("git", ["init", "--quiet"], { cwd: flowCwd });
-		execFileSync("git", ["config", "user.email", "test@test"], { cwd: flowCwd });
-		execFileSync("git", ["config", "user.name", "Test"], { cwd: flowCwd });
-		writeFileSync(path.join(flowCwd, "README.md"), "# test");
-		execFileSync("git", ["add", "-A"], { cwd: flowCwd });
-		execFileSync("git", ["commit", "-m", "initial"], { cwd: flowCwd });
+		const flowCwd = createGitRepo("pi-plan-branch-");
 
 		const ctx = fakeCtx({
 			hasUI: true, cwd: flowCwd,
@@ -698,7 +725,6 @@ describe("execution handoff", () => {
 		const lastPlanEntry = allPlanEntries[allPlanEntries.length - 1];
 		const flowData = lastPlanEntry?.data?.flow;
 		assert.ok(flowData, "flow state persisted after execution");
-		const savedFlowPhase = flowData.phase;
 
 		// Simulate switching to a branch with no pi-plan entry
 		const emptyBranchCtx = fakeCtx({
@@ -872,5 +898,187 @@ describe("ask_plan_question validation", () => {
 			qd.execute("c1", { question: "Q?", options: [{ label: "other" }, { label: "Option B" }] }, undefined, undefined, ctx),
 			/Option labels cannot conflict with the "Other" label\./,
 		);
+	});
+});
+
+describe("flow loop regression coverage", () => {
+	it("stops when verification marker is absent", async () => {
+		const state = createFakePi(["read"], { plan: false });
+		const ctx = fakeCtx({
+			sessionManager: {
+				getBranch: () => [
+					{
+						type: "custom",
+						customType: "pi-plan",
+						data: {
+							enabled: false,
+							lastPlanPath: "/some/path.md",
+							lastPlanTitle: "Some Plan",
+							flow: {
+								phase: "implement",
+								reviewPass: 0,
+								baseline: "abc",
+								initialDirty: "none",
+								initialDirtyPatch: "",
+								initialUntrackedSnapshot: "[]",
+							},
+						},
+					},
+					{
+						type: "message",
+						message: {
+							role: "assistant",
+							content: [{ type: "text", text: "Done with no marker." }],
+						},
+					},
+				],
+			},
+		});
+
+		await state.handlers.session_tree?.[0]({}, ctx);
+		const settled = state.handlers.agent_settled?.[0];
+		assert.ok(settled);
+		await settled({}, ctx);
+
+		const lastEntry = state.entries[state.entries.length - 1];
+		assert.equal(lastEntry?.data?.flow?.phase, "stopped", "phase becomes stopped");
+	});
+
+	it("completes when verification passes and review has no blocking findings", async () => {
+		const state = createFakePi(["read"], { plan: false });
+		let reviewEventEmitted = false;
+		state.onEmit = (event, data) => {
+			if (event === "pi-review:run") {
+				reviewEventEmitted = true;
+				const accepted = data.accept();
+				assert.ok(accepted);
+				data.respond({ id: data.id, ok: true, result: { findings: [] } });
+			}
+		};
+
+		const flowCwd = createGitRepo("pi-plan-flow-ok-");
+
+		const planPath = path.join(flowCwd, "plan.md");
+		writeFileSync(planPath, "# Plan");
+
+		const ctx = fakeCtx({
+			cwd: flowCwd,
+			sessionManager: {
+				getBranch: () => [
+					{
+						type: "custom",
+						customType: "pi-plan",
+						data: {
+							enabled: false,
+							lastPlanPath: planPath,
+							lastPlanTitle: "Some Plan",
+							flow: {
+								phase: "implement",
+								reviewPass: 0,
+								baseline: "abc",
+								initialDirty: "none",
+								initialDirtyPatch: "",
+								initialUntrackedSnapshot: "[]",
+							},
+						},
+					},
+					{
+						type: "message",
+						message: {
+							role: "assistant",
+							content: [{ type: "text", text: "We verified everything. [verification: pass]" }],
+						},
+					},
+				],
+			},
+		});
+
+		await state.handlers.session_tree?.[0]({}, ctx);
+		const settled = state.handlers.agent_settled?.[0];
+		assert.ok(settled);
+		await settled({}, ctx);
+
+		assert.ok(reviewEventEmitted, "review event was emitted");
+		const lastEntry = state.entries[state.entries.length - 1];
+		assert.equal(lastEntry?.data?.flow?.phase, "done", "phase becomes done");
+		assert.equal(state.customMessages.length, 1);
+		assert.equal(state.customMessages[0].message?.customType, "pi-flow-result");
+	});
+
+	it("sends fix prompt when reviewer returns blocking findings", async () => {
+		const state = createFakePi(["read"], { plan: false });
+		let reviewEventEmitted = false;
+		state.onEmit = (event, data) => {
+			if (event === "pi-review:run") {
+				reviewEventEmitted = true;
+				const accepted = data.accept();
+				assert.ok(accepted);
+				data.respond({
+					id: data.id,
+					ok: true,
+					result: {
+						findings: [
+							{
+								severity: "error",
+								file: "index.ts",
+								line: 10,
+								issue: "test issue",
+								evidence: "xxx",
+								suggestedFix: "fix it",
+								blocking: true,
+							},
+						],
+					},
+				});
+			}
+		};
+
+		const flowCwd = createGitRepo("pi-plan-flow-fail-");
+
+		const planPath = path.join(flowCwd, "plan.md");
+		writeFileSync(planPath, "# Plan");
+
+		const ctx = fakeCtx({
+			cwd: flowCwd,
+			sessionManager: {
+				getBranch: () => [
+					{
+						type: "custom",
+						customType: "pi-plan",
+						data: {
+							enabled: false,
+							lastPlanPath: planPath,
+							lastPlanTitle: "Some Plan",
+							flow: {
+								phase: "implement",
+								reviewPass: 0,
+								baseline: "abc",
+								initialDirty: "none",
+								initialDirtyPatch: "",
+								initialUntrackedSnapshot: "[]",
+							},
+						},
+					},
+					{
+						type: "message",
+						message: {
+							role: "assistant",
+							content: [{ type: "text", text: "Checks run. [verification: pass]" }],
+						},
+					},
+				],
+			},
+		});
+
+		await state.handlers.session_tree?.[0]({}, ctx);
+		const settled = state.handlers.agent_settled?.[0];
+		assert.ok(settled);
+		await settled({}, ctx);
+
+		assert.ok(reviewEventEmitted, "review event was emitted");
+		const lastEntry = state.entries[state.entries.length - 1];
+		assert.equal(lastEntry?.data?.flow?.phase, "fix", "phase transitions to fix");
+		assert.equal(state.sentMessages.length, 1);
+		assert.ok(state.sentMessages[0].content?.includes("Independent review found blocking issues"), "sent fix prompt to user");
 	});
 });
