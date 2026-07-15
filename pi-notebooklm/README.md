@@ -1,4 +1,4 @@
-# pi-notebooklm v0.1.0
+# pi-notebooklm
 
 Pi extension for **Google NotebookLM** (personal/Pro) — one `notebooklm` tool backed by [`notebooklm-py`](https://github.com/teng-lin/notebooklm-py) CLI bridge (v0.7.3).
 

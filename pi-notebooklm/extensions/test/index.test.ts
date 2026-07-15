@@ -201,9 +201,15 @@ describe("isDestructive", () => {
 		expect(isDestructive(["clear"])).to.be.true;
 	});
 
+	it("does not mistake option values for destructive or preview flags", () => {
+		expect(isDestructive(["source", "clean", "--profile", "--dry-run"])).to.be.true;
+		expect(isDestructive(["ask", "-c", "--new", "question"])).to.be.false;
+	});
+
 	describe("file overwrite (--force / -f)", () => {
 		it("detects download --force as destructive", () => {
 			expect(isDestructive(["download", "audio", "output.mp3", "-a", "<id>", "--force"])).to.be.true;
+			expect(isDestructive(["download", "audio", "--all", "--force"])).to.be.true;
 		});
 		it("allows download with short -f (not --force in v0.7.3)", () => {
 			expect(isDestructive(["download", "audio", "output.mp3", "-a", "<id>", "-f"])).to.be.false;
@@ -313,6 +319,11 @@ describe("requiresYesFlag", () => {
 	it("accepts --yes before --", () => {
 		expect(requiresYesFlag(["delete", "-n", "<id>", "--yes", "--"])).to.be.false;
 	});
+
+	it("identifies --yes correctly with chained option-like values", () => {
+		// "-p" is the value of "--storage", so "-y" is a real flag, not the value of "-p"
+		expect(requiresYesFlag(["delete", "-n", "<id>", "--storage", "-p", "-y"])).to.be.false;
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -354,6 +365,7 @@ describe("isBlockedInteractive", () => {
 
 	it("allows login --help (not blocked)", () => {
 		expect(isBlockedInteractive(["login", "--help"]).blocked).to.be.false;
+		expect(isBlockedInteractive(["login", "--storage", "-p", "--help"]).blocked).to.be.false;
 	});
 
 	it("blocks login when --help is --storage value (not real help flag)", () => {
@@ -464,6 +476,15 @@ describe("truncateOutput", () => {
 		expect(r.truncated).to.be.false;
 		expect(r.text.split("\n").length).to.be.at.most(2000);
 	});
+
+	it("final output does not exceed 50 KB when line-triggered near byte limit", () => {
+		const big = ["x".repeat(50 * 1024 - 5 - 2000), ...Array(2000).fill("")].join("\n");
+		expect(Buffer.byteLength(big, "utf8")).to.equal(50 * 1024 - 5);
+
+		const r = truncateOutput(big);
+		expect(r.truncated).to.be.true;
+		expect(Buffer.byteLength(r.text, "utf8")).to.be.at.most(50 * 1024);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -480,6 +501,34 @@ describe("extractOutputPaths", () => {
 	it("extracts --output flag path", () => {
 		const paths = extractOutputPaths(["source", "fulltext", "<src>", "--output", "/abs/path.md"], "/cwd");
 		expect(paths).to.deep.equal(["/abs/path.md"]);
+	});
+
+	it("does not treat option values as output flags", () => {
+		const paths = extractOutputPaths(
+			["--storage", "-o", "--profile", "-o", "source", "fulltext", "<src>", "--output", "actual.md"],
+			"/cwd",
+		);
+		expect(paths).to.deep.equal(["/cwd/actual.md"]);
+	});
+
+	it("extracts -o=-out.txt flag path", () => {
+		const paths = extractOutputPaths(["source", "fulltext", "<src>", "-o=-out.txt"], "/cwd");
+		expect(paths).to.deep.equal(["/cwd/-out.txt"]);
+	});
+
+	it("extracts --output=-out.txt flag path", () => {
+		const paths = extractOutputPaths(["source", "fulltext", "<src>", "--output=-out.txt"], "/cwd");
+		expect(paths).to.deep.equal(["/cwd/-out.txt"]);
+	});
+
+	it("extracts -o-out.txt flag path", () => {
+		const paths = extractOutputPaths(["source", "fulltext", "<src>", "-o-out.txt"], "/cwd");
+		expect(paths).to.deep.equal(["/cwd/-out.txt"]);
+	});
+
+	it("extracts -o -out.txt flag path", () => {
+		const paths = extractOutputPaths(["source", "fulltext", "<src>", "-o", "-out.txt"], "/cwd");
+		expect(paths).to.deep.equal(["/cwd/-out.txt"]);
 	});
 
 	it("extracts download positional path", () => {
@@ -500,8 +549,8 @@ describe("extractOutputPaths", () => {
 		expect(paths).to.deep.equal(["/cwd"]);
 	});
 
-	it("extracts download positional path when -a precedes path", () => {
-		const paths = extractOutputPaths(["download", "audio", "-a", "<id>", "output.mp3"], "/cwd");
+	it("extracts download positional path when --all boolean precedes path", () => {
+		const paths = extractOutputPaths(["download", "audio", "--all", "output.mp3"], "/cwd");
 		expect(paths).to.deep.equal(["/cwd/output.mp3"]);
 	});
 
@@ -528,6 +577,11 @@ describe("extractOutputPaths", () => {
 	it("global options before download without explicit path gets cwd fallback", () => {
 		const paths = extractOutputPaths(["--profile", "work", "download", "audio", "-a", "<id>"], "/cwd");
 		expect(paths).to.deep.equal(["/cwd"]);
+	});
+
+	it("accepts dash-prefixed positional output paths after --", () => {
+		const paths = extractOutputPaths(["download", "audio", "--", "-out.mp3"], "/cwd");
+		expect(paths).to.deep.equal(["/cwd/-out.mp3"]);
 	});
 });
 
@@ -782,6 +836,15 @@ describe("tool execution", () => {
 		expect(capturedTimeout).to.equal(60_000);
 	});
 
+	it("rejects source add with two positional contents after --", async () => {
+		try {
+			await registered.execute("id", { args: ["source", "add", "--", "-content1.txt", "-content2.txt"] }, mockSignal, undefined, mockCtx);
+			expect.fail("should have thrown");
+		} catch (e: any) {
+			expect(e.message).to.include("exactly one source");
+		}
+	});
+
 	it("returns stderr-only success", async () => {
 		execResults.push({ stdout: "", stderr: "info: done", code: 0 });
 		const r = await registered.execute("id", { args: ["doctor", "--json"] }, mockSignal, undefined, mockCtx);
@@ -1023,6 +1086,18 @@ describe("tool execution", () => {
 			const r = await registered.execute(
 				"id",
 				{ args: ["download", "audio", "output.mp3", "-a", "<id>", "--force"], confirm: true },
+				mockSignal,
+				undefined,
+				mockCtx,
+			);
+			expect(r.content[0].text).to.equal("downloaded");
+		});
+
+		it("allows download -n after artifact type", async () => {
+			execResults.push({ stdout: "downloaded", stderr: "", code: 0 });
+			const r = await registered.execute(
+				"id",
+				{ args: ["download", "audio", "--force", "-n", "id"], confirm: true },
 				mockSignal,
 				undefined,
 				mockCtx,

@@ -25,7 +25,7 @@ const VALUE_OPTIONS = new Set([
 	"--storage", "--profile", "-p", "--request-timeout", "--timeout",
 	"-n", "--notebook",
 	"-o", "--output",
-	"-a", "--all",
+	"-a",
 	"--name", "--title", "--content",
 	"-t",
 	"-c",
@@ -119,6 +119,21 @@ export function extractCommandPath(args: string[]): { path: string[]; rest: stri
 	return { path, rest: args.slice(i), endOfOptions };
 }
 
+/** Check if args array contains any target flag before `--`, skipping values consumed by VALUE_OPTIONS. */
+function hasRealFlag(args: string[], targets: string[]): boolean {
+	let endOfOptions = false;
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i];
+		if (a === "--") {
+			endOfOptions = true;
+			continue;
+		}
+		if (!endOfOptions && targets.includes(a)) return true;
+		if (!endOfOptions && VALUE_OPTIONS.has(a)) i++;
+	}
+	return false;
+}
+
 /** Check whether `--help` or `-h` appears before any `--` (end-of-options).
  *
  *  After `--`, flags like `--help` are positional values, not help flags.
@@ -128,28 +143,11 @@ export function extractCommandPath(args: string[]): { path: string[]; rest: stri
  *  login/interactive gates are not bypassed.
  */
 function hasHelpFlag(args: string[]): boolean {
-	const dd = args.indexOf("--");
-	const preDD = dd === -1 ? args : args.slice(0, dd);
-	for (let i = 0; i < preDD.length; i++) {
-		if ((preDD[i] === "--help" || preDD[i] === "-h") && !(i > 0 && VALUE_OPTIONS.has(preDD[i - 1]))) {
-			return true;
-		}
-	}
-	return false;
+	return hasRealFlag(args, ["--help", "-h"]);
 }
 
 function arraysMatch(a: string[], b: string[]): boolean {
 	return a.length === b.length && a.every((v, i) => v === b[i]);
-}
-
-/** Check whether args[index] is the value of a preceding option.
- *
- *  Prevents mistaking option values (e.g. `-y` as value of `--storage`,
- *  `--yes` as value of `-n`) for confirmation flags.
- */
-function isOptionValue(args: string[], index: number): boolean {
-	if (index <= 0) return false;
-	return VALUE_OPTIONS.has(args[index - 1]);
 }
 
 /** Check if args represent a destructive/state-removing operation.
@@ -168,9 +166,7 @@ export function isDestructive(args: string[]): boolean {
 	// Safe preview: source clean --dry-run is read-only
 	// Only consider --dry-run before end-of-options marker `--`;
 	// after `--`, flags are positional values, not options.
-	const dryRunDD = rest.indexOf("--");
-	const beforeDryRunDD = dryRunDD === -1 ? rest : rest.slice(0, dryRunDD);
-	if (arraysMatch(path, ["source", "clean"]) && beforeDryRunDD.includes("--dry-run")) {
+	if (arraysMatch(path, ["source", "clean"]) && hasRealFlag(rest, ["--dry-run"])) {
 		return false;
 	}
 
@@ -180,9 +176,7 @@ export function isDestructive(args: string[]): boolean {
 	if (path.length > 0 && DESTRUCTIVE_FLAGS[path[0]]) {
 		// Scan destructive flags only before the end-of-options marker.
 		// After `--`, flags like `--new` are positional values, not options.
-		const dd = args.indexOf("--");
-		const beforeDD = dd === -1 ? args : args.slice(0, dd);
-		return DESTRUCTIVE_FLAGS[path[0]].some((f) => beforeDD.includes(f));
+		if (hasRealFlag(args, DESTRUCTIVE_FLAGS[path[0]])) return true;
 	}
 
 	// File overwrite: --force with file-output commands overwrites
@@ -191,10 +185,7 @@ export function isDestructive(args: string[]): boolean {
 	// means --format, not --force. Only check long-form --force.
 	// Uses prefix matching because subcommands (e.g. "download audio")
 	// extend the base path.
-	const dd = args.indexOf("--");
-	const beforeDoubleDash = dd === -1 ? args : args.slice(0, dd);
-	const hasForce = beforeDoubleDash.includes("--force");
-	if (hasForce) {
+	if (hasRealFlag(args, ["--force"])) {
 		for (const fp of FILE_OVERWRITE_PATTERNS) {
 			if (path.length >= fp.length && fp.every((p, i) => path[i] === p)) {
 				return true;
@@ -213,20 +204,12 @@ export function isDestructive(args: string[]): boolean {
  *  After `--`, flags are positional values, not CLI options.
  */
 export function requiresYesFlag(args: string[]): boolean {
-	const { path, rest } = extractCommandPath(args);
+	const { path } = extractCommandPath(args);
 	const key = path.join(".");
 	if (NO_YES_SUPPORT.has(key)) return false;
 	if (!REQUIRES_YES.has(key)) return false;
-	if (key === "ask" && !rest.includes("--new")) return false; // ask without --new
-	// Only check before `--` (end-of-options marker)
-	const dd = args.indexOf("--");
-	const beforeDoubleDash = dd === -1 ? args : args.slice(0, dd);
-	// Skip args that are values of a preceding option: e.g. `-y` as value
-	// of `--storage`, or `--yes` as value of `-n`. Those are not confirmation flags.
-	const hasYes = beforeDoubleDash.some(
-		(a, i) => (a === "-y" || a === "--yes") && !isOptionValue(beforeDoubleDash, i),
-	);
-	return !hasYes;
+	if (key === "ask" && !hasRealFlag(args, ["--new"])) return false; // ask without --new
+	return !hasRealFlag(args, ["-y", "--yes"]);
 }
 
 /** Check if args contain interactive setup commands that require a terminal. */
@@ -301,7 +284,7 @@ export function truncateOutput(text: string): { text: string; truncated: boolean
 	if (needByteNotice) {
 		const limit = Math.max(0, MAX_OUTPUT_BYTES - suffixBytes);
 		const buf = Buffer.from(text, "utf8");
-		const sliced = buf.slice(0, limit).toString("utf8");
+		const sliced = buf.subarray(0, limit).toString("utf8");
 		result = sliced.replace(/\uFFFD+$/g, "");
 	}
 
@@ -312,11 +295,11 @@ export function truncateOutput(text: string): { text: string; truncated: boolean
 		result = currentLines.slice(0, lineLimit).join("\n");
 	}
 
-	// Re-check byte limit after line truncation may have restored bytes
-	if (!needByteNotice && Buffer.byteLength(result, "utf8") > MAX_OUTPUT_BYTES) {
+	// Re-check byte limit after line truncation (suffix bytes may push it over the limit)
+	if (!needByteNotice && Buffer.byteLength(result, "utf8") + suffixBytes > MAX_OUTPUT_BYTES) {
 		const limit = Math.max(0, MAX_OUTPUT_BYTES - suffixBytes);
 		const buf = Buffer.from(result, "utf8");
-		const sliced = buf.slice(0, limit).toString("utf8");
+		const sliced = buf.subarray(0, limit).toString("utf8");
 		result = sliced.replace(/\uFFFD+$/g, "");
 	}
 
@@ -339,18 +322,28 @@ export function truncateOutput(text: string): { text: string; truncated: boolean
  */
 export function extractOutputPaths(args: string[], cwd: string): string[] {
 	const paths: string[] = [];
+	let endOfOptions = false;
 
-	// -o / --output flag: next arg is the output path
-	for (let i = 0; i < args.length - 1; i++) {
-		if ((args[i] === "-o" || args[i] === "--output") && args[i + 1] && !args[i + 1].startsWith("-")) {
-			paths.push(resolve(cwd, args[i + 1]));
+	// -o / --output flag
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i];
+		if (a === "--") {
+			endOfOptions = true;
+			continue;
 		}
-	}
-
-	// --all <directory>: download all files to a directory
-	for (let i = 0; i < args.length - 1; i++) {
-		if (args[i] === "--all" && args[i + 1] && !args[i + 1].startsWith("-")) {
-			paths.push(resolve(cwd, args[i + 1]));
+		if (!endOfOptions) {
+			if (a === "-o" || a === "--output") {
+				if (i + 1 < args.length) {
+					paths.push(resolve(cwd, args[i + 1]));
+					i++;
+				}
+			} else if (a.startsWith("-o=") || a.startsWith("--output=")) {
+				paths.push(resolve(cwd, a.slice(a.indexOf("=") + 1)));
+			} else if (a.startsWith("-o") && a.length > 2) {
+				paths.push(resolve(cwd, a.slice(2)));
+			} else if (VALUE_OPTIONS.has(a)) {
+				i++;
+			}
 		}
 	}
 
@@ -361,10 +354,13 @@ export function extractOutputPaths(args: string[], cwd: string): string[] {
 	const { path: cmdPath, rest } = extractCommandPath(args);
 	if (cmdPath.length >= 2 && cmdPath[0] === "download") {
 		let lastPosArg: string | undefined;
+		let restEndOfOptions = false;
 		for (let i = 0; i < rest.length; i++) {
-			if (VALUE_OPTIONS.has(rest[i])) { i++; continue; }
-			if (rest[i].startsWith("-")) continue;
-			lastPosArg = rest[i];
+			const a = rest[i];
+			if (a === "--") { restEndOfOptions = true; continue; }
+			if (!restEndOfOptions && VALUE_OPTIONS.has(a)) { i++; continue; }
+			if (!restEndOfOptions && a.startsWith("-")) continue;
+			lastPosArg = a;
 		}
 		if (lastPosArg) {
 			paths.push(resolve(cwd, lastPosArg));
@@ -377,7 +373,7 @@ export function extractOutputPaths(args: string[], cwd: string): string[] {
 		paths.push(resolve(cwd, "."));
 	}
 
-	// Deduplicate: e.g. --all ./dir and positional path may coincide
+	// Deduplicate
 	return [...new Set(paths)];
 }
 
@@ -460,32 +456,24 @@ export default function piNotebooklmExtension(pi: ExtensionAPI) {
 		if (args.length >= 3 && sourceCmdPath[0] === "source" && sourceCmdPath[1] === "add") {
 			// Count content arguments (non-option items) in rest, skipping option values
 			let contentCount = 0;
+			let sourceRestEnd = false;
 			for (let i = 0; i < sourceRest.length; i++) {
-				if (VALUE_OPTIONS.has(sourceRest[i])) {
+				const a = sourceRest[i];
+				if (a === "--") {
+					sourceRestEnd = true;
+					continue;
+				}
+				if (!sourceRestEnd && VALUE_OPTIONS.has(a)) {
 					i++; // skip the following value
 					continue;
 				}
-				if (sourceRest[i].startsWith("-")) continue;
+				if (!sourceRestEnd && a.startsWith("-")) continue;
 				contentCount++;
 			}
 			if (contentCount > 1) {
 				throw new Error(
 					"notebooklm source add accepts exactly one source. " +
 						"Add sources one at a time: call notebooklm separately for each URL/file/text.",
-				);
-			}
-		}
-
-		// -------------------------------------------------------------------
-		// Validate: -n/--notebook after download subcommand must precede type
-		// -------------------------------------------------------------------
-		const { path: downloadCmdPath, rest: downloadRest } = extractCommandPath(args);
-		if (downloadCmdPath[0] === "download") {
-			const nbIndex = downloadRest.indexOf("-n") === -1 ? downloadRest.indexOf("--notebook") : downloadRest.indexOf("-n");
-			if (nbIndex > 0 && nbIndex < downloadRest.length - 1) {
-				throw new Error(
-					"Place -n/--notebook immediately after 'download', before the artifact type. " +
-						"Example: args: [\"download\", \"-n\", \"NOTEBOOK_ID\", \"audio\", ...]",
 				);
 			}
 		}
