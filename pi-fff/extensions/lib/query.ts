@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import path from "node:path";
 
 export function normalizePathConstraint(
@@ -6,6 +7,14 @@ export function normalizePathConstraint(
 ): string | null {
   let trimmed = pathConstraint.trim();
   if (!trimmed) return null;
+  if (trimmed.startsWith("@")) trimmed = trimmed.slice(1);
+  // Accept either platform separator, then validate traversal uniformly.
+  trimmed = trimmed.replaceAll("\\", "/");
+  if (/^[a-zA-Z]:/.test(trimmed) && !path.isAbsolute(trimmed)) {
+    throw new Error(
+      `Path constraint must be relative to the workspace: ${pathConstraint}`,
+    );
+  }
 
   if (path.isAbsolute(trimmed)) {
     const relative = path.relative(cwd, trimmed).replaceAll(path.sep, "/");
@@ -43,6 +52,13 @@ export function normalizePathConstraint(
   if (trimmed.startsWith("/") || trimmed.endsWith("/")) return trimmed;
   // Globs (`*.ts`, `src/**/*.cc`, `{src,lib}`) are handled by the parser.
   if (/[*?[{]/.test(trimmed)) return trimmed;
+
+  try {
+    return statSync(path.resolve(cwd, trimmed)).isDirectory() ? `${trimmed}/` : trimmed;
+  } catch {
+    // Keep the parser-compatible heuristic for paths that do not exist yet.
+  }
+
   // Filename with extension (`main.rs`, `config.json`) → FilePath constraint.
   const lastSegment = trimmed.split("/").pop() ?? "";
   if (/\.[a-zA-Z][a-zA-Z0-9]{0,9}$/.test(lastSegment)) return trimmed;

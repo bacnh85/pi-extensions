@@ -1,6 +1,6 @@
 # @bacnh85/pi-fff
 
-A maintained Pi package based on upstream [`@ff-labs/pi-fff`](https://github.com/dmtrKovalenko/fff/tree/main/packages/pi-fff). It replaces the built-in `find` and `grep` tools with [FFF](https://github.com/dmtrKovalenko/fff.nvim) — a Rust-native, SIMD-accelerated file finder with built-in memory.
+A maintained Pi package based on upstream [`@ff-labs/pi-fff`](https://github.com/dmtrKovalenko/fff/tree/main/packages/pi-fff). It adds FFF-powered search tools by default and can optionally replace Pi's built-in `find` and `grep` tools with [FFF](https://github.com/dmtrKovalenko/fff.nvim), a Rust-native SIMD-accelerated file finder.
 
 ## What it does
 
@@ -14,12 +14,12 @@ A maintained Pi package based on upstream [`@ff-labs/pi-fff`](https://github.com
 
 - **No subprocess spawning** — FFF is a Rust native library called through the Node binding. No `fd`/`rg` process per call.
 - **Pre-indexed** — files are indexed in the background at session start. Searches are instant.
-- **Frecency ranking** — files you access often rank higher. Learns across sessions.
-- **Query history** — remembers which files were selected for which queries. Combo boost.
+- **Frecency ranking** — files you access often rank higher; cross-session learning is enabled when a frecency database path is configured.
+- **Query history** — query-to-file selection history and combo boost are enabled when a history database path is configured.
 - **Git-aware** — modified/staged/untracked files are boosted in results.
 - **Smart case** — case-insensitive when query is all lowercase, case-sensitive otherwise.
 - **Fuzzy file search** — `find` uses fuzzy matching, not glob-only. Typo-tolerant.
-- **Cursor pagination** — grep results include a cursor for fetching the next page.
+- **Cursor pagination** — grep results include a query-bound cursor for fetching the next page; invalid, expired, and cross-tool cursors are rejected.
 
 ## Install
 
@@ -52,7 +52,7 @@ Parameters:
 - `exclude` — exclude paths (e.g. `test/,*.min.js`)
 - `caseSensitive` — force case-sensitive (default: smart-case)
 - `context` — context lines around matches
-- `limit` — max matches (default: 20)
+- `limit` — global max matches per page (default: 20)
 - `outputMode` — `"content"` (default), `"files_with_matches"` (one preview per file), or `"count"` (file match counts)
 - `cursor` — pagination cursor from previous result
 
@@ -88,7 +88,7 @@ Parameters:
 - `path` — directory/file constraint
 - `exclude` — exclude paths
 - `context` — context lines around matches
-- `limit` — max matches (default: 20)
+- `limit` — global max matches per page (default: 20)
 - `outputMode` — `"content"`, `"files_with_matches"`, or `"count"` (default: `"content"`)
 - `cursor` — pagination cursor from previous result
 
@@ -106,13 +106,13 @@ Example: `related_files({ path: "src/Chart.tsx" })` → `Chart.test.tsx`, `Chart
 
 - `/fff-health` — show FFF status (indexed files, git info, frecency/history DB status)
 - `/fff-rescan` — trigger a file rescan
-- `/fff-mode <mode>` — switch mode (tool name change requires restart)
+- `/fff-mode <mode>` — switch mode; transitions into or out of `override` automatically reload Pi
 
 ## Modes
 
 - `tools-and-ui` (default): registers `fffind`, `ffgrep` as additional tools + FFF-backed `@` autocomplete
 - `tools-only`: additional tools only; keep pi's default `@` autocomplete
-- `override`: replaces pi's built-in `find` and `grep` + FFF-backed `@` autocomplete
+- `override`: replaces pi's built-in `find` and `grep` + FFF-backed `@` autocomplete. The overrides retain Pi's built-in schemas: `find` accepts `pattern`, `path`, and `limit`; `grep` accepts `pattern`, `path`, `glob`, `ignoreCase`, `literal`, `context`, and `limit`.
 
 Mode precedence:
 1. `--fff-mode <mode>` CLI flag
@@ -128,9 +128,7 @@ Mode precedence:
 
 ## Data
 
-When database paths are provided, FFF stores:
-- frecency database — file access frequency/recency
-- history database — query-to-file selection history
+Database persistence is opt-in. Without `--fff-frecency-db`/`FFF_FRECENCY_DB` and `--fff-history-db`/`FFF_HISTORY_DB`, FFF 0.9.6 disables frecency and query-history persistence. When paths are provided, FFF stores file access frequency/recency and query-to-file selection history at those paths.
 
 No project files are uploaded anywhere by this extension. It runs locally and only uses the configured LLM through pi itself.
 
@@ -140,4 +138,4 @@ No project files are uploaded anywhere by this extension. It runs locally and on
 - No network calls in the extension code
 - No telemetry
 - No credential handling beyond whatever pi and your configured model provider already do
-- Search state is stored locally under `~/.pi/agent/fff/`
+- Persistent search state is created only at explicitly configured database paths

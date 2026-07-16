@@ -7,6 +7,13 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
+  formatSize,
+  truncateHead,
+  type TruncationResult,
+} from "@earendil-works/pi-coding-agent";
+import {
   type AutocompleteItem,
   type AutocompleteProvider,
   Text,
@@ -21,7 +28,10 @@ import type {
 } from "@ff-labs/fff-node";
 import { FileFinder } from "@ff-labs/fff-node";
 import { Type } from "@sinclair/typebox";
-import { buildQuery } from "./lib/query";
+import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
+import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
+import { buildQuery, normalizeExcludes, normalizePathConstraint } from "./lib/query";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -30,6 +40,7 @@ import { buildQuery } from "./lib/query";
 const DEFAULT_GREP_LIMIT = 20;
 const DEFAULT_FIND_LIMIT = 30;
 const GREP_MAX_LINE_LENGTH = 500;
+const GREP_MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 const VALID_MODES = ["tools-and-ui", "tools-only", "override"] as const;
 type FffMode = (typeof VALID_MODES)[number];
@@ -41,9 +52,9 @@ type FffMode = (typeof VALID_MODES)[number];
 class BoundedMap<V> {
   private map = new Map<string, V>();
   private counter = 0;
-  constructor(private maxSize: number) {}
+  constructor(private maxSize: number, private prefix: string) {}
   store(value: V): string {
-    const id = `${++this.counter}`;
+    const id = `${this.prefix}:${++this.counter}`;
     this.map.set(id, value);
     if (this.map.size > this.maxSize) {
       const first = this.map.keys().next().value;
@@ -56,27 +67,85 @@ class BoundedMap<V> {
   }
 }
 
-const cursorStore = new BoundedMap<GrepCursor>(200);
+interface GrepCursorState {
+  tool: "grep";
+  cwd: string;
+  cursor: GrepCursor;
+  query: string;
+  scope?: string;
+  hiddenFile?: boolean;
+  exclude?: string | string[];
+  glob?: string;
+  mode: GrepMode;
+  smartCase: boolean;
+  context?: number;
+  outputMode: GrepOutputMode;
+  pageSize: number;
+}
+
+interface MultiGrepCursorState {
+  tool: "multi";
+  cwd: string;
+  cursor: GrepCursor;
+  patterns: string[];
+  scope?: string;
+  hiddenFile?: boolean;
+  exclude?: string | string[];
+  constraints?: string;
+  smartCase: boolean;
+  context?: number;
+  outputMode: GrepOutputMode;
+  pageSize: number;
+}
+
+type StoredGrepCursor = GrepCursorState | MultiGrepCursorState;
+const cursorStore = new BoundedMap<StoredGrepCursor>(200, "grep");
 
 // Find pagination uses a page-index cursor: native `fileSearch` takes
 // pageIndex/pageSize, so the cursor is just the next page index paired with
 // the query+limit that produced it. Stored tokens are opaque IDs to the agent.
 interface FindCursor {
+  cwd: string;
   query: string;
   pattern: string;
   pageSize: number;
   nextPageIndex: number;
+  scope?: string;
+  exclude?: string | string[];
 }
 
-const findCursorStore = new BoundedMap<FindCursor>(200);
+const findCursorStore = new BoundedMap<FindCursor>(200, "find");
 
 // ---------------------------------------------------------------------------
 // Output formatting helpers
 // ---------------------------------------------------------------------------
 
 function truncateLine(line: string, max = GREP_MAX_LINE_LENGTH): string {
-  const trimmed = line.trim();
+  const trimmed = line.trimEnd();
   return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max)}...`;
+}
+
+function stripLeadingAt(value: string): string {
+  return value.trim().replace(/^@/, "");
+}
+
+function companionStem(filePath: string): string {
+  return path.posix.basename(filePath)
+    .replace(/\.(test|spec|story|stories|type|types|style|styles|d|module)\./g, ".")
+    .replace(/\.[^.]+$/, "");
+}
+
+function boundedText(text: string): { text: string; truncation?: TruncationResult } {
+  const truncation = truncateHead(text, {
+    maxLines: DEFAULT_MAX_LINES,
+    maxBytes: DEFAULT_MAX_BYTES,
+  });
+  if (!truncation.truncated) return { text };
+  const cursorNotice = text.match(/\[[^\]]*cursor="[^"]+"[^\]]*\]$/)?.[0];
+  return {
+    text: `${truncation.content}\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}).]${cursorNotice ? `\n\n${cursorNotice}` : ""}`,
+    truncation,
+  };
 }
 
 const HOT_FRECENCY = 25;
@@ -141,14 +210,21 @@ function formatGrepOutput(
         seen.add(match.relativePath);
         lines.push(`${match.relativePath}${fffFileAnnotation(match)}`);
         lines.push(` ${match.lineNumber}: ${truncateLine(match.lineContent)}`);
-        appendDefContext(lines, match, "|");
+        if (options?.explicitContext !== undefined) {
+          match.contextAfter
+            ?.slice(0, options.explicitContext)
+            .forEach((line: string, i: number) =>
+              lines.push(` ${match.lineNumber + 1 + i}| ${truncateLine(line)}`),
+            );
+        } else appendDefContext(lines, match, "|");
       }
     }
     return lines.join("\n");
   }
 
   // content mode (default) — with definition auto-expand
-  const explicitContext = (options?.explicitContext ?? 0) > 0;
+  const hasExplicitContext = options?.explicitContext !== undefined;
+  const explicitContext = options?.explicitContext ?? 0;
   const lines: string[] = [];
   let currentFile = "";
 
@@ -159,15 +235,16 @@ function formatGrepOutput(
       lines.push(`${currentFile}${fffFileAnnotation(match)}`);
     }
 
-    match.contextBefore?.forEach((line: string, i: number) => {
-      const lineNum = match.lineNumber - match.contextBefore!.length + i;
+    const before = match.contextBefore?.slice(-explicitContext) ?? [];
+    before.forEach((line: string, i: number) => {
+      const lineNum = match.lineNumber - before.length + i;
       lines.push(` ${lineNum}- ${truncateLine(line)}`);
     });
 
     lines.push(` ${match.lineNumber}: ${truncateLine(match.lineContent)}`);
 
-    if (explicitContext) {
-      match.contextAfter?.forEach((line: string, i: number) => {
+    if (hasExplicitContext) {
+      match.contextAfter?.slice(0, explicitContext).forEach((line: string, i: number) => {
         const lineNum = match.lineNumber + 1 + i;
         lines.push(` ${lineNum}- ${truncateLine(line)}`);
       });
@@ -210,13 +287,23 @@ type GrepResultFormat = { content: { type: "text"; text: string }[]; details: { 
 function formatGrepResult(
   result: GrepResult,
   outputMode: GrepOutputMode | undefined,
-  explicitContext: number,
-  extras?: { regexFallbackError?: string; fuzzyNotice?: string | null },
+  explicitContext: number | undefined,
+  extras?: {
+    regexFallbackError?: string;
+    fuzzyNotice?: string | null;
+    cursorState?:
+      | Omit<GrepCursorState, "cursor">
+      | Omit<MultiGrepCursorState, "cursor">;
+  },
 ): GrepResultFormat {
   let output = formatGrepOutput(result, { outputMode, explicitContext });
   const notices: string[] = [];
   if (extras?.regexFallbackError) notices.push(`Invalid regex: ${extras.regexFallbackError}, used literal match`);
-  if (result.nextCursor) notices.push(`Continue with cursor="${cursorStore.store(result.nextCursor)}"`);
+  if (result.nextCursor && extras?.cursorState) {
+    notices.push(
+      `Continue with cursor="${cursorStore.store({ ...extras.cursorState, cursor: result.nextCursor } as StoredGrepCursor)}"`,
+    );
+  }
   if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
   if (extras?.fuzzyNotice) output = `[${extras.fuzzyNotice}]\n${output}`;
   return { content: [{ type: "text", text: output }], details: { totalMatched: result.totalMatched, totalFiles: result.totalFiles } };
@@ -321,40 +408,43 @@ export default function fffExtension(pi: ExtensionAPI) {
   let finderPromise: Promise<FileFinder> | null = null;
   let activeCwd = process.cwd();
 
-  // Mode resolution: flag > env > default
-  let currentMode: FffMode =
-    (pi.getFlag("fff-mode") as FffMode) ??
-    (process.env.PI_FFF_MODE as FffMode) ??
-    "tools-and-ui";
+  let currentMode: FffMode = "tools-and-ui";
+  let grepName = "ffgrep";
+  let findName = "fffind";
+  let frecencyDbPath: string | undefined;
+  let historyDbPath: string | undefined;
+  let enableFsRootScanning = false;
+  let toolsRegistered = false;
 
-  const grepName = currentMode === "override" ? "grep" : "ffgrep";
-  const findName = currentMode === "override" ? "find" : "fffind";
+  function resolveRuntimeConfig() {
+    // Pi populates extension flag values only after loading extension factories.
+    const configuredMode = pi.getFlag("fff-mode") ?? process.env.PI_FFF_MODE;
+    currentMode = VALID_MODES.includes(configuredMode as FffMode)
+      ? (configuredMode as FffMode)
+      : "tools-and-ui";
+    grepName = currentMode === "override" ? "grep" : "ffgrep";
+    findName = currentMode === "override" ? "find" : "fffind";
 
-  // DB path resolution: flag > env > undefined (use fff-node defaults)
-  const frecencyDbPath =
-    (pi.getFlag("fff-frecency-db") as string | undefined) ??
-    process.env.FFF_FRECENCY_DB ??
-    undefined;
-  const historyDbPath =
-    (pi.getFlag("fff-history-db") as string | undefined) ??
-    process.env.FFF_HISTORY_DB ??
-    undefined;
+    frecencyDbPath =
+      (pi.getFlag("fff-frecency-db") as string | undefined) ??
+      process.env.FFF_FRECENCY_DB;
+    historyDbPath =
+      (pi.getFlag("fff-history-db") as string | undefined) ??
+      process.env.FFF_HISTORY_DB;
 
-  // Root scanning opt-in: flag (boolean) > env ("1"/"true") > false.
-  // FFF refuses to init at / unless this is set. Home dir scanning is on by
-  // default for pi — launching pi from $HOME is a normal flow.
-  const rootScanFlag = pi.getFlag("fff-enable-root-scan");
-  const rootScanEnv = process.env.FFF_ENABLE_ROOT_SCAN;
-  const enableFsRootScanning =
-    rootScanFlag === true ||
-    rootScanFlag === "true" ||
-    rootScanFlag === "1" ||
-    (rootScanFlag == null && (rootScanEnv === "1" || rootScanEnv === "true"));
+    const rootScanFlag = pi.getFlag("fff-enable-root-scan");
+    const rootScanEnv = process.env.FFF_ENABLE_ROOT_SCAN;
+    enableFsRootScanning =
+      rootScanFlag === true ||
+      rootScanFlag === "true" ||
+      rootScanFlag === "1" ||
+      (rootScanFlag == null && (rootScanEnv === "1" || rootScanEnv === "true"));
+  }
 
   function ensureFinder(cwd: string): Promise<FileFinder> {
+    if (finderPromise) return finderPromise;
     if (finder && !finder.isDestroyed && finderCwd === cwd)
       return Promise.resolve(finder);
-    if (finderPromise) return finderPromise;
 
     finderPromise = (async () => {
       if (finder && !finder.isDestroyed) {
@@ -384,6 +474,366 @@ export default function fffExtension(pi: ExtensionAPI) {
     });
 
     return finderPromise;
+  }
+
+  function resolveExplicitHiddenScope(pathConstraint: string | undefined) {
+    if (!pathConstraint) return null;
+    const normalized = normalizePathConstraint(pathConstraint, activeCwd);
+    if (!normalized) return null;
+
+    const segments = normalized.replace(/\/$/, "").split("/");
+    const globIndex = segments.findIndex((segment) => /[*?[{]/.test(segment));
+    const scopeSegments = globIndex < 0 ? segments : segments.slice(0, globIndex);
+    const scope = scopeSegments.join("/");
+    if (!scope || !scopeSegments.some((segment) => segment.startsWith("."))) return null;
+
+    const absoluteScope = path.resolve(activeCwd, scope);
+    try {
+      return {
+        scope: scope.replaceAll(path.sep, "/"),
+        absoluteScope,
+        constraint: globIndex < 0 ? undefined : segments.slice(globIndex).join("/"),
+        stat: statSync(absoluteScope),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function rebaseScopedExcludes(
+    exclude: string | string[] | undefined,
+    scope: string,
+  ): { excludeAll: boolean; values?: string[] } {
+    const prefix = `${scope.replace(/\/$/, "")}/`;
+    const values: string[] = [];
+    for (const negated of normalizeExcludes(exclude, activeCwd)) {
+      const constraint = negated.slice(1);
+      if (constraint === prefix || constraint === scope) return { excludeAll: true };
+      if (constraint.startsWith(prefix)) {
+        values.push(constraint.slice(prefix.length));
+      } else if (!constraint.replace(/\/$/, "").includes("/") || constraint.startsWith("**/")) {
+        values.push(constraint);
+      }
+    }
+    return { excludeAll: false, values: values.length > 0 ? values : undefined };
+  }
+
+  async function withExplicitHiddenFinder<T>(
+    pathConstraint: string | undefined,
+    run: (finder: FileFinder, scope: string, cwd: string, constraint?: string) => T,
+  ): Promise<{ scope: string; value: T } | null> {
+    const resolved = resolveExplicitHiddenScope(pathConstraint);
+    if (!resolved?.stat.isDirectory()) return null;
+
+    const created = FileFinder.create({
+      basePath: resolved.absoluteScope,
+      // ponytail: scoped fallback is ephemeral; sharing workspace DBs risks native lock contention.
+      aiMode: true,
+      enableHomeDirScanning: true,
+      enableFsRootScanning,
+    });
+    if (!created.ok) return null;
+
+    const scopedFinder = created.value;
+    try {
+      await scopedFinder.waitForScan(15000);
+      return {
+        scope: resolved.scope,
+        value: run(scopedFinder, resolved.scope, resolved.absoluteScope, resolved.constraint),
+      };
+    } finally {
+      scopedFinder.destroy();
+    }
+  }
+
+  function matchesExplicitFile(
+    relativePath: string,
+    pattern: string,
+    exclude: string | string[] | undefined,
+  ): boolean {
+    const candidate = relativePath.replaceAll(path.sep, "/");
+    const basename = path.posix.basename(candidate);
+    const matchesConstraint = (constraint: string) => {
+      if (constraint.endsWith("/")) return candidate.startsWith(constraint);
+      if (/[*?[{]/.test(constraint)) {
+        try {
+          return path.matchesGlob(candidate, constraint) || path.matchesGlob(basename, constraint);
+        } catch {
+          return false;
+        }
+      }
+      return candidate === constraint || basename === constraint;
+    };
+    if (normalizeExcludes(exclude, activeCwd).some((value) => matchesConstraint(value.slice(1)))) {
+      return false;
+    }
+    if (!pattern || pattern === "*") return true;
+    if (/[*?[{]/.test(pattern)) return matchesConstraint(pattern);
+
+    const target = candidate.toLowerCase();
+    return pattern.toLowerCase().split(/\s+/).filter(Boolean).every((term) => {
+      let index = 0;
+      for (const char of target) if (char === term[index]) index++;
+      return index === term.length;
+    });
+  }
+
+  function emptyGrepResult(totalFiles = 0): GrepResult {
+    return {
+      items: [],
+      totalMatched: 0,
+      totalFilesSearched: 0,
+      totalFiles,
+      filteredFileCount: 0,
+      nextCursor: null,
+    };
+  }
+
+  function prefixGrepResult(result: GrepResult, scope: string): GrepResult {
+    return {
+      ...result,
+      items: result.items.map((item) => ({
+        ...item,
+        relativePath: `${scope}/${item.relativePath}`,
+      })),
+    };
+  }
+
+  function grepExplicitHiddenFile(
+    pathConstraint: string | undefined,
+    patterns: string[],
+    options: {
+      mode: GrepMode;
+      smartCase: boolean;
+      context: number;
+      pageSize: number;
+      exclude?: string | string[];
+      glob?: string;
+      offset?: number;
+    },
+  ): GrepResult | null {
+    const resolved = resolveExplicitHiddenScope(pathConstraint);
+    if (!resolved?.stat.isFile()) return null;
+    if (!matchesExplicitFile(resolved.scope, options.glob ?? "*", options.exclude)) {
+      return emptyGrepResult(1);
+    }
+
+    const smartInsensitive = options.smartCase && patterns.every((pattern) => pattern === pattern.toLowerCase());
+    const matchers = patterns.map((pattern) => {
+      if (options.mode === "regex") {
+        const insensitive = pattern.match(/^\(\?i:(.*)\)$/s);
+        try {
+          const regex = new RegExp(insensitive?.[1] ?? pattern, insensitive || smartInsensitive ? "i" : "");
+          return (line: string) => regex.test(line);
+        } catch {
+          const literal = insensitive?.[1] ?? pattern;
+          const needle = smartInsensitive ? literal.toLowerCase() : literal;
+          return (line: string) => (smartInsensitive ? line.toLowerCase() : line).includes(needle);
+        }
+      }
+      const needle = smartInsensitive ? pattern.toLowerCase() : pattern;
+      return (line: string) => {
+        const candidate = smartInsensitive ? line.toLowerCase() : line;
+        if (options.mode === "plain") return candidate.includes(needle);
+        let index = 0;
+        for (const char of candidate) if (char === needle[index]) index++;
+        return index === needle.length;
+      };
+    });
+
+    const offset = options.offset ?? 0;
+    const items: GrepMatch[] = [];
+    const before: string[] = [];
+    const pending: Array<{ item: GrepMatch; remaining: number }> = [];
+    let matched = 0;
+    let hasMore = false;
+    let lineNumber = 1;
+    let stopMatching = false;
+
+    const processLine = (rawLine: string) => {
+      const line = rawLine.replace(/\r$/, "");
+      for (const entry of pending) {
+        entry.item.contextAfter!.push(line);
+        entry.remaining--;
+      }
+      while (pending[0]?.remaining === 0) pending.shift();
+
+      if (!stopMatching && matchers.some((matcher) => matcher(line))) {
+        if (matched >= offset) {
+          if (items.length >= options.pageSize) {
+            hasMore = true;
+            stopMatching = true;
+          } else {
+            const item = {
+              relativePath: resolved.scope,
+              fileName: path.posix.basename(resolved.scope),
+              lineNumber,
+              lineContent: line,
+              contextBefore: [...before],
+              contextAfter: [],
+            } as unknown as GrepMatch;
+            items.push(item);
+            if (options.context > 0) pending.push({ item, remaining: options.context });
+          }
+        }
+        matched++;
+      }
+
+      if (options.context > 0) {
+        before.push(line);
+        if (before.length > options.context) before.shift();
+      }
+      lineNumber++;
+      return stopMatching && pending.length === 0;
+    };
+
+    const fd = openSync(resolved.absoluteScope, "r");
+    try {
+      if (fstatSync(fd).size > GREP_MAX_FILE_SIZE) return emptyGrepResult(1);
+      const buffer = Buffer.allocUnsafe(64 * 1024);
+      const decoder = new StringDecoder("utf8");
+      let remainder = "";
+      let bytesReadTotal = 0;
+      let done = false;
+      while (!done) {
+        const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
+        if (bytesRead === 0) break;
+        bytesReadTotal += bytesRead;
+        if (bytesReadTotal > GREP_MAX_FILE_SIZE || buffer.subarray(0, bytesRead).includes(0)) {
+          return emptyGrepResult(1);
+        }
+        const chunk = remainder + decoder.write(buffer.subarray(0, bytesRead));
+        let start = 0;
+        for (;;) {
+          const newline = chunk.indexOf("\n", start);
+          if (newline < 0) {
+            remainder = chunk.slice(start);
+            break;
+          }
+          if (processLine(chunk.slice(start, newline))) {
+            done = true;
+            break;
+          }
+          start = newline + 1;
+        }
+      }
+      if (!done) processLine(remainder + decoder.end());
+    } finally {
+      closeSync(fd);
+    }
+
+    const nextOffset = offset + items.length;
+    return {
+      items,
+      totalMatched: items.length,
+      totalFilesSearched: 1,
+      totalFiles: 1,
+      filteredFileCount: 1,
+      nextCursor: hasMore
+        ? { __brand: "GrepCursor", _offset: nextOffset } as GrepCursor
+        : null,
+    };
+  }
+
+  async function searchExplicitHiddenScope(
+    pathConstraint: string | undefined,
+    pattern: string,
+    exclude: string | string[] | undefined,
+    pageIndex: number,
+    pageSize: number,
+  ): Promise<SearchResult | null> {
+    const resolved = resolveExplicitHiddenScope(pathConstraint);
+    if (!resolved) return null;
+
+    if (resolved.stat.isFile()) {
+      if (pageIndex > 0 || !matchesExplicitFile(resolved.scope, pattern, exclude)) return null;
+      return {
+        items: [{ relativePath: resolved.scope, fileName: path.basename(resolved.scope) } as SearchResult["items"][number]],
+        scores: [{ total: Number.MAX_SAFE_INTEGER, matchType: "exact", exactMatch: true } as SearchResult["scores"][number]],
+        totalMatched: 1,
+        totalFiles: 1,
+      };
+    }
+
+    const rebased = rebaseScopedExcludes(exclude, resolved.scope);
+    if (rebased.excludeAll) {
+      return { items: [], scores: [], totalMatched: 0, totalFiles: 0 };
+    }
+    const searched = await withExplicitHiddenFinder(pathConstraint, (scopedFinder, scope, cwd, constraint) => {
+      const scopedQuery = buildQuery(constraint, pattern, rebased.values, cwd);
+      const result = scopedFinder.fileSearch(scopedQuery, { pageIndex, pageSize });
+      if (!result.ok) return null;
+      return {
+        ...result.value,
+        items: result.value.items.map((item) => ({
+          ...item,
+          relativePath: `${scope}/${item.relativePath}`,
+        })),
+      };
+    });
+    return searched?.value ?? null;
+  }
+
+  async function searchOverrideFind(
+    finder: FileFinder,
+    pattern: string,
+    searchPath: string | undefined,
+    limit: number,
+  ) {
+    const pathScope = searchPath ? normalizePathConstraint(searchPath, activeCwd) : null;
+    const hidden = resolveExplicitHiddenScope(searchPath ?? pattern);
+    let result: SearchResult;
+
+    if (hidden?.stat.isFile()) {
+      const matched = matchesExplicitFile(hidden.scope, searchPath ? pattern : hidden.scope, undefined);
+      result = matched
+        ? {
+            items: [{ relativePath: searchPath ? path.posix.basename(hidden.scope) : hidden.scope, fileName: path.posix.basename(hidden.scope) } as SearchResult["items"][number]],
+            scores: [{ total: Number.MAX_SAFE_INTEGER, matchType: "exact", exactMatch: true } as SearchResult["scores"][number]],
+            totalMatched: 1,
+            totalFiles: 1,
+          }
+        : { items: [], scores: [], totalMatched: 0, totalFiles: 0 };
+    } else if (hidden?.stat.isDirectory()) {
+      const localPattern = searchPath ? pattern : hidden.constraint ?? "*";
+      const scoped = await withExplicitHiddenFinder(hidden.scope, (target) =>
+        target.glob(localPattern, { pageSize: limit }),
+      );
+      if (!scoped?.value.ok) {
+        return { content: [{ type: "text" as const, text: "No files found matching pattern" }], details: undefined };
+      }
+      result = {
+        ...scoped.value.value,
+        items: scoped.value.value.items.map((item) => ({
+          ...item,
+          relativePath: searchPath ? item.relativePath : `${hidden.scope}/${item.relativePath}`,
+        })),
+      };
+    } else {
+      const scope = pathScope?.replace(/\/$/, "");
+      const scopedPattern = scope ? `${scope}/${pattern}` : pattern;
+      const searched = finder.glob(scopedPattern, { pageSize: limit });
+      if (!searched.ok) {
+        return { content: [{ type: "text" as const, text: `Search failed: ${searched.error}` }], details: undefined };
+      }
+      result = {
+        ...searched.value,
+        items: searched.value.items.map((item) => ({
+          ...item,
+          relativePath: scope && item.relativePath.startsWith(`${scope}/`)
+            ? item.relativePath.slice(scope.length + 1)
+            : item.relativePath,
+        })),
+      };
+    }
+
+    const output = result.items.map((item) => item.relativePath).join("\n") || "No files found matching pattern";
+    return {
+      content: [{ type: "text" as const, text: output }],
+      details: result.totalMatched > result.items.length
+        ? { resultLimitReached: limit }
+        : undefined,
+    };
   }
 
   function destroyFinder() {
@@ -487,30 +937,16 @@ export default function fffExtension(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     try {
       activeCwd = ctx.cwd;
-
-      // Restore persisted mode from session entries. This handles session
-      // resume after process restart where env vars are lost, and ensures
-      // the env var is set for the next /reload in the same session.
-      const entries = ctx.sessionManager?.getEntries();
-      if (entries) {
-        const modeEntry = [...entries]
-          .reverse()
-          .find(
-            (e: { type: string; customType?: string }) =>
-              e.type === "custom" && e.customType === "fff-mode",
-          );
-        if (
-          modeEntry &&
-          typeof (modeEntry as any).data?.mode === "string" &&
-          VALID_MODES.includes((modeEntry as any).data.mode as FffMode)
-        ) {
-          const restored = (modeEntry as any).data.mode as FffMode;
-          if (restored !== currentMode) {
-            currentMode = restored;
-          }
-        }
+      resolveRuntimeConfig();
+      registerTools();
+      if (currentMode === "override") {
+        const available = new Set(pi.getAllTools().map((tool) => tool.name));
+        const active = pi.getActiveTools();
+        const overrides = ["find", "grep"].filter(
+          (name) => available.has(name) && !active.includes(name),
+        );
+        if (overrides.length > 0) pi.setActiveTools([...active, ...overrides]);
       }
-
       registerAutocompleteProvider(ctx);
       await ensureFinder(activeCwd);
     } catch (e: unknown) {
@@ -524,6 +960,10 @@ export default function fffExtension(pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     destroyFinder();
   });
+
+  function registerTools() {
+    if (toolsRegistered) return;
+    toolsRegistered = true;
 
   // --- Shared render helpers ---
 
@@ -554,49 +994,54 @@ export default function fffExtension(pi: ExtensionAPI) {
     return text;
   };
 
+  const registerBoundedTool = (tool: any) => {
+    const execute = tool.execute;
+    pi.registerTool({
+      ...tool,
+      async execute(...args: any[]) {
+        const result = await execute(...args);
+        let truncation: TruncationResult | undefined;
+        const content = result.content?.map((item: any) => {
+          if (item.type !== "text") return item;
+          const bounded = boundedText(item.text);
+          truncation ??= bounded.truncation;
+          return { ...item, text: bounded.text };
+        });
+        return {
+          ...result,
+          content,
+          details: truncation
+            ? { ...(result.details ?? {}), truncation }
+            : result.details,
+        };
+      },
+    });
+  };
+
   // --- grep tool ---
 
-  const grepSchema = Type.Object({
-    pattern: Type.String({
-      description: "Literal text or regex",
-    }),
-    path: Type.Optional(
-      Type.String({
-        description:
-          "Dir prefix (src/), filename (main.rs), or glob (*.ts, src/**/*.cc).",
-      }),
-    ),
-    exclude: Type.Optional(
-      Type.Union([Type.String(), Type.Array(Type.String())], {
-        description:
-          "Exclude paths — dir prefix, filename, or glob.",
-      }),
-    ),
-    caseSensitive: Type.Optional(
-      Type.Boolean({
-        description:
-          "Force case-sensitive (smart-case by default).",
-      }),
-    ),
-    context: Type.Optional(
-      Type.Number({ description: "Context lines before+after" }),
-    ),
-    limit: Type.Optional(
-      Type.Number({
-        description: `Max matches (default ${DEFAULT_GREP_LIMIT})`,
-      }),
-    ),
-    outputMode: Type.Optional(
-      Type.String({
-        description: "'content' (default), 'files_with_matches', or 'count'",
-      }),
-    ),
-    cursor: Type.Optional(
-      Type.String({ description: "Pagination cursor" }),
-    ),
-  });
+  const grepSchema = currentMode === "override"
+    ? Type.Object({
+        pattern: Type.String({ description: "Search pattern (regex or literal string)" }),
+        path: Type.Optional(Type.String({ description: "Directory or file to search (default: current directory)" })),
+        glob: Type.Optional(Type.String({ description: "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'" })),
+        ignoreCase: Type.Optional(Type.Boolean({ description: "Case-insensitive search (default: false)" })),
+        literal: Type.Optional(Type.Boolean({ description: "Treat pattern as literal string instead of regex (default: false)" })),
+        context: Type.Optional(Type.Number({ description: "Number of lines to show before and after each match (default: 0)" })),
+        limit: Type.Optional(Type.Number({ description: "Maximum number of matches to return (default: 100)" })),
+      })
+    : Type.Object({
+        pattern: Type.String({ description: "Literal text or regex" }),
+        path: Type.Optional(Type.String({ description: "Dir prefix (src/), filename (main.rs), or glob (*.ts, src/**/*.cc)." })),
+        exclude: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())], { description: "Exclude paths — dir prefix, filename, or glob." })),
+        caseSensitive: Type.Optional(Type.Boolean({ description: "Force case-sensitive (smart-case by default)." })),
+        context: Type.Optional(Type.Integer({ minimum: 0, description: "Context lines before+after" })),
+        limit: Type.Optional(Type.Integer({ minimum: 1, description: `Max matches (default ${DEFAULT_GREP_LIMIT})` })),
+        outputMode: Type.Optional(Type.String({ description: "'content' (default), 'files_with_matches', or 'count'" })),
+        cursor: Type.Optional(Type.String({ description: "Pagination cursor" })),
+      });
 
-  pi.registerTool({
+  registerBoundedTool({
     name: grepName,
     label: grepName,
     description: `Grep contents. Smart-case, regex auto-detect, git-aware, frecency-ranked.`,
@@ -609,8 +1054,17 @@ export default function fffExtension(pi: ExtensionAPI) {
     ],
     parameters: grepSchema,
 
-    async execute(_toolCallId, params, signal) {
+    async execute(_toolCallId: any, params: any, signal: AbortSignal | undefined) {
       if (signal?.aborted) throw new Error("Operation aborted");
+
+      const override = currentMode === "override";
+      const stored = !override && params.cursor ? cursorStore.get(params.cursor) : undefined;
+      if (params.cursor && (!stored || stored.tool !== "grep" || stored.cwd !== activeCwd)) {
+        return {
+          content: [{ type: "text", text: "Invalid or expired grep cursor. Start the search again without cursor." }],
+          details: override ? undefined : { totalMatched: 0, totalFiles: 0 },
+        };
+      }
 
       let f;
       try {
@@ -619,117 +1073,224 @@ export default function fffExtension(pi: ExtensionAPI) {
       } catch {
         return {
           content: [{ type: "text", text: "FFF search unavailable in this directory. Try a different working directory or use built-in find instead." }],
-          details: { totalMatched: 0, totalFiles: 0 },
+          details: currentMode === "override" ? undefined : { totalMatched: 0, totalFiles: 0 },
         };
       }
-      const effectiveLimit = Math.max(1, params.limit ?? DEFAULT_GREP_LIMIT);
-      let query;
+
+      const resumed = stored?.tool === "grep" ? stored : undefined;
+      const pageSize = resumed?.pageSize ?? Math.max(1, Math.floor(params.limit ?? (override ? 100 : DEFAULT_GREP_LIMIT)));
+      const explicitContext = resumed?.context ?? (params.context === undefined
+        ? undefined
+        : Math.max(0, Math.floor(params.context)));
+      const contextLines = explicitContext ?? 0;
+      const outputMode = resumed?.outputMode ?? (params.outputMode as GrepOutputMode | undefined) ?? "content";
+
+      let query = resumed?.query;
+      let mode = resumed?.mode;
+      let smartCase = resumed?.smartCase;
+      let scope = resumed?.scope;
+      let manualFile = resumed?.hiddenFile ?? false;
+      let searchPattern = params.pattern;
+      let hasRegexSyntax = false;
       try {
-        query = buildQuery(params.path, params.pattern, params.exclude, activeCwd);
+        if (!query || !mode || smartCase === undefined) {
+          if (override) {
+            mode = params.literal ? "plain" : "regex";
+            if (params.ignoreCase) {
+              searchPattern = mode === "plain" ? searchPattern.toLowerCase() : `(?i:${searchPattern})`;
+              smartCase = true;
+            } else smartCase = false;
+            const withGlob = params.glob
+              ? buildQuery(params.glob, searchPattern, undefined, activeCwd)
+              : searchPattern;
+            query = buildQuery(params.path, withGlob, undefined, activeCwd);
+          } else {
+            query = buildQuery(params.path, searchPattern, params.exclude, activeCwd);
+            hasRegexSyntax =
+              searchPattern !== searchPattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            mode = hasRegexSyntax ? "regex" : "plain";
+            if (mode === "regex") {
+              try {
+                new RegExp(searchPattern);
+              } catch {
+                mode = "plain";
+              }
+            }
+            smartCase = params.caseSensitive !== true;
+          }
+        }
       } catch (e) {
         return {
           content: [{ type: "text", text: `Invalid path constraint: ${(e as Error).message}. Try without path/exclude constraints.` }],
-          details: { totalMatched: 0, totalFiles: 0 },
+          details: override ? undefined : { totalMatched: 0, totalFiles: 0 },
         };
       }
-      // Auto-detect: regex if the pattern has regex metacharacters AND parses
-      // as a valid regex, otherwise plain literal. The fuzzy fallback below
-      // only kicks in for plain mode — regex queries are intentional.
-      const hasRegexSyntax =
-        params.pattern !== params.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      let mode: GrepMode = hasRegexSyntax ? "regex" : "plain";
-      if (mode === "regex") {
-        try {
-          new RegExp(params.pattern);
-        } catch {
-          mode = "plain";
+
+      if (!query || !mode || smartCase === undefined) {
+        return {
+          content: [{ type: "text", text: "Search failed: invalid grep state" }],
+          details: currentMode === "override" ? undefined : { totalMatched: 0, totalFiles: 0 },
+        };
+      }
+
+      let scopeExcluded = false;
+      if (!resumed) {
+        const hidden = resolveExplicitHiddenScope(params.path);
+        if (hidden?.stat.isFile()) {
+          scope = hidden.scope;
+          query = searchPattern;
+          manualFile = true;
+        } else if (hidden?.stat.isDirectory()) {
+          scope = hidden.scope;
+          const rebased = rebaseScopedExcludes(params.exclude, hidden.scope);
+          scopeExcluded = rebased.excludeAll;
+          query = override
+            ? buildQuery(hidden.constraint, buildQuery(params.glob, searchPattern, undefined, hidden.absoluteScope), undefined, hidden.absoluteScope)
+            : buildQuery(hidden.constraint, searchPattern, rebased.values, hidden.absoluteScope);
         }
       }
 
-      // Guard: the agent keeps calling grep with '.*' or similar wildcard-only regex
-      // to try to read a whole file. That's not what grep is for — return a terse error
-      // steering them to a real pattern, preventing dozens of wasted retries.
       const p = params.pattern.trim();
       const isWildcardOnly =
+        !override &&
         hasRegexSyntax &&
-        /^(?:[.^$]*(?:[.][*+?]|\*|\+)[.^$]*|[.^$\s]*|\.\*\??|\.\*[+?]?|\.\+\??|\.|\*|\?)$/.test(
-          p,
-        );
-
+        /^(?:[.^$]*(?:[.][*+?]|\*|\+)[.^$]*|[.^$\s]*|\.\*\??|\.\*[+?]?|\.\+\??|\.|\*|\?)$/.test(p);
       if (isWildcardOnly) {
         return {
-          content: [
-            {
-              type: "text",
-              text: `Pattern '${params.pattern}' matches everything — grep needs a concrete substring or identifier. Example: \`pattern: 'MyClass'\` or \`pattern: 'export function'\`.`,
-            },
-          ],
+          content: [{ type: "text", text: `Pattern '${params.pattern}' matches everything — grep needs a concrete substring or identifier.` }],
           details: { totalMatched: 0, totalFiles: 0 },
         };
       }
 
-      // caseSensitive override flips smartCase off; omitting it keeps smart-case
-      // (case-insensitive when pattern is all lowercase).
-      const smartCase = params.caseSensitive !== true;
-      const explicitContext = params.context ?? 0;
+      const runGrep = (
+        target: FileFinder,
+        targetQuery: string,
+        targetMode: GrepMode,
+        cursor: GrepCursor | null,
+      ) => target.grep(targetQuery, {
+        mode: targetMode,
+        smartCase,
+        pageSize,
+        maxMatchesPerFile: Math.min(pageSize, 50),
+        cursor,
+        beforeContext: contextLines,
+        afterContext: Math.max(contextLines, explicitContext === undefined ? 3 : contextLines),
+        classifyDefinitions: true,
+      });
 
-      // Always request a little context so definition auto-expand can work.
       let grepResult;
       try {
-        grepResult = f.grep(query, {
-          mode,
-          smartCase,
-          maxMatchesPerFile: Math.min(effectiveLimit, 50),
-          cursor: (params.cursor ? cursorStore.get(params.cursor) : null) ?? null,
-          beforeContext: explicitContext,
-          afterContext: Math.max(explicitContext, 3),
-          classifyDefinitions: true,
-        });
+        if (scopeExcluded) {
+          grepResult = { ok: true as const, value: emptyGrepResult() };
+        } else if (manualFile && scope) {
+          const manual = grepExplicitHiddenFile(scope, [query!], {
+            mode,
+            smartCase,
+            context: contextLines,
+            pageSize,
+            offset: resumed?.cursor._offset,
+            exclude: resumed?.exclude,
+            glob: resumed?.glob,
+          });
+          grepResult = manual ? { ok: true as const, value: manual } : undefined;
+        } else if (scope) {
+          const scoped = await withExplicitHiddenFinder(scope, (target) =>
+            runGrep(target, query!, mode!, resumed?.cursor ?? null),
+          );
+          grepResult = scoped?.value;
+          if (grepResult?.ok) grepResult = { ok: true, value: prefixGrepResult(grepResult.value, scope) };
+        } else {
+          grepResult = runGrep(f, query!, mode!, resumed?.cursor ?? null);
+        }
       } catch (e) {
         return {
           content: [{ type: "text", text: `Search error: ${(e as Error).message}` }],
-          details: { totalMatched: 0, totalFiles: 0 },
+          details: override ? undefined : { totalMatched: 0, totalFiles: 0 },
         };
       }
-
+      if (!grepResult) {
+        return {
+          content: [{ type: "text", text: "Search failed: hidden path scope is unavailable" }],
+          details: override ? undefined : { totalMatched: 0, totalFiles: 0 },
+        };
+      }
       if (!grepResult.ok) {
         return {
           content: [{ type: "text", text: `Search failed: ${grepResult.error}` }],
-          details: { totalMatched: 0, totalFiles: 0 },
+          details: override ? undefined : { totalMatched: 0, totalFiles: 0 },
         };
       }
 
       let result = grepResult.value;
       let fuzzyNotice: string | null = null;
-
-      // automatic fuzzy fallback allows to broad the queries and find different cases
-      if (result.items.length === 0 && !params.cursor && mode !== "regex") {
-        let fuzzy;
+      if (!override && !resumed && !scopeExcluded && result.items.length === 0 && mode !== "regex") {
         try {
-          fuzzy = f.grep(params.pattern, {
-            mode: "fuzzy",
-            smartCase,
-            maxMatchesPerFile: Math.min(effectiveLimit, 50),
-            cursor: null,
-            beforeContext: 0,
-            afterContext: 0,
-            classifyDefinitions: true,
-          });
+          let fuzzy;
+          if (manualFile && scope) {
+            const manual = grepExplicitHiddenFile(scope, [query!], {
+              mode: "fuzzy",
+              smartCase,
+              context: contextLines,
+              pageSize,
+              exclude: params.exclude,
+              glob: params.glob,
+            });
+            fuzzy = manual ? { ok: true as const, value: manual } : undefined;
+          } else if (scope) {
+            const scoped = await withExplicitHiddenFinder(scope, (target) =>
+              runGrep(target, query!, "fuzzy", null),
+            );
+            fuzzy = scoped?.value;
+            if (fuzzy?.ok) fuzzy = { ok: true as const, value: prefixGrepResult(fuzzy.value, scope) };
+          } else {
+            fuzzy = runGrep(f, query!, "fuzzy", null);
+          }
+          if (fuzzy?.ok && fuzzy.value.items.length > 0) {
+            mode = "fuzzy";
+            fuzzyNotice = "0 exact matches. Maybe you meant this?";
+            result = fuzzy.value;
+          }
         } catch {
-          fuzzy = null;
-        }
-
-        if (fuzzy?.ok && fuzzy.value.items.length > 0) {
-          fuzzyNotice = `0 exact matches. Maybe you meant this?`;
-          result = fuzzy.value;
+          // Keep the exact-search result when fuzzy fallback is unavailable.
         }
       }
 
-      const outputMode = params.outputMode as GrepOutputMode | undefined;
-      return formatGrepResult(result, outputMode, explicitContext, { regexFallbackError: result.regexFallbackError, fuzzyNotice });
+      const formatted = formatGrepResult(result, outputMode, explicitContext, {
+        regexFallbackError: result.regexFallbackError,
+        fuzzyNotice,
+        cursorState: override
+          ? undefined
+          : {
+              tool: "grep",
+              cwd: activeCwd,
+              query: query!,
+              scope,
+              hiddenFile: manualFile,
+              exclude: resumed?.exclude ?? params.exclude,
+              glob: resumed?.glob ?? params.glob,
+              mode: mode!,
+              smartCase,
+              context: explicitContext,
+              outputMode,
+              pageSize,
+            },
+      });
+      if (!override) return formatted;
+
+      const details: { matchLimitReached?: number; linesTruncated?: boolean } = {};
+      if (result.nextCursor) details.matchLimitReached = pageSize;
+      if (result.items.some((item) =>
+        [item.lineContent, ...(item.contextBefore ?? []), ...(item.contextAfter ?? [])]
+          .some((line) => line.trimEnd().length > GREP_MAX_LINE_LENGTH))) {
+        details.linesTruncated = true;
+      }
+      return {
+        content: formatted.content,
+        details: Object.keys(details).length > 0 ? details : undefined,
+      };
     },
 
-    renderCall(args, theme, context) {
+    renderCall(args: any, theme: any, context: any) {
       const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
       const pattern = args?.pattern ?? "";
       const path = args?.path ?? ".";
@@ -745,41 +1306,28 @@ export default function fffExtension(pi: ExtensionAPI) {
       return text;
     },
 
-    renderResult(result, options, theme, context) {
+    renderResult(result: any, options: any, theme: any, context: any) {
       return renderTextResult(result, options, theme, context, 15);
     },
   });
 
   // --- find tool ---
 
-  const findSchema = Type.Object({
-    pattern: Type.String({
-      description:
-        "Fuzzy filename/glob search. Frecency-ranked, git-aware. Multi-word narrows (AND).",
-    }),
-    path: Type.Optional(
-      Type.String({
-        description:
-          "Dir prefix (src/), filename (main.rs), or glob (*.ts, src/**/*.cc).",
-      }),
-    ),
-    exclude: Type.Optional(
-      Type.Union([Type.String(), Type.Array(Type.String())], {
-        description:
-          "Exclude paths — dir prefix, filename, or glob.",
-      }),
-    ),
-    limit: Type.Optional(
-      Type.Number({
-        description: `Max results per page (default ${DEFAULT_FIND_LIMIT})`,
-      }),
-    ),
-    cursor: Type.Optional(
-      Type.String({ description: "Pagination cursor" }),
-    ),
-  });
+  const findSchema = currentMode === "override"
+    ? Type.Object({
+        pattern: Type.String({ description: "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'" }),
+        path: Type.Optional(Type.String({ description: "Directory to search in (default: current directory)" })),
+        limit: Type.Optional(Type.Number({ description: "Maximum number of results (default: 1000)" })),
+      })
+    : Type.Object({
+        pattern: Type.String({ description: "Fuzzy filename/glob search. Frecency-ranked, git-aware. Multi-word narrows (AND)." }),
+        path: Type.Optional(Type.String({ description: "Dir prefix (src/), filename (main.rs), or glob (*.ts, src/**/*.cc)." })),
+        exclude: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())], { description: "Exclude paths — dir prefix, filename, or glob." })),
+        limit: Type.Optional(Type.Integer({ minimum: 1, description: `Max results per page (default ${DEFAULT_FIND_LIMIT})` })),
+        cursor: Type.Optional(Type.String({ description: "Pagination cursor" })),
+      });
 
-  pi.registerTool({
+  registerBoundedTool({
     name: findName,
     label: findName,
     description: `Fuzzy path/glob search. Whole-path matching, frecency-ranked, git-aware.`,
@@ -794,8 +1342,17 @@ export default function fffExtension(pi: ExtensionAPI) {
     ],
     parameters: findSchema,
 
-    async execute(_toolCallId, params, signal) {
+    async execute(_toolCallId: any, params: any, signal: AbortSignal | undefined) {
       if (signal?.aborted) throw new Error("Operation aborted");
+
+      const override = currentMode === "override";
+      const resumed = !override && params.cursor ? findCursorStore.get(params.cursor) : undefined;
+      if (params.cursor && (!resumed || resumed.cwd !== activeCwd)) {
+        return {
+          content: [{ type: "text", text: "Invalid or expired find cursor. Start the search again without cursor." }],
+          details: override ? undefined : { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
+        };
+      }
 
       let f;
       try {
@@ -804,16 +1361,24 @@ export default function fffExtension(pi: ExtensionAPI) {
       } catch {
         return {
           content: [{ type: "text", text: "FFF search unavailable in this directory. Try a different working directory." }],
-          details: { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
+          details: override ? undefined : { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
         };
+      }
+
+      if (override) {
+        return searchOverrideFind(
+          f,
+          params.pattern,
+          params.path,
+          Math.max(1, Math.floor(params.limit ?? 1000)),
+        );
       }
 
       // Resume from a prior cursor if supplied — cursor owns query+pageSize so
       // the agent can't accidentally mix patterns across pages.
-      const resumed = params.cursor ? findCursorStore.get(params.cursor) : undefined;
       const effectiveLimit = resumed
         ? resumed.pageSize
-        : Math.max(1, params.limit ?? DEFAULT_FIND_LIMIT);
+        : Math.max(1, Math.floor(params.limit ?? (override ? 1000 : DEFAULT_FIND_LIMIT)));
       let query;
       try {
         query = resumed
@@ -822,33 +1387,56 @@ export default function fffExtension(pi: ExtensionAPI) {
       } catch (e) {
         return {
           content: [{ type: "text", text: `Invalid path constraint: ${(e as Error).message}. Try without path/exclude constraints.` }],
-          details: { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
+          details: override ? undefined : { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
         };
       }
       const pattern = resumed ? resumed.pattern : params.pattern;
       const pageIndex = resumed?.nextPageIndex ?? 0;
+      const scope = resumed?.scope ?? params.path;
 
       let searchResult;
       try {
-        searchResult = f.fileSearch(query, {
-          pageIndex,
-          pageSize: effectiveLimit,
-        });
+        if (resolveExplicitHiddenScope(scope)) {
+          searchResult = {
+            ok: true as const,
+            value: (await searchExplicitHiddenScope(
+              scope,
+              pattern,
+              resumed?.exclude ?? params.exclude,
+              pageIndex,
+              effectiveLimit,
+            )) ?? { items: [], scores: [], totalMatched: 0, totalFiles: 0 },
+          };
+        } else {
+          searchResult = f.fileSearch(query, {
+            pageIndex,
+            pageSize: effectiveLimit,
+          });
+        }
       } catch (e) {
         return {
           content: [{ type: "text", text: `Search error: ${(e as Error).message}` }],
-          details: { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
+          details: override ? undefined : { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
         };
       }
       if (!searchResult.ok) {
         return {
           content: [{ type: "text", text: `Search failed: ${searchResult.error}` }],
-          details: { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
+          details: override ? undefined : { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
         };
       }
 
       const result = searchResult.value;
-      const formatted = formatFindOutput(result, effectiveLimit, pattern, pageIndex);
+      const formatted = override
+        ? {
+            output: result.items
+              .slice(0, effectiveLimit)
+              .map((item) => item.relativePath)
+              .join("\n") || "No files found matching pattern",
+            weak: false,
+            shownCount: Math.min(result.items.length, effectiveLimit),
+          }
+        : formatFindOutput(result, effectiveLimit, pattern, pageIndex);
       let output = formatted.output;
 
       // Infer hasMore: native fileSearch fills pageSize when more results
@@ -864,13 +1452,16 @@ export default function fffExtension(pi: ExtensionAPI) {
           `Query "${pattern}" produced only weak scattered fuzzy matches. Output capped at ${formatted.shownCount}/${result.totalMatched}.`,
         );
 
-      if (!formatted.weak && hasMore) {
+      if (!override && !formatted.weak && hasMore) {
         const remaining = result.totalMatched - shownSoFar;
         const cursorId = findCursorStore.store({
+          cwd: activeCwd,
           query,
           pattern,
           pageSize: effectiveLimit,
           nextPageIndex: pageIndex + 1,
+          scope,
+          exclude: resumed?.exclude ?? params.exclude,
         });
         notices.push(
           `${remaining} more match${remaining === 1 ? "" : "es"} available. cursor="${cursorId}" to continue`,
@@ -878,6 +1469,12 @@ export default function fffExtension(pi: ExtensionAPI) {
       }
 
       if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
+      if (override) {
+        return {
+          content: [{ type: "text", text: output }],
+          details: hasMore ? { resultLimitReached: effectiveLimit } : undefined,
+        };
+      }
       return {
         content: [{ type: "text", text: output }],
         details: {
@@ -889,7 +1486,7 @@ export default function fffExtension(pi: ExtensionAPI) {
       };
     },
 
-    renderCall(args, theme, context) {
+    renderCall(args: any, theme: any, context: any) {
       const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
       const pattern = args?.pattern ?? "";
       const path = args?.path ?? ".";
@@ -905,7 +1502,7 @@ export default function fffExtension(pi: ExtensionAPI) {
       return text;
     },
 
-    renderResult(result, options, theme, context) {
+    renderResult(result: any, options: any, theme: any, context: any) {
       return renderTextResult(result, options, theme, context, 20);
     },
   });
@@ -918,13 +1515,14 @@ export default function fffExtension(pi: ExtensionAPI) {
         "Fuzzy file path query. Turn vague reference ('auth middleware') into exact path.",
     }),
     limit: Type.Optional(
-      Type.Number({
+      Type.Integer({
+        minimum: 1,
         description: `Max candidates when ambiguous (default ${DEFAULT_RESOLVE_LIMIT})`,
       }),
     ),
   });
 
-  pi.registerTool({
+  registerBoundedTool({
     name: "resolve_file",
     label: "Resolve File",
     description:
@@ -937,7 +1535,7 @@ export default function fffExtension(pi: ExtensionAPI) {
     ],
     parameters: resolveFileSchema,
 
-    async execute(_toolCallId, params, signal) {
+    async execute(_toolCallId: any, params: any, signal: AbortSignal | undefined) {
       if (signal?.aborted) throw new Error("Operation aborted");
 
       let f;
@@ -950,11 +1548,12 @@ export default function fffExtension(pi: ExtensionAPI) {
           details: { resolved: false, totalMatched: 0 },
         };
       }
-      const limit = Math.max(1, params.limit ?? DEFAULT_RESOLVE_LIMIT);
+      const limit = params.limit ?? DEFAULT_RESOLVE_LIMIT;
+      const pattern = stripLeadingAt(params.pattern);
 
       let result;
       try {
-        result = f.fileSearch(params.pattern, { pageSize: limit });
+        result = f.fileSearch(pattern, { pageSize: Math.max(limit, 2) });
       } catch (e) {
         return {
           content: [{ type: "text", text: `Search error: ${(e as Error).message}` }],
@@ -970,7 +1569,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 
       if (result.value.items.length === 0) {
         return {
-          content: [{ type: "text", text: `No files matched "${params.pattern}".` }],
+          content: [{ type: "text", text: `No files matched "${pattern}".` }],
           details: { resolved: false, totalMatched: 0 },
         };
       }
@@ -1040,10 +1639,11 @@ export default function fffExtension(pi: ExtensionAPI) {
       }),
     ),
     context: Type.Optional(
-      Type.Number({ description: "Context lines before+after" }),
+      Type.Integer({ minimum: 0, description: "Context lines before+after" }),
     ),
     limit: Type.Optional(
-      Type.Number({
+      Type.Integer({
+        minimum: 1,
         description: `Max matches (default ${DEFAULT_GREP_LIMIT})`,
       }),
     ),
@@ -1063,7 +1663,7 @@ export default function fffExtension(pi: ExtensionAPI) {
     ),
   });
 
-  pi.registerTool({
+  registerBoundedTool({
     name: "fff_multi_grep",
     label: "FFF Multi Grep",
     description:
@@ -1076,8 +1676,16 @@ export default function fffExtension(pi: ExtensionAPI) {
     ],
     parameters: multiGrepSchema,
 
-    async execute(_toolCallId, params, signal) {
+    async execute(_toolCallId: any, params: any, signal: AbortSignal | undefined) {
       if (signal?.aborted) throw new Error("Operation aborted");
+
+      const stored = params.cursor ? cursorStore.get(params.cursor) : undefined;
+      if (params.cursor && (!stored || stored.tool !== "multi" || stored.cwd !== activeCwd)) {
+        return {
+          content: [{ type: "text", text: "Invalid or expired multi-grep cursor. Start the search again without cursor." }],
+          details: { totalMatched: 0, totalFiles: 0 },
+        };
+      }
 
       let f;
       try {
@@ -1089,30 +1697,79 @@ export default function fffExtension(pi: ExtensionAPI) {
           details: { totalMatched: 0, totalFiles: 0 },
         };
       }
-      const effectiveLimit = Math.max(1, params.limit ?? DEFAULT_GREP_LIMIT);
-      let query;
+      const resumed = stored?.tool === "multi" ? stored : undefined;
+      const pageSize = resumed?.pageSize ?? Math.max(1, Math.floor(params.limit ?? DEFAULT_GREP_LIMIT));
+      const patterns = resumed?.patterns ?? params.patterns;
+      const explicitContext = resumed?.context ?? (params.context === undefined
+        ? undefined
+        : Math.max(0, Math.floor(params.context)));
+      const contextLines = explicitContext ?? 0;
+      const smartCase = resumed?.smartCase ?? params.caseSensitive !== true;
+      const outputMode = resumed?.outputMode ?? (params.outputMode as GrepOutputMode | undefined) ?? "content";
+      let scope = resumed?.scope;
+      let manualFile = resumed?.hiddenFile ?? false;
+      let constraints = resumed?.constraints;
+      let scopeExcluded = false;
       try {
-        query = buildQuery(params.path, "", params.exclude, activeCwd);
+        if (!resumed) {
+          constraints = buildQuery(params.path, "", params.exclude, activeCwd) || undefined;
+          const hidden = resolveExplicitHiddenScope(params.path);
+          if (hidden?.stat.isFile()) {
+            scope = hidden.scope;
+            manualFile = true;
+          } else if (hidden?.stat.isDirectory()) {
+            scope = hidden.scope;
+            const rebased = rebaseScopedExcludes(params.exclude, hidden.scope);
+            scopeExcluded = rebased.excludeAll;
+            constraints = buildQuery(hidden.constraint, "", rebased.values, hidden.absoluteScope) || undefined;
+          }
+        }
       } catch (e) {
         return {
           content: [{ type: "text", text: `Invalid path constraint: ${(e as Error).message}.` }],
           details: { totalMatched: 0, totalFiles: 0 },
         };
       }
-      const explicitContext = params.context ?? 0;
+
+      const runMultiGrep = (
+        target: FileFinder,
+        targetConstraints: string | undefined,
+        cursor: GrepCursor | null,
+      ) => target.multiGrep({
+        patterns,
+        constraints: targetConstraints,
+        cursor,
+        beforeContext: contextLines,
+        afterContext: Math.max(contextLines, explicitContext === undefined ? 3 : contextLines),
+        pageSize,
+        maxMatchesPerFile: Math.min(pageSize, 50),
+        smartCase,
+        classifyDefinitions: true,
+      });
 
       let grepResult;
       try {
-        grepResult = f.multiGrep({
-          patterns: params.patterns,
-          constraints: query || undefined,
-          cursor: (params.cursor ? cursorStore.get(params.cursor) : null) ?? null,
-          beforeContext: explicitContext,
-          afterContext: Math.max(explicitContext, 3),
-          maxMatchesPerFile: Math.min(effectiveLimit, 50),
-          smartCase: params.caseSensitive !== true,
-          classifyDefinitions: true,
-        });
+        if (scopeExcluded) {
+          grepResult = { ok: true as const, value: emptyGrepResult() };
+        } else if (manualFile && scope) {
+          const manual = grepExplicitHiddenFile(scope, patterns, {
+            mode: "plain",
+            smartCase,
+            context: contextLines,
+            pageSize,
+            offset: resumed?.cursor._offset,
+            exclude: resumed?.exclude,
+          });
+          grepResult = manual ? { ok: true as const, value: manual } : undefined;
+        } else if (scope) {
+          const scoped = await withExplicitHiddenFinder(scope, (target) =>
+            runMultiGrep(target, constraints, resumed?.cursor ?? null),
+          );
+          grepResult = scoped?.value;
+          if (grepResult?.ok) grepResult = { ok: true, value: prefixGrepResult(grepResult.value, scope) };
+        } else {
+          grepResult = runMultiGrep(f, constraints, resumed?.cursor ?? null);
+        }
       } catch (e) {
         return {
           content: [{ type: "text", text: `Search error: ${(e as Error).message}` }],
@@ -1120,6 +1777,12 @@ export default function fffExtension(pi: ExtensionAPI) {
         };
       }
 
+      if (!grepResult) {
+        return {
+          content: [{ type: "text", text: "Search failed: hidden path scope is unavailable" }],
+          details: { totalMatched: 0, totalFiles: 0 },
+        };
+      }
       if (!grepResult.ok) {
         return {
           content: [{ type: "text", text: `Search failed: ${grepResult.error}` }],
@@ -1128,8 +1791,21 @@ export default function fffExtension(pi: ExtensionAPI) {
       }
 
       const result = grepResult.value;
-      const outputMode = params.outputMode as GrepOutputMode | undefined;
-      return formatGrepResult(result, outputMode, explicitContext);
+      return formatGrepResult(result, outputMode, explicitContext, {
+        cursorState: {
+          tool: "multi",
+          cwd: activeCwd,
+          patterns,
+          scope,
+          hiddenFile: manualFile,
+          exclude: resumed?.exclude ?? params.exclude,
+          constraints,
+          smartCase,
+          context: explicitContext,
+          outputMode,
+          pageSize,
+        },
+      });
     },
   });
 
@@ -1141,25 +1817,26 @@ export default function fffExtension(pi: ExtensionAPI) {
         "File path (relative or fuzzy) to find companion files for (tests, types, styles, stories).",
     }),
     limit: Type.Optional(
-      Type.Number({
+      Type.Integer({
+        minimum: 1,
         description: `Max related files (default ${DEFAULT_RESOLVE_LIMIT})`,
       }),
     ),
   });
 
-  pi.registerTool({
+  registerBoundedTool({
     name: "related_files",
     label: "Related Files",
     description:
       "Find companion files by stem matching (tests, types, styles).",
     promptSnippet: "Find companion files",
     promptGuidelines: [
-      "Pass any file path. Strips test/spec/.d/.module suffixes.",
+      "Pass any file path. Strips test/spec/story/types/styles/.d/.module suffixes.",
       "Great for finding test files or type defs for a module.",
     ],
     parameters: relatedFilesSchema,
 
-    async execute(_toolCallId, params, signal) {
+    async execute(_toolCallId: any, params: any, signal: AbortSignal | undefined) {
       if (signal?.aborted) throw new Error("Operation aborted");
 
       let f;
@@ -1172,12 +1849,13 @@ export default function fffExtension(pi: ExtensionAPI) {
           details: { reference: "", related: [] },
         };
       }
-      const limit = Math.max(1, params.limit ?? DEFAULT_RESOLVE_LIMIT);
+      const limit = params.limit ?? DEFAULT_RESOLVE_LIMIT;
+      const referenceQuery = stripLeadingAt(params.path);
 
       // Resolve the reference file first
       let refResult;
       try {
-        refResult = f.fileSearch(params.path, { pageSize: limit * 2 });
+        refResult = f.fileSearch(referenceQuery, { pageSize: limit * 2 });
       } catch (e) {
         return {
           content: [{ type: "text", text: `Search error: ${(e as Error).message}` }],
@@ -1192,24 +1870,24 @@ export default function fffExtension(pi: ExtensionAPI) {
       }
       if (refResult.value.items.length === 0) {
         return {
-          content: [{ type: "text", text: `No file matched "${params.path}".` }],
+          content: [{ type: "text", text: `No file matched "${referenceQuery}".` }],
           details: { reference: "", related: [] },
         };
       }
 
       const referencePath = refResult.value.items[0].relativePath;
 
-      // Extract stem: strip test/spec/stories/.d/.module suffixes, then extension
-      const stem = (referencePath.split("/").pop() ?? referencePath)
-        .replace(/\.(test|spec|stories)\./g, ".")
-        .replace(/\.d\./g, ".")
-        .replace(/\.module\./g, ".")
-        .replace(/\.[^.]+$/, "");
+      const stem = companionStem(referencePath);
 
-      // Search for files with the same stem
+      const referenceDir = path.posix.dirname(referencePath);
+
+      // Search only the reference directory for files with the same stem.
       let relatedResult;
       try {
-        relatedResult = f.fileSearch(stem, { pageSize: limit * 3 });
+        relatedResult = f.fileSearch(
+          buildQuery(referenceDir === "." ? undefined : `${referenceDir}/`, stem),
+          { pageSize: limit * 3 },
+        );
       } catch (e) {
         return {
           content: [{ type: "text", text: `Search error: ${(e as Error).message}` }],
@@ -1223,16 +1901,13 @@ export default function fffExtension(pi: ExtensionAPI) {
         };
       }
 
-      // Filter out the reference file and limit
+      // Filter out the reference file and keep normalized-stem companions in
+      // the same directory only.
       const related = relatedResult.value.items
         .filter((item) => item.relativePath !== referencePath)
         .filter((item) => {
-          const candidateBase = item.relativePath.split("/").pop() ?? "";
-          const refDir = referencePath.substring(0, referencePath.lastIndexOf("/"));
-          return (
-            candidateBase.includes(stem) ||
-            item.relativePath.includes(`${refDir}/${stem}`)
-          );
+          if (path.posix.dirname(item.relativePath) !== referenceDir) return false;
+          return companionStem(item.relativePath) === stem;
         })
         .slice(0, limit);
 
@@ -1264,6 +1939,7 @@ export default function fffExtension(pi: ExtensionAPI) {
       };
     },
   });
+  }
 
   // --- commands ---
 
@@ -1284,17 +1960,23 @@ export default function fffExtension(pi: ExtensionAPI) {
         return;
       }
 
+      const flagMode = pi.getFlag("fff-mode");
+      if (VALID_MODES.includes(flagMode as FffMode) && flagMode !== arg) {
+        ctx.ui.notify(`Mode is fixed by --fff-mode=${flagMode}. Restart without the flag to change it.`, "warning");
+        return;
+      }
+
       const newMode = arg as FffMode;
       const oldMode = currentMode;
       currentMode = newMode;
+      process.env.PI_FFF_MODE = newMode;
 
-      pi.appendEntry("fff-mode", { mode: newMode });
-
-      const note =
-        (oldMode === "override") !== (newMode === "override")
-          ? " (tool name change requires /reload)"
-          : "";
-      ctx.ui.notify(`Mode changed: '${oldMode}' → '${newMode}'${note}`, "info");
+      if ((oldMode === "override") !== (newMode === "override")) {
+        ctx.ui.notify(`Mode changed: '${oldMode}' → '${newMode}'. Reloading tools...`, "info");
+        await ctx.reload();
+        return;
+      }
+      ctx.ui.notify(`Mode changed: '${oldMode}' → '${newMode}'`, "info");
     },
   });
 
