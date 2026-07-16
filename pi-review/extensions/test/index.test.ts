@@ -82,6 +82,7 @@ describe("review parsing and shell gate", () => {
 		assert.equal(isReadOnlyBash("git diff --output=/tmp/patch"), false, "diff --output");
 		assert.equal(isReadOnlyBash("git show HEAD"), true, "show ok");
 		assert.equal(isReadOnlyBash("git log --oneline -5"), true, "log ok");
+		assert.equal(isReadOnlyBash("awk -i inplace '1' tracked.txt"), false, "awk inplace");
 		assert.equal(isReadOnlyBash("sed -n 'w output.txt' input.txt"), false, "sed w command");
 		assert.equal(isReadOnlyBash("sed 'w /tmp/out' input"), false, "sed w path");
 		assert.equal(isReadOnlyBash("sed -n -e \"w output.txt\" input.txt"), false, "sed -e w");

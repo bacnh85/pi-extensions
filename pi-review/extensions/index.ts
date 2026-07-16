@@ -93,7 +93,7 @@ export function isReadOnlyBash(command: string): boolean {
 	// Package-manager commands can run repository-controlled lifecycle scripts.
 	if (/^(?:npm|yarn|pnpm)\s+/i.test(inspection)) return false;
 	// Read-only non-git commands
-	return /^(?:rg|grep|find|fd|ls|pwd|cat|head|tail|awk|wc|sort|uniq|cut)\b/i.test(inspection);
+	return /^(?:rg|grep|find|fd|ls|pwd|cat|head|tail|wc|sort|uniq|cut)\b/i.test(inspection);
 }
 
 function reviewPresetPrompt(preset: ReviewPreset): string {
