@@ -18,8 +18,11 @@ Project agents override user agents with the same name when `agentScope: "both"`
 ---
 name: my-agent          # Required. Unique identifier (kebab-case).
 description: ...        # Required. When to use this agent.
-tools: read, grep, ...  # Optional. Comma-separated tool names. Defaults to all.
-model: provider/model     # Optional. Defaults to parent's model.
+tools: read, grep, ...    # Optional. Comma-separated tool names. Defaults to all.
+model: provider/model     # Optional explicit first choice (legacy compatible).
+models:                   # Optional ordered fallbacks; comma form also accepted.
+  - provider/fast-model
+  - provider/backup-model
 thinking: low             # Optional: off|minimal|low|medium|high|xhigh|max.
 sandbox: read-only        # Optional: read-only | workspace-write. Auto-derives tool restrictions.
 color: cyan               # Optional: red|blue|green|yellow|purple|orange|pink|cyan.
@@ -62,13 +65,14 @@ Read-only service execution (used by `pi-review`) restricts tools to the read-on
 
 ## Model Resolution
 
-Model IDs are resolved via `getModel("provider", "id")`. Common values:
-- `claude-haiku-4-5` (Anthropic Haiku — fast, cheap)
-- `claude-sonnet-4-20250514` (Anthropic Sonnet — balanced)
-- `gpt-4o` (OpenAI)
-- Any model available in your pi configuration.
+Pi selects the first authenticated/configured model reported by the parent session's `ModelRegistry`. Resolution order is legacy `model`, then each `models` entry, then the authenticated parent model. Duplicate candidates are ignored. If no candidate is available, the error lists every attempted model.
 
-If not specified, defaults to the parent session's model.
+```yaml
+model: openai-codex/gpt-5.6-terra
+models: opencode-go/deepseek-v4-pro, opencode-go/mimo-v2.5
+```
+
+The registry includes OAuth subscriptions, API-key subscriptions such as OpenCode Go, environment/runtime credentials, and custom `models.json` providers. Use provider-qualified IDs for predictable routing.
 
 ## Instruction handoff
 

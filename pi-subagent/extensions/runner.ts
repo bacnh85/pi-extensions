@@ -7,7 +7,7 @@
  *
  *   - Only the agent's system prompt is used (no pi defaults).
  *   - No AGENTS.md, no extensions, no skills, no prompt templates loaded.
- *   - Thinking disabled, compaction disabled, retry disabled.
+ *   - Thinking disabled, compaction disabled, one transient retry.
  *   - In-memory session (no disk I/O).
  *   - Shared auth/model infrastructure (no re-connection).
  *
@@ -126,7 +126,7 @@ export async function runSubAgent(options: {
 
 	const settingsManager = SettingsManager.inMemory({
 		compaction: { enabled: false },
-		retry: { enabled: false },
+		retry: { enabled: true, maxRetries: 1 },
 	});
 
 	// Hoisted so the outer catch can clean up on early failure.
@@ -220,7 +220,7 @@ export async function runSubAgent(options: {
 										result.model = `${msg.provider || "?"}/${msg.model}`;
 									}
 									if (msg.stopReason) result.stopReason = msg.stopReason;
-									if (msg.errorMessage) result.errorMessage = msg.errorMessage;
+									result.errorMessage = msg.errorMessage;
 								}
 								// Collect all messages for extraction
 								result.messages.push(msg as unknown as Message);
@@ -228,6 +228,7 @@ export async function runSubAgent(options: {
 								break;
 							}
 							case "agent_end": {
+								if (event.willRetry) break;
 								// agent_end carries all messages; use them if we haven't collected
 								if (result.messages.length === 0 && event.messages) {
 									result.messages = event.messages as unknown as Message[];
@@ -271,19 +272,16 @@ export async function runSubAgent(options: {
 			abortedBySignal = combinedSignal.aborted && !timedOut;
 
 			if (timedOut) {
-				result.exitCode = 1;
 				result.stopReason = "timeout";
-				result.errorMessage ||= `Timeout after ${timeoutMs}ms`;
+				result.errorMessage = `Timeout after ${timeoutMs}ms`;
 			} else if (abortedBySignal) {
-				result.exitCode = 1;
 				result.stopReason = "aborted";
 				result.errorMessage ||= "Sub-agent aborted";
-			} else {
-				result.exitCode = 0;
 			}
 
-			// Classify canonical status.
+			// Classify canonical status and keep the legacy exit code consistent.
 			result.status = classifyStopReason(result.stopReason, result.stopReason === "aborted", result.stopReason === "timeout");
+			result.exitCode = result.status === "success" || result.status === "partial" ? 0 : 1;
 
 			return result;
 		} finally {

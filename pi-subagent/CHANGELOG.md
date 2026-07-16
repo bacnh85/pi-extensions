@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.0 (2026-07-16)
+
+### Model routing
+
+- Bundled roles now select the first authenticated model from an ordered preference list, with the authenticated parent model as the final fallback.
+- Added read-only `planner` and focused `tester` roles for consequential design and cheap routine verification.
+- Agent files accept `models` as a YAML array or comma-separated string; legacy `model` remains the explicit first choice.
+
+## 0.8.2 (2026-07-16)
+
+### Reliability
+
+- Transient provider and transport failures receive one bounded SDK retry. Retrying Codex WebSocket failures uses the session's SSE fallback, waits through retrying `agent_end` events, clears recovered error state, preserves nonzero failure exit codes, and reports explicit timeout messages.
+
 ## 0.8.1 (2026-07-15)
 
 ### Review handoff

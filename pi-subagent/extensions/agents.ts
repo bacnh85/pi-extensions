@@ -20,12 +20,17 @@ export interface AgentConfig {
 	description: string;
 	tools?: string[];
 	model?: string;
+	models?: string[];
 	thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	sandbox?: "read-only" | "workspace-write";
 	color?: AgentColor;
 	systemPrompt: string;
 	source: "user" | "project" | "bundled";
 	filePath: string;
+}
+
+export function getModelCandidates(agent: Pick<AgentConfig, "model" | "models">): string[] {
+	return [...new Set([agent.model, ...(agent.models ?? [])].filter((model): model is string => Boolean(model)))];
 }
 
 export interface AgentDiscoveryResult {
@@ -160,11 +165,28 @@ function loadAgentsFromDir(
 				: Array.isArray(frontmatter.tools)
 					? (frontmatter.tools as unknown[]).filter((t): t is string => typeof t === "string")
 					: undefined;
+		const model = typeof frontmatter.model === "string" ? frontmatter.model.trim() || undefined : undefined;
+		const models =
+			typeof frontmatter.models === "string"
+				? frontmatter.models.split(",").map((item) => item.trim()).filter(Boolean)
+				: Array.isArray(frontmatter.models)
+					? (frontmatter.models as unknown[]).filter((item): item is string => typeof item === "string" && Boolean(item.trim())).map((item) => item.trim())
+					: undefined;
 
-		if (typeof frontmatter.model === "string" && frontmatter.model && !frontmatter.model.includes("/")) {
+		if (frontmatter.models !== undefined && typeof frontmatter.models !== "string" && !Array.isArray(frontmatter.models)) {
+			diagnostics.push({ filePath, issue: `"models" must be a YAML array or comma-separated string. Ignoring.`, severity: "warn" });
+		}
+		if (Array.isArray(frontmatter.models)) {
+			for (const item of frontmatter.models) {
+				if (typeof item === "string" && item.trim()) continue;
+				diagnostics.push({ filePath, issue: `"models" entries must be non-empty strings. Ignoring invalid entry.`, severity: "warn" });
+			}
+		}
+		for (const modelName of getModelCandidates({ model, models })) {
+			if (modelName.includes("/")) continue;
 			diagnostics.push({
 				filePath,
-				issue: `Model "${frontmatter.model}" does not include a provider prefix (e.g., "anthropic/claude-sonnet-4-20250514"). Resolution may fail.`,
+				issue: `Model "${modelName}" does not include a provider prefix (e.g., "anthropic/claude-sonnet-4-20250514"). Resolution may fail.`,
 				severity: "warn",
 			});
 		}
@@ -204,7 +226,8 @@ function loadAgentsFromDir(
 			name: frontmatter.name,
 			description: frontmatter.description,
 			tools: tools && tools.length > 0 ? tools : undefined,
-			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
+			model,
+			models: models && models.length > 0 ? models : undefined,
 			thinking: typeof frontmatter.thinking === "string" && ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(frontmatter.thinking)
 				? frontmatter.thinking as AgentConfig["thinking"]
 				: undefined,

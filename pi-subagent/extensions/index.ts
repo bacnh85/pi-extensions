@@ -30,7 +30,7 @@ import {
 import { Container, Markdown, SelectList, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
-import { type AgentColor, type AgentConfig, type AgentScope, discoverAgents, formatAgentList, invalidateAgentCache } from "./agents.ts";
+import { type AgentColor, type AgentConfig, type AgentScope, discoverAgents, formatAgentList, getModelCandidates, invalidateAgentCache } from "./agents.ts";
 import {
 	type SubAgentResult,
 	getFinalOutput,
@@ -164,11 +164,14 @@ export default function (pi: ExtensionAPI) {
 		const ctx = currentCtx;
 		const discovery = discoverAgents(ctx?.cwd ?? process.cwd(), "both", bundledAgentsDir);
 		const catalog = discovery.agents
-			.map((a) => {
-				const modelInfo = a.model ? ` (model: ${a.model})` : " (inherits parent)";
-				const thinkingInfo = a.thinking ? `, thinking: ${a.thinking}` : "";
-				const sandboxInfo = a.sandbox ? `, sandbox: ${a.sandbox}` : "";
-				return `- **${a.name}**: ${a.description}${modelInfo}${thinkingInfo}${sandboxInfo}`;
+			.map((agent) => {
+				const candidates = getModelCandidates(agent);
+				const modelInfo = candidates.length > 0
+					? ` (models: ${candidates.join(" → ")} → parent fallback)`
+					: " (parent fallback)";
+				const thinkingInfo = agent.thinking ? `, thinking: ${agent.thinking}` : "";
+				const sandboxInfo = agent.sandbox ? `, sandbox: ${agent.sandbox}` : "";
+				return `- **${agent.name}**: ${agent.description}${modelInfo}${thinkingInfo}${sandboxInfo}`;
 			})
 			.join("\n");
 		return {
@@ -177,9 +180,9 @@ export default function (pi: ExtensionAPI) {
 				`\n\n## Available Subagents\n${catalog}\n\n` +
 				"The subagent tool can delegate tasks to these specialized agents with isolated context. " +
 				"Use for read-heavy exploration, parallel analysis, or work that would flood the main context.\n" +
-				"Prefer **scout** for fast read-only exploration. " +
-				"Prefer **reviewer** for code review (high thinking, read-only). " +
-				"Prefer **worker** for implementation (medium thinking, all tools). " +
+				"Prefer **scout** and **tester** for cheap routine work. " +
+				"Prefer **worker** or **general-purpose** for normal coding. " +
+				"Prefer **planner** and **reviewer** for consequential reasoning. " +
 				"Modes: single, parallel (max 8 tasks, 4 concurrent), chain.",
 		};
 	});
@@ -272,12 +275,13 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui.notify(`Unknown agent: "${args.trim()}". Use /subagent to list all.`, "error");
 					return;
 				}
+				const candidates = getModelCandidates(agent);
 				pi.sendMessage({
 					customType: "pi-subagent",
 					content: [
 						`Agent: ${agent.name} (${agent.source})`,
 						`Description: ${agent.description}`,
-						`Model: ${agent.model || "inherits from parent"}`,
+						`Models: ${candidates.length > 0 ? `${candidates.join(" → ")} → parent fallback` : "parent fallback"}`,
 						`Thinking: ${agent.thinking || "off"}`,
 						`Tools: ${agent.tools?.join(", ") || "all default"}`,
 						`Source file: ${agent.filePath}`,
@@ -343,11 +347,11 @@ export default function (pi: ExtensionAPI) {
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" or "project".`,
 		].join(" "),
 		parameters: SubagentParams,
-		promptSnippet: "Delegate tasks to specialized sub-agents (scout, reviewer, worker, general-purpose)",
+		promptSnippet: "Delegate tasks to specialized sub-agents with automatic role-based model routing",
 		promptGuidelines: [
 			"Use subagent to delegate work that would flood the main context with search results or file contents.",
 			"Modes: single {agent, task}, parallel {tasks: [...]} (max 8, 4 concurrent), chain {chain: [...]} (sequential with {previous}).",
-			"Bundled agents: scout (fast recon), reviewer (code review), worker (implementation), general-purpose (fallback).",
+			"Bundled agents: scout (fast recon), tester (verification), worker (implementation), general-purpose (fallback), planner (planning), reviewer (review).",
 			"Use /subagent to list all available agents or /subagent <name> for agent details.",
 		],
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -536,7 +540,7 @@ export default function (pi: ExtensionAPI) {
 					};
 				}
 
-				const resolved = resolveModel(agent.model, ctx.model, ctx.modelRegistry);
+				const resolved = await resolveModel(getModelCandidates(agent), ctx.model, ctx.modelRegistry);
 				if (!resolved.model) {
 					const tried = resolved.attempted.join(", ") || "none";
 					const parentInfo = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";

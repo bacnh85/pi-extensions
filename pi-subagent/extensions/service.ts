@@ -1,5 +1,5 @@
 import { AuthStorage, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AgentConfig } from "./agents.ts";
+import { type AgentConfig, getModelCandidates } from "./agents.ts";
 import { runSubAgent, type SubAgentResult } from "./runner.ts";
 import { resolveModel } from "./model.ts";
 import {
@@ -39,7 +39,7 @@ export async function runNamedAgent(options: {
 	signal?: AbortSignal;
 	onMessage?: (result: SubAgentResult) => void;
 }): Promise<SubAgentResult> {
-	const { model, attempted } = resolveModel(options.agent.model, options.ctx.model, options.ctx.modelRegistry);
+	const { model, attempted } = await resolveModel(getModelCandidates(options.agent), options.ctx.model, options.ctx.modelRegistry);
 	if (!model) throw new Error(`No model resolved for agent "${options.agent.name}" (tried: ${attempted.join(", ") || "none"})`);
 
 	const authStorage = AuthStorage.inMemory();

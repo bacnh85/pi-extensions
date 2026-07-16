@@ -14,14 +14,16 @@ Requires Node.js >= 20.18.
 
 ## Bundled roles
 
-| Role | Model | Thinking | Tools |
+| Role | Ordered model preferences | Thinking | Tools |
 | --- | --- | --- | --- |
-| `scout` | parent model | low | read, grep, find, ls |
-| `reviewer` | parent model | high | read, grep, find, ls |
-| `worker` | parent model | medium | read, bash, edit, write, grep, find, ls |
-| `general-purpose` | parent model | off | read, bash, edit, write, grep, find, ls |
+| `scout` | `opencode-go/deepseek-v4-flash` → `openai-codex/gpt-5.6-luna` → `opencode-go/mimo-v2.5` | low | read, grep, find, ls |
+| `tester` | `openai-codex/gpt-5.6-luna` → `opencode-go/mimo-v2.5` → `opencode-go/deepseek-v4-flash` | low | read, bash, grep, find, ls |
+| `worker` | `openai-codex/gpt-5.6-terra` → `opencode-go/deepseek-v4-pro` | medium | read, bash, edit, write, grep, find, ls |
+| `general-purpose` | `openai-codex/gpt-5.6-terra` → `opencode-go/deepseek-v4-pro` | medium | read, bash, edit, write, grep, find, ls |
+| `planner` | `openai-codex/gpt-5.6-sol` → `opencode-go/deepseek-v4-pro` | high | read, grep, find, ls |
+| `reviewer` | `openai-codex/gpt-5.6-sol` → `opencode-go/deepseek-v4-pro` | high | read, grep, find, ls |
 
-Bundled roles inherit the parent model so they work with the account already active in Pi. User/project agent files may override `model` and `thinking`.
+Each role uses the first authenticated preference available through Pi's model registry, then falls back to the authenticated parent model. User/project agent files remain stronger overrides and may set legacy `model`, ordered `models`, and `thinking`.
 
 ## Agent files
 
@@ -32,7 +34,8 @@ Create `~/.pi/agent/agents/*.md` or `.pi/agents/*.md`:
 name: scout-fast
 description: Locate relevant files and symbols
 tools: read, grep, find, ls
-model: optional-provider/optional-model
+model: openai-codex/gpt-5.6-luna
+models: opencode-go/mimo-v2.5, opencode-go/deepseek-v4-flash
 ---
 
 Return concise evidence with file/symbol anchors.
@@ -159,6 +162,7 @@ The raw `stopReason` from the Pi SDK is preserved in the result.
 - **Parent cancellation:** Aborting the parent tool call cancels all children.
 - **Sibling cancellation:** In parallel mode with `abortOnFailure: true`, the first failed task cancels running siblings.
 - **Timeout vs. abort:** Timeout errors set `status: "timeout"` and `stopReason: "timeout"`; parent cancellation sets `status: "aborted"`.
+- **Transient provider failures:** One automatic retry runs within the same timeout; Codex WebSocket failures use the SDK's SSE fallback on retry.
 - **Transport idle:** The parent tool receives periodic progress heartbeats while a child runs; these do not extend its timeout.
 
 ## Extension contract

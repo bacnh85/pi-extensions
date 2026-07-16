@@ -3,8 +3,10 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmdir
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "mocha";
-import { discoverAgents, invalidateAgentCache } from "../agents.ts";
-import { mapWithConcurrencyLimit, isFailedResult, getResultOutput, getFinalOutput, startHeartbeat } from "../runner.ts";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { discoverAgents, getModelCandidates, invalidateAgentCache } from "../agents.ts";
+import { resolveModel } from "../model.ts";
+import { mapWithConcurrencyLimit, isFailedResult, getResultOutput, getFinalOutput, runSubAgent, startHeartbeat } from "../runner.ts";
 import { ThreadStore } from "../threads.ts";
 import {
 	resolveSafeCwd,
@@ -239,6 +241,71 @@ describe("agent discovery", () => {
 		const result = discoverAgents(root, "user", bundledDir);
 		assert.equal(result.agents.length, 2);
 	});
+
+	it("parses ordered model arrays and comma-separated strings", () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
+		const bundledDir = path.join(root, "bundled");
+		mkdirSync(bundledDir);
+		writeFileSync(path.join(bundledDir, "array.md"), "---\nname: array-models\ndescription: array\nmodel: provider/override\nmodels:\n  - provider/first\n  - provider/override\n  - provider/second\n---\narray");
+		writeFileSync(path.join(bundledDir, "comma.md"), "---\nname: comma-models\ndescription: comma\nmodels: provider/first, provider/second\n---\ncomma");
+		writeFileSync(path.join(bundledDir, "invalid.md"), "---\nname: invalid-models\ndescription: invalid entries\nmodels:\n  - provider/valid\n  - 123\n  - ''\n---\ninvalid");
+
+		invalidateAgentCache();
+		const result = discoverAgents(root, "project", bundledDir);
+		const array = result.agents.find((agent) => agent.name === "array-models")!;
+		const comma = result.agents.find((agent) => agent.name === "comma-models")!;
+		const invalid = result.agents.find((agent) => agent.name === "invalid-models")!;
+		assert.equal(array.model, "provider/override");
+		assert.deepEqual(array.models, ["provider/first", "provider/override", "provider/second"]);
+		assert.deepEqual(getModelCandidates(array), ["provider/override", "provider/first", "provider/second"]);
+		assert.deepEqual(comma.models, ["provider/first", "provider/second"]);
+		assert.deepEqual(invalid.models, ["provider/valid"]);
+		assert.equal(result.diagnostics.filter((diagnostic) => diagnostic.filePath.endsWith("invalid.md")).length, 2);
+	});
+
+	it("ships planner and tester routing contracts", () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
+		invalidateAgentCache();
+		const agents = discoverAgents(root, "project", path.resolve(import.meta.dirname, "../../agents")).agents;
+		const planner = agents.find((agent) => agent.name === "planner")!;
+		const tester = agents.find((agent) => agent.name === "tester")!;
+		assert.deepEqual(getModelCandidates(planner), ["openai-codex/gpt-5.6-sol", "opencode-go/deepseek-v4-pro"]);
+		assert.equal(planner.thinking, "high");
+		assert.equal(planner.sandbox, "read-only");
+		assert.deepEqual(planner.tools, ["read", "grep", "find", "ls"]);
+		assert.deepEqual(getModelCandidates(tester), ["openai-codex/gpt-5.6-luna", "opencode-go/mimo-v2.5", "opencode-go/deepseek-v4-flash"]);
+		assert.equal(tester.thinking, "low");
+		assert.deepEqual(tester.tools, ["read", "bash", "grep", "find", "ls"]);
+	});
+});
+
+// ===========================================================================
+// Model resolution
+// ===========================================================================
+
+describe("resolveModel", () => {
+	const model = (provider: string, id: string) => ({ provider, id }) as any;
+	const registry = (...models: any[]) => ({ getAvailable: () => models }) as ModelRegistry;
+
+	it("selects the first authenticated candidate", async () => {
+		const second = model("provider", "second");
+		const resolved = await resolveModel(["provider/missing", "provider/second"], undefined, registry(second));
+		assert.equal(resolved.model, second);
+		assert.deepEqual(resolved.attempted, ["provider/missing", "provider/second"]);
+	});
+
+	it("falls back from unavailable candidates to an authenticated parent", async () => {
+		const parent = model("provider", "parent");
+		const resolved = await resolveModel(["provider/missing"], parent, registry(parent));
+		assert.equal(resolved.model, parent);
+		assert.deepEqual(resolved.attempted, ["provider/missing", "provider/parent"]);
+	});
+
+	it("reports every attempted candidate when none are authenticated", async () => {
+		const resolved = await resolveModel(["provider/first", "provider/second"], model("provider", "parent"), registry());
+		assert.equal(resolved.model, null);
+		assert.deepEqual(resolved.attempted, ["provider/first", "provider/second", "provider/parent"]);
+	});
 });
 
 // ===========================================================================
@@ -290,6 +357,72 @@ describe("runner helpers", () => {
 		});
 		assert.equal(peak, 3);
 		assert.deepEqual(result, [1, 2, 3, 4, 5, 6]);
+	});
+});
+
+// ===========================================================================
+// Runner retry lifecycle
+// ===========================================================================
+
+describe("runSubAgent retry lifecycle", () => {
+	it("recovers once from a transient WebSocket error and then stops retrying", async function () {
+		this.timeout(10_000);
+		// Register with the pi-ai instance bundled inside pi-coding-agent, which owns AgentSession's provider registry.
+		const { registerFauxProvider } = await import("../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/compat.js");
+		const { fauxAssistantMessage } = await import("../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/faux.js");
+		const faux = registerFauxProvider({ api: "pi-subagent-retry-test", provider: "pi-subagent-retry-test" });
+		const model = faux.getModel();
+		const authStorage = AuthStorage.inMemory();
+		authStorage.setRuntimeApiKey(model.provider, "test-key");
+		const modelRegistry = ModelRegistry.inMemory(authStorage);
+		const websocketError = () => fauxAssistantMessage("", { stopReason: "error", errorMessage: "WebSocket error" });
+		const run = (timeoutMs?: number) => runSubAgent({
+			cwd: process.cwd(),
+			systemPrompt: "Test assistant",
+			task: "Respond",
+			tools: [],
+			model,
+			authStorage,
+			modelRegistry,
+			agentName: "test",
+			timeoutMs,
+		});
+
+		try {
+			faux.setResponses([websocketError(), fauxAssistantMessage("recovered")]);
+			const recovered = await run();
+			assert.equal(faux.state.callCount, 2, JSON.stringify(recovered));
+			assert.equal(recovered.status, "success");
+			assert.equal(recovered.exitCode, 0);
+			assert.equal(recovered.errorMessage, undefined);
+			assert.equal(getFinalOutput(recovered.messages), "recovered");
+
+			const callsBeforeExhaustion = faux.state.callCount;
+			faux.setResponses([websocketError(), websocketError(), fauxAssistantMessage("unexpected")]);
+			const exhausted = await run();
+			assert.equal(faux.state.callCount - callsBeforeExhaustion, 2);
+			assert.equal(faux.getPendingResponseCount(), 1);
+			assert.equal(exhausted.status, "error");
+			assert.equal(exhausted.exitCode, 1);
+			assert.equal(exhausted.errorMessage, "WebSocket error");
+
+			faux.setResponses([async (_context, options) => {
+				await new Promise<void>((resolve, reject) => {
+					const timer = setTimeout(resolve, 1_000);
+					options?.signal?.addEventListener("abort", () => {
+						clearTimeout(timer);
+						reject(new Error("aborted"));
+					}, { once: true });
+				});
+				return fauxAssistantMessage("late");
+			}]);
+			const timedOut = await run(25);
+			assert.equal(timedOut.status, "timeout");
+			assert.equal(timedOut.exitCode, 1);
+			assert.equal(timedOut.errorMessage, "Timeout after 25ms");
+		} finally {
+			faux.unregister();
+		}
 	});
 });
 

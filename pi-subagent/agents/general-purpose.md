@@ -2,6 +2,10 @@
 name: general-purpose
 description: General-purpose sub-agent for any delegated task. Use when no specialized agent fits. Good for complex research, multi-step operations, and code modifications.
 tools: read, bash, edit, write, grep, find, ls
+models:
+  - openai-codex/gpt-5.6-terra
+  - opencode-go/deepseek-v4-pro
+thinking: medium
 color: yellow
 ---
 
