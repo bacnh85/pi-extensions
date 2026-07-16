@@ -25,7 +25,8 @@ const PLAN_EXECUTE_COMMAND = "plan-execute";
 // ponytail: keep in sync with pi-review/extensions/index.ts REVIEW_EVENT
 const REVIEW_EVENT = "pi-review:run";
 const MAX_REVIEW_PASSES = 3;
-const REVIEW_TIMEOUT_MS = 10 * 60 * 1000;
+const REVIEW_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
+const REVIEW_HARD_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_DIRTY_PATCH_BYTES = 50 * 1024;
 const MAX_UNTRACKED_SNAPSHOT_BYTES = MAX_DIRTY_PATCH_BYTES;
 const PREFERENCES_FILE = path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "pi-plan", "preferences.json");
@@ -599,10 +600,12 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		flowController = controller;
 		if (reviewTimer) clearTimeout(reviewTimer);
 
-		let timer: ReturnType<typeof setTimeout> | undefined;
+		let idleTimer: ReturnType<typeof setTimeout> | undefined;
+		let hardTimer: ReturnType<typeof setTimeout> | undefined;
 		const cleanup = () => {
-			if (timer) clearTimeout(timer);
-			if (reviewTimer === timer) reviewTimer = undefined;
+			if (idleTimer) clearTimeout(idleTimer);
+			if (hardTimer) clearTimeout(hardTimer);
+			if (reviewTimer === idleTimer) reviewTimer = undefined;
 			if (flowController === controller) flowController = undefined;
 		};
 		controller.signal.addEventListener("abort", () => {
@@ -612,15 +615,21 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			resolve({ ok: false, error: "Reviewer cancelled" });
 		}, { once: true });
 
-		timer = setTimeout(() => {
+		const timeout = (reason: "idle" | "hard") => {
 			if (reviewState === "IDLE" || reviewState === "ACCEPTED") {
 				reviewState = "TIMED_OUT";
 				controller.abort();
 				cleanup();
-				resolve({ ok: false, error: "Reviewer timed out" });
+				resolve({ ok: false, error: `Reviewer ${reason} timeout` });
 			}
-		}, REVIEW_TIMEOUT_MS);
-		reviewTimer = timer;
+		};
+		const resetIdle = () => {
+			if (idleTimer) clearTimeout(idleTimer);
+			idleTimer = setTimeout(() => timeout("idle"), REVIEW_INACTIVITY_TIMEOUT_MS);
+			reviewTimer = idleTimer;
+		};
+		resetIdle();
+		hardTimer = setTimeout(() => timeout("hard"), REVIEW_HARD_TIMEOUT_MS);
 
 		let untrackedDelta = "";
 		try {
@@ -653,8 +662,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			prompt: `Review implementation of ${relativeToCwd(ctx.cwd, lastPlanPath)} against Git baseline ${flow.baseline}. Initial dirty paths at workflow start (exclude unless changed by this implementation):\n${(flow.initialDirty || "(none)").slice(0, MAX_DIRTY_PATCH_BYTES)}\n\nInitial dirty patch (all tracked changes, staged + unstaged from git diff HEAD, 50 KB max):\n${flow.initialDirtyPatch || "(none)"}${untrackedDelta}\n\nCompare the current diff against the initial patch above. Report only regressions introduced by this implementation, not pre-existing dirt.`,
 			gitRange: `${flow.baseline}...HEAD`,
 			requireExactRange: true,
-			timeout: REVIEW_TIMEOUT_MS,
+			timeout: REVIEW_INACTIVITY_TIMEOUT_MS,
 			signal: controller.signal,
+			onProgress: () => resetIdle(),
 			accept: () => {
 				if (reviewState !== "IDLE") return false;
 				reviewState = "ACCEPTED";

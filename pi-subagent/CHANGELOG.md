@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.1 (2026-07-16)
+
+### Activity-aware timeouts
+
+- Child `timeout` values now define a sliding inactivity window (three minutes by default); real SDK lifecycle events reset it while a fixed 20-minute hard cap remains.
+- `/agent` distinguishes real activity from transport heartbeats and reports idle versus hard timeouts.
+
 ## 0.9.0 (2026-07-16)
 
 ### Model routing

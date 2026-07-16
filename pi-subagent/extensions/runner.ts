@@ -45,6 +45,18 @@ export interface UsageStats {
 	turns: number;
 }
 
+export const DEFAULT_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
+export const HARD_TIMEOUT_MS = 20 * 60 * 1000;
+
+export interface SubAgentProgress {
+	label: string;
+	at: number;
+	elapsedMs: number;
+	inactivityDeadline: number;
+	hardDeadline: number;
+	result: SubAgentResult;
+}
+
 export interface SubAgentResult {
 	agent: string;
 	task: string;
@@ -81,231 +93,110 @@ export async function runSubAgent(options: {
 	agentName?: string;
 	thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	onMessage?: (partialResult: SubAgentResult) => void;
-	/** Pre-validated timeout in ms. When provided, an abort signal will be created. */
+	onProgress?: (progress: SubAgentProgress) => void;
 	timeoutMs?: number;
+	hardTimeoutMs?: number;
 }): Promise<SubAgentResult> {
 	const {
-		cwd,
-		systemPrompt,
-		task,
-		tools,
-		model,
-		authStorage,
-		modelRegistry,
-		signal,
-		agentName = "subagent",
-		thinkingLevel = "off",
-		onMessage,
-		timeoutMs,
+		cwd, systemPrompt, task, tools, model, authStorage, modelRegistry, signal,
+		agentName = "subagent", thinkingLevel = "off", onMessage, onProgress,
+		timeoutMs = DEFAULT_INACTIVITY_TIMEOUT_MS, hardTimeoutMs = HARD_TIMEOUT_MS,
 	} = options;
-
 	const result: SubAgentResult = {
-		agent: agentName,
-		task,
-		exitCode: 0,
-		messages: [],
-		stderr: "",
+		agent: agentName, task, exitCode: 0, messages: [], stderr: "",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-		model: `${model.provider}/${model.id}`,
-		status: undefined,
+		model: `${model.provider}/${model.id}`, status: undefined,
 	};
-
-	// Build a minimal resource loader. The sub-agent sees ONLY the agent's
-	// system prompt — no pi defaults, no AGENTS.md, no extensions, no skills.
 	const resourceLoader: ResourceLoader = {
 		getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
-		getSkills: () => ({ skills: [], diagnostics: [] }),
-		getPrompts: () => ({ prompts: [], diagnostics: [] }),
-		getThemes: () => ({ themes: [], diagnostics: [] }),
-		getAgentsFiles: () => ({ agentsFiles: [] }),
-		getSystemPrompt: () => systemPrompt,
-		getAppendSystemPrompt: () => [],
-		extendResources: () => {},
-		reload: async () => {},
+		getSkills: () => ({ skills: [], diagnostics: [] }), getPrompts: () => ({ prompts: [], diagnostics: [] }),
+		getThemes: () => ({ themes: [], diagnostics: [] }), getAgentsFiles: () => ({ agentsFiles: [] }),
+		getSystemPrompt: () => systemPrompt, getAppendSystemPrompt: () => [], extendResources: () => {}, reload: async () => {},
 	};
-
-	const settingsManager = SettingsManager.inMemory({
-		compaction: { enabled: false },
-		retry: { enabled: true, maxRetries: 1 },
-	});
-
-	// Hoisted so the outer catch can clean up on early failure.
-	let timeoutController: AbortController | undefined;
-	let timeoutId: ReturnType<typeof setTimeout> | undefined;
+	const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: true, maxRetries: 1 } });
+	const startedAt = Date.now();
+	let inactivityDeadline = startedAt + timeoutMs;
+	const hardDeadline = startedAt + hardTimeoutMs;
+	let timeoutKind: "idle" | "hard" | undefined;
+	const timeoutController = new AbortController();
+	let idleTimer: ReturnType<typeof setTimeout> | undefined;
+	let hardTimer: ReturnType<typeof setTimeout> | undefined;
 	let cleanupCombined: (() => void) | undefined;
-
+	const clearTimers = () => { if (idleTimer) clearTimeout(idleTimer); if (hardTimer) clearTimeout(hardTimer); };
+	const armIdle = () => {
+		if (idleTimer) clearTimeout(idleTimer);
+		inactivityDeadline = Date.now() + timeoutMs;
+		idleTimer = setTimeout(() => { timeoutKind = "idle"; timeoutController.abort(new Error(`Idle timeout after ${timeoutMs}ms`)); }, timeoutMs);
+	};
+	const snapshot = (label: string): SubAgentProgress => ({ label, at: Date.now(), elapsedMs: Date.now() - startedAt, inactivityDeadline, hardDeadline, result: { ...result, messages: [...result.messages] } });
 	try {
-		// Build combined signal from parent signal and timeout
-		const signalsToCombine: (AbortSignal | undefined | null | false)[] = [signal];
-
-		// Create timeout controller
-		if (timeoutMs && timeoutMs > 0) {
-			timeoutController = new AbortController();
-			timeoutId = setTimeout(() => timeoutController!.abort(new Error(`Timeout after ${timeoutMs}ms`)), timeoutMs);
-			signalsToCombine.push(timeoutController.signal);
-		}
-
-		const { signal: combinedSignal, cleanup: cleanupCb } = createCombinedAbortSignal(signalsToCombine);
-		cleanupCombined = cleanupCb;
-
+		armIdle();
+		hardTimer = setTimeout(() => { timeoutKind = "hard"; timeoutController.abort(new Error(`Hard timeout after ${hardTimeoutMs}ms`)); }, hardTimeoutMs);
+		const { signal: combinedSignal, cleanup } = createCombinedAbortSignal([signal, timeoutController.signal]);
+		cleanupCombined = cleanup;
 		if (combinedSignal.aborted) {
 			result.exitCode = 1;
-			const isTimeout = timeoutController?.signal.aborted === true && signal?.aborted !== true;
-			result.stopReason = isTimeout ? "timeout" : "aborted";
-			result.errorMessage = combinedSignal.reason instanceof Error ? combinedSignal.reason.message : "Sub-agent aborted before start";
-			result.status = classifyStopReason(result.stopReason, !isTimeout, isTimeout);
-			cleanupCombined?.();
-			if (timeoutId) clearTimeout(timeoutId);
+			const timedOut = timeoutController.signal.aborted && !signal?.aborted;
+			result.stopReason = timedOut ? "timeout" : "aborted";
+			result.errorMessage = timedOut ? `${timeoutKind === "idle" ? "Idle" : "Hard"} timeout after ${timeoutKind === "idle" ? timeoutMs : hardTimeoutMs}ms` : "Sub-agent aborted before start";
+			result.status = classifyStopReason(result.stopReason, !timedOut, timedOut);
 			return result;
 		}
-
-		const { session } = await createAgentSession({
-			cwd,
-			model,
-			thinkingLevel,
-			authStorage,
-			modelRegistry,
-			resourceLoader,
-			tools,
-			sessionManager: SessionManager.inMemory(cwd),
-			settingsManager,
-		});
-
-		let cleanupAbort: (() => void) | undefined;
-		let cleanupEventAbort: (() => void) | undefined;
-		let abortedBySignal = false;
-		let timedOut = false;
-		let eventUnsubscribe: (() => void) | undefined;
-
+		const { session } = await createAgentSession({ cwd, model, thinkingLevel, authStorage, modelRegistry, resourceLoader, tools, sessionManager: SessionManager.inMemory(cwd), settingsManager });
+		let unsubscribe: (() => void) | undefined;
+		let removeAbort: (() => void) | undefined;
 		try {
-			// Wire combined abort signal to session
-			const onAbort = () => {
-				session.abort();
-			};
-			if (combinedSignal.aborted) {
-				abortedBySignal = true;
-				timedOut = timeoutController?.signal.aborted === true && signal?.aborted !== true;
-				onAbort();
-				return result;
-			}
-			combinedSignal.addEventListener("abort", onAbort, { once: true });
-			cleanupAbort = () => combinedSignal.removeEventListener("abort", onAbort);
-
-			// Collect all messages and usage stats from events
-			const eventPromise = new Promise<void>((resolve, reject) => {
-				let settled = false;
-				const finish = (fn: () => void) => {
-					if (settled) return;
-					settled = true;
-					fn();
-				};
-
-				let unsubscribe: (() => void) | undefined;
+			const eventDone = new Promise<void>((resolve, reject) => {
+				let done = false;
+				const finish = (fn: () => void) => { if (!done) { done = true; unsubscribe?.(); fn(); } };
 				unsubscribe = session.subscribe((event) => {
 					try {
-						switch (event.type) {
-							case "message_end": {
-								const msg = event.message as AgentMessage;
-								if (msg.role === "assistant") {
-									result.usage.turns++;
-									if (msg.usage) {
-										result.usage.input += msg.usage.input || 0;
-										result.usage.output += msg.usage.output || 0;
-										result.usage.cacheRead += msg.usage.cacheRead || 0;
-										result.usage.cacheWrite += msg.usage.cacheWrite || 0;
-										result.usage.cost += msg.usage.cost?.total || 0;
-										result.usage.contextTokens = msg.usage.totalTokens || 0;
-									}
-									if (!result.model && msg.model) {
-										result.model = `${msg.provider || "?"}/${msg.model}`;
-									}
-									if (msg.stopReason) result.stopReason = msg.stopReason;
-									result.errorMessage = msg.errorMessage;
-								}
-								// Collect all messages for extraction
-								result.messages.push(msg as unknown as Message);
-								if (onMessage) onMessage({ ...result, messages: [...result.messages] });
-								break;
+						// Any SDK session lifecycle event is actual child activity, unlike a parent heartbeat.
+						armIdle(); onProgress?.(snapshot(event.type));
+						if (event.type === "message_end") {
+							const msg = event.message as AgentMessage;
+							if (msg.role === "assistant") {
+								result.usage.turns++;
+								if (msg.usage) { result.usage.input += msg.usage.input || 0; result.usage.output += msg.usage.output || 0; result.usage.cacheRead += msg.usage.cacheRead || 0; result.usage.cacheWrite += msg.usage.cacheWrite || 0; result.usage.cost += msg.usage.cost?.total || 0; result.usage.contextTokens = msg.usage.totalTokens || 0; }
+								if (!result.model && msg.model) result.model = `${msg.provider || "?"}/${msg.model}`;
+								if (msg.stopReason) result.stopReason = msg.stopReason;
+								result.errorMessage = msg.errorMessage;
 							}
-							case "agent_end": {
-								if (event.willRetry) break;
-								// agent_end carries all messages; use them if we haven't collected
-								if (result.messages.length === 0 && event.messages) {
-									result.messages = event.messages as unknown as Message[];
-								}
-								finish(() => {
-									unsubscribe?.();
-									resolve();
-								});
-								break;
-							}
+							result.messages.push(msg as unknown as Message);
+							onMessage?.({ ...result, messages: [...result.messages] });
+						} else if (event.type === "agent_end" && !event.willRetry) {
+							if (!result.messages.length && event.messages) result.messages = event.messages as unknown as Message[];
+							finish(resolve);
 						}
-					} catch (err) {
-						finish(() => {
-							unsubscribe?.();
-							reject(err);
-						});
-					}
+					} catch (error) { finish(() => reject(error)); }
 				});
-				eventUnsubscribe = unsubscribe;
-
-				// Resolve on abort so the eventPromise doesn't hang
-				const onAbortResolve = () => {
-					finish(() => {
-						result.exitCode = 1;
-						if (!result.errorMessage) result.errorMessage = "Sub-agent aborted";
-						unsubscribe?.();
-						resolve();
-					});
-				};
-				combinedSignal.addEventListener("abort", onAbortResolve, { once: true });
-				cleanupEventAbort = () => combinedSignal.removeEventListener("abort", onAbortResolve);
+				const abort = () => finish(resolve);
+				combinedSignal.addEventListener("abort", abort, { once: true });
+				removeAbort = () => combinedSignal.removeEventListener("abort", abort);
 			});
-
-			await Promise.race([
-				session.prompt(task),
-				eventPromise,
-			]);
-
-			// Detect timeout vs. parent abort.
-			timedOut = timeoutController?.signal.aborted === true && signal?.aborted !== true;
-			abortedBySignal = combinedSignal.aborted && !timedOut;
-
-			if (timedOut) {
-				result.stopReason = "timeout";
-				result.errorMessage = `Timeout after ${timeoutMs}ms`;
-			} else if (abortedBySignal) {
-				result.stopReason = "aborted";
-				result.errorMessage ||= "Sub-agent aborted";
-			}
-
-			// Classify canonical status and keep the legacy exit code consistent.
+			const abortSession = () => session.abort();
+			combinedSignal.addEventListener("abort", abortSession, { once: true });
+			const removeSessionAbort = () => combinedSignal.removeEventListener("abort", abortSession);
+			await Promise.race([session.prompt(task), eventDone]);
+			removeSessionAbort();
+			const timedOut = timeoutController.signal.aborted && !signal?.aborted;
+			if (timedOut) { result.stopReason = "timeout"; result.errorMessage = `${timeoutKind === "idle" ? "Idle" : "Hard"} timeout after ${timeoutKind === "idle" ? timeoutMs : hardTimeoutMs}ms`; }
+			else if (combinedSignal.aborted) { result.stopReason = "aborted"; result.errorMessage ||= "Sub-agent aborted"; }
 			result.status = classifyStopReason(result.stopReason, result.stopReason === "aborted", result.stopReason === "timeout");
 			result.exitCode = result.status === "success" || result.status === "partial" ? 0 : 1;
-
 			return result;
 		} finally {
-			cleanupAbort?.();
-			cleanupEventAbort?.();
-			cleanupCombined();
-			eventUnsubscribe?.();
-			if (timeoutId) clearTimeout(timeoutId);
-			try {
-				session.dispose();
-			} catch {
-				// Best-effort cleanup
-			}
+			unsubscribe?.(); removeAbort?.();
+			try { session.dispose(); } catch { /* best effort */ }
 		}
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
+	} catch (error) {
 		result.exitCode = 1;
-		result.errorMessage = message;
-		if (!result.stopReason) result.stopReason = "error";
-		result.status = classifyStopReason("error", false, false);
-		// Ensure cleanup runs even when the outer try fails before the inner finally.
-		cleanupCombined?.();
-		if (timeoutId) clearTimeout(timeoutId);
+		result.errorMessage = error instanceof Error ? error.message : String(error);
+		result.stopReason ||= "error";
+		result.status = classifyStopReason(result.stopReason, false, false);
 		return result;
+	} finally {
+		clearTimers(); cleanupCombined?.();
 	}
 }
 

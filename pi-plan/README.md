@@ -50,7 +50,7 @@ pi --plan
    - **Implement, verify, and review** — captures the Git baseline, implements in fresh context, invokes `pi-review` through `pi-subagent`, feeds blocking findings back as actionable issues with expected behavior and acceptance criteria, and stops clean or after three review passes.
    - **Stay in Plan mode** — continue refining the plan.
 
-Non-blocking review findings do not enter the fix loop, but remain available in the workflow result details instead of being reported as a clean review.
+Non-blocking review findings do not enter the fix loop, but remain available in the workflow result details instead of being reported as a clean review. Automated review uses a 3-minute activity-resettable inactivity window and a 20-minute hard cap; only real reviewer progress resets the window.
 
 Fresh-session replacement is intentionally initiated by `/plan-approve`: extension-originated messages bypass Pi's slash-command router and cannot call command-only session APIs. The automated choice requires `pi-review` and `pi-subagent`. It never resets files or Git state; initial dirty paths are recorded for reviewer context. Untracked content snapshots are lossless up to the same 50 KB evidence limit as tracked dirty patches and fail closed above it. The implementer must report exact checks with `[verification: pass]` or `[verification: fail]`.
 

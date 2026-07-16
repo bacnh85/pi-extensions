@@ -86,12 +86,12 @@ Unknown or misspelled tool names produce clear diagnostics. Duplicate tool names
 
 Every child execution receives a timeout:
 
-- **Default:** 10 minutes (`DEFAULT_TIMEOUT_MS`)
-- **Maximum:** 60 minutes (`MAX_TIMEOUT_MS`)
-- Timeout values must be positive integers within the allowed range.
-- Timeout errors are distinguishable from parent cancellation.
-- Progress heartbeats keep the parent transport active during quiet model work; explicit timeouts remain hard deadlines.
-- Parallel tasks and chain steps may have per-item timeouts.
+- **Default inactivity window:** 3 minutes (`DEFAULT_TIMEOUT_MS`); real SDK lifecycle activity resets it.
+- **Absolute cap:** 20 minutes for every child, even when active.
+- **Maximum requested inactivity window:** 60 minutes (`MAX_TIMEOUT_MS`); values must be positive integers.
+- Timeout diagnostics distinguish `Idle timeout` from `Hard timeout` and parent cancellation.
+- 30-second progress heartbeats only keep the parent transport alive; they never reset inactivity.
+- `/agent` shows last real activity and the remaining idle window; parallel tasks and chain steps may have per-item windows.
 
 ### Output safety
 

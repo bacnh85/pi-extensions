@@ -967,7 +967,8 @@ describe("flow loop regression coverage", () => {
 		state.onEmit = (event, data) => {
 			if (event === "pi-review:run") {
 				reviewEventEmitted = true;
-				assert.equal(data.timeout, 10 * 60 * 1000);
+				assert.equal(data.timeout, 3 * 60 * 1000);
+				assert.equal(typeof data.onProgress, "function");
 				assert.equal(data.gitRange, "abc...HEAD");
 				assert.equal(data.requireExactRange, true);
 				const accepted = data.accept();

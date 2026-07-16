@@ -146,6 +146,14 @@ export class ThreadViewer {
 		lines.push(truncateToWidth(t.fg("dim", this.thread.task), width));
 		lines.push("");
 
+		if (status === "running") {
+			const now = Date.now();
+			const elapsed = Math.floor((now - this.thread.createdAt) / 1000);
+			const activity = this.thread.lastActivityAt ? `${Math.floor((now - this.thread.lastActivityAt) / 1000)}s ago (${this.thread.lastActivityLabel})` : "none yet";
+			const idleMs = this.thread.inactivityDeadline ? this.thread.inactivityDeadline - now : 0;
+			const idle = this.thread.inactivityDeadline ? `${Math.max(0, Math.ceil(idleMs / 1000))}s remaining` : "pending";
+			lines.push(truncateToWidth(t.fg(idleMs < 30_000 ? "warning" : "muted", `Elapsed ${elapsed}s · last activity ${activity} · idle ${idle}`), width));
+		}
 		if (status === "running" && (!result || result.messages.length === 0)) {
 			lines.push(truncateToWidth(t.fg("muted", "(waiting for first message...)"), width));
 		} else if (result) {

@@ -32,6 +32,7 @@ import { Type } from "typebox";
 
 import { type AgentColor, type AgentConfig, type AgentScope, discoverAgents, formatAgentList, getModelCandidates, invalidateAgentCache } from "./agents.ts";
 import {
+	type SubAgentProgress,
 	type SubAgentResult,
 	getFinalOutput,
 	getResultOutput,
@@ -94,14 +95,14 @@ const TaskItem = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
 	task: Type.String({ description: "Task to delegate to the agent" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent" })),
-	timeout: Type.Optional(Type.Number({ description: "Timeout in milliseconds for this task" })),
+	timeout: Type.Optional(Type.Number({ description: "Inactivity timeout in milliseconds for this task; real child activity resets it (default 3 minutes, absolute cap 20 minutes)" })),
 });
 
 const ChainItem = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
 	task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent" })),
-	timeout: Type.Optional(Type.Number({ description: "Timeout in milliseconds for this step" })),
+	timeout: Type.Optional(Type.Number({ description: "Inactivity timeout in milliseconds for this step; real child activity resets it (default 3 minutes, absolute cap 20 minutes)" })),
 });
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
@@ -126,7 +127,7 @@ const SubagentParams = Type.Object({
 	// Project-agent confirmation is enforced via trusted configuration.
 	// See Security model section in README.
 	cwd: Type.Optional(Type.String({ description: "Working directory (single mode, must be inside workspace)" })),
-	timeout: Type.Optional(Type.Number({ description: "Global timeout in milliseconds for all sub-agents (overridden by per-task/step timeouts)" })),
+	timeout: Type.Optional(Type.Number({ description: "Global inactivity timeout in milliseconds (default 3 minutes; real activity resets it; fixed 20-minute absolute cap)" })),
 	instructions: Type.Optional(Type.String({ description: "Bounded repository/task instructions passed to each child (max 16 KB)" })),
 	abortOnFailure: Type.Optional(Type.Boolean({ description: "In parallel mode, cancel remaining tasks when one fails. Default: false.", default: false })),
 });
@@ -208,6 +209,7 @@ export default function (pi: ExtensionAPI) {
 			instructions: request.instructions,
 			signal: request.signal,
 			onMessage: (result) => threadStore.updateThread(thread.id, { result }),
+			onProgress: (progress) => { threadStore.updateProgress(thread.id, progress); request.onProgress?.(progress); },
 		}).then((result) => {
 			threadStore.updateThread(thread.id, {
 				status: isFailedResult(result) ? (result.stopReason === "aborted" ? "aborted" : "failed") : "completed",
@@ -520,7 +522,9 @@ export default function (pi: ExtensionAPI) {
 				parentSignal?: AbortSignal,
 				timeoutMs?: number,
 				onProgress?: (partial: SubAgentResult) => void,
+				onActivity?: (progress: SubAgentProgress) => void,
 				heartbeatDetails?: () => SubagentDetails,
+				onHeartbeat?: () => void,
 				isReadOnly?: boolean,
 			): Promise<SubAgentResult> {
 				const agent = agents.find((a) => a.name === agentName);
@@ -582,10 +586,10 @@ export default function (pi: ExtensionAPI) {
 					};
 				}
 
-				const stopHeartbeat = onUpdate ? startHeartbeat(() => onUpdate({
-					content: [{ type: "text", text: `Subagent ${agentName} is still running…` }],
-					details: heartbeatDetails?.() ?? makeDetails("single")([]),
-				})) : undefined;
+				const stopHeartbeat = onUpdate ? startHeartbeat(() => {
+					onHeartbeat?.();
+					onUpdate({ content: [{ type: "text", text: `Subagent ${agentName} is still running…` }], details: heartbeatDetails?.() ?? makeDetails("single")([]) });
+				}) : undefined;
 				try {
 					return await runSubAgent({
 						cwd: safeCwd,
@@ -602,6 +606,7 @@ export default function (pi: ExtensionAPI) {
 						agentName,
 						thinkingLevel: agent.thinking,
 						onMessage: onProgress,
+						onProgress: onActivity,
 					});
 				} finally {
 					stopHeartbeat?.();
@@ -628,7 +633,9 @@ export default function (pi: ExtensionAPI) {
 						step.agent, taskWithContext, step.cwd,
 						signal, step.timeout ?? params.timeout,
 						(partial) => threadStore.updateThread(thread.id, { result: partial }),
+						(progress) => threadStore.updateProgress(thread.id, progress),
 						() => makeDetails("chain")(results),
+						() => threadStore.refreshHeartbeat(thread.id),
 					);
 					threadStore.updateThread(thread.id, {
 						status: isFailedResult(result) ? (result.stopReason === "aborted" ? "aborted" : "failed") : "completed",
@@ -782,7 +789,9 @@ export default function (pi: ExtensionAPI) {
 									t.agent, t.task, t.cwd,
 									parallelController.signal, t.timeout ?? params.timeout,
 									(partial) => threadStore.updateThread(parallelThreads[index].id, { result: partial }),
+									(progress) => threadStore.updateProgress(parallelThreads[index].id, progress),
 									() => makeDetails("parallel")([...allResults]),
+									() => threadStore.refreshHeartbeat(parallelThreads[index].id),
 								);
 								allResults[index] = result;
 								threadStore.updateThread(parallelThreads[index].id, {
@@ -838,7 +847,9 @@ export default function (pi: ExtensionAPI) {
 					params.agent, params.task, params.cwd,
 					signal, params.timeout,
 					(partial) => threadStore.updateThread(thread.id, { result: partial }),
+					(progress) => threadStore.updateProgress(thread.id, progress),
 					() => makeDetails("single")([]),
+					() => threadStore.refreshHeartbeat(thread.id),
 				);
 				threadStore.updateThread(thread.id, {
 					status: isFailedResult(result) ? (result.stopReason === "aborted" ? "aborted" : "failed") : "completed",

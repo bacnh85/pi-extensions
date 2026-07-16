@@ -6,7 +6,7 @@
  * Supports subscriptions so UIs can react to thread status changes.
  */
 
-import type { SubAgentResult } from "./runner.ts";
+import type { SubAgentProgress, SubAgentResult } from "./runner.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,6 +26,11 @@ export interface SubagentThread {
 	color?: string;
 	createdAt: number;
 	updatedAt: number;
+	lastActivityAt?: number;
+	lastActivityLabel?: string;
+	lastHeartbeatAt?: number;
+	inactivityDeadline?: number;
+	hardDeadline?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +86,26 @@ export class ThreadStore {
 		if (updates.status) thread.status = updates.status;
 		if (updates.result) thread.result = updates.result;
 		thread.updatedAt = Date.now();
+		this.notify();
+	}
+
+	updateProgress(id: string, progress: SubAgentProgress): void {
+		const thread = this.threads.get(id);
+		if (!thread) return;
+		thread.result = progress.result;
+		thread.lastActivityAt = progress.at;
+		thread.lastActivityLabel = progress.label;
+		thread.inactivityDeadline = progress.inactivityDeadline;
+		thread.hardDeadline = progress.hardDeadline;
+		thread.updatedAt = Date.now();
+		this.notify();
+	}
+
+	refreshHeartbeat(id: string): void {
+		const thread = this.threads.get(id);
+		if (!thread) return;
+		thread.lastHeartbeatAt = Date.now();
+		thread.updatedAt = thread.lastHeartbeatAt;
 		this.notify();
 	}
 

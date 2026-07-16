@@ -28,11 +28,10 @@ export const MUTATION_TOOLS: readonly string[] = ["edit", "write"];
 export const EXECUTION_TOOLS: readonly string[] = ["bash"];
 
 /**
- * Default timeout applied to every child execution unless an explicit timeout
- * is provided. Children may request a shorter-but-not-longer timeout within
- * the allowed range.
+ * Default inactivity timeout. Real SDK lifecycle activity resets this window;
+ * the runner separately enforces a fixed 20-minute absolute cap.
  */
-export const DEFAULT_TIMEOUT_MS = 10 * 60 * 1_000; // 10 minutes
+export const DEFAULT_TIMEOUT_MS = 3 * 60 * 1_000; // 3 minutes
 
 /**
  * Absolute maximum timeout. Any requested value above this cap is rejected

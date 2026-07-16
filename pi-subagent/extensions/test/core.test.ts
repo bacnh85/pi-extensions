@@ -419,7 +419,7 @@ describe("runSubAgent retry lifecycle", () => {
 			const timedOut = await run(25);
 			assert.equal(timedOut.status, "timeout");
 			assert.equal(timedOut.exitCode, 1);
-			assert.equal(timedOut.errorMessage, "Timeout after 25ms");
+			assert.equal(timedOut.errorMessage, "Idle timeout after 25ms");
 		} finally {
 			faux.unregister();
 		}
@@ -444,8 +444,19 @@ describe("thread store", () => {
 		const store = new ThreadStore();
 		let notified = false;
 		store.subscribe(() => { notified = true; });
-		const thread = store.createThread({ agentName: "a", task: "t", mode: "single" });
+		store.createThread({ agentName: "a", task: "t", mode: "single" });
 		assert.ok(notified);
+	});
+
+	it("keeps real activity separate from transport heartbeats", () => {
+		const store = new ThreadStore();
+		const thread = store.createThread({ agentName: "a", task: "t", mode: "single" });
+		store.updateProgress(thread.id, { label: "tool_execution_start", at: 100, elapsedMs: 10, inactivityDeadline: 200, hardDeadline: 1_000, result: { agent: "a", task: "t", exitCode: 0, messages: [], stderr: "", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 } } });
+		store.refreshHeartbeat(thread.id);
+		const current = store.getThread(thread.id)!;
+		assert.equal(current.lastActivityAt, 100);
+		assert.equal(current.lastActivityLabel, "tool_execution_start");
+		assert.ok(current.lastHeartbeatAt);
 	});
 });
 
@@ -1018,8 +1029,8 @@ describe("security constants", () => {
 		}
 	});
 
-	it("DEFAULT_TIMEOUT_MS is 10 minutes", () => {
-		assert.equal(DEFAULT_TIMEOUT_MS, 10 * 60 * 1000);
+	it("DEFAULT_TIMEOUT_MS is 3 minutes", () => {
+		assert.equal(DEFAULT_TIMEOUT_MS, 3 * 60 * 1000);
 	});
 
 	it("MAX_TIMEOUT_MS is 60 minutes", () => {

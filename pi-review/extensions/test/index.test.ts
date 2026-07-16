@@ -17,7 +17,7 @@ const ACTIONABLE_REVIEW = JSON.stringify({
 	}],
 });
 
-function harness(subagent = false, reviewOutput = '{"summary":"clean","findings":[]}', reviewEventResult?: unknown) {
+function harness(subagent = false, reviewOutput = '{"summary":"clean","findings":[]}', reviewEventResult?: unknown, subagentError?: string, abortError?: string) {
 	const handlers: Record<string, Function[]> = {};
 	const commands: Record<string, any> = {};
 	const sent: any[] = [];
@@ -43,7 +43,10 @@ function harness(subagent = false, reviewOutput = '{"summary":"clean","findings"
 				if (name === "pi-subagent:run") subagentRequests.push(value);
 				if (subagent && name === "pi-subagent:run") {
 					value.accept();
-					value.respond({ id: value.id, ok: true, result: { messages: [{ role: "assistant", content: [{ type: "text", text: reviewOutput }] }] } });
+					if (abortError) value.signal.addEventListener("abort", () => value.respond({ id: value.id, ok: false, error: abortError }), { once: true });
+					else value.respond(subagentError
+						? { id: value.id, ok: false, error: subagentError }
+						: { id: value.id, ok: true, result: { messages: [{ role: "assistant", content: [{ type: "text", text: reviewOutput }] }] } });
 				}
 				for (const fn of bus.get(name) ?? []) fn(value);
 			},
@@ -156,6 +159,25 @@ describe("review lifecycle", () => {
 		assert.equal(h.subagentRequests.length, 1);
 		assert.equal(h.subagentRequests[0].timeout, 600_000);
 		assert.equal(response?.ok, true);
+	});
+
+	it("preserves isolated reviewer failure reasons", async () => {
+		const h = harness(true, undefined, undefined, "Idle timeout after 180000ms");
+		let response: any;
+		h.emit("pi-review:run", { id: "review-error", cwd: process.cwd(), prompt: "Review this change", accept: () => true, respond: (value: any) => { response = value; } });
+		await flush();
+		assert.equal(h.subagentRequests.length, 1);
+		assert.equal(response?.ok, false);
+		assert.equal(response?.error, "Idle timeout after 180000ms");
+	});
+
+	it("keeps the idle-timeout reason when abort synchronously responds", async () => {
+		const h = harness(true, undefined, undefined, undefined, "Sub-agent aborted");
+		let response: any;
+		h.emit("pi-review:run", { id: "review-timeout", cwd: process.cwd(), prompt: "Review this change", timeout: 25, accept: () => true, respond: (value: any) => { response = value; } });
+		await new Promise((r) => setTimeout(r, 60));
+		assert.equal(response?.ok, false);
+		assert.equal(response?.error, "Reviewer idle timeout");
 	});
 
 	it("uses isolated review when available without changing parent tools", async () => {

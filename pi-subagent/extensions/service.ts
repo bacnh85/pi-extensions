@@ -1,6 +1,6 @@
 import { AuthStorage, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type AgentConfig, getModelCandidates } from "./agents.ts";
-import { runSubAgent, type SubAgentResult } from "./runner.ts";
+import { runSubAgent, type SubAgentProgress, type SubAgentResult } from "./runner.ts";
 import { resolveModel } from "./model.ts";
 import {
 	validateAgentTools,
@@ -23,6 +23,7 @@ export interface SubagentRunRequest {
 	signal?: AbortSignal;
 	accept?: () => boolean;
 	respond: (response: SubagentRunResponse) => void;
+	onProgress?: (progress: SubAgentProgress) => void;
 }
 
 export type SubagentRunResponse =
@@ -38,6 +39,7 @@ export async function runNamedAgent(options: {
 	instructions?: string;
 	signal?: AbortSignal;
 	onMessage?: (result: SubAgentResult) => void;
+	onProgress?: (progress: SubAgentProgress) => void;
 }): Promise<SubAgentResult> {
 	const { model, attempted } = await resolveModel(getModelCandidates(options.agent), options.ctx.model, options.ctx.modelRegistry);
 	if (!model) throw new Error(`No model resolved for agent "${options.agent.name}" (tried: ${attempted.join(", ") || "none"})`);
@@ -88,6 +90,7 @@ export async function runNamedAgent(options: {
 			agentName: options.agent.name,
 			thinkingLevel: options.agent.thinking,
 			onMessage: options.onMessage,
+			onProgress: options.onProgress,
 		});
 		return result;
 	} finally {

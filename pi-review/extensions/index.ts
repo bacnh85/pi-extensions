@@ -11,6 +11,8 @@ const MAX_STATUS_BYTES = 10 * 1024;
 const MAX_LOG_BYTES = 10 * 1024;
 const MAX_DIFF_BYTES = 50 * 1024;
 const MAX_RANGE_DIFF_BYTES = 30 * 1024;
+const INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
+const HARD_TIMEOUT_MS = 20 * 60 * 1000;
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 // ponytail: keep in sync with pi-plan/extensions/lib/plan-tools.ts READ_ONLY_TOOLS (additions there should be mirrored here)
 export const SAFE_REVIEW_TOOLS = new Set([
@@ -51,6 +53,7 @@ export interface ReviewRunRequest {
 	signal?: AbortSignal;
 	accept?: () => boolean;
 	respond: (response: { id: string; ok: boolean; result?: ReviewResult; error?: string }) => void;
+	onProgress?: (progress: { at: number; label: string }) => void;
 	/** Git diff range for branch/custom scopes (e.g. "@{upstream}...HEAD"). */
 	gitRange?: string;
 	/** When true, custom ranges must resolve exactly — no fallback to upstream/main. */
@@ -181,33 +184,37 @@ function formatReview(result: ReviewResult): string {
 
 async function isolatedReview(pi: ExtensionAPI, request: Omit<ReviewRunRequest, "id" | "respond" | "accept">): Promise<ReviewResult | undefined> {
 	const id = crypto.randomUUID();
+	const inactivityMs = request.timeout ?? INACTIVITY_TIMEOUT_MS;
+	const controller = new AbortController();
+	const signal = request.signal ? AbortSignal.any([request.signal, controller.signal]) : controller.signal;
 	let accepted = false;
 	let settled = false;
+	let idleTimer: ReturnType<typeof setTimeout> | undefined;
+	let hardTimer: ReturnType<typeof setTimeout> | undefined;
 	let resolve!: (value: ReviewResult | undefined) => void;
-	const result = new Promise<ReviewResult | undefined>((done) => { resolve = done; });
-	const timer = setTimeout(() => { if (!settled) { settled = true; resolve(undefined); } }, request.timeout ?? 180_000);
+	let reject!: (error: Error) => void;
+	const result = new Promise<ReviewResult | undefined>((done, fail) => { resolve = done; reject = fail; });
+	const cleanup = () => { if (idleTimer) clearTimeout(idleTimer); if (hardTimer) clearTimeout(hardTimer); };
+	const finish = (value: ReviewResult | undefined) => { if (!settled) { settled = true; cleanup(); resolve(value); } };
+	const fail = (message: string) => { if (!settled) { settled = true; cleanup(); reject(new Error(message.slice(0, 1_000))); } };
+	const resetIdle = () => {
+		if (idleTimer) clearTimeout(idleTimer);
+		idleTimer = setTimeout(() => { fail("Reviewer idle timeout"); controller.abort(new Error("Reviewer idle timeout")); }, inactivityMs);
+	};
+	resetIdle();
+	hardTimer = setTimeout(() => { fail("Reviewer hard timeout"); controller.abort(new Error("Reviewer hard timeout")); }, HARD_TIMEOUT_MS);
 	pi.events.emit(SUBAGENT_EVENT, {
-		id,
-		agent: "reviewer",
-		task: request.prompt,
-		cwd: request.cwd,
-		timeout: request.timeout ?? 180_000,
-		signal: request.signal,
-		instructions: "Read-only independent review. Follow repository REVIEW.md guidance supplied in the task contract. Return JSON only.",
-		readOnly: true,
-		accept: () => {
-			if (accepted) return false;
-			accepted = true;
-			return true;
-		},
+		id, agent: "reviewer", task: request.prompt, cwd: request.cwd, timeout: inactivityMs, signal,
+		instructions: "Read-only independent review. Follow repository REVIEW.md guidance supplied in the task contract. Return JSON only.", readOnly: true,
+		accept: () => { if (accepted) return false; accepted = true; return true; },
+		onProgress: (progress: { at: number; label: string }) => { resetIdle(); request.onProgress?.(progress); },
 		respond: (response: any) => {
-			if (settled || response?.id !== id) return;
-			settled = true;
-			clearTimeout(timer);
-			resolve(response.ok === true ? parseReviewResult(finalOutput(response.result?.messages ?? [])) : undefined);
+			if (response?.id !== id) return;
+			if (response.ok === true) finish(parseReviewResult(finalOutput(response.result?.messages ?? [])));
+			else fail(response.error || "Reviewer failed");
 		},
 	});
-	if (!accepted) { settled = true; clearTimeout(timer); return undefined; }
+	if (!accepted) { finish(undefined); return undefined; }
 	return result;
 }
 
@@ -261,7 +268,7 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
 		return { preset: "uncommitted", target: "" };
 	}
 
-	async function runReview(prompt: string, cwd: string, signal?: AbortSignal, gitRange?: string, requireExactRange?: boolean, timeout?: number): Promise<ReviewResult | undefined> {
+	async function runReview(prompt: string, cwd: string, signal?: AbortSignal, gitRange?: string, requireExactRange?: boolean, timeout?: number, onProgress?: (progress: { at: number; label: string }) => void): Promise<ReviewResult | undefined> {
 		const guidance = await readReviewGuidance(cwd);
 		let status, diff, staged, aheadLog, rangeDiff, rangeFailed;
 		try {
@@ -270,9 +277,9 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
 				pi.exec("git", ["diff"], { cwd, signal, timeout: 30_000 }),
 				pi.exec("git", ["diff", "--cached"], { cwd, signal, timeout: 30_000 }),
 			]);
-			// All primary git commands must succeed — nonzero exit produces empty evidence and a false-clean review
-			if (status.code !== 0 || diff.code !== 0 || staged.code !== 0) return undefined;
-		} catch { return undefined; }
+			// All primary git commands must succeed — never report an evidence failure as clean or unavailable.
+			if (status.code !== 0 || diff.code !== 0 || staged.code !== 0) throw new Error("Reviewer Git evidence collection failed");
+		} catch (error) { throw error instanceof Error ? error : new Error("Reviewer Git evidence collection failed"); }
 		// Range commands are best-effort: try primary range, fall back to common bases.
 		if (gitRange) {
 			try {
@@ -299,14 +306,14 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
 			} catch { rangeFailed = true; }
 		}
 		// A required range that cannot be resolved is a hard failure.
-		if (rangeFailed) return undefined;
+		if (rangeFailed) throw new Error("Reviewer Git range could not be resolved");
 		if (
 			Buffer.byteLength(status.stdout, "utf8") > MAX_STATUS_BYTES ||
 			Buffer.byteLength(diff.stdout, "utf8") > MAX_DIFF_BYTES ||
 			Buffer.byteLength(staged.stdout, "utf8") > MAX_DIFF_BYTES ||
 			Buffer.byteLength(aheadLog?.stdout ?? "", "utf8") > MAX_LOG_BYTES ||
 			Buffer.byteLength(rangeDiff?.stdout ?? "", "utf8") > MAX_RANGE_DIFF_BYTES
-		) return undefined;
+		) throw new Error("Reviewer Git evidence exceeds the configured limit");
 		const rangeEvidence = gitRange && aheadLog?.code === 0
 			? `\n\nCommits ahead (${gitRange}):\n${aheadLog.stdout}\n\nRange diff (${gitRange}):\n${rangeDiff?.stdout || ""}`
 			: "";
@@ -315,7 +322,7 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
 		const stagedSection = `\n\nStaged diff:\n${staged.stdout}`;
 		const evidence = `${rangeEvidence}${statusSection}${diffSection}${stagedSection}`;
 		const task = `${prompt}${guidance ? `\n\nREVIEW.md guidance:\n${guidance.slice(0, 16 * 1024)}` : ""}${evidence}`;
-		return isolatedReview(pi, { cwd, prompt: task, signal, timeout });
+		return isolatedReview(pi, { cwd, prompt: task, signal, timeout, onProgress });
 	}
 
 	pi.registerCommand("review", {
@@ -353,7 +360,7 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
 				prompt,
 				gitRange,
 				requireExactRange: preset === "custom",
-				timeout: 180_000,
+				timeout: INACTIVITY_TIMEOUT_MS,
 				accept: () => {
 					if (accepted) return false;
 					accepted = true;
@@ -385,7 +392,7 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
 		const request = raw as ReviewRunRequest;
 		if (!request?.id || typeof request.respond !== "function") return;
 		if (request.accept && !request.accept()) return;
-		void runReview(request.prompt, request.cwd, request.signal, request.gitRange, request.requireExactRange, request.timeout).then(
+		void runReview(request.prompt, request.cwd, request.signal, request.gitRange, request.requireExactRange, request.timeout, request.onProgress).then(
 			(result) => request.respond(result ? { id: request.id, ok: true, result } : { id: request.id, ok: false, error: "Isolated reviewer unavailable" }),
 			(error) => request.respond({ id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) }),
 		);
