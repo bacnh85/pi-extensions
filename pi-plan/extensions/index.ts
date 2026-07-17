@@ -383,7 +383,6 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	function applyThinking(level: ThinkingLevel): void {
 		applyingStoredThinking = true;
 		try {
-			// @ts-expect-error — SDK 0.80.2 ThinkingLevel omits "max", runtime accepts it
 			pi.setThinkingLevel(level);
 		} finally {
 			applyingStoredThinking = false;
@@ -1282,7 +1281,6 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	 * newSession()), prefill /plan-approve so the command handler runs with
 	 * the proper ExtensionCommandContext that has newSession().
 	 */
-	// @ts-expect-error — "agent_settled" dispatched at runtime, missing from SDK 0.80.2 event map
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (flow && !planModeEnabled && ["implement", "fix"].includes(flow.phase)) {
 			await advanceFlow(ctx);

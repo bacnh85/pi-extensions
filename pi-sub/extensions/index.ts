@@ -1,6 +1,5 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { readStoredCredential, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
-import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -27,8 +26,6 @@ type UsageApiSnapshot = {
 	secondary?: UsageApiWindow;
 	plan_type?: string;
 };
-
-type PiAuthFile = Record<string, PiAuthEntry | undefined>;
 
 type PiAuthEntry = {
 	type?: string;
@@ -107,10 +104,6 @@ function isZaiModel(model: ModelLike): boolean {
 function piAuthPath(): string {
 	const configDir = process.env.PI_CODING_AGENT_DIR?.trim() || path.join(os.homedir(), ".pi", "agent");
 	return path.join(configDir, "auth.json");
-}
-
-async function readJsonFile<T>(file: string): Promise<T> {
-	return JSON.parse(await fs.readFile(file, "utf8")) as T;
 }
 
 function decodeJwtPayload(token: string | undefined): Record<string, any> | undefined {
@@ -274,23 +267,20 @@ function parseUsageResponse(body: unknown): UsageApiSnapshot | undefined {
 }
 
 async function readPiCodexAuth(): Promise<PiAuthEntry & { accountId: string }> {
-	const auth = await readJsonFile<PiAuthFile>(piAuthPath());
-	const entry = auth[CODEX_PROVIDER];
+	const entry = readStoredCredential(CODEX_PROVIDER, piAuthPath()) as PiAuthEntry | undefined;
 	const accountId = getCodexAccountId(entry);
 	if (!entry?.access || !accountId) throw new Error("Missing openai-codex OAuth entry in Pi auth");
 	return { ...entry, accountId };
 }
 
 async function readOpenCodeGoAuth(): Promise<SubscriptionAccountSnapshot> {
-	const auth = await readJsonFile<PiAuthFile>(piAuthPath());
-	const entry = auth[OPC_PROVIDER];
+	const entry = readStoredCredential(OPC_PROVIDER, piAuthPath()) as PiAuthEntry | undefined;
 	if (!entry?.key && !entry?.accountId) throw new Error("Missing opencode-go API key or accountId in Pi auth");
 	return authAccountSnapshot("OpenCode Go", entry, { plan: "Go" });
 }
 
 async function readZaiAuth(): Promise<{ key: string; account: SubscriptionAccountSnapshot }> {
-	const auth = await readJsonFile<PiAuthFile>(piAuthPath());
-	const entry = auth[ZAI_PROVIDER];
+	const entry = readStoredCredential(ZAI_PROVIDER, piAuthPath()) as PiAuthEntry | undefined;
 	if (!entry?.key) throw new Error("Missing zai API key in Pi auth");
 	return { key: entry.key, account: authAccountSnapshot("Z.ai", entry) };
 }
