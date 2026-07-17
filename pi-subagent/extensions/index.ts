@@ -14,17 +14,14 @@
  */
 
 import * as path from "node:path";
-import type { Model } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
-	AuthStorage,
 	CONFIG_DIR_NAME,
 	DynamicBorder,
 	type ExtensionAPI,
 	type ExtensionContext,
 	getAgentDir,
 	getMarkdownTheme,
-	ModelRegistry,
 	type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, SelectList, Spacer, Text } from "@earendil-works/pi-tui";
@@ -463,20 +460,9 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 
-			// Shared auth/model setup for SDK sessions
-			// ponytail: reuse parent modelRegistry instead of a fresh copy — avoids
-			// internal API casts (storeModelHeaders) and preserves env/headers/OAuth.
-			const authStorage = AuthStorage.inMemory();
 			const modelRegistry = ctx.modelRegistry;
-
-			// Helper: inject parent's API key into child auth storage
-			async function injectApiKey(model: Model<any>): Promise<void> {
-				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-				if (auth.ok) {
-					if (auth.apiKey) authStorage.setRuntimeApiKey(model.provider, auth.apiKey);
-					// ponytail: headers/env stay on the parent registry — no copy needed.
-				}
-			}
+			const modelRuntime = (modelRegistry as any).runtime;
+			const authStorage = (modelRegistry as any).authStorage;
 
 			// Helper: resolve a safe child working directory.
 			function resolveChildCwd(childCwd: string | undefined): string {
@@ -566,8 +552,6 @@ export default function (pi: ExtensionAPI) {
 				let effectiveTimeoutMs: number | undefined;
 				let safeCwd: string;
 				try {
-					// Inject parent's API key so --api-key and other runtime overrides work
-					await injectApiKey(resolved.model);
 					tools = resolveChildTools(agent.tools, agent.sandbox, isReadOnly);
 					effectiveTimeoutMs = resolveChildTimeout(timeoutMs, params.timeout);
 					safeCwd = resolveChildCwd(cwd);
@@ -599,6 +583,7 @@ export default function (pi: ExtensionAPI) {
 						task,
 						tools,
 						model: resolved.model,
+						modelRuntime,
 						authStorage,
 						modelRegistry,
 						signal: parentSignal,

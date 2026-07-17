@@ -17,10 +17,8 @@
 import type { Message, Model } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
-	AuthStorage,
 	createAgentSession,
 	createExtensionRuntime,
-	ModelRegistry,
 	type ResourceLoader,
 	SessionManager,
 	SettingsManager,
@@ -87,8 +85,11 @@ export async function runSubAgent(options: {
 	task: string;
 	tools: string[];
 	model: Model<any>;
-	authStorage: AuthStorage;
-	modelRegistry: ModelRegistry;
+	/** Pi 0.80.10's canonical credential/model runtime. */
+	modelRuntime?: unknown;
+	/** Legacy Pi SDK session options retained for 0.80.6 tests and hosts. */
+	authStorage?: unknown;
+	modelRegistry?: unknown;
 	signal?: AbortSignal;
 	agentName?: string;
 	thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -98,7 +99,7 @@ export async function runSubAgent(options: {
 	hardTimeoutMs?: number;
 }): Promise<SubAgentResult> {
 	const {
-		cwd, systemPrompt, task, tools, model, authStorage, modelRegistry, signal,
+		cwd, systemPrompt, task, tools, model, modelRuntime, authStorage, modelRegistry, signal,
 		agentName = "subagent", thinkingLevel = "off", onMessage, onProgress,
 		timeoutMs = DEFAULT_INACTIVITY_TIMEOUT_MS, hardTimeoutMs = HARD_TIMEOUT_MS,
 	} = options;
@@ -142,7 +143,12 @@ export async function runSubAgent(options: {
 			result.status = classifyStopReason(result.stopReason, !timedOut, timedOut);
 			return result;
 		}
-		const { session } = await createAgentSession({ cwd, model, thinkingLevel, authStorage, modelRegistry, resourceLoader, tools, sessionManager: SessionManager.inMemory(cwd), settingsManager });
+		const { session } = await createAgentSession({
+			cwd, model, thinkingLevel, resourceLoader, tools, sessionManager: SessionManager.inMemory(cwd), settingsManager,
+			...(modelRuntime ? { modelRuntime } : {}),
+			// Pi 0.80.10 owns credentials in ModelRuntime; older SDKs still accept these.
+			...(authStorage ? { authStorage, modelRegistry } : {}),
+		} as any);
 		let unsubscribe: (() => void) | undefined;
 		let removeAbort: (() => void) | undefined;
 		try {

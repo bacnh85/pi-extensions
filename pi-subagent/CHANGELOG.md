@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.2 (2026-07-16)
+
+### Pi SDK compatibility
+
+- Removed use of the deleted `AuthStorage.inMemory()` API so delegated planner and other subagents start on Pi 0.80.10.
+
 ## 0.9.1 (2026-07-16)
 
 ### Activity-aware timeouts
