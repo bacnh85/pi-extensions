@@ -6,16 +6,8 @@
 
 ## Installation
 
-```bash
-npm install @bacnh85/pi-windows-tools
-```
-
-Then add to your Pi configuration:
-
-```json
-{
-  "extensions": ["pi-windows-tools"]
-}
+```powershell
+pi install npm:@bacnh85/pi-windows-tools
 ```
 
 ## Quick Start
@@ -23,28 +15,10 @@ Then add to your Pi configuration:
 After installation, Pi automatically detects your Windows shell environment and injects PowerShell syntax guidance. Run the doctor to see what's available:
 
 ```
-pi windows doctor
+/windows-doctor
 ```
 
 ## Configuration
-
-```json
-{
-  "windowsTools": {
-    "enabled": true,
-    "defaultShell": "pwsh",
-    "allowShellFallback": true,
-    "gitBashPath": null,
-    "wslDistro": null,
-    "preferWslFor": [
-      "openwrt",
-      "yocto",
-      "linux-kernel",
-      "embedded-linux"
-    ]
-  }
-}
-```
 
 ### Environment Variables
 
@@ -68,14 +42,14 @@ pi windows doctor
 ### Changing Shell
 
 ```
-pi windows shell pwsh
-pi windows shell git-bash
-pi windows shell wsl
+/windows-shell pwsh
+/windows-shell git-bash
+/windows-shell wsl
 ```
 
 ## Commands
 
-### `pi windows doctor`
+### `/windows-doctor`
 
 Detects installed developer tools and system configuration:
 
@@ -107,7 +81,7 @@ Default shell: pwsh
   Developer Mode: enabled
 ```
 
-### `pi windows shell [shell]`
+### `/windows-shell [shell]`
 
 Show or set the default Windows shell.
 
@@ -119,6 +93,7 @@ The extension registers these tools:
 |------|-------------|
 | `windows_shell_detect` | Detect available shells with versions |
 | `windows_shell_exec` | Execute command through a shell |
+| `windows_audit_log` | Show command history and exit codes |
 | `windows_path_to_windows` | Convert POSIX/WSL path to Windows format |
 | `windows_path_to_wsl` | Convert Windows path to WSL `/mnt/c/...` |
 | `windows_path_to_gitbash` | Convert Windows path to Git Bash `/c/...` |
@@ -146,20 +121,6 @@ Commands matching dangerous patterns (rm -rf, diskpart, format, git push --force
 2. Install [Git for Windows](https://git-scm.com/download/win) (includes Git Bash)
 3. Install [Windows Terminal](https://learn.microsoft.com/en-us/windows/terminal/install) (optional, better UX)
 4. Optional: Install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) with Ubuntu
-
-## Project-Specific Config
-
-For Linux-native projects (OpenWrt, Yocto, kernel builds):
-
-```json
-{
-  "windowsTools": {
-    "defaultShell": "wsl",
-    "wslDistro": "Ubuntu-24.04",
-    "preferWslFor": ["openwrt", "yocto", "linux-kernel"]
-  }
-}
-```
 
 ## Common Syntax Mistakes
 

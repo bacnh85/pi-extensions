@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-windows-tools",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Pi extension for Windows-native tool manipulation — shell profiles, path conversion, command execution, WSL bridge, safety policy, and developer tool discovery.",
   "type": "module",
   "license": "MIT",

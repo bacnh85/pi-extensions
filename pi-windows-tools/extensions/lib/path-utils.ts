@@ -23,8 +23,8 @@ export function toPosixPath(windowsPath: string): string {
 		return p.replace(/^\/\/([^/])/, "//$1");
 	}
 
-	// Handle C:/foo → /c/foo or C:foo\bar → /c/foo\bar
-	if (/^[A-Za-z]:/.test(p)) {
+	// Handle absolute C:/foo → /c/foo; preserve drive-relative C:foo.
+	if (/^[A-Za-z]:\//.test(p)) {
 		return p.replace(/^([A-Za-z]):\/?/, (_, d) => `/${d.toLowerCase()}/`);
 	}
 
@@ -35,14 +35,12 @@ export function toPosixPath(windowsPath: string): string {
  * Convert a POSIX path (/c/foo/bar) to a Windows path (C:\foo\bar).
  */
 export function toWindowsPath(posixPath: string): string {
-	if (/^[A-Za-z]:[\\/]/.test(posixPath)) {
-		return posixPath.replace(/\//g, "\\");
-	}
-	const wsl = posixPath.match(/^\/mnt\/([a-zA-Z])\/(.+)/);
-	if (wsl) return `${wsl[1].toUpperCase()}:\\${wsl[2].replace(/\//g, "\\")}`;
-	const gb = posixPath.match(/^\/([a-zA-Z])\/(.+)/);
-	if (gb) return `${gb[1].toUpperCase()}:\\${gb[2].replace(/\//g, "\\")}`;
-	return posixPath.replace(/\//g, "\\");
+	if (/^[A-Za-z]:[\\/]/.test(posixPath)) return posixPath.replace(/\//g, "\\");
+	const wsl = posixPath.match(/^\/mnt\/([a-zA-Z])(?:\/(.*))?$/);
+	if (wsl) return `${wsl[1].toUpperCase()}:\\${wsl[2]?.replace(/\//g, "\\") || ""}`;
+	const gb = posixPath.match(/^\/([a-zA-Z])(?:\/(.*))?$/);
+	if (gb) return `${gb[1].toUpperCase()}:\\${gb[2]?.replace(/\//g, "\\") || ""}`;
+	return posixPath;
 }
 
 /**
@@ -50,9 +48,9 @@ export function toWindowsPath(posixPath: string): string {
  * Ignores input already in WSL or POSIX format.
  */
 export function toWslPath(windowsPath: string): string {
-	if (windowsPath.startsWith("/mnt/")) return windowsPath;
+	if (/^\/mnt\/[a-zA-Z](?:\/|$)/.test(windowsPath)) return windowsPath;
 	const posix = toPosixPath(windowsPath);
-	return posix.startsWith("/mnt/") ? posix : `/mnt${posix}`;
+	return /^\/[a-z](?:\/|$)/i.test(posix) ? `/mnt${posix}` : posix;
 }
 
 /**
@@ -90,16 +88,13 @@ export function isWindowsAbsolutePath(path: string): boolean {
  * Quote a path for a specific Windows shell.
  */
 export function quoteForShell(path: string, shell: WindowsShellKind): string {
-	if (!path) return '""';
-	const q = path.includes(" ") || path.includes("\t") || path.includes('"') || path.includes("'");
 	switch (shell) {
 		case "pwsh":
-		case "powershell":
-			return q ? `'${path.replace(/'/g, "''")}'` : path;
+		case "powershell": return `'${path.replace(/'/g, "''")}'`;
 		case "cmd":
-			return q ? `"${path.replace(/"/g, '""')}"` : path;
+			if (path.includes("%")) throw new Error("cmd paths containing % cannot be safely quoted");
+			return `"${path.replace(/"/g, '""')}"`;
 		case "git-bash":
-		case "wsl":
-			return q ? `'${path.replace(/'/g, "'\\''")}'` : path;
+		case "wsl": return `'${path.replace(/'/g, "'\\''")}'`;
 	}
 }

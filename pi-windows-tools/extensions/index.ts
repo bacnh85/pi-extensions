@@ -5,9 +5,13 @@ import type { WindowsShellKind } from "./lib/shell-detect";
 import { executeCommand as execCmd } from "./lib/shell-exec";
 import * as pathUtils from "./lib/path-utils";
 import { classifyCommand } from "./lib/safety";
-import { runDoctor, formatDoctorReport } from "./lib/doctor";
+import { runDoctor, formatDoctorReport, parseWslDistros } from "./lib/doctor";
 import { buildShellGuidance } from "./lib/prompts";
 import { execFileSync } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+const systemExe = (name: string) => join(process.env.SystemRoot || "C:\\Windows", "System32", name);
 
 const sk = Type.Union([Type.Literal("pwsh"), Type.Literal("powershell"), Type.Literal("cmd"), Type.Literal("git-bash"), Type.Literal("wsl")]);
 const tp = Type.Optional(Type.Number({ description: "Timeout in ms." }));
@@ -15,10 +19,7 @@ const cs = { timeout_ms: tp };
 
 function tr(text: string) { return Promise.resolve({ content: [{ type: "text" as const, text }], details: {} }); }
 function rs(shell?: WindowsShellKind): WindowsShellKind {
-	if (shell) return shell;
-	const e = process.env.PI_WINDOWS_SHELL as WindowsShellKind | undefined;
-	if (e && ["pwsh", "powershell", "cmd", "git-bash", "wsl"].includes(e)) return e;
-	return getDefaultShell().kind;
+	return shell || getDefaultShell().kind;
 }
 
 // in-memory audit log
@@ -33,6 +34,7 @@ function _fmt() {
 }
 
 export default function piWindowsToolsExtension(pi: ExtensionAPI) {
+	if (process.env.PI_WINDOWS_TOOLS_ENABLED === "false") return;
 	// ── Shell tools ──
 	pi.registerTool({ name: "windows_shell_detect", label: "Windows: Detect Shells", description: "Detect available Windows shells.", promptSnippet: "Detect available Windows shells", promptGuidelines: ["Use to check what shells are available."], parameters: Type.Object({ ...cs }),
 		execute() { return tr(detectAllShells().map(s => `  ${s.available ? "\u2713" : "\u2717"} ${s.displayName}${s.version ? " " + s.version : ""}`).join("\n")); } });
@@ -40,9 +42,13 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
 	pi.registerTool({ name: "windows_shell_exec", label: "Windows: Execute Command", description: "Execute a command through a Windows shell.", promptSnippet: "Execute a command through a Windows shell",
 		promptGuidelines: ["Use instead of generic bash on Windows.", 'Use shell:"wsl" for WSL.', "Dangerous commands require confirmation."],
 		parameters: Type.Object({ command: Type.String(), shell: Type.Optional(sk), cwd: Type.Optional(Type.String()), timeout_ms: tp }),
-		async execute(_id, p, _s, _u, ctx) {
-			const opts = { shell: rs(p.shell as WindowsShellKind | undefined), cwd: p.cwd || ctx?.cwd || process.cwd(), timeoutMs: p.timeout_ms };
+		async execute(_id, p, signal, _u, ctx) {
+			const opts = { shell: rs(p.shell as WindowsShellKind | undefined), cwd: p.cwd || ctx?.cwd || process.cwd(), timeoutMs: p.timeout_ms, signal };
 			const safe = classifyCommand(p.command);
+			if (safe.risk === "confirm") {
+				if (!ctx?.hasUI) return tr(`Command requires confirmation but UI is unavailable: ${safe.reasons.join("; ")}`);
+				if (!await ctx.ui.confirm("Run dangerous Windows command?", `Command: ${p.command}\n\nRisk: ${safe.reasons.join("; ")}`)) return tr("Command cancelled by user.");
+			}
 			const r = await execCmd(p.command, opts);
 			_log.push({ shell: opts.shell as string, command: p.command, exitCode: r.exitCode, timedOut: r.timedOut });
 			let o = `Exit code: ${r.exitCode}\n`;
@@ -77,9 +83,9 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
 	pi.registerTool({ name: "windows_doctor", label: "Windows: Doctor", description: "Detect installed developer tools.", promptSnippet: "Run Windows doctor", promptGuidelines: ["Checks PATH, WSL, long paths, dev mode."], parameters: Type.Object({ format: Type.Optional(Type.Union([Type.Literal("text"), Type.Literal("json")])), ...cs }),
 		execute(_id, p) { const r = runDoctor(); return tr(p.format === "json" ? JSON.stringify(r, null, 2) : formatDoctorReport(r)); } });
 	pi.registerTool({ name: "windows_tool_discover", label: "Windows: Discover Tool", description: "Check if a tool is in PATH.", promptSnippet: "Check tool availability", promptGuidelines: ["Use to verify a tool is installed."], parameters: Type.Object({ name: Type.String(), ...cs }),
-		execute(_id, p) { try { const r = execFileSync("where", [p.name], { encoding: "utf8", timeout: 3000 }); return tr(`\u2713 ${p.name} at:\n${r.split(/\r?\n/).filter(Boolean).map(x => "  " + x).join("\n")}`); } catch { return tr(`\u2717 ${p.name} not in PATH`); } } });
+		execute(_id, p) { try { const r = execFileSync(systemExe("where.exe"), [p.name], { cwd: homedir(), encoding: "utf8", timeout: 3000 }); return tr(`\u2713 ${p.name} at:\n${r.split(/\r?\n/).filter(Boolean).map(x => "  " + x).join("\n")}`); } catch { return tr(`\u2717 ${p.name} not in PATH`); } } });
 	pi.registerTool({ name: "windows_wsl_list_distros", label: "Windows: List WSL Distros", description: "List installed WSL distros.", promptSnippet: "List WSL distros", promptGuidelines: ["See what distros are available."], parameters: Type.Object({ ...cs }),
-		execute() { try { const r = execFileSync("wsl.exe", ["-l", "-q"], { encoding: "utf8", timeout: 5000 }); const d = r.split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.toLowerCase().includes("noinstall") && !s.startsWith("Windows")); return tr(d.length ? "Installed WSL distros:\n  \u2022 " + d.join("\n  \u2022 ") : "No WSL distros found."); } catch { return tr("WSL not available."); } } });
+		execute() { try { const d = parseWslDistros(execFileSync(systemExe("wsl.exe"), ["-l", "-q"], { cwd: homedir(), timeout: 5000 })); return tr(d.length ? "Installed WSL distros:\n  \u2022 " + d.join("\n  \u2022 ") : "No WSL distros found."); } catch { return tr("WSL not available."); } } });
 
 	// ── Commands ──
 	pi.registerCommand("windows-doctor", { description: "Run Windows Tools Doctor.", handler: async (_a, ctx) => { ctx?.ui?.notify?.("Windows Doctor complete.", "info"); process.stdout.write(formatDoctorReport(runDoctor()) + "\n"); } });

@@ -1,6 +1,6 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import { buildShellArgs, mergeEnv } from "../lib/shell-exec";
+import { buildShellArgs, executeCommand, mergeEnv } from "../lib/shell-exec";
 
 describe("shell-exec", () => {
 
@@ -37,7 +37,7 @@ describe("shell-exec", () => {
 
 		it("wsl: builds wsl.exe bash -lc command", () => {
 			const { exe, args } = buildShellArgs("wsl", "uname -a");
-			expect(exe).to.equal("wsl.exe");
+			expect(exe).to.match(/wsl\.exe$/i);
 			expect(args).to.deep.equal(["--", "bash", "-lc", "uname -a"]);
 		});
 
@@ -45,6 +45,14 @@ describe("shell-exec", () => {
 			const { args } = buildShellArgs("wsl", "echo hi", "Ubuntu-24.04");
 			expect(args).to.deep.equal(["-d", "Ubuntu-24.04", "--", "bash", "-lc", "echo hi"]);
 		});
+	});
+
+	it("does not spawn when the AbortSignal is already cancelled", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		const result = await executeCommand("this-command-must-not-run", { shell: "cmd", signal: controller.signal });
+		expect(result.cancelled).to.be.true;
+		expect(result.exitCode).to.equal(null);
 	});
 
 	describe("mergeEnv", () => {

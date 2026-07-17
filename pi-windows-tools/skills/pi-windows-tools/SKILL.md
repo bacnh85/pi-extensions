@@ -17,15 +17,11 @@ Provides Windows-native tool manipulation: shell profiles, path conversion, comm
 
 ## Configuration
 
-```json
-{
-  "extensions": ["pi-windows-tools"],
-  "windowsTools": {
-    "enabled": true,
-    "defaultShell": "pwsh"
-  }
-}
+```powershell
+pi install npm:@bacnh85/pi-windows-tools
 ```
+
+Configure with `PI_WINDOWS_TOOLS_ENABLED`, `PI_WINDOWS_SHELL`, `PI_GIT_BASH_PATH`, and `PI_WSL_DISTRO` environment variables.
 
 ## Tools
 
@@ -44,8 +40,8 @@ Provides Windows-native tool manipulation: shell profiles, path conversion, comm
 
 ## Commands
 
-- `pi windows doctor` — full system health report
-- `pi windows shell [name]` — show or set default shell
+- `/windows-doctor` — full system health report
+- `/windows-shell [name]` — show or set default shell
 
 ## Prompt guidance
 

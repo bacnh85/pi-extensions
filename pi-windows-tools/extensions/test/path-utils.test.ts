@@ -28,8 +28,8 @@ describe("path-utils", () => {
 		it("strips \\\\?\\ long-path prefix", () => {
 			expect(toPosixPath("\\\\?\\C:\\foo")).to.equal("/c/foo");
 		});
-		it("handles drive-relative path C:foo\\bar", () => {
-			expect(toPosixPath("C:foo\\bar")).to.equal("/c/foo/bar");
+		it("preserves drive-relative path C:foo\\bar", () => {
+			expect(toPosixPath("C:foo\\bar")).to.equal("C:foo/bar");
 		});
 	});
 
@@ -40,14 +40,19 @@ describe("path-utils", () => {
 		it("converts /mnt/c/foo/bar to C:\\foo\\bar", () => {
 			expect(toWindowsPath("/mnt/c/foo/bar")).to.equal("C:\\foo\\bar");
 		});
-		it("preserves relative paths", () => {
-			expect(toWindowsPath("relative/path")).to.equal("relative\\path");
+		it("preserves unrelated relative paths", () => {
+			expect(toWindowsPath("relative/path")).to.equal("relative/path");
 		});
 		it("handles lowercase drive", () => {
 			expect(toWindowsPath("/d/work/repo")).to.equal("D:\\work\\repo");
 		});
 		it("preserves Windows-native paths already in C:\\ format", () => {
 			expect(toWindowsPath("C:\\Users\\me")).to.equal("C:\\Users\\me");
+		});
+		it("supports drive roots and preserves unrelated POSIX paths", () => {
+			expect(toWindowsPath("/c/")).to.equal("C:\\");
+			expect(toWindowsPath("/mnt/c/")).to.equal("C:\\");
+			expect(toWindowsPath("/home/me")).to.equal("/home/me");
 		});
 	});
 
@@ -63,6 +68,10 @@ describe("path-utils", () => {
 		});
 		it("wraps Git Bash paths to /mnt/", () => {
 			expect(toWslPath("/c/foo")).to.equal("/mnt/c/foo");
+		});
+		it("preserves unrelated POSIX and relative paths", () => {
+			expect(toWslPath("/home/me")).to.equal("/home/me");
+			expect(toWslPath("relative/path")).to.equal("relative/path");
 		});
 	});
 
@@ -108,10 +117,8 @@ describe("path-utils", () => {
 	describe("quoteForShell", () => {
 		const shells: WindowsShellKind[] = ["pwsh", "powershell", "cmd", "git-bash", "wsl"];
 
-		it("does not quote paths without spaces", () => {
-			for (const s of shells) {
-				expect(quoteForShell("C:\\foo\\bar", s)).to.equal("C:\\foo\\bar");
-			}
+		it("always quotes paths", () => {
+			for (const s of shells) expect(quoteForShell("C:\\foo\\bar", s)).to.match(/^["']/);
 		});
 		it("quotes paths with spaces for PowerShell", () => {
 			expect(quoteForShell("C:\\Program Files\\Git", "pwsh")).to.include("'");
@@ -126,9 +133,11 @@ describe("path-utils", () => {
 			expect(quoteForShell("/mnt/c/Program Files", "wsl")).to.include("'");
 		});
 		it("handles empty path", () => {
-			for (const s of shells) {
-				expect(quoteForShell("", s)).to.equal('""');
-			}
+			for (const s of shells) expect(quoteForShell("", s)).to.match(/^["']/);
+		});
+		it("quotes shell metacharacters and rejects cmd variable expansion", () => {
+			for (const s of shells.filter(s => s !== "cmd")) expect(quoteForShell("x&$();|`", s)).to.match(/^'/);
+			expect(() => quoteForShell("x%USERPROFILE%", "cmd")).to.throw();
 		});
 	});
 });

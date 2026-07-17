@@ -1,12 +1,18 @@
 import { spawn } from "node:child_process";
+import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { WindowsShellKind } from "./shell-detect";
 import { getDefaultShell, detectShell } from "./shell-detect";
+import { toWindowsPath } from "./path-utils";
+
+const MAX_OUTPUT_BYTES = 1024 * 1024;
 
 export interface ExecOptions {
 	shell?: WindowsShellKind;
 	cwd?: string;
 	env?: Record<string, string>;
 	timeoutMs?: number;
+	signal?: AbortSignal;
 }
 
 export interface ExecResult {
@@ -20,140 +26,81 @@ export interface ExecResult {
 	cancelled: boolean;
 }
 
-/**
- * Merge custom env with process.env deduplicating case-insensitively.
- * On Windows, "PATH" and "Path" are the same variable — passing both
- * causes duplicate entries. This keeps the custom value when keys
- * differ only in case.
- */
+/** Merge custom env with process.env, deduplicating keys case-insensitively. */
 export function mergeEnv(customEnv: Record<string, string>): Record<string, string> {
 	const merged: Record<string, string> = {};
-
-	// Build set of lowercase custom keys for O(1) lookup
-	const customLower = new Set<string>();
-	for (const key of Object.keys(customEnv)) {
-		customLower.add(key.toLowerCase());
-	}
-
-	// Copy process.env keys, skipping any that match a custom key case-insensitively
+	const customLower = new Set(Object.keys(customEnv).map(key => key.toLowerCase()));
 	for (const key of Object.keys(process.env)) {
-		if (customLower.has(key.toLowerCase())) continue;
-		const val = process.env[key];
-		if (val !== undefined) {
-			merged[key] = val;
-		}
+		if (!customLower.has(key.toLowerCase()) && process.env[key] !== undefined) merged[key] = process.env[key]!;
 	}
-
-	// Add custom keys (they win)
-	for (const [key, val] of Object.entries(customEnv)) {
-		merged[key] = val;
-	}
-
-	return merged;
+	return { ...merged, ...customEnv };
 }
 
-/**
- * Build the arg array for a given shell kind.
- */
+/** Build the arg array for a given shell kind. */
 export function buildShellArgs(kind: WindowsShellKind, command: string, distro?: string): { exe: string; args: string[] } {
 	switch (kind) {
 		case "pwsh":
 		case "powershell": {
 			const info = detectShell(kind);
-			return {
-				exe: info.executable,
-				args: [
-					"-NoLogo",
-					"-NoProfile",
-					"-NonInteractive",
-					"-ExecutionPolicy", "Bypass",
-					"-Command", command,
-				],
-			};
+			return { exe: info.executable, args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command] };
 		}
-		case "cmd": {
-			const comspec = process.env.ComSpec || "cmd.exe";
-			return {
-				exe: comspec,
-				args: ["/c", command],
-			};
-		}
-		case "git-bash": {
-			const info = detectShell(kind);
-			return {
-				exe: info.executable,
-				args: ["-lc", command],
-			};
-		}
-		case "wsl": {
-			const distroFlag = distro ? ["-d", distro] : [];
-			return {
-				exe: "wsl.exe",
-				args: [...distroFlag, "--", "bash", "-lc", command],
-			};
-		}
+		case "cmd": return { exe: process.env.ComSpec || "cmd.exe", args: ["/c", command] };
+		case "git-bash": return { exe: detectShell(kind).executable, args: ["-lc", command] };
+		case "wsl": return { exe: detectShell("wsl").executable, args: [...(distro ? ["-d", distro] : []), "--", "bash", "-lc", command] };
 	}
 }
 
-/**
- * Execute a command through the specified Windows shell.
- * Returns stdout, stderr, exit code, and cancellation/timeout info.
- */
+function stop(child: ReturnType<typeof spawn>) {
+	if (process.platform === "win32" && child.pid) {
+		spawn(join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"), ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true }).unref();
+	}
+	child.kill();
+}
+
+/** Execute a command through the specified Windows shell. */
 export function executeCommand(command: string, options: ExecOptions = {}): Promise<ExecResult> {
 	const shellKind = options.shell || getDefaultShell().kind;
-	const cwd = options.cwd || process.cwd();
-	const env = options.env || {};
-
-	// Use WSL_DISTRO from env or config if user set it
-	const distro = process.env.PI_WSL_DISTRO || undefined;
-	const { exe, args } = buildShellArgs(shellKind, command, distro);
+	const cwd = options.cwd && (shellKind === "git-bash" || shellKind === "wsl") ? toWindowsPath(options.cwd) : options.cwd || process.cwd();
+	if (options.signal?.aborted) return Promise.resolve({ command, shell: shellKind, cwd, exitCode: null, stdout: "", stderr: "", timedOut: false, cancelled: true });
+	const { exe, args } = buildShellArgs(shellKind, command, process.env.PI_WSL_DISTRO || undefined);
 
 	return new Promise((resolve) => {
-		const child = spawn(exe, args, {
-			cwd,
-			env: mergeEnv(env),
-		});
-
+		const child = spawn(exe, args, { cwd, env: mergeEnv(options.env || {}) });
 		let stdout = "";
 		let stderr = "";
+		let outputBytes = 0;
+		let truncated = false;
 		let timedOut = false;
-
-		const timer = options.timeoutMs
-			? setTimeout(() => {
-					timedOut = true;
-					child.kill("SIGTERM");
-			  }, options.timeoutMs)
-			: null;
-
-		child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
-		child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
-
-		child.on("close", (exitCode, signal) => {
+		let aborted = false;
+		let settled = false;
+		const stdoutDecoder = new StringDecoder("utf8");
+		const stderrDecoder = new StringDecoder("utf8");
+		const append = (current: string, chunk: Buffer, decoder: StringDecoder) => {
+			const remaining = MAX_OUTPUT_BYTES - outputBytes;
+			if (remaining <= 0) { truncated = true; return current; }
+			const slice = chunk.subarray(0, remaining);
+			const text = decoder.write(slice);
+			outputBytes += slice.length;
+			if (slice.length < chunk.length) truncated = true;
+			return current + text;
+		};
+		const terminate = () => stop(child);
+		const onAbort = () => { aborted = true; terminate(); };
+		options.signal?.addEventListener("abort", onAbort, { once: true });
+		const timer = options.timeoutMs ? setTimeout(() => { timedOut = true; terminate(); }, options.timeoutMs) : undefined;
+		child.stdout?.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk, stdoutDecoder); if (truncated) terminate(); });
+		child.stderr?.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk, stderrDecoder); if (truncated) terminate(); });
+		const finish = (exitCode: number | null, spawnError?: string) => {
+			if (settled) return;
+			settled = true;
 			if (timer) clearTimeout(timer);
-			resolve({
-				command,
-				shell: shellKind,
-				cwd,
-				exitCode: timedOut ? null : exitCode,
-				stdout: stdout.replace(/\r\n/g, "\n"),
-				stderr: stderr.replace(/\r\n/g, "\n"),
-				timedOut,
-				cancelled: signal !== null && !timedOut,
-			});
-		});
-
-		child.on("error", () => {
-			if (timer) clearTimeout(timer);
-			resolve({
-				command,
-				shell: shellKind,
-				cwd,
-				exitCode: 1,
-				stdout,
-				stderr: stderr || "Failed to spawn process",
-				timedOut: false,
-				cancelled: false,
-			});
-		});
+			options.signal?.removeEventListener("abort", onAbort);
+			stdout += stdoutDecoder.end();
+			stderr += stderrDecoder.end();
+			if (truncated) stderr += `${stderr ? "\n" : ""}[output truncated at ${MAX_OUTPUT_BYTES} bytes]`;
+			resolve({ command, shell: shellKind, cwd, exitCode: timedOut || aborted ? null : exitCode, stdout: stdout.replace(/\r\n/g, "\n"), stderr: (stderr || spawnError || "").replace(/\r\n/g, "\n"), timedOut, cancelled: aborted });
+		};
+		child.on("close", code => finish(code));
+		child.on("error", () => finish(1, "Failed to spawn process"));
 	});
 }

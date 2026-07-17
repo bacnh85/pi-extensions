@@ -1,0 +1,48 @@
+name: publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ./pi-windows-tools
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci && npm test && npm run typecheck
+
+  publish:
+    needs: verify-windows
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: [pi-notebooklm, pi-ponytail, pi-serena, pi-web, pi-munin, pi-plan, pi-subagent, pi-review, pi-fff, pi-rtk, pi-sub, pi-deepseek-tools, pi-obsidian, pi-windows-tools]
+    defaults:
+      run:
+        working-directory: ./${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Publish if version changed
+        run: |
+          PKG=$(node -p "require('./package.json').name")
+          VER=$(node -p "require('./package.json').version")
+          PUBLISHED=$(npm view "$PKG" version 2>/dev/null || echo "")
+          if [ "$PUBLISHED" = "$VER" ]; then
+            echo "-> Version $VER already published, skipping"
+          else
+            echo "-> Publishing $VER (was ${PUBLISHED:-none})"
+            npm publish
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

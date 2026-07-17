@@ -1,107 +1,43 @@
 export type CommandRisk = "safe" | "confirm";
 
-export interface RiskResult {
-	risk: CommandRisk;
-	reasons: string[];
-}
-
-// ── Dangerous command patterns (case-insensitive prefix/path match) ──
+export interface RiskResult { risk: CommandRisk; reasons: string[]; }
 
 const DESTRUCTIVE_COMMANDS: { pattern: RegExp; reason: string }[] = [
-	// PowerShell destructive
-	{ pattern: /remove-item\s+-recurse\s+-force/i, reason: "Recursive force delete" },
-	{ pattern: /rm\s+-[rf]+\s+/i, reason: "Recursive force remove" },
-	{ pattern: /rmdir\s+\/s\s+\/q/i, reason: "Recursive quiet directory remove" },
-	{ pattern: /del\s+\/s\s+\/q/i, reason: "Recursive quiet file delete" },
-
-	// Disk operations
-	{ pattern: /^format\s+/i, reason: "Format disk" },
-	{ pattern: /^diskpart\b/i, reason: "Disk partition tool" },
-
-	// Registry
+	{ pattern: /\b(?:remove-item|rm)\b(?=[^;&|\r\n]*\s(?:--?(?:recurse|recursive)|-\w*r\w*)\b)(?=[^;&|\r\n]*\s(?:--?force|-\w*f\w*)\b)/i, reason: "Recursive force delete" },
+	{ pattern: /\b(?:rmdir|rd|del)\b(?=[^;&|]*\s\/s\b)(?=[^;&|]*\s\/q\b)/i, reason: "Recursive quiet delete" },
+	{ pattern: /(?:^|[;&|\r\n]\s*)format\s+|\bcmd(?:\.exe)?\s+\/c\s+format\s+/i, reason: "Format disk" },
+	{ pattern: /(?:^|[;&|\r\n]\s*)diskpart\b/i, reason: "Disk partition tool" },
 	{ pattern: /reg\s+delete/i, reason: "Registry key delete" },
-
-	// Service management
 	{ pattern: /sc\s+delete/i, reason: "Service delete" },
-
-	// Network
 	{ pattern: /netsh\s+advfirewall\s+reset/i, reason: "Firewall reset" },
-
-	// Git destructive
-	{ pattern: /git\s+clean\s+-fdx/i, reason: "Force clean git ignored files" },
+	{ pattern: /git\s+clean\b(?=[^;&|\r\n]*\s(?:--force|-[a-z]*f[a-z]*)\b)(?=[^;&|\r\n]*\s(?:-d|-[a-z]*d[a-z]*)\b)(?=[^;&|\r\n]*\s(?:-x|-[a-z]*x[a-z]*)\b)/i, reason: "Force clean git ignored files" },
 	{ pattern: /git\s+reset\s+--hard/i, reason: "Hard git reset" },
-	{ pattern: /git\s+push\s+--force/i, reason: "Force git push" },
-	{ pattern: /git\s+push\s+--force-with-lease/i, reason: "Force git push" },
-
-	// Package publish
-	{ pattern: /npm\s+publish/i, reason: "npm package publish" },
-	{ pattern: /pnpm\s+publish/i, reason: "pnpm package publish" },
-	{ pattern: /yarn\s+publish/i, reason: "yarn package publish" },
-
-	// System commands
-	{ pattern: /stop-computer/i, reason: "Shutdown computer" },
-	{ pattern: /restart-computer/i, reason: "Restart computer" },
-	{ pattern: /^shutdown\s+/i, reason: "Shutdown/restart computer" },
-
-	// Ownership/permissions (destructive)
+	{ pattern: /git\s+push\b(?=[^;&|]*\s(?:--force|-f)\b)/i, reason: "Force git push" },
+	{ pattern: /(?:npm|pnpm|yarn)\s+publish/i, reason: "Package publish" },
+	{ pattern: /stop-computer|restart-computer|(?:^|[;&|\r\n]\s*)shutdown\s+/i, reason: "Shutdown/restart computer" },
 	{ pattern: /takeown\s+\/f/i, reason: "Take ownership of file" },
 	{ pattern: /icacls\s+\/grant/i, reason: "Grant file permissions" },
-
-	// WSL destructive
-	{ pattern: /wsl\s+--unregister/i, reason: "Unregister WSL distro" },
-	{ pattern: /wsl\s+--terminate/i, reason: "Terminate WSL distro" },
+	{ pattern: /wsl\s+--(?:unregister|terminate)/i, reason: "Destructive WSL operation" },
 ];
 
-// ── Sensitive file / path patterns (case-insensitive) ──
-
 const SENSITIVE_FILE_PATTERNS: { pattern: RegExp; reason: string }[] = [
-	// Environment / secrets
-	{ pattern: /(?:^|[\s\\/])\.env(?:\.[a-z0-9]+)?$/i, reason: "Environment file" },
-	{ pattern: /\.pem$/i, reason: "Private key (PEM)" },
-	{ pattern: /\.key$/i, reason: "Private key file" },
-	{ pattern: /id_rsa$/i, reason: "SSH private key (RSA)" },
-	{ pattern: /id_ed25519$/i, reason: "SSH private key (Ed25519)" },
+	{ pattern: /(?:^|[\s\\/'"])\.env(?:\.[a-z0-9]+)*(?=$|[\s;|&><'"])/i, reason: "Environment file" },
+	{ pattern: /\.pem(?=$|[\s;|&><'"])/i, reason: "Private key (PEM)" },
+	{ pattern: /\.key(?=$|[\s;|&><'"])/i, reason: "Private key file" },
+	{ pattern: /id_rsa(?=$|[\s;|&><'"])/i, reason: "SSH private key (RSA)" },
+	{ pattern: /id_ed25519(?=$|[\s;|&><'"])/i, reason: "SSH private key (Ed25519)" },
 	{ pattern: /[\\/]\.ssh[\\/]/i, reason: "SSH directory" },
-	{ pattern: /[\\/]\.aws[\\/]/i, reason: "AWS credentials" },
-	{ pattern: /[\\/]\.azure[\\/]/i, reason: "Azure credentials" },
-	{ pattern: /[\\/]\.kube[\\/]/i, reason: "Kubernetes config" },
-	{ pattern: /[\\/]\.gcloud[\\/]/i, reason: "Google Cloud credentials" },
-	{ pattern: /npmrc$/i, reason: "npm config (may contain tokens)" },
-	{ pattern: /\.pypirc$/i, reason: "Python package config (may contain tokens)" },
+	{ pattern: /[\\/]\.(?:aws|azure|kube|gcloud)[\\/]/i, reason: "Cloud credentials" },
+	{ pattern: /(?:npmrc|\.pypirc)(?=$|[\s;|&><'"])/i, reason: "Package config (may contain tokens)" },
 	{ pattern: /[\\/]AppData[\\/]Roaming[\\/]Microsoft[\\/]Credentials/i, reason: "Windows stored credentials" },
 ];
 
-/**
- * Classify a command string for risk.
- * Returns the highest risk level found along with matched rules.
- */
 export function classifyCommand(command: string): RiskResult {
-	const reasons: string[] = [];
-
-	// Check destructive patterns
-	for (const rule of DESTRUCTIVE_COMMANDS) {
-		if (rule.pattern.test(command)) {
-			reasons.push(rule.reason);
-		}
-	}
-
-	// Check sensitive file paths in the command
-	for (const rule of SENSITIVE_FILE_PATTERNS) {
-		if (rule.pattern.test(command)) {
-			reasons.push(rule.reason);
-		}
-	}
-
-	if (reasons.length > 0) {
-		return { risk: "confirm", reasons };
-	}
-
-	return { risk: "safe", reasons: [] };
+	const normalized = command.replace(/\.(?:exe|cmd|com)\b/gi, "");
+	const reasons = [...DESTRUCTIVE_COMMANDS, ...SENSITIVE_FILE_PATTERNS].filter(rule => rule.pattern.test(normalized)).map(rule => rule.reason);
+	return reasons.length ? { risk: "confirm", reasons } : { risk: "safe", reasons: [] };
 }
 
-/**
- * Check if a path matches any sensitive file pattern.
- */
 export function isSensitivePath(path: string): boolean {
 	return SENSITIVE_FILE_PATTERNS.some(rule => rule.pattern.test(path));
 }

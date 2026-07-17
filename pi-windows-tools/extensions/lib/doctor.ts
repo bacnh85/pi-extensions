@@ -1,5 +1,9 @@
 import { execFileSync } from "node:child_process";
 import * as os from "node:os";
+import { join } from "node:path";
+import { getDefaultShell } from "./shell-detect";
+
+const systemExe = (name: string) => join(process.env.SystemRoot || "C:\\Windows", "System32", name);
 
 export interface ToolInfo { name: string; found: boolean; path?: string; version?: string; }
 export interface DoctorReport {
@@ -8,7 +12,7 @@ export interface DoctorReport {
 }
 
 function which(cmd: string): string | null {
-	try { return execFileSync("where", [cmd], { encoding: "utf8", timeout: 3000 }).split(/\r?\n/)[0]?.trim() || null; } catch { return null; }
+	try { return execFileSync(systemExe("where.exe"), [cmd], { cwd: os.homedir(), encoding: "utf8", timeout: 3000 }).split(/\r?\n/)[0]?.trim() || null; } catch { return null; }
 }
 function checkTool(name: string, cmd: string, va: string[] = ["--version"]): ToolInfo {
 	const p = which(cmd); let v: string | undefined;
@@ -16,12 +20,17 @@ function checkTool(name: string, cmd: string, va: string[] = ["--version"]): Too
 	return { name, found: !!p, path: p || undefined, version: v };
 }
 
+export function parseWslDistros(output: Buffer | string): string[] {
+	const buffer = typeof output === "string" ? Buffer.from(output) : output;
+	const text = buffer[0] === 0xff && buffer[1] === 0xfe || buffer.subarray(1, 16).some(byte => byte === 0) ? buffer.toString("utf16le") : buffer.toString("utf8");
+	return text.replace(/^\uFEFF/, "").split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.toLowerCase().includes("noinstall") && !s.startsWith("Windows"));
+}
 function wslDistros(): string[] {
-	try { return execFileSync("wsl.exe", ["-l", "-q"], { encoding: "utf8", timeout: 5000 }).split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.toLowerCase().includes("noinstall") && !s.startsWith("Windows")); } catch { return []; }
+	try { return parseWslDistros(execFileSync(systemExe("wsl.exe"), ["-l", "-q"], { cwd: os.homedir(), timeout: 5000 })); } catch { return []; }
 }
 function regDword(key: string, val: string): boolean | null {
 	try {
-		const out = execFileSync("reg", ["query", key, "/v", val], { encoding: "utf8", timeout: 3000 });
+		const out = execFileSync(systemExe("reg.exe"), ["query", key, "/v", val], { cwd: os.homedir(), encoding: "utf8", timeout: 3000 });
 		const m = out.match(new RegExp(`${val}\\s+REG_DWORD\\s+(0x[0-9a-f]+)`, "i"));
 		return m ? parseInt(m[1], 16) === 1 : null;
 	} catch { return null; }
@@ -40,12 +49,7 @@ export function runDoctor(): DoctorReport {
 		checkTool("devenv", "devenv"), checkTool("reg", "reg"), checkTool("sc", "sc"), checkTool("netsh", "netsh"),
 	];
 	const wslTool = tools.find(t => t.name === "wsl");
-	return {
-		...osInfo, defaultShell: process.env.PI_WINDOWS_SHELL || "pwsh",
-		tools, wslDistros: wslTool?.found ? wslDistros() : [],
-		longPathsEnabled: regDword("HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem", "LongPathsEnabled"),
-		developerMode: regDword("HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock", "AllowDevelopmentWithoutDevLicense"),
-	};
+	return { ...osInfo, defaultShell: getDefaultShell().kind, tools, wslDistros: wslTool?.found ? wslDistros() : [], longPathsEnabled: regDword("HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem", "LongPathsEnabled"), developerMode: regDword("HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock", "AllowDevelopmentWithoutDevLicense") };
 }
 
 export function formatDoctorReport(r: DoctorReport): string {

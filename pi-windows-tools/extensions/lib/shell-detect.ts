@@ -1,7 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export type WindowsShellKind = "pwsh" | "powershell" | "cmd" | "git-bash" | "wsl";
+const shellKinds = ["pwsh", "powershell", "cmd", "git-bash", "wsl"] as const;
+export const isWindowsShellKind = (value: string | undefined): value is WindowsShellKind => !!value && shellKinds.includes(value as WindowsShellKind);
 
 export interface ShellInfo {
 	kind: WindowsShellKind;
@@ -11,9 +15,11 @@ export interface ShellInfo {
 	version?: string;
 }
 
+const systemExe = (name: string) => join(process.env.SystemRoot || "C:\\Windows", "System32", name);
+
 function where(cmd: string): string | null {
 	try {
-		return execFileSync("where", [cmd], { encoding: "utf8", timeout: 3000 })
+		return execFileSync(systemExe("where.exe"), [cmd], { cwd: homedir(), encoding: "utf8", timeout: 3000 })
 			.split(/\r?\n/)[0]?.trim() || null;
 	} catch { return null; }
 }
@@ -41,15 +47,16 @@ export function detectShell(kind: WindowsShellKind): ShellInfo {
 			return { kind, displayName: "Command Prompt", executable: exe || "cmd.exe", available: !!exe || process.platform === "win32" };
 		}
 		case "git-bash": {
-			const candidates = ["C:\\Program Files\\Git\\bin\\bash.exe", "C:\\Program Files (x86)\\Git\\bin\\bash.exe", process.env.PI_GIT_BASH_PATH || ""].filter(Boolean);
+			const candidates = [process.env.PI_GIT_BASH_PATH || "", "C:\\Program Files\\Git\\bin\\bash.exe", "C:\\Program Files (x86)\\Git\\bin\\bash.exe"].filter(Boolean);
 			const fromPath = where("bash");
 			const exe = candidates.find(c => existsSync(c)) || (fromPath ? fromPath : null);
-			const isGitBash = exe && (exe.toLowerCase().includes("git") || exe.toLowerCase().includes("program files") || exe.toLowerCase().includes("scoop") || exe.toLowerCase().includes("chocolatey") || getVersion(exe, ["--version"])?.toLowerCase().includes("gnu bash") === true);
+			const configured = process.env.PI_GIT_BASH_PATH;
+			const isGitBash = exe && (exe === configured || /(?:^|[\\/])git(?:[\\/]|$)/i.test(exe));
 			return { kind, displayName: "Git Bash", executable: exe || "bash.exe", available: !!exe && !!isGitBash, version: exe ? getVersion(exe, ["--version"]) : undefined };
 		}
 		case "wsl": {
 			const exe = where("wsl");
-			return { kind, displayName: "WSL", executable: "wsl.exe", available: !!exe, version: exe ? getVersion("wsl.exe", ["--status"]) : undefined };
+			return { kind, displayName: "WSL", executable: exe || systemExe("wsl.exe"), available: !!exe, version: exe ? getVersion(exe, ["--status"]) : undefined };
 		}
 	}
 }
@@ -63,8 +70,11 @@ export function getAvailableShells(): ShellInfo[] {
 }
 
 export function getDefaultShell(): ShellInfo {
-	const envShell = process.env.PI_WINDOWS_SHELL as WindowsShellKind | undefined;
-	if (envShell && detectShell(envShell).available) return detectShell(envShell);
+	const envShell = process.env.PI_WINDOWS_SHELL;
+	if (isWindowsShellKind(envShell)) {
+		const info = detectShell(envShell);
+		if (info.available) return info;
+	}
 	for (const kind of ["pwsh", "powershell", "git-bash", "cmd", "wsl"] as WindowsShellKind[]) {
 		const info = detectShell(kind);
 		if (info.available) return info;

@@ -1,6 +1,6 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import { formatDoctorReport } from "../lib/doctor";
+import { formatDoctorReport, parseWslDistros } from "../lib/doctor";
 import type { DoctorReport } from "../lib/doctor";
 
 describe("doctor", () => {
@@ -85,5 +85,9 @@ describe("doctor", () => {
 	it("includes version when present", () => {
 		const output = formatDoctorReport(sampleReport);
 		expect(output).to.include("7.4.0");
+	});
+
+	it("parses UTF-16LE WSL output", () => {
+		expect(parseWslDistros(Buffer.from("Ubuntu\r\nDebian\r\n", "utf16le"))).to.deep.equal(["Ubuntu", "Debian"]);
 	});
 });
