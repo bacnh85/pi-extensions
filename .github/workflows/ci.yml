@@ -7,94 +7,97 @@ on:
   workflow_dispatch:
 
 jobs:
-  ci:
+  # Detect which packages have changed, build a dynamic matrix
+  changes:
     runs-on: [self-hosted, Linux, X64]
+    permissions:
+      pull-requests: read
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            pi-agy: pi-agy/**
+            pi-ponytail: pi-ponytail/**
+            pi-serena: pi-serena/**
+            pi-web: pi-web/**
+            pi-munin: pi-munin/**
+            pi-plan: pi-plan/**
+            pi-subagent: pi-subagent/**
+            pi-review: pi-review/**
+            pi-fff: pi-fff/**
+            pi-notebooklm: pi-notebooklm/**
+            pi-rtk: pi-rtk/**
+            pi-sub: pi-sub/**
+            pi-deepseek-tools: pi-deepseek-tools/**
+            pi-obsidian: pi-obsidian/**
+            pi-windows-tools: pi-windows-tools/**
+
+      - name: Build matrix
+        id: set-matrix
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const all = [
+              { pkg: 'pi-agy', cmd: 'npm ci && npm test && npm run typecheck' },
+              { pkg: 'pi-ponytail', cmd: 'node --test extensions/test/*.test.js' },
+              { pkg: 'pi-serena', cmd: 'npm ci && npm test' },
+              { pkg: 'pi-web', cmd: 'npm ci && npm test' },
+              { pkg: 'pi-munin', cmd: 'npm ci && npm test' },
+              { pkg: 'pi-plan', cmd: 'npm ci && npm test && npm run typecheck' },
+              { pkg: 'pi-subagent', cmd: 'npm ci && npm test && npm run typecheck' },
+              { pkg: 'pi-review', cmd: 'npm ci && npm test && npm run typecheck' },
+              { pkg: 'pi-fff', cmd: 'npm ci && npm test' },
+              { pkg: 'pi-notebooklm', cmd: 'npm ci && npm test' },
+              { pkg: 'pi-rtk', cmd: 'npm pack --dry-run' },
+              { pkg: 'pi-sub', cmd: 'npm pack --dry-run' },
+              { pkg: 'pi-deepseek-tools', cmd: 'npm ci && npm test' },
+              { pkg: 'pi-obsidian', cmd: 'npm ci && npm test' },
+              { pkg: 'pi-windows-tools', cmd: 'npm ci && npm test && npm run typecheck' },
+            ];
+
+            const selected = '${{ github.event_name }}' === 'workflow_dispatch'
+              ? all
+              : all.filter(p => JSON.parse('${{ steps.filter.outputs.changes }}').includes(p.pkg));
+
+            const include = selected.map(p => ({
+              package: p.pkg,
+              'test-command': p.cmd,
+              runner: p.pkg === 'pi-windows-tools'
+                ? '"windows-latest"'
+                : '["self-hosted","Linux","X64"]',
+            }));
+
+            core.setOutput('matrix', JSON.stringify({ include }));
+
+  # Test and publish only the changed packages
+  ci:
+    needs: changes
+    if: needs.changes.outputs.matrix != '{"include":[]}'
     strategy:
-      matrix:
-        include:
-          - package: pi-agy
-            test-command: npm ci && npm test && npm run typecheck
-          - package: pi-ponytail
-            test-command: node --test extensions/test/*.test.js
-          - package: pi-serena
-            test-command: npm ci && npm test
-          - package: pi-web
-            test-command: npm ci && npm test
-          - package: pi-munin
-            test-command: npm ci && npm test
-          - package: pi-plan
-            test-command: npm ci && npm test && npm run typecheck
-          - package: pi-subagent
-            test-command: npm ci && npm test && npm run typecheck
-          - package: pi-review
-            test-command: npm ci && npm test && npm run typecheck
-          - package: pi-fff
-            test-command: npm ci && npm test
-          - package: pi-notebooklm
-            test-command: npm ci && npm test
-          - package: pi-rtk
-            test-command: npm pack --dry-run
-          - package: pi-sub
-            test-command: npm pack --dry-run
-          - package: pi-deepseek-tools
-            test-command: npm ci && npm test
-          - package: pi-obsidian
-            test-command: npm ci && npm test
-          - package: pi-windows-tools
-            test-command: npm ci && npm test
+      matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
+    runs-on: ${{ fromJSON(matrix.runner) }}
     defaults:
       run:
         working-directory: ./${{ matrix.package }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Detect changes
-        id: check
-        run: |
-          # workflow_dispatch = manual trigger, run everything
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "-> Manual trigger, testing all packages"
-            exit 0
-          fi
-
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-          else
-            BASE="${{ github.event.before }}"
-          fi
-
-          if [ -n "$BASE" ] && [ "$BASE" != "0000000000000000000000000000000000000000" ]; then
-            # pathspec is '.' because defaults.run.working-directory is already the package dir
-            CHANGES=$(git diff --name-only "$BASE"...HEAD -- .)
-          else
-            # first push or no base — run everything to be safe
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "-> First push or no base, testing package"
-            exit 0
-          fi
-
-          if [ -n "$CHANGES" ]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Test
-        if: steps.check.outputs.changed == 'true'
         run: ${{ matrix.test-command }}
 
       - name: Publish
-        if: |
-          steps.check.outputs.changed == 'true' &&
-          github.ref == 'refs/heads/main' &&
-          github.event_name == 'push'
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
           PKG=$(node -p "require('./package.json').name")
           VER=$(node -p "require('./package.json').version")
