@@ -9,6 +9,7 @@ import { resolveModel } from "../model.ts";
 import { mapWithConcurrencyLimit, isFailedResult, getResultOutput, getFinalOutput, runSubAgent, startHeartbeat } from "../runner.ts";
 import { ThreadStore } from "../threads.ts";
 import {
+	isRateLimitError,
 	resolveSafeCwd,
 	validateAgentTools,
 	normalizeTimeout,
@@ -1052,4 +1053,27 @@ describe("security constants", () => {
 	it("PER_TASK_OUTPUT_CAP is 50 KB", () => {
 		assert.equal(PER_TASK_OUTPUT_CAP, 50 * 1024);
 	});
+});
+
+// ===========================================================================
+// Rate-limit detection
+// ===========================================================================
+
+describe("isRateLimitError", () => {
+	it("matches 429", () => assert.ok(isRateLimitError("429 Too Many Requests")));
+	it("matches 529", () => assert.ok(isRateLimitError("529 Overloaded")));
+	it("matches rate limit text", () => assert.ok(isRateLimitError("Rate limit exceeded")));
+	it("matches ratelimit concatenated", () => assert.ok(isRateLimitError("RateLimitExceeded")));
+	it("matches quota exhausted", () => assert.ok(isRateLimitError("quota_exhausted")));
+	it("matches resource exhausted", () => assert.ok(isRateLimitError("Resource exhausted")));
+	it("matches quota exceeded", () => assert.ok(isRateLimitError("Quota exceeded for API")));
+	it("matches exceeded quota reversed order", () => assert.ok(isRateLimitError("You exceeded your current quota, please try again later")));
+	it("matches too many requests", () => assert.ok(isRateLimitError("too many requests")));
+	it("matches insufficient_quota", () => assert.ok(isRateLimitError("insufficient_quota")));
+	it("matches capacity exceeded", () => assert.ok(isRateLimitError("capacity exceeded")));
+	it("matches usage limit", () => assert.ok(isRateLimitError("usage limit reached")));
+	it("matches overloaded", () => assert.ok(isRateLimitError("model is overloaded")));
+	it("rejects generic errors", () => assert.ok(!isRateLimitError("Internal server error")));
+	it("rejects empty", () => assert.ok(!isRateLimitError("")));
+	it("rejects 503 alone", () => assert.ok(!isRateLimitError("503 Service Unavailable")));
 });

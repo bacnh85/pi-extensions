@@ -3,6 +3,7 @@ import { type AgentConfig, getModelCandidates } from "./agents.ts";
 import { runSubAgent, type SubAgentProgress, type SubAgentResult } from "./runner.ts";
 import { resolveModel } from "./model.ts";
 import {
+	isRateLimitError,
 	validateAgentTools,
 	normalizeTimeout,
 	resolveSafeCwd,
@@ -72,13 +73,43 @@ export async function runNamedAgent(options: {
 
 	const contract = options.instructions?.slice(0, MAX_INSTRUCTIONS_LENGTH);
 
-	try {
+	// Retry loop: rate-limit model fallback
+	const candidates = getModelCandidates(options.agent);
+	const triedModels: string[] = [];
+
+	const tryWithFallback = async (): Promise<SubAgentResult> => {
+		const remaining = candidates.filter(m => !triedModels.includes(m));
+		const isParentFallback = remaining.length === 0;
+		const fallbackResolved = await resolveModel(remaining, options.ctx.model, options.ctx.modelRegistry);
+		if (!fallbackResolved.model) {
+			throw new Error(
+				`All models rate-limited or unavailable. Tried: ${triedModels.join(" → ") || "(none)"}. ` +
+				`Remaining candidates: ${remaining.join(", ") || "none"}. ` +
+				`Parent: ${options.ctx.model?.provider}/${options.ctx.model?.id}.`,
+			);
+		}
+		const triedName = `${fallbackResolved.model!.provider}/${fallbackResolved.model!.id}`;
+		if (triedModels.includes(triedName)) {
+			// Already tried this model (e.g., all candidates unavailable
+			// and parent fallback) — no further options.
+			throw new Error(
+				`All available models exhausted. Tried: ${triedModels.join(" → ")}.`,
+			);
+		}
+		triedModels.push(triedName);
+		// Also track the raw candidate name so candidates.filter() can
+		// exclude it even when the agent uses unqualified names.
+		// Avoid duplicating when candidate name is already qualified (matchedCandidate === triedName).
+		if (fallbackResolved.matchedCandidate && fallbackResolved.matchedCandidate !== triedName) {
+			triedModels.push(fallbackResolved.matchedCandidate);
+		}
+
 		const result = await runSubAgent({
 			cwd: safeCwd.path,
 			systemPrompt: contract ? `${options.agent.systemPrompt}\n\n## Task Contract\n${contract}` : options.agent.systemPrompt,
 			task: options.task,
 			tools: toolValidation.tools,
-			model,
+			model: fallbackResolved.model,
 			modelRuntime,
 			authStorage,
 			modelRegistry,
@@ -89,7 +120,22 @@ export async function runNamedAgent(options: {
 			onMessage: options.onMessage,
 			onProgress: options.onProgress,
 		});
+
+		if (result.errorMessage && isRateLimitError(result.errorMessage)) {
+			// If the model that just rate-limited was the parent fallback
+			// (no remaining candidates), stop — no further options.
+			if (isParentFallback) {
+				throw new Error(
+					`All available models exhausted. Tried: ${triedModels.join(" → ")}.`,
+				);
+			}
+			return tryWithFallback();
+		}
 		return result;
+	};
+
+	try {
+		return await tryWithFallback();
 	} finally {
 		// No manual timeout handling needed — runSubAgent handles timeouts internally.
 	}

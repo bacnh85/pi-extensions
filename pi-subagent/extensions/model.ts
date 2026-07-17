@@ -17,6 +17,8 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 export interface ResolvedModel {
 	model: Model<any> | null;
 	attempted: string[];
+	/** The raw candidate name that matched, if a candidate resolved. Undefined for parent fallback. */
+	matchedCandidate?: string;
 }
 
 /** Known provider prefixes for unqualified model names. */
@@ -47,16 +49,16 @@ export async function resolveModel(
 		const idx = modelName.indexOf("/");
 		if (idx > 0) {
 			const found = tryAvailable(modelName);
-			if (found) return { model: found, attempted };
+			if (found) return { model: found, attempted, matchedCandidate: modelName };
 			continue;
 		}
 		for (const [provider, pattern] of KNOWN_PROVIDERS) {
 			if (!pattern.test(modelName)) continue;
 			const found = tryAvailable(`${provider}/${modelName}`);
-			if (found) return { model: found, attempted };
+			if (found) return { model: found, attempted, matchedCandidate: modelName };
 		}
 		const found = tryAvailable(`anthropic/${modelName}`);
-		if (found) return { model: found, attempted };
+		if (found) return { model: found, attempted, matchedCandidate: modelName };
 	}
 
 	if (parentModel) {

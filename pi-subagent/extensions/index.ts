@@ -39,6 +39,7 @@ import {
 	startHeartbeat,
 } from "./runner.ts";
 import {
+	isRateLimitError,
 	normalizeTimeout,
 	resolveSafeCwd,
 	validateAgentTools,
@@ -570,29 +571,108 @@ export default function (pi: ExtensionAPI) {
 					};
 				}
 
+				// Retry loop: rate-limit model fallback
+				const candidates = getModelCandidates(agent);
+				const triedModels: string[] = [];
+
 				const stopHeartbeat = onUpdate ? startHeartbeat(() => {
 					onHeartbeat?.();
 					onUpdate({ content: [{ type: "text", text: `Subagent ${agentName} is still running…` }], details: heartbeatDetails?.() ?? makeDetails("single")([]) });
 				}) : undefined;
 				try {
-					return await runSubAgent({
-						cwd: safeCwd,
-						systemPrompt: params.instructions
-						? `${agent.systemPrompt}\n\n## Task Contract\n${params.instructions.slice(0, MAX_INSTRUCTIONS_LENGTH)}`
-						: agent.systemPrompt,
-						task,
-						tools,
-						model: resolved.model,
-						modelRuntime,
-						authStorage,
-						modelRegistry,
-						signal: parentSignal,
-						timeoutMs: effectiveTimeoutMs,
-						agentName,
-						thinkingLevel: agent.thinking,
-						onMessage: onProgress,
-						onProgress: onActivity,
-					});
+					const tryWithFallback = async (): Promise<SubAgentResult> => {
+						const remaining = candidates.filter(m => !triedModels.includes(m));
+						const isParentFallback = remaining.length === 0;
+						const fallbackResolved = await resolveModel(remaining, ctx.model, ctx.modelRegistry);
+						if (!fallbackResolved.model) {
+							return {
+								agent: agentName,
+								task,
+								exitCode: 1,
+								status: "error" as const,
+								stopReason: "error" as const,
+								messages: [],
+								stderr: [
+									`All models rate-limited or unavailable.`,
+									`Tried: ${triedModels.join(" → ") || "(none)"}.`,
+									`Remaining candidates: ${remaining.join(", ") || "none"}.`,
+									`Parent: ${ctx.model?.provider}/${ctx.model?.id}.`,
+								].join(" "),
+								usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+								errorMessage: `All models exhausted (tried: ${triedModels.join(" → ") || "none"})`,
+							};
+						}
+						const triedName = `${fallbackResolved.model!.provider}/${fallbackResolved.model!.id}`;
+						if (triedModels.includes(triedName)) {
+							// Already tried this model (e.g., all candidates unavailable
+							// and parent fallback) — no further options.
+							return {
+								agent: agentName,
+								task,
+								exitCode: 1,
+								status: "error" as const,
+								stopReason: "error" as const,
+								messages: [],
+								stderr: [
+									`All available models exhausted.`,
+									`Tried: ${triedModels.join(" → ")}.`,
+								].join(" "),
+								usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+								errorMessage: `All available models exhausted (tried: ${triedModels.join(" → ")})`,
+							};
+						}
+						triedModels.push(triedName);
+						// Also track the raw candidate name so candidates.filter() can
+						// exclude it even when the agent uses unqualified names.
+						// Avoid duplicating when candidate name is already qualified (matchedCandidate === triedName).
+						if (fallbackResolved.matchedCandidate && fallbackResolved.matchedCandidate !== triedName) {
+							triedModels.push(fallbackResolved.matchedCandidate);
+						}
+
+						const result = await runSubAgent({
+							cwd: safeCwd,
+							systemPrompt: params.instructions
+							? `${agent.systemPrompt}\n\n## Task Contract\n${params.instructions.slice(0, MAX_INSTRUCTIONS_LENGTH)}`
+							: agent.systemPrompt,
+							task,
+							tools,
+							model: fallbackResolved.model,
+							modelRuntime,
+							authStorage,
+							modelRegistry,
+							signal: parentSignal,
+							timeoutMs: effectiveTimeoutMs,
+							agentName,
+							thinkingLevel: agent.thinking,
+							onMessage: onProgress,
+							onProgress: onActivity,
+						});
+
+						if (result.errorMessage && isRateLimitError(result.errorMessage)) {
+							// If the model that just rate-limited was the parent fallback
+							// (no remaining candidates), stop — no further options.
+							if (isParentFallback) {
+								return {
+									agent: agentName,
+									task,
+									exitCode: 1,
+									status: "error" as const,
+									stopReason: "error" as const,
+									messages: [],
+									stderr: [
+										`All available models exhausted.`,
+										`Tried: ${triedModels.join(" → ")}.`,
+									].join(" "),
+									usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+									errorMessage: `All available models exhausted (tried: ${triedModels.join(" → ")})`,
+								};
+							}
+							return tryWithFallback();
+						}
+						return result;
+					};
+
+					return tryWithFallback();
 				} finally {
 					stopHeartbeat?.();
 				}

@@ -501,3 +501,33 @@ export function truncateParallelOutput(output: string): string {
 	}
 	return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted.]`;
 }
+
+// ---------------------------------------------------------------------------
+// Rate-limit error detection
+// ---------------------------------------------------------------------------
+
+const RATE_LIMIT_PATTERNS = [
+	/\b429\b/,
+	/\b529\b/,
+	/rate[\s_]limit/i,
+	/ratelimit/i,
+	/too[\s_]many[\s_]requests/i,
+	/quota[\s_]exhausted/i,
+	/quota[\s_]exceeded/i,
+	/exceeded[\s_](?:your[\s_])?(?:current[\s_])?quota/i,
+	/insufficient_quota/i,
+	/resource[\s_]exhausted/i,
+	/capacity[\s_]exceeded/i,
+	/usage[\s_]limit/i,
+	/overloaded/i,
+];
+
+/**
+ * Check if an error message indicates a rate-limit / quota-exhaustion condition.
+ *
+ * Used by the sub-agent runtime to trigger automatic model fallback when the
+ * primary model candidate hits a 429 or similar server-side capacity error.
+ */
+export function isRateLimitError(message: string): boolean {
+	return RATE_LIMIT_PATTERNS.some(p => p.test(message));
+}
