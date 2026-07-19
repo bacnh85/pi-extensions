@@ -38,7 +38,7 @@ pi --plan
 | `/handoff` | Write a compact `.pi-handoff.md` and print the fresh-session resume line. |
 | `/rewind` | Confirm, stash current work, and restore the active workflow baseline. |
 | `/advisor [model hint\|off]` | Configure a transcript-aware strategic advisor with `/model`-style search. |
-| `/btw <query>` | Ask a stateless terse developer sidebar. |
+| `/btw [query]` | Ask a context-aware side question; completed answers persist as transcript cards. Without a query, reopens the last answer. |
 | `/specs <intent>` | Write an EARS specification and hard-lock workspace writes. |
 | `/specs-approve` | Release the active specs write gate. |
 | `/doctor` | Show compact workspace, Git, Node, model-auth, and tool health. |
@@ -84,7 +84,7 @@ Run `/advisor` to open the same searchable picker as `/model`; type a provider/m
 
 When configured, the primary agent receives an `advisor` tool and decides when to use it—typically before a consequential approach, after recurring failures, or before completing non-trivial work. The advisor sees Pi's effective session transcript (including compaction summaries and tool results), returns read-only guidance to the primary agent, and does not replace `pi-review`'s Git-scoped review workflow.
 
-Optional Pi settings (global `~/.pi/agent/settings.json` or trusted project `.pi/settings.json`) still select the stateless `/btw` model:
+Optional Pi settings (global `~/.pi/agent/settings.json` or trusted project `.pi/settings.json`) select the `/btw` model:
 
 ```json
 {
@@ -94,7 +94,11 @@ Optional Pi settings (global `~/.pi/agent/settings.json` or trusted project `.pi
 }
 ```
 
-`/btw` and `/specs` use isolated model calls. `/specs` keeps the existing plan-mode read gate active until `/specs-approve` is explicitly run.
+`/btw` injects a compact snapshot of the current session transcript as context, so it can answer questions about files read, decisions made, and things discussed earlier. It uses an isolated model call with no tool access. Completed answers render as durable transcript cards that remain visible after dismissal and are excluded from the primary agent's LLM context.
+
+`/btw` without a query recalls the latest answer from the current session branch, including after reload or resume.
+
+`/specs` uses an isolated model call and keeps the existing plan-mode read gate active until `/specs-approve` is explicitly run.
 
 ## Reasoning levels
 

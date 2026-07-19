@@ -108,6 +108,7 @@ interface FakePi {
 	entries: any[];
 	sentMessages: any[];
 	customMessages: any[];
+	entryRenderers: Record<string, any>;
 	flagValues: Record<string, any>;
 	eventEmits?: any[];
 	onEmit?: (event: string, data: any) => void;
@@ -128,6 +129,7 @@ function createFakePi(
 		entries: [],
 		sentMessages: [],
 		customMessages: [],
+		entryRenderers: {},
 		flagValues: { ...flagValues },
 	};
 
@@ -146,6 +148,9 @@ function createFakePi(
 		},
 		registerShortcut(keys: string, def: any) {
 			state.shortcuts[keys] = def;
+		},
+		registerEntryRenderer(type: string, renderer: any) {
+			state.entryRenderers[type] = renderer;
 		},
 		getActiveTools() {
 			return [...state.activeTools];
@@ -366,6 +371,102 @@ describe("advisor", () => {
 		await commands.advisor.handler("off", ctx);
 		assert.equal(selected, undefined);
 		assert.ok(!pi.active.includes("advisor"));
+	});
+});
+
+describe("btw", () => {
+	it("registers the command and durable entry renderer", () => {
+		const { commands, entryRenderers } = createFakePi(["read"]);
+		assert.ok(commands.btw, "/btw registered");
+		assert.ok(entryRenderers["pi-plan-btw"], "BTW entry renderer registered");
+	});
+
+	it("reports no recall on empty query with no history", async () => {
+		const { commands } = createFakePi(["read"]);
+		const notifications: string[] = [];
+		const ctx = fakeCtx({
+			mode: "print",
+			hasUI: true,
+			ui: { notify: (msg: string) => { notifications.push(msg); } },
+			sessionManager: { getBranch: () => [], getSessionFile: () => "/test/session.jsonl" },
+		});
+		await commands.btw.handler("", ctx);
+		assert.match(notifications[0], /No previous BTW/);
+	});
+
+	it("injects transcript context and persists a non-LLM answer", async () => {
+		const { commands, entries, customMessages } = createFakePi(["read"]);
+		let capturedContext: any;
+		const response: any = {
+			async *[Symbol.asyncIterator]() { yield { type: "text_delta", delta: "You discussed file.ts." }; },
+			result: async () => ({ stopReason: "stop", content: [{ type: "text", text: "You discussed file.ts." }] }),
+		};
+		const widgetCalls: unknown[] = [];
+		const message = {
+			type: "message", id: "1", parentId: null, timestamp: "2026-01-01T00:00:00.000Z",
+			message: { role: "user", content: [{ type: "text", text: "Let's work on file.ts" }], timestamp: 1 },
+		};
+		const ctx = fakeCtx({
+			mode: "print",
+			hasUI: false,
+			modelRegistry: {
+				getAvailable: () => [], find: () => ({ provider: "test", id: "m", contextWindow: 16_384 }),
+				getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "key", headers: {}, env: {} }),
+				getRegisteredProviderConfig: () => ({ streamSimple: (_model: any, context: any) => { capturedContext = context; return response; } }),
+			},
+			sessionManager: { getBranch: () => [message], getEntries: () => [message], getLeafId: () => "1", getSessionFile: () => "/test/session.jsonl" },
+			isProjectTrusted: () => false,
+			ui: { setWidget: (...args: unknown[]) => { widgetCalls.push(args); } },
+		});
+
+		await commands.btw.handler("What file were we discussing?", ctx);
+
+		assert.ok(capturedContext.systemPrompt.includes("<transcript>"), "transcript injected into system prompt");
+		assert.ok(capturedContext.systemPrompt.includes("file.ts"), "transcript contains session content");
+		assert.equal(capturedContext.messages[0].content[0].text, "What file were we discussing?");
+		assert.equal(entries.length, 1);
+		assert.equal(entries[0].customType, "pi-plan-btw");
+		assert.equal(entries[0].data.query, "What file were we discussing?");
+		assert.equal(entries[0].data.answer, "You discussed file.ts.");
+		assert.equal(typeof entries[0].data.timestamp, "number");
+		assert.equal(customMessages.length, 0, "BTW answer does not enter LLM context");
+		assert.equal(widgetCalls.length, 0, "BTW no longer renders a transient widget");
+	});
+
+	it("does not persist a cancelled TUI request", async () => {
+		const { commands, entries } = createFakePi(["read"]);
+		const notifications: string[] = [];
+		const ctx = fakeCtx({
+			mode: "tui",
+			isProjectTrusted: () => false,
+			sessionManager: { getBranch: () => [], getEntries: () => [], getLeafId: () => "1", getSessionFile: () => "/test/session.jsonl" },
+			ui: {
+				custom: async () => ({ cancelled: true }),
+				notify: (message: string) => { notifications.push(message); },
+			},
+		});
+
+		await commands.btw.handler("What changed?", ctx);
+		assert.deepEqual(entries, []);
+		assert.deepEqual(notifications, ["BTW cancelled."]);
+	});
+
+	it("recalls the latest answer from the current branch", async () => {
+		const { commands } = createFakePi(["read"]);
+		let editorTitle = "";
+		let editorContent = "";
+		const ctx = fakeCtx({
+			mode: "tui",
+			sessionManager: {
+				getBranch: () => [{ type: "custom", customType: "pi-plan-btw", data: { query: "What file?", answer: "file.ts", timestamp: 1 } }],
+				getSessionFile: () => "/test/session.jsonl",
+			},
+			ui: { editor: async (title: string, content: string) => { editorTitle = title; editorContent = content; } },
+		});
+
+		await commands.btw.handler("", ctx);
+		assert.ok(editorTitle.startsWith("BTW recall:"));
+		assert.equal(editorContent, "file.ts");
 	});
 });
 
