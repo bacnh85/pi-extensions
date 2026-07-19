@@ -7,11 +7,12 @@ import assert from "node:assert/strict";
 import { before, describe, it } from "mocha";
 import os from "node:os";
 import path from "node:path";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import piPlanExtension, { snapshotUntrackedFiles } from "./index";
 import { BLOCKED_TOOLS, PLAN_ONLY_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
+import { createHandoff, rewindToFlowBaseline } from "./lib/lifecycle";
 
 /** Real temp directory for tests that write files. */
 const TMP = path.join(os.tmpdir(), "pi-plan-test-" + process.pid);
@@ -42,10 +43,49 @@ describe("workflow snapshots", () => {
 		writeFileSync(path.join(cwd, names[0]), "changed");
 		const second = new Map<string, Entry>((JSON.parse(await snapshotUntrackedFiles(cwd)) as Entry[]).map((entry) => [entry.path, entry]));
 		assert.notEqual(second.get(names[0])?.hash, first.get(names[0])?.hash);
+		chmodSync(path.join(cwd, names[1]), 0o755);
+		const third = new Map<string, Entry>((JSON.parse(await snapshotUntrackedFiles(cwd)) as Entry[]).map((entry) => [entry.path, entry]));
+		assert.equal(third.get(names[1])?.hash, second.get(names[1])?.hash);
+		assert.equal((third.get(names[1]) as Entry & { mode: number }).mode, 0o755);
 		writeFileSync(path.join(cwd, "large.txt"), "x".repeat(14 * 1024));
 		assert.ok(JSON.parse(await snapshotUntrackedFiles(cwd)).some((entry: Entry) => entry.path === "large.txt"));
 		writeFileSync(path.join(cwd, "large.txt"), "x".repeat(51 * 1024));
 		await assert.rejects(snapshotUntrackedFiles(cwd), /untracked content exceeds 50 KB; commit, stage, or ignore/);
+		const symlinkRepo = createGitRepo("pi-plan-symlink-");
+		symlinkSync("/etc/hosts", path.join(symlinkRepo, "outside"));
+		await assert.rejects(snapshotUntrackedFiles(symlinkRepo), /not a regular file: outside/);
+	});
+});
+
+describe("state lifecycle", () => {
+	it("writes a compact handoff and restores the workflow baseline", async () => {
+		const cwd = createGitRepo("pi-plan-lifecycle-");
+		const plan = path.join(cwd, ".agents", "plans", "plan.md");
+		mkdirSync(path.dirname(plan), { recursive: true });
+		mkdirSync(path.join(cwd, "scratch"));
+		writeFileSync(plan, "# Plan\n\n- [x] inspect\n- [ ] implement\n");
+		chmodSync(plan, 0o755);
+		writeFileSync(path.join(cwd, "README.md"), "staged\n");
+		execFileSync("git", ["add", "README.md"], { cwd });
+		writeFileSync(path.join(cwd, "README.md"), "unstaged\n");
+		const initialUntrackedSnapshot = await snapshotUntrackedFiles(cwd);
+		const baseline = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+		const initialCachedPatch = execFileSync("git", ["diff", "--cached", "--binary", "HEAD"], { cwd, encoding: "utf8" });
+		const initialUnstagedPatch = execFileSync("git", ["diff", "--binary"], { cwd, encoding: "utf8" });
+		writeFileSync(path.join(cwd, "README.md"), "broken");
+		writeFileSync(path.join(cwd, "bad.ts"), "broken");
+
+		const handoff = await createHandoff(cwd, { lastPlanPath: plan, lastPlanTitle: "Plan", lastPlanStatus: "executing", flow: { baseline, phase: "implement", reviewPass: 0 } });
+		assert.equal(handoff.snippet, "Read .pi-handoff.md; continue the next milestone.");
+		assert.match(readFileSync(handoff.path, "utf8"), /next: implement/);
+
+		await rewindToFlowBaseline(cwd, { baseline, phase: "implement", reviewPass: 0, initialCachedPatch, initialUnstagedPatch, initialUntrackedSnapshot });
+		assert.equal(readFileSync(path.join(cwd, "README.md"), "utf8"), "unstaged\n");
+		assert.equal(execFileSync("git", ["show", ":README.md"], { cwd, encoding: "utf8" }), "staged\n");
+		assert.equal(readFileSync(plan, "utf8"), "# Plan\n\n- [x] inspect\n- [ ] implement\n");
+		assert.equal(statSync(plan).mode & 0o777, 0o755);
+		assert.equal(existsSync(path.join(cwd, "bad.ts")), false);
+		assert.equal(existsSync(path.join(cwd, "scratch")), true);
 	});
 });
 
@@ -149,6 +189,7 @@ function fakeCtx(overrides: Record<string, any> = {}): any {
 		hasUI: overrides.hasUI ?? true,
 		model: overrides.model ?? { provider: "test", id: "model-1" },
 		getContextUsage: () => ({ percent: 50 }),
+		isIdle: () => true,
 		ui: {
 			theme: { fg: (_style: string, text: string) => text },
 			setStatus: () => {},

@@ -5,16 +5,16 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {
 	CONFIG_DIR_NAME,
+	CustomEditor,
 	isToolCallEventType,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
+import { createHandoff, rewindToFlowBaseline, snapshotUntrackedFiles } from "./lib/lifecycle";
 import { BLOCKED_TOOLS, PLAN_ONLY_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 
 const STATUS_KEY = "pi-plan";
@@ -28,8 +28,9 @@ const MAX_REVIEW_PASSES = 3;
 const REVIEW_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
 const REVIEW_HARD_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_DIRTY_PATCH_BYTES = 50 * 1024;
-const MAX_UNTRACKED_SNAPSHOT_BYTES = MAX_DIRTY_PATCH_BYTES;
+const MAX_UNTRACKED_REVIEW_BYTES = 12 * 1024;
 const PREFERENCES_FILE = path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "pi-plan", "preferences.json");
+const HANDOFF_FILE = ".pi-handoff.md";
 const THINKING_LEVELS = [
 	"off",
 	"minimal",
@@ -60,8 +61,11 @@ interface FlowState {
 	baseline: string;
 	initialDirty: string;
 	initialDirtyPatch?: string;
+	initialCachedPatch?: string;
+	initialUnstagedPatch?: string;
 	initialUntracked?: string;
 	initialUntrackedSnapshot?: string;
+	initialUntrackedSnapshotVersion?: 1;
 	phase: FlowPhase;
 	reviewPass: number;
 	verificationSummary?: string;
@@ -140,38 +144,7 @@ function relativeToCwd(cwd: string, absolutePath: string): string {
 	return path.relative(cwd, absolutePath).split(path.sep).join("/");
 }
 
-/**
- * Platform-independent, bounded untracked file snapshot using Node.js APIs.
- * Returns JSON path/hash/base64 entries, or an empty string if no files.
- * Throws on error so callers can handle failure.
- */
-export async function snapshotUntrackedFiles(cwd: string): Promise<string> {
-	const stdout = await new Promise<string>((resolve, reject) => {
-		execFile(
-			"git",
-			["ls-files", "-z", "--others", "--exclude-standard"],
-			{ cwd, encoding: "utf8", timeout: 10_000, maxBuffer: 10 * 1024 * 1024 },
-			(error, output) => error ? reject(error) : resolve(output),
-		);
-	});
-	const files = stdout.split("\0").filter(Boolean);
-	if (!files.length) return "";
-	let totalBytes = 0;
-	const entries: Array<{ path: string; hash: string; content: string }> = [];
-	for (const file of files) {
-		const content = await readFile(path.join(cwd, file));
-		totalBytes += content.length;
-		if (totalBytes > MAX_UNTRACKED_SNAPSHOT_BYTES) {
-			throw new Error(`untracked content exceeds ${MAX_UNTRACKED_SNAPSHOT_BYTES / 1024} KB; commit, stage, or ignore unrelated untracked files before retrying`);
-		}
-		entries.push({
-			path: file,
-			hash: createHash("sha256").update(content).digest("hex"),
-			content: content.toString("base64"),
-		});
-	}
-	return JSON.stringify(entries);
-}
+export { snapshotUntrackedFiles } from "./lib/lifecycle";
 
 function formatShortContextUsage(ctx: ExtensionContext): string {
 	const usage = ctx.getContextUsage();
@@ -366,7 +339,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	}
 
 	function enablePlanTools(): void {
-		const baseline = toolsBeforePlan ?? pi.getActiveTools();
+		const baseline = [...new Set([...(toolsBeforePlan ?? pi.getActiveTools()), PLAN_TOOL])];
 		toolsBeforePlan = baseline;
 		// ponytail: preserve active read tools, remove mutators, add plan-only (no duplicates)
 		pi.setActiveTools([
@@ -463,6 +436,57 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		else enterPlanMode(ctx);
 	}
 
+	async function handoff(ctx: ExtensionContext): Promise<void> {
+		persistState();
+		try {
+			const result = await withFileMutationQueue(path.join(ctx.cwd, HANDOFF_FILE), () =>
+				createHandoff(ctx.cwd, { lastPlanPath, lastPlanTitle, lastPlanStatus, flow }),
+			);
+			ctx.ui.notify(result.snippet, "info");
+		} catch (error) {
+			ctx.ui.notify(`Handoff failed: ${String(error)}`, "error");
+		}
+	}
+
+	async function rewind(ctx: ExtensionContext): Promise<void> {
+		if (!ctx.isIdle()) return ctx.ui.notify("Rewind is available after the active agent settles.", "warning");
+		if (!flow) return ctx.ui.notify("No active workflow checkpoint to rewind.", "warning");
+		if (ctx.hasUI && !await ctx.ui.confirm("Rewind workflow?", "Current changes will be stashed, then the workflow baseline restored.")) return;
+		try {
+			const result = await withFileMutationQueue(path.join(ctx.cwd, ".git", "pi-plan-rewind"), () =>
+				rewindToFlowBaseline(ctx.cwd, flow!),
+			);
+			flow = undefined;
+			if (lastPlanPath) lastPlanStatus = "approved";
+			planReadyForReview = false;
+			persistState();
+			updateFooter(ctx);
+			ctx.ui.notify(`Rewound. Backup: ${result.stash}.`, "info");
+		} catch (error) {
+			ctx.ui.notify(`Rewind failed: ${String(error)}`, "error");
+		}
+	}
+
+	function installRewindShortcut(ctx: ExtensionContext): void {
+		if (ctx.mode !== "tui") return;
+		const previous = (ctx.ui as any).getEditorComponent?.();
+		ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+			const editor = previous?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings);
+			const handleInput = editor.handleInput.bind(editor);
+			let lastEscape = 0;
+			editor.handleInput = (data: string) => {
+				if (flow && (data === "\u001b\u001b" || (data === "\u001b" && Date.now() - lastEscape < 600))) {
+					lastEscape = 0;
+					void rewind(ctx);
+					return;
+				}
+				lastEscape = data === "\u001b" && flow ? Date.now() : 0;
+				handleInput(data);
+			};
+			return editor;
+		});
+	}
+
 	function beginCurrentSessionExecution(
 		ctx: ExtensionContext,
 		relativePlan: string,
@@ -498,10 +522,11 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		const parentSession = ctx.sessionManager.getSessionFile();
 		const priorFlow = flow;
 		if (withFlow) {
-			const [head, dirty, dirtyPatch, untracked] = await Promise.all([
+			const [head, dirty, cachedPatch, unstagedPatch, untracked] = await Promise.all([
 				pi.exec("git", ["rev-parse", "HEAD"], { timeout: 5_000 }),
 				pi.exec("git", ["status", "--porcelain"], { timeout: 5_000 }),
-				pi.exec("git", ["diff", "HEAD"], { timeout: 30_000 }),
+				pi.exec("git", ["diff", "--cached", "--binary", "HEAD"], { timeout: 30_000 }),
+				pi.exec("git", ["diff", "--binary"], { timeout: 30_000 }),
 				pi.exec("git", ["ls-files", "--others", "--exclude-standard"], { timeout: 5_000 }),
 			]);
 			if (head.code !== 0 || !head.stdout.trim()) {
@@ -512,12 +537,13 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Cannot create workflow: could not capture git status.", "error");
 				return;
 			}
-			if (dirtyPatch.code !== 0) {
+			if (cachedPatch.code !== 0 || unstagedPatch.code !== 0) {
 				ctx.ui.notify("Cannot create workflow: initial dirty patch could not be captured.", "error");
 				return;
 			}
-			const initialDirtyPatch = dirtyPatch.stdout.trim();
-			if (Buffer.byteLength(initialDirtyPatch, "utf8") > MAX_DIRTY_PATCH_BYTES) {
+			const initialCachedPatch = cachedPatch.stdout;
+			const initialUnstagedPatch = unstagedPatch.stdout;
+			if (Buffer.byteLength(initialCachedPatch, "utf8") + Buffer.byteLength(initialUnstagedPatch, "utf8") > MAX_DIRTY_PATCH_BYTES) {
 				ctx.ui.notify(`Cannot create workflow: initial dirty patch exceeds ${MAX_DIRTY_PATCH_BYTES / 1024} KB. Commit, stash, or reduce existing changes first.`, "error");
 				return;
 			}
@@ -531,9 +557,11 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			flow = {
 				baseline: head.code === 0 ? head.stdout.trim() : "unavailable",
 				initialDirty: dirty.code === 0 ? dirty.stdout.trim() : "unavailable",
-				initialDirtyPatch,
+				initialCachedPatch,
+				initialUnstagedPatch,
 				initialUntracked: untracked.code === 0 ? untracked.stdout.trim() : undefined,
 				initialUntrackedSnapshot,
+				initialUntrackedSnapshotVersion: 1,
 				phase: "implement",
 				reviewPass: 0,
 			};
@@ -580,9 +608,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			const item = branch[i];
 			if (!item || typeof item !== "object" || !("message" in item)) continue;
 			const message = item?.type === "message" ? item.message : undefined;
+			if (message?.role === "user") return "";
 			if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-			const text = message.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("");
-			if (text.trim()) return text;
+			return message.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("");
 		}
 		return "";
 	}
@@ -632,23 +660,38 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 		let untrackedDelta = "";
 		try {
-			type SnapshotEntry = { path: string; hash: string; content: string };
+			type SnapshotEntry = { path: string; hash: string; content: string; mode?: number; kind?: string };
 			const currentRaw = await snapshotUntrackedFiles(ctx.cwd);
-			const before = new Map<string, SnapshotEntry>((flow.initialUntrackedSnapshot ? JSON.parse(flow.initialUntrackedSnapshot) as SnapshotEntry[] : []).map((entry) => [entry.path, entry]));
-			const current = new Map<string, SnapshotEntry>((currentRaw ? JSON.parse(currentRaw) as SnapshotEntry[] : []).map((entry) => [entry.path, entry]));
+			const beforeEntries = (flow.initialUntrackedSnapshot ? JSON.parse(flow.initialUntrackedSnapshot) as SnapshotEntry[] : []).filter((entry) => entry.kind !== "dir");
+			const currentEntries = (currentRaw ? JSON.parse(currentRaw) as SnapshotEntry[] : []).filter((entry) => entry.kind !== "dir");
+			const before = new Map<string, SnapshotEntry>(beforeEntries.map((entry) => [entry.path, entry]));
+			const current = new Map<string, SnapshotEntry>(currentEntries.map((entry) => [entry.path, entry]));
 			const paths = new Set([...before.keys(), ...current.keys()]);
-			const changes = [...paths].flatMap((file) => {
+			let usedBytes = 0;
+			const changes: unknown[] = [...paths].flatMap<unknown>((file) => {
 				const oldEntry = before.get(file);
 				const newEntry = current.get(file);
-				if (oldEntry?.hash === newEntry?.hash) return [];
-				return [{
+				if (oldEntry?.hash === newEntry?.hash && oldEntry?.mode === newEntry?.mode) return [];
+				const change = {
 					path: file,
-					before: oldEntry ? Buffer.from(oldEntry.content, "base64").toString("utf8") : null,
-					after: newEntry ? Buffer.from(newEntry.content, "base64").toString("utf8") : null,
-				}];
+					before: oldEntry ? Buffer.from(oldEntry.content, "base64").toString("utf8").slice(0, 2_000) : null,
+					after: newEntry ? Buffer.from(newEntry.content, "base64").toString("utf8").slice(0, 2_000) : null,
+					beforeMode: oldEntry?.mode,
+					afterMode: newEntry?.mode,
+				};
+				const bytes = Buffer.byteLength(JSON.stringify(change), "utf8");
+				if (usedBytes + bytes <= MAX_UNTRACKED_REVIEW_BYTES) {
+					usedBytes += bytes;
+					return [change];
+				}
+				const summary = { path: file, beforeHash: oldEntry?.hash, afterHash: newEntry?.hash, beforeMode: oldEntry?.mode, afterMode: newEntry?.mode, truncated: true };
+				const summaryBytes = Buffer.byteLength(JSON.stringify(summary), "utf8");
+				if (usedBytes + summaryBytes > MAX_UNTRACKED_REVIEW_BYTES) return [];
+				usedBytes += summaryBytes;
+				return [summary];
 			});
 			untrackedDelta = changes.length
-				? `\n\nUntracked content changes since start:\n${JSON.stringify(changes, null, 2)}`
+				? `\n\nUntracked content changes since start (12 KB max):\n${JSON.stringify(changes, null, 2)}`
 				: "\n\nUntracked files unchanged since start.";
 		} catch (error) {
 			cleanup();
@@ -658,7 +701,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		pi.events.emit(REVIEW_EVENT, {
 			id,
 			cwd: ctx.cwd,
-			prompt: `Review implementation of ${relativeToCwd(ctx.cwd, lastPlanPath)} against Git baseline ${flow.baseline}. Initial dirty paths at workflow start (exclude unless changed by this implementation):\n${(flow.initialDirty || "(none)").slice(0, MAX_DIRTY_PATCH_BYTES)}\n\nInitial dirty patch (all tracked changes, staged + unstaged from git diff HEAD, 50 KB max):\n${flow.initialDirtyPatch || "(none)"}${untrackedDelta}\n\nCompare the current diff against the initial patch above. Report only regressions introduced by this implementation, not pre-existing dirt.`,
+			prompt: `Review implementation of ${relativeToCwd(ctx.cwd, lastPlanPath)} against Git baseline ${flow.baseline}. Initial dirty paths at workflow start (exclude unless changed by this implementation):\n${(flow.initialDirty || "(none)").slice(0, MAX_DIRTY_PATCH_BYTES)}\n\nInitial dirty patches (staged + unstaged, 50 KB max):\n${flow.initialDirtyPatch ?? ([flow.initialCachedPatch, flow.initialUnstagedPatch].filter(Boolean).join("\n") || "(none)")}${untrackedDelta}\n\nCompare the current diff against the initial patch above. Report only regressions introduced by this implementation, not pre-existing dirt.`,
 			gitRange: `${flow.baseline}...HEAD`,
 			requireExactRange: true,
 			timeout: REVIEW_INACTIVITY_TIMEOUT_MS,
@@ -1090,6 +1133,16 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => handlePlanApproval(args, ctx),
 	});
 
+	pi.registerCommand("handoff", {
+		description: "Write a compact state handoff ledger",
+		handler: async (_args, ctx) => handoff(ctx),
+	});
+
+	pi.registerCommand("rewind", {
+		description: "Stash current work and restore the active workflow baseline",
+		handler: async (_args, ctx) => rewind(ctx),
+	});
+
 	pi.registerCommand(PLAN_EXECUTE_COMMAND, {
 		description: "Backward-compatible fresh plan execution command",
 		handler: async (args, ctx) => {
@@ -1130,7 +1183,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 	// ── Events ──────────────────────────────────────────────────
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		preferences = await loadPreferences();
 		if (!preferences) {
 			preferences = {
@@ -1155,6 +1208,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 		// ponytail: skip plan mode re-entry during execution handoff
 		if (
+			event.reason === "startup" &&
 			pi.getFlag("plan") === true &&
 			!executionHandoff
 		) {
@@ -1168,6 +1222,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		}
 		updateFooter(ctx);
 		clearPlanWidget(ctx);
+		installRewindShortcut(ctx);
 	});
 
 	pi.on("model_select", async (event, ctx) => {

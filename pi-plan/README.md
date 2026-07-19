@@ -35,6 +35,9 @@ pi --plan
 | `/plan-approve [current|new|flow]` | Open approval choices or execute a specific handoff through Pi's command router. |
 | `/flow status` | Show the active workflow phase and review pass. |
 | `/flow stop` | Abort review and stop the active workflow. |
+| `/handoff` | Write a compact `.pi-handoff.md` and print the fresh-session resume line. |
+| `/rewind` | Confirm, stash current work, and restore the active workflow baseline. |
+| `Esc Esc` | Trigger `/rewind` in the TUI. |
 | `Ctrl+Alt+P` | Toggle plan mode. |
 
 ## Workflow
@@ -51,6 +54,8 @@ pi --plan
    - **Stay in Plan mode** — continue refining the plan.
 
 Non-blocking review findings do not enter the fix loop, but remain available in the workflow result details instead of being reported as a clean review. Automated review uses a 3-minute activity-resettable inactivity window and a 20-minute hard cap; only real reviewer progress resets the window.
+
+`/handoff` records the active plan, workflow phase, compact milestones, changed paths, stack, and critical review/verification errors without injecting that ledger into the current model context. Start a fresh session with the printed line. `/rewind` is available only while a flow workflow has its Git checkpoint; it saves all current changes to a Git stash, restores that checkpoint (including the workflow's initial dirty/untracked state), and clears execution milestones.
 
 Fresh-session replacement is intentionally initiated by `/plan-approve`: extension-originated messages bypass Pi's slash-command router and cannot call command-only session APIs. The automated choice requires `pi-review` and `pi-subagent`. It never resets files or Git state; initial dirty paths are recorded for reviewer context. Untracked content snapshots are lossless up to the same 50 KB evidence limit as tracked dirty patches and fail closed above it. The implementer must report exact checks with `[verification: pass]` or `[verification: fail]`.
 
