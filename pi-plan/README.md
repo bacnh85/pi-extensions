@@ -37,6 +37,11 @@ pi --plan
 | `/flow stop` | Abort review and stop the active workflow. |
 | `/handoff` | Write a compact `.pi-handoff.md` and print the fresh-session resume line. |
 | `/rewind` | Confirm, stash current work, and restore the active workflow baseline. |
+| `/advisor [model hint\|off]` | Configure a transcript-aware strategic advisor with `/model`-style search. |
+| `/btw <query>` | Ask a stateless terse developer sidebar. |
+| `/specs <intent>` | Write an EARS specification and hard-lock workspace writes. |
+| `/specs-approve` | Release the active specs write gate. |
+| `/doctor` | Show compact workspace, Git, Node, model-auth, and tool health. |
 | `Esc Esc` | Trigger `/rewind` in the TUI. |
 | `Ctrl+Alt+P` | Toggle plan mode. |
 
@@ -72,6 +77,24 @@ Fresh-session replacement is intentionally initiated by `/plan-approve`: extensi
 | Unknown tools (not in original baseline) | Requires `confirm` dialog |
 | Direct source mutators (`edit`, `write`, Serena/Munin mutations) | Hard-blocked with error message |
 | `multi_tool_use.parallel` | Each nested call independently gated |
+
+## Advisor and utility command configuration
+
+Run `/advisor` to open the same searchable picker as `/model`; type a provider/model hint to filter it. `/advisor provider/model` (or an unambiguous bare model ID) selects immediately, while an unmatched hint opens the picker prefiltered. Use `/advisor off` to disable it. The selected model persists globally in `~/.pi/agent/pi-plan/preferences.json` and is disabled by default.
+
+When configured, the primary agent receives an `advisor` tool and decides when to use it—typically before a consequential approach, after recurring failures, or before completing non-trivial work. The advisor sees Pi's effective session transcript (including compaction summaries and tool results), returns read-only guidance to the primary agent, and does not replace `pi-review`'s Git-scoped review workflow.
+
+Optional Pi settings (global `~/.pi/agent/settings.json` or trusted project `.pi/settings.json`) still select the stateless `/btw` model:
+
+```json
+{
+  "pi-plan": {
+    "btw": { "model": "provider/model" }
+  }
+}
+```
+
+`/btw` and `/specs` use isolated model calls. `/specs` keeps the existing plan-mode read gate active until `/specs-approve` is explicitly run.
 
 ## Reasoning levels
 

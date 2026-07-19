@@ -19,6 +19,8 @@ export const READ_ONLY_TOOLS = new Set([
 	"munin_search", "munin_get", "munin_list", "munin_recent", "munin_capabilities",
 	// Plan tools (path-constrained to .agents/plans/, safe in plan mode)
 	"write_plan",
+	// Advisor returns guidance only; it has no filesystem tools.
+	"advisor",
 ]);
 
 /**

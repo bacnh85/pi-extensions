@@ -16,6 +16,10 @@ import path from "node:path";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
 import { createHandoff, rewindToFlowBaseline, snapshotUntrackedFiles } from "./lib/lifecycle";
 import { BLOCKED_TOOLS, PLAN_ONLY_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
+import { registerAdvisor } from "./commands/advisor";
+import { registerBtw } from "./commands/btw";
+import { registerDoctor } from "./commands/doctor";
+import { registerSpecs } from "./commands/specs";
 
 const STATUS_KEY = "pi-plan";
 const PLAN_DIR = ".agents/plans";
@@ -82,6 +86,9 @@ interface PlanState {
 	lastPlanTitle?: string;
 	lastPlanStatus?: PlanStatus;
 	planReadyForReview?: boolean;
+	specGateActive?: boolean;
+	specGatePlanMode?: boolean;
+	specPath?: string;
 	flow?: FlowState;
 }
 
@@ -92,6 +99,7 @@ interface PlanPreferences {
 		string,
 		{ planThinking: ThinkingLevel; normalThinking: ThinkingLevel }
 	>;
+	advisorModel?: string;
 }
 
 interface WritePlanParams {
@@ -222,7 +230,12 @@ async function loadPreferences(): Promise<PlanPreferences | undefined> {
 				perModel[key] = { planThinking: m.planThinking, normalThinking: m.normalThinking };
 			}
 		}
-		return { version: 2, defaults: parsed.defaults, perModel };
+		return {
+			version: 2,
+			defaults: parsed.defaults,
+			perModel,
+			advisorModel: typeof parsed.advisorModel === "string" && parsed.advisorModel.trim() ? parsed.advisorModel.trim() : undefined,
+		};
 	} catch {
 		return undefined;
 	}
@@ -271,6 +284,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	let preferences: PlanPreferences | undefined;
 	let reviewTimer: ReturnType<typeof setTimeout> | undefined;
 	let writePlanInProgress = false;
+	let specGateActive = false;
+	let specGatePlanMode = false;
+	let specPath: string | undefined;
+	let advisor: { sync(ctx: ExtensionContext): void };
 
 	// ── UI helpers ──────────────────────────────────────────────
 
@@ -297,6 +314,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			lastPlanTitle,
 			lastPlanStatus,
 			planReadyForReview,
+			specGateActive,
+			specGatePlanMode,
+			specPath,
 			flow,
 		} satisfies PlanState);
 	}
@@ -323,6 +343,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			lastPlanStatus = undefined;
 			planReadyForReview = false;
 			toolsBeforePlan = undefined;
+			specGateActive = false;
+			specGatePlanMode = false;
+			specPath = undefined;
 			return;
 		}
 		// ponytail: treat saved state as authoritative — no ?? fallback to
@@ -335,6 +358,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		lastPlanTitle = saved.data.lastPlanTitle;
 		lastPlanStatus = saved.data.lastPlanStatus;
 		planReadyForReview = typeof saved.data.planReadyForReview === "boolean" ? saved.data.planReadyForReview : false;
+		specGateActive = saved.data.specGateActive === true;
+		specGatePlanMode = saved.data.specGatePlanMode === true;
+		specPath = typeof saved.data.specPath === "string" ? saved.data.specPath : undefined;
 		flow = saved.data.flow ?? undefined;
 	}
 
@@ -419,6 +445,26 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		ctx.ui.notify("Plan mode disabled.", "info");
 	}
 
+	function activateSpecGate(file: string, ctx: ExtensionContext): void {
+		specGatePlanMode = planModeEnabled;
+		specGateActive = true;
+		specPath = file;
+		if (!planModeEnabled) enterPlanMode(ctx);
+		persistState();
+	}
+
+	function approveSpecGate(ctx: ExtensionContext): boolean {
+		if (!specGateActive) return false;
+		specGateActive = false;
+		specPath = undefined;
+		const keepPlanMode = specGatePlanMode;
+		specGatePlanMode = false;
+		if (!keepPlanMode) leavePlanMode(ctx);
+		else persistState();
+		ctx.ui.notify("Specs approved; write gate released.", "info");
+		return true;
+	}
+
 	// ── Commands ────────────────────────────────────────────────
 
 	async function handlePlanCommand(
@@ -432,8 +478,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			);
 			return;
 		}
-		if (planModeEnabled) leavePlanMode(ctx);
-		else enterPlanMode(ctx);
+		if (planModeEnabled) {
+			if (specGateActive) return ctx.ui.notify("/specs gate is active. Run /specs-approve before leaving plan mode.", "warning");
+			leavePlanMode(ctx);
+		} else enterPlanMode(ctx);
 	}
 
 	async function handoff(ctx: ExtensionContext): Promise<void> {
@@ -795,6 +843,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 
 	async function handlePlanApproval(args: string, ctx: ExtensionCommandContext): Promise<void> {
+		if (specGateActive) {
+			ctx.ui.notify("/specs gate is active. Run /specs-approve before execution.", "warning");
+			return;
+		}
 		if (!lastPlanPath) {
 			ctx.ui.notify("No plan is ready for approval.", "warning");
 			return;
@@ -1133,6 +1185,30 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => handlePlanApproval(args, ctx),
 	});
 
+	advisor = registerAdvisor(pi, {
+		getModel: () => preferences?.advisorModel,
+		setModel: async (model) => {
+			if (!preferences) throw new Error("Advisor preferences are unavailable.");
+			const previous = preferences.advisorModel;
+			preferences.advisorModel = model;
+			try {
+				await savePreferences(preferences);
+			} catch (error) {
+				preferences.advisorModel = previous;
+				throw error;
+			}
+		},
+		onAvailabilityChange: (enabled) => {
+			if (!toolsBeforePlan) return;
+			toolsBeforePlan = enabled
+				? [...new Set([...toolsBeforePlan, "advisor"])]
+				: toolsBeforePlan.filter((tool) => tool !== "advisor");
+		},
+	});
+	registerBtw(pi);
+	registerSpecs(pi, activateSpecGate, approveSpecGate);
+	registerDoctor(pi);
+
 	pi.registerCommand("handoff", {
 		description: "Write a compact state handoff ledger",
 		handler: async (_args, ctx) => handoff(ctx),
@@ -1146,6 +1222,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	pi.registerCommand(PLAN_EXECUTE_COMMAND, {
 		description: "Backward-compatible fresh plan execution command",
 		handler: async (args, ctx) => {
+			if (specGateActive) return ctx.ui.notify("/specs gate is active. Run /specs-approve before execution.", "warning");
 			const mode = args.trim();
 			if (mode !== "new" && mode !== "flow") {
 				ctx.ui.notify(`Usage: /${PLAN_EXECUTE_COMMAND} new|flow`, "warning");
@@ -1176,8 +1253,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	pi.registerShortcut("ctrl+alt+p", {
 		description: "Toggle pi-plan mode",
 		handler: async (ctx) => {
-			if (planModeEnabled) leavePlanMode(ctx);
-			else enterPlanMode(ctx);
+			if (planModeEnabled) {
+				if (specGateActive) return ctx.ui.notify("/specs gate is active. Run /specs-approve before leaving plan mode.", "warning");
+				leavePlanMode(ctx);
+			} else enterPlanMode(ctx);
 		},
 	});
 
@@ -1220,6 +1299,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		} else {
 			applyThinking(normalThinking);
 		}
+		advisor.sync(ctx);
 		updateFooter(ctx);
 		clearPlanWidget(ctx);
 		installRewindShortcut(ctx);
@@ -1248,6 +1328,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			toolsBeforePlan = undefined;
 			applyThinking(normalThinking);
 		}
+		advisor.sync(ctx);
 		updateFooter(ctx);
 		persistState();
 	});
@@ -1270,6 +1351,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	 */
 	pi.on("tool_call", async (event, ctx) => {
 		if (!planModeEnabled) return;
+		if (specGateActive && !READ_ONLY_TOOLS.has(event.toolName) && !PLAN_ONLY_TOOLS.has(event.toolName)) {
+			return { block: true, reason: "pi-plan: /specs gate is active. Run /specs-approve before workspace writes." };
+		}
 
 		// ponytail: hard-blocked mutators never available
 		if (BLOCKED_TOOLS.has(event.toolName)) {

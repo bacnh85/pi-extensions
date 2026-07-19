@@ -13,6 +13,10 @@ import piPlanExtension, { snapshotUntrackedFiles } from "./index";
 import { BLOCKED_TOOLS, PLAN_ONLY_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
 import { createHandoff, rewindToFlowBaseline } from "./lib/lifecycle";
+import { registerAdvisor } from "./commands/advisor";
+import { formatSpecsProgress, invalidExistingTargets, specSlug } from "./commands/specs";
+import { workspaceContext } from "./lib/workspace-context";
+import { parseModel } from "./lib/utility-config";
 
 /** Real temp directory for tests that write files. */
 const TMP = path.join(os.tmpdir(), "pi-plan-test-" + process.pid);
@@ -188,6 +192,7 @@ function fakeCtx(overrides: Record<string, any> = {}): any {
 		cwd: overrides.cwd ?? TMP,
 		hasUI: overrides.hasUI ?? true,
 		model: overrides.model ?? { provider: "test", id: "model-1" },
+		modelRegistry: { getAvailable: () => [] },
 		getContextUsage: () => ({ percent: 50 }),
 		isIdle: () => true,
 		ui: {
@@ -210,10 +215,66 @@ function fakeCtx(overrides: Record<string, any> = {}): any {
 	};
 	if (overrides.ui) Object.assign(ctx.ui, overrides.ui);
 	if (overrides.sessionManager) Object.assign(ctx.sessionManager, overrides.sessionManager);
+	if (overrides.modelRegistry) Object.assign(ctx.modelRegistry, overrides.modelRegistry);
 	return ctx;
 }
 
 // ── Tests ────────────────────────────────────────────────────────
+
+describe("workspace utility commands", () => {
+	it("registers isolated utility commands and creates safe spec slugs", () => {
+		const { commands } = createFakePi(["read"]);
+		for (const command of ["advisor", "btw", "specs", "specs-approve", "doctor"]) assert.ok(commands[command], `/${command} registered`);
+		assert.equal(specSlug("Refactor cache!"), "refactor-cache");
+		assert.equal(specSlug("../../../etc/passwd"), "etc-passwd");
+		assert.deepEqual(parseModel("openai-codex/gpt-5.6-sol"), { provider: "openai-codex", id: "gpt-5.6-sol" });
+		assert.deepEqual(parseModel("openrouter/anthropic/claude-3-haiku"), { provider: "openrouter", id: "anthropic/claude-3-haiku" });
+		assert.equal(parseModel("invalid"), undefined);
+	});
+
+	it("formats colored timestamped specs progress", () => {
+		const now = new Date("2026-07-19T00:00:00.000Z");
+		assert.equal(formatSpecsProgress("scanning workspace", "cyan", now), "\x1b[36m[2026-07-19T00:00:00.000Z] scanning workspace\x1b[0m");
+		assert.match(formatSpecsProgress("specification written", "green", now), /^\x1b\[32m\[/);
+		assert.match(formatSpecsProgress("specification failed", "red", now), /^\x1b\[31m\[/);
+	});
+
+	it("grounds specs targets in the supplied workspace context", () => {
+		const context = { files: new Set(["known.ts", "src/existing.ts"]), directories: new Set(["", "src", "lib"]) };
+		const cases: Array<[string, string[]]> = [
+			["- `known.ts`", []],
+			["- `known.ts`, `missing.ts`", ["missing.ts"]],
+			["- `src/existing.ts`", []],
+			["- `missing.ts`", ["missing.ts"]],
+			["- `/tmp/missing.ts`", ["/tmp/missing.ts"]],
+			["- `../missing.ts`", ["../missing.ts"]],
+			["- `src\\missing.ts`", ["src\\missing.ts"]],
+			["- no existing target file: `proposed.ts` (new)", []],
+			["- no existing target file: `src/proposed.ts` (new)", []],
+			["- `lib/proposed.ts` (new)", ["lib/proposed.ts"]],
+			["- no existing target file: `apps/web/page.ts` (new)", ["apps/web/page.ts"]],
+		];
+		for (const [line, invalid] of cases) assert.deepEqual(invalidExistingTargets(context, line), invalid, line);
+	});
+
+	it("returns captured workspace paths with the model prompt", async () => {
+		const cwd = mkdtempSync(path.join(os.tmpdir(), "pi-plan-context-"));
+		mkdirSync(path.join(cwd, "src")); writeFileSync(path.join(cwd, "src", "index.ts"), "export {};");
+		const context = await workspaceContext(cwd);
+		assert.ok(context.prompt.includes("src/index.ts"));
+		assert.ok(context.files.has("src/index.ts"));
+		assert.ok(context.directories.has("src"));
+	});
+
+	it("hard-blocks all non-read tools while a restored specs gate is active", async () => {
+		const { handlers } = createFakePi(["read", "edit"], {});
+		const ctx = fakeCtx({ sessionManager: { getBranch: () => [{ type: "custom", customType: "pi-plan", data: { enabled: true, specGateActive: true, specGatePlanMode: false } }] } });
+		await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+		const result = await handlers.tool_call?.[0]({ toolName: "edit", input: { path: "x" } }, ctx);
+		assert.ok(result?.block);
+		assert.match(result?.reason ?? "", /specs gate/);
+	});
+});
 
 describe("plan-mode guidance", () => {
 	it("tells agents to use Serena before raw code reads/searches", () => {
@@ -226,9 +287,91 @@ describe("plan-mode guidance", () => {
 	});
 });
 
+describe("advisor", () => {
+	it("matches /model selection and forwards the effective transcript", async () => {
+		let selected: string | undefined;
+		let captured: any;
+		let selectorOpened = false;
+		const tools: Record<string, any> = {};
+		const commands: Record<string, any> = {};
+		const pi: any = {
+			active: [] as string[],
+			registerTool(tool: any) { tools[tool.name] = tool; },
+			registerCommand(name: string, command: any) { commands[name] = command; },
+			getActiveTools() { return [...this.active]; },
+			setActiveTools(next: string[]) { this.active = next; },
+		};
+		const advisor = registerAdvisor(pi, { getModel: () => selected, setModel: (model) => { selected = model; } });
+		const response: any = {
+			async *[Symbol.asyncIterator]() { yield { type: "text_delta", delta: "Check the existing test." }; },
+			result: async () => ({ stopReason: "stop", content: [{ type: "text", text: "Check the existing test." }] }),
+		};
+		const models = [
+			{ provider: "test", id: "advisor", contextWindow: 256 },
+			{ provider: "test", id: "unique", contextWindow: 256 },
+			{ provider: "openai", id: "shared", name: "Shared OpenAI", contextWindow: 256 },
+			{ provider: "other", id: "shared", name: "Shared Other", contextWindow: 256 },
+		];
+		const messages: any[] = [
+			{ type: "message", id: "1", parentId: null, timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "Implement it" }, { type: "image", data: "very-secret-image-data", mimeType: "image/png" }], timestamp: 1 } },
+			{ type: "message", id: "2", parentId: "1", timestamp: "2026-01-01T00:00:01.000Z", message: { role: "assistant", content: [{ type: "text", text: "I will inspect it." }], timestamp: 2 } },
+			{ type: "message", id: "3", parentId: "2", timestamp: "2026-01-01T00:00:02.000Z", message: { role: "toolResult", toolCallId: "call", toolName: "read", content: [{ type: "text", text: "source".repeat(1_000) }], isError: false, timestamp: 3 } },
+			{ type: "message", id: "4", parentId: "3", timestamp: "2026-01-01T00:00:03.000Z", message: { role: "assistant", content: [{ type: "toolCall", id: "advisor-call", name: "advisor", arguments: {} }], timestamp: 4 } },
+		];
+		const ctx: any = {
+			mode: "print",
+			hasUI: false,
+			modelRegistry: {
+				getAvailable: () => models,
+				refresh: async () => {},
+				find: (provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id),
+				getError: () => undefined,
+				getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "key", headers: {}, env: {} }),
+				getRegisteredProviderConfig: () => ({ streamSimple: (_model: any, context: any) => { captured = context; return response; } }),
+			},
+			sessionManager: { getEntries: () => messages, getLeafId: () => "4" },
+			getSystemPrompt: () => "Primary instructions",
+			ui: { notify: () => {}, custom: async () => { selectorOpened = true; return undefined; } },
+		};
+
+		advisor.sync(ctx);
+		assert.ok(!pi.active.includes("advisor"), "disabled by default");
+		const completions = commands.advisor.getArgumentCompletions("test");
+		assert.ok(completions.some((item: any) => item.value === "test/advisor" && item.label === "advisor" && item.description === "test"));
+		assert.ok(completions.some((item: any) => item.value === "test/unique" && item.label === "unique" && item.description === "test"));
+		await commands.advisor.handler("test/advisor", ctx);
+		assert.equal(selected, "test/advisor");
+		assert.ok(pi.active.includes("advisor"));
+		await commands.advisor.handler("unique", ctx);
+		assert.equal(selected, "test/unique", "unique bare IDs select directly");
+		await assert.rejects(() => commands.advisor.handler("shared", ctx), /Usage: \/advisor <provider\/model\|off>/);
+		assert.equal(selected, "test/unique", "headless ambiguity leaves the advisor unchanged");
+		ctx.mode = "tui";
+		await commands.advisor.handler("shared", ctx);
+		assert.ok(selectorOpened, "ambiguous hints open the searchable selector");
+		assert.equal(selected, "test/unique", "cancelling leaves the advisor unchanged");
+		ctx.mode = "print";
+		await commands.advisor.handler("test/advisor", ctx);
+		const result = await tools.advisor.execute("call", {}, undefined, undefined, ctx);
+		assert.match(result.content[0].text, /Advice from test\/advisor/);
+		assert.equal(captured.systemPrompt.includes("Primary instructions"), true);
+		assert.equal(captured.messages.length, 1, "transcript is inert evidence, not a live tool conversation");
+		const evidence = captured.messages[0].content[0].text;
+		assert.match(evidence, /Implement it/);
+		assert.match(evidence, /source/);
+		assert.ok(Buffer.byteLength(evidence, "utf8") < 1_200, "evidence fits the advisor input budget");
+		assert.match(evidence, /advisor-call/);
+		assert.doesNotMatch(evidence, /very-secret-image-data/);
+		assert.match(evidence, /Provide strategic guidance/);
+		await commands.advisor.handler("off", ctx);
+		assert.equal(selected, undefined);
+		assert.ok(!pi.active.includes("advisor"));
+	});
+});
+
 describe("plan-mode tool lists", () => {
 	it("includes all known read/research tools", () => {
-		for (const tool of ["read", "grep", "find", "ls", "ffgrep", "fffind", "web_search", "web_extract",
+		for (const tool of ["read", "grep", "find", "ls", "ffgrep", "fffind", "web_search", "web_extract", "advisor",
 			"serena_check_onboarding_performed", "serena_find_symbol", "serena_get_symbols_overview",
 			"munin_search", "munin_get", "munin_list",
 		]) {
