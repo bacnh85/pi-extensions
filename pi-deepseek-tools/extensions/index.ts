@@ -292,7 +292,7 @@ export default function (pi: ExtensionAPI) {
 
 		if (selectionGuidanceEnabled()) {
 			const activeTools = Array.isArray(event.systemPromptOptions?.selectedTools) ? event.systemPromptOptions.selectedTools : [];
-			if (["serena_get_symbols_overview", "serena_find_symbol", "serena_find_referencing_symbols", "serena_find_declaration", "serena_find_implementations", "ls", "grep", "find", "read", "edit", "bash"].some((name) => activeTools.includes(name))) {
+			if (["serena_get_symbols_overview", "serena_find_symbol", "serena_find_referencing_symbols", "serena_find_declaration", "serena_find_implementations", "obsidian", "ls", "grep", "find", "read", "edit", "bash"].some((name) => activeTools.includes(name))) {
 				prefixParts.push(deepSeekSelectionGuidance(activeTools));
 				debugLog("guidance: injected for", activeTools.length, "tools");
 			} else {

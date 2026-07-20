@@ -44,7 +44,7 @@ Then reload Pi:
 
 ## Features
 
-**Tool-selection guidance** — Injects concise, model-specific rules before each agent turn when relevant tools are active, including clone-first GitHub repository analysis and discover-before-read handling for uncertain file paths. Results are cached per tool-set combination.
+**Tool-selection guidance** — Injects concise, model-specific rules before each agent turn when relevant tools are active, including clone-first GitHub repository analysis and discover-before-read handling for uncertain file paths. When the `obsidian` tool is active, vault reading, search, creation, edits, moves, and deletion are routed to `obsidian` instead of generic filesystem tools. Results are cached per tool-set combination.
 
 **Tool-input repair** — Wraps Pi's built-in file/shell tools to fix common recoverable argument mistakes before validation:
 - `null` on optional fields → omitted

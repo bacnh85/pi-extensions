@@ -1,11 +1,17 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import {
 	readQuotedContent,
 	parseCliString,
 	parseFlags,
 	escapeCliValue,
+	isObsidianVaultCwd,
+	isPathInObsidianVault,
+	vaultNameForCwd,
 } from "../index.js";
 
 // ---------------------------------------------------------------------------
@@ -315,7 +321,8 @@ describe("piObsidianExtension tool integration", () => {
 		const mockPi: any = {
 			registerTool(tool: any) {
 				registeredTool = tool;
-			}
+			},
+			on() {},
 		};
 		piObsidianExtension(mockPi);
 		expect(registeredTool).to.not.be.null;
@@ -326,6 +333,69 @@ describe("piObsidianExtension tool integration", () => {
 			expect.fail("Should have thrown an error");
 		} catch (err: any) {
 			expect(err.message).to.include("is only available via the Obsidian desktop app");
+		}
+	});
+
+	it("blocks generic vault filesystem operations but leaves normal shell work alone", async () => {
+		const { default: piObsidianExtension } = await import("../index.js");
+		let registeredTool: any = null;
+		const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
+		const mockPi: any = {
+			registerTool(tool: any) { registeredTool = tool; },
+			on(event: string, handler: (event: any, ctx: any) => any) {
+				(handlers[event] ??= []).push(handler);
+			},
+		};
+		piObsidianExtension(mockPi);
+		const guard = handlers.tool_call[0];
+		const vault = mkdtempSync(join(tmpdir(), "pi-obsidian-vault-"));
+		const outside = mkdtempSync(join(tmpdir(), "pi-obsidian-outside-"));
+		writeFileSync(join(outside, ".obsidian"), "not a directory");
+		mkdirSync(join(vault, ".obsidian"));
+		mkdirSync(join(vault, "..notes"));
+		symlinkSync(vault, join(outside, "vault-link"), "dir");
+		symlinkSync(outside, join(vault, "external-link"), "dir");
+		try {
+			expect(isObsidianVaultCwd(outside)).to.equal(false);
+			expect(isObsidianVaultCwd(join(vault, "nested"))).to.equal(true);
+			expect(isPathInObsidianVault("Note.md", vault)).to.equal(true);
+			expect(isPathInObsidianVault("..notes/Note.md", vault)).to.equal(true);
+			expect(isPathInObsidianVault(join(outside, "vault-link", "Note.md"), vault)).to.equal(true);
+			expect(isPathInObsidianVault("external-link/README.md", vault)).to.equal(false);
+			expect(isPathInObsidianVault(join(outside, "README.md"), vault)).to.equal(false);
+			expect(vaultNameForCwd(vault, { name: "vault-a", path: vault })).to.equal("vault-a");
+			expect(vaultNameForCwd(vault, { name: "vault-b", path: outside })).to.equal(undefined);
+			expect(guard({ toolName: "read", input: { path: "Note.md" } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "write", input: { path: "Note.md" } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "edit", input: { path: "Note.md" } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "ls", input: { path: "." } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "find", input: { path: "." } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "grep", input: { path: "." } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "bash", input: { command: "mv Note.md Archive/" } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "bash", input: { command: "ls -la" } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "bash", input: { command: "find -print" } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "bash", input: { command: "rg needle" } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "bash", input: { command: "/bin/rm Note.md" } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "bash", input: { command: "command rm Note.md" } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "bash", input: { command: "unlink Note.md" } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "bash", input: { command: "truncate -s 0 Note.md" } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "bash", input: { command: "sed -i.bak 's/a/b/' Note.md" } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "bash", input: { command: "perl -pi -e 's/a/b/' Note.md" } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "bash", input: { command: "grep -R needle" } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "bash", input: { command: "grep --recursive needle" } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "bash", input: { command: "echo hello > Note.md" } }, { cwd: vault })?.block).to.equal(true);
+			expect(guard({ toolName: "bash", input: { command: "echo 'status > done'" } }, { cwd: vault })).to.equal(undefined);
+			expect(guard({ toolName: "bash", input: { command: "echo hello" } }, { cwd: vault })).to.equal(undefined);
+			expect(guard({ toolName: "bash", input: { command: `cat ${join(outside, "README.md")}` } }, { cwd: vault })).to.equal(undefined);
+			expect(guard({ toolName: "bash", input: { command: `truncate -s 0 ${join(outside, "README.md")}` } }, { cwd: vault })).to.equal(undefined);
+			expect(guard({ toolName: "bash", input: { command: `echo hello > "${join(outside, "outside file.md")}"` } }, { cwd: vault })).to.equal(undefined);
+			expect(guard({ toolName: "bash", input: { command: "npm test" } }, { cwd: vault })).to.equal(undefined);
+			expect(guard({ toolName: "read", input: { path: join(outside, "README.md") } }, { cwd: vault })).to.equal(undefined);
+			expect(guard({ toolName: "grep", input: { path: outside } }, { cwd: vault })).to.equal(undefined);
+			expect(registeredTool.promptGuidelines.join("\n")).to.include("Use obsidian—not bash, read, write, edit, ls, find, or grep");
+		} finally {
+			rmSync(vault, { recursive: true, force: true });
+			rmSync(outside, { recursive: true, force: true });
 		}
 	});
 });

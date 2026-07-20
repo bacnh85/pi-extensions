@@ -274,6 +274,9 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 	const lines: string[] = ["OpenCode Go DeepSeek V4 — pick the right tool on the first try:", ""];
 
 	const lookups: string[] = [
+		...(activeTools.includes("obsidian")
+			? ["  • Obsidian vault operation (read, search, create, edit, move, delete) → obsidian only; never bash, read, write, or edit for vault files."]
+			: []),
 		`  • File location uncertain → ${workspaceFinder} before read inside the workspace; use find with the checkout root for external temporary clones. Never guess subdirectories from naming conventions — a guessed path that doesn't exist is a wasted turn. Discover first.`,
 		"  • Analyze a GitHub repository/codebase URL → bash git clone to a temporary directory, then inspect the local checkout with Serena/read; use web tools only for webpage content such as issues, PRs, releases, or individual pages",
 	];
@@ -288,8 +291,8 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 		);
 		lookups.push("  • Serena is ONE call vs multiple read/grep scans — even when you know the file, serena_get_symbols_overview returns all symbols at once, and serena_find_symbol finds definitions grep would miss");
 	}
-	lookups.push("  • Read a file whose exact path is verified → read");
-	lookups.push("  • Write a new file → write (never bash echo/printf > for file creation)");
+	lookups.push("  • Read a non-Obsidian file whose exact path is verified → read");
+	lookups.push("  • Write a new non-Obsidian file → write (never bash echo/printf > for file creation)");
 	lookups.push("  • edit oldText → copy verbatim from a narrow read and include enough unchanged surrounding lines to match exactly once; watch for tabs vs spaces");
 
 	for (const l of lookups) lines.push(l);

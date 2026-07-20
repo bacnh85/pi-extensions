@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Type } from "@sinclair/typebox";
 
 import { execObsidian } from "./lib/cli";
@@ -15,6 +17,124 @@ import {
 	formatAliases,
 	formatWordCount,
 } from "./lib/format";
+
+// ---------------------------------------------------------------------------
+// Vault guard
+// ---------------------------------------------------------------------------
+
+export function obsidianVaultRoot(cwd: string | undefined): string | undefined {
+	if (!cwd) return undefined;
+	let dir = resolve(cwd);
+	while (true) {
+		try {
+			if (statSync(join(dir, ".obsidian")).isDirectory()) return dir;
+		} catch { /* keep walking */ }
+		const parent = dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
+}
+
+export function isObsidianVaultCwd(cwd: string | undefined): boolean {
+	return Boolean(obsidianVaultRoot(cwd));
+}
+
+function canonicalPath(path: string): string {
+	let existing = resolve(path);
+	const missing: string[] = [];
+	while (!existsSync(existing)) {
+		const parent = dirname(existing);
+		if (parent === existing) break;
+		missing.unshift(basename(existing));
+		existing = parent;
+	}
+	return resolve(realpathSync(existing), ...missing);
+}
+
+export function isPathInObsidianVault(path: string | undefined, cwd: string, vaultRoot = obsidianVaultRoot(cwd)): boolean {
+	if (!path || !vaultRoot) return false;
+	const fromRoot = relative(canonicalPath(vaultRoot), canonicalPath(resolve(cwd, path)));
+	return fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot);
+}
+
+export function parseVaultInfo(output: string): { name: string; path: string } | undefined {
+	const name = output.match(/^name\s+(.+)$/m)?.[1]?.trim();
+	const path = output.match(/^path\s+(.+)$/m)?.[1]?.trim();
+	return name && path ? { name, path } : undefined;
+}
+
+export function vaultNameForCwd(cwd: string | undefined, active: { name: string; path: string } | undefined): string | undefined {
+	const root = obsidianVaultRoot(cwd);
+	return root && active && resolve(active.path) === root ? active.name : undefined;
+}
+
+function focusedVaultNameForCwd(cwd: string | undefined): string | undefined {
+	return vaultNameForCwd(cwd, parseVaultInfo(execObsidian(["vault"]).stdout));
+}
+
+function redirectionDestination(command: string): string | undefined {
+	let quote = "";
+	for (let i = 0; i < command.length; i++) {
+		const char = command[i];
+		if (quote) {
+			if (char === quote && command[i - 1] !== "\\") quote = "";
+			continue;
+		}
+		if (char === "\"" || char === "'") {
+			quote = char;
+			continue;
+		}
+		if (char === ">") return parseCliString(command.slice(i + (command[i + 1] === ">" ? 2 : 1)).trim())[0];
+	}
+	return undefined;
+}
+
+export function isVaultFilesystemBashCommand(command: unknown, cwd: string, vaultRoot = obsidianVaultRoot(cwd)): boolean {
+	if (typeof command !== "string" || !vaultRoot) return false;
+	const trimmed = command.trim();
+	if (/[;&|`$()]/.test(trimmed)) return true;
+	const tokens = parseCliString(trimmed);
+	while (tokens[0] === "command" || tokens[0] === "env") tokens.shift();
+	while (tokens[0]?.startsWith("-")) tokens.shift();
+	while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0] ?? "")) tokens.shift();
+	const commandName = basename(tokens.shift() ?? "");
+	if (!commandName) return false;
+	const args = tokens;
+	const targets = (values: string[]) => values.filter((value) => !value.startsWith("-"));
+	const hasVaultTarget = (values: string[]) => values.some((value) => isPathInObsidianVault(value, cwd, vaultRoot));
+	const inPlaceFiles = (values: string[]) => {
+		let programSeen = false;
+		const files: string[] = [];
+		for (let i = 0; i < values.length; i++) {
+			if (values[i] === "-e") { i++; programSeen = true; continue; }
+			if (values[i].startsWith("-")) continue;
+			if (!programSeen) { programSeen = true; continue; }
+			files.push(values[i]);
+		}
+		return files;
+	};
+
+	if (/^(?:npm|pnpm|yarn|bun)\s+(?:test|run\s+(?:test|build|lint)|build|lint)\b/.test(trimmed)
+		|| /^git\s+(?:status|diff|log|branch)\b/.test(trimmed)
+		|| /^(?:node|python|python3)\s+--version\b/.test(trimmed)
+		|| ["pwd", "which"].includes(commandName)) return false;
+	if (["ls", "find"].includes(commandName)) {
+		const locations = targets(args);
+		return locations.length === 0 || hasVaultTarget(locations);
+	}
+	if (["cat", "cp", "mv", "rm", "touch", "mkdir", "rmdir", "tee", "unlink"].includes(commandName)) return hasVaultTarget(targets(args));
+	if (commandName === "truncate") return hasVaultTarget(targets(args).filter((value) => !/^\d+$/.test(value)));
+	if (["head", "tail"].includes(commandName)) return hasVaultTarget(targets(args).filter((value) => !/^\d+$/.test(value)));
+	if (["grep", "rg", "ag", "ack"].includes(commandName)) {
+		const values = targets(args);
+		const recursive = args.some((value) => value === "-r" || value === "-R" || value === "--recursive");
+		return (["rg", "ag", "ack"].includes(commandName) || recursive) && values.length <= 1
+			|| values.length > 1 && isPathInObsidianVault(values.at(-1), cwd, vaultRoot);
+	}
+	if (["echo", "printf"].includes(commandName)) return isPathInObsidianVault(redirectionDestination(trimmed), cwd, vaultRoot);
+	if (["sed", "perl"].includes(commandName) && args.some((value) => /^-i(?:.|$)|^--in-place(?:=|$)|^-.*i/.test(value))) return hasVaultTarget(inPlaceFiles(args));
+	return true;
+}
 
 // ---------------------------------------------------------------------------
 // CLI string parser
@@ -337,9 +457,9 @@ function formatObsidianOutput(cmdString: string, parsed: unknown): string {
 // Tool wrapper
 // ---------------------------------------------------------------------------
 
-function tool(body: (p: Record<string, unknown>) => string) {
-	return async function execute(_id: string, params: Record<string, unknown>) {
-		const text = body(params);
+function tool(body: (p: Record<string, unknown>, ctx: { cwd?: string }) => string) {
+	return async function execute(_id: string, params: Record<string, unknown>, _signal: unknown, _onUpdate: unknown, ctx: { cwd?: string }) {
+		const text = body(params, ctx ?? {});
 		return { content: [{ type: "text" as const, text }], details: {} };
 	};
 }
@@ -350,12 +470,28 @@ function tool(body: (p: Record<string, unknown>) => string) {
 
 export default function piObsidianExtension(pi: ExtensionAPI) {
 
+	pi.on("tool_call", (event, ctx) => {
+		const vaultRoot = obsidianVaultRoot(ctx.cwd);
+		if (!vaultRoot) return;
+		const input = event.input as Record<string, unknown>;
+		const path = typeof input.path === "string" ? input.path : undefined;
+		const targetsVault = isPathInObsidianVault(path, ctx.cwd, vaultRoot);
+		if ((["read", "write", "edit", "ls", "find", "grep"].includes(event.toolName) && (targetsVault || (["ls", "find", "grep"].includes(event.toolName) && !path)))
+			|| (event.toolName === "bash" && isVaultFilesystemBashCommand(input.command, ctx.cwd, vaultRoot))) {
+			return {
+				block: true,
+				reason: `Obsidian vault detected at ${vaultRoot}. Use obsidian with vault="<vault name>" for vault files; use explicit external paths for non-vault work.`,
+			};
+		}
+	});
+
 	pi.registerTool({
 		name: "obsidian",
 		label: "Run Obsidian CLI Command",
 		description: "Run an Obsidian CLI command on the vault. Commands: read, write, search, tasks, tags, eval.",
 		promptSnippet: "Run an Obsidian CLI command on the vault",
 		promptGuidelines: [
+			"Use obsidian—not bash, read, write, edit, ls, find, or grep—for every operation on files in an Obsidian vault; pass vault=<name> if it is not the focused vault.",
 			"Format: `<command> <key=value> ... <flag>`",
 			"Quote spaces: `file=\"My Note\"`, content=`# Title`.",
 			"content_from=SourceNoteName for content with quotes.",
@@ -383,15 +519,20 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 			vault: Type.Optional(Type.String({ description: "Target vault. Default: most recent." })),
 			timeout_ms: Type.Optional(Type.Number({ description: "Timeout ms (default 30000)." })),
 		}),
-		execute: tool((p) => {
+		execute: tool((p, ctx) => {
 			let raw = (p.run as string).trim();
 			if (!raw) throw new Error("'run' is required.");
 			const cmd = raw.split(/\s+/)[0];
 			if (cmd.startsWith("daily:") && !["daily:read", "daily:append", "daily:prepend"].includes(cmd)) {
 				throw new Error(`Command "${cmd}" is only available via the Obsidian desktop app and is not supported in CLI mode.`);
 			}
-			const v = p.vault as string | undefined;
 			const flags = parseFlags(raw);
+			const explicitVault = (p.vault as string | undefined) ?? flags.vault;
+			const v = explicitVault ?? focusedVaultNameForCwd(ctx.cwd);
+			if (!v && isObsidianVaultCwd(ctx.cwd)) {
+				throw new Error("This cwd is an Obsidian vault but it is not the focused vault. Supply vault=\"<vault name>\" to avoid operating on another vault.");
+			}
+			const cliArgs = () => parseCliString(raw).filter((arg) => !arg.startsWith("vault="));
 			const timeoutMs = (p.timeout_ms as number) ?? (flags.timeout_ms ? parseInt(flags.timeout_ms) : 30_000);
 
 			// --- files: recursive, root, normal, missing-property ---
@@ -522,7 +663,7 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 				}
 				// Normal create/write: rewrite args so CLI gets path= instead of file=
 				if (path) {
-					const cArgs = parseCliString(raw);
+					const cArgs = cliArgs();
 					// Obsidian CLI has no 'write' command — normalize to 'create'
 					if (cArgs[0] === "write" || cArgs[0] === "overwrite") {
 						cArgs[0] = "create";
@@ -544,7 +685,7 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 
 			// --- property:set with array values ---
 			if (cmd === "property:set") {
-				const args = parseCliString(raw);
+				const args = cliArgs();
 				const ai = args.findIndex(a => a.startsWith("value="));
 				if (ai >= 0) {
 					let end = ai + 1;
@@ -563,7 +704,7 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 			}
 
 			// --- Standard CLI passthrough (B1/B6: normalize file= and bare paths) ---
-			const args = parseCliString(raw);
+			const args = cliArgs();
 			// ponytail: normalize bare positional arg to path= for read/append/prepend
 			if (args.length >= 2 && !args[1].includes("=")) {
 				args[1] = "path=" + args[1];

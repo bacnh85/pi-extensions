@@ -192,6 +192,13 @@ describe("deepSeekSelectionGuidance", () => {
 		assert.match(g, /bash for file ops/);
 	});
 
+	it("routes vault work to obsidian without contradicting generic file guidance", () => {
+		const g = deepSeekSelectionGuidance(["obsidian"]);
+		assert.match(g, /Obsidian vault operation.*obsidian only/);
+		assert.match(g, /Read a non-Obsidian file/);
+		assert.match(g, /Write a new non-Obsidian file/);
+	});
+
 	it("produces consistent output for same tool set", () => {
 		const a = deepSeekSelectionGuidance(["bash", "read"]);
 		const b = deepSeekSelectionGuidance(["read", "bash"]);
@@ -294,6 +301,15 @@ describe("extension runtime scoping", () => {
 	});
 
 
+
+	it("injects guidance when obsidian is the only relevant tool", () => {
+		const { handlers } = createFakePi(["obsidian"]);
+		const result = handlers.before_agent_start[0](
+			{ systemPrompt: "base", systemPromptOptions: { selectedTools: ["obsidian"] } },
+			{ model: { provider: "opencode-go", id: "deepseek-v4-flash" } },
+		);
+		assert.match(result.systemPrompt, /Obsidian vault operation.*obsidian only/);
+	});
 
 	it("returns the replacement payload directly", () => {
 		const { handlers } = createFakePi(activeTools);
