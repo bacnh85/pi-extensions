@@ -14,7 +14,7 @@ import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
-import { createHandoff, rewindToFlowBaseline, snapshotUntrackedFiles } from "./lib/lifecycle";
+import { captureRewindCheckpoint, createHandoff, restoreRewindCheckpoint, rewindToFlowBaseline, snapshotUntrackedFiles, validateRewindCheckpoint, type RewindCheckpoint } from "./lib/lifecycle";
 import { BLOCKED_TOOLS, PLAN_ONLY_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 import { registerAdvisor } from "./commands/advisor";
 import { registerBtw } from "./commands/btw";
@@ -35,6 +35,8 @@ const MAX_DIRTY_PATCH_BYTES = 50 * 1024;
 const MAX_UNTRACKED_REVIEW_BYTES = 12 * 1024;
 const PREFERENCES_FILE = path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "pi-plan", "preferences.json");
 const HANDOFF_FILE = ".pi-handoff.md";
+const REWIND_CHECKPOINT_TYPE = "pi-plan-rewind";
+const MAX_REWIND_CHECKPOINTS = 100;
 const THINKING_LEVELS = [
 	"off",
 	"minimal",
@@ -264,6 +266,19 @@ function isReviewResult(value: unknown): value is { summary: string; findings: R
 	const result = value as { summary: string; findings: ReviewFinding[] };
 	return !!result && typeof result.summary === "string" && result.summary.trim().length > 0 &&
 		Array.isArray(result.findings) && result.findings.every(isReviewFinding);
+}
+
+function checkpointLabel(checkpoint: RewindCheckpoint): string {
+	const prompt = checkpoint.prompt.trim().replace(/\s+/g, " ") || "(empty prompt)";
+	return `${new Date(checkpoint.timestamp).toLocaleString()} · ${prompt.slice(0, 90)}`;
+}
+
+function checkpointFromEntry(entry: any): RewindCheckpoint | undefined {
+	const checkpoint = entry?.type === "custom" && entry.customType === REWIND_CHECKPOINT_TYPE ? entry.data : undefined;
+	if (!checkpoint || typeof checkpoint !== "object") return undefined;
+	if (typeof checkpoint.promptEntryId !== "string" || typeof checkpoint.prompt !== "string" || typeof checkpoint.timestamp !== "string") return undefined;
+	if (!/^[0-9a-f]{7,64}$/i.test(checkpoint.baseline) || typeof checkpoint.cachedPatch !== "string" || typeof checkpoint.unstagedPatch !== "string" || typeof checkpoint.untrackedSnapshot !== "string") return undefined;
+	return { ...checkpoint, untrackedSnapshotVersion: 1 } as RewindCheckpoint;
 }
 
 export default function piPlanExtension(pi: ExtensionAPI): void {
@@ -496,20 +511,56 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		}
 	}
 
-	async function rewind(ctx: ExtensionContext): Promise<void> {
-		if (!ctx.isIdle()) return ctx.ui.notify("Rewind is available after the active agent settles.", "warning");
-		if (!flow) return ctx.ui.notify("No active workflow checkpoint to rewind.", "warning");
+	function checkpoints(ctx: ExtensionContext): RewindCheckpoint[] {
+		return ctx.sessionManager.getBranch().flatMap((entry) => {
+			const checkpoint = checkpointFromEntry(entry);
+			return checkpoint ? [checkpoint] : [];
+		}).slice(-MAX_REWIND_CHECKPOINTS);
+	}
+
+	async function rewindFlow(ctx: ExtensionContext): Promise<void> {
+		if (!flow) return ctx.ui.notify("No rewind checkpoint is available.", "warning");
 		if (ctx.hasUI && !await ctx.ui.confirm("Rewind workflow?", "Current changes will be stashed, then the workflow baseline restored.")) return;
+		const activeFlow = flow;
+		const result = await withFileMutationQueue(path.join(ctx.cwd, ".git", "pi-plan-rewind"), () => rewindToFlowBaseline(ctx.cwd, activeFlow));
+		flow = undefined;
+		if (lastPlanPath) lastPlanStatus = "approved";
+		planReadyForReview = false;
+		persistState();
+		updateFooter(ctx);
+		ctx.ui.notify(`Rewound. Backup: ${result.stash}.`, "info");
+	}
+
+	async function rewind(ctx: ExtensionCommandContext): Promise<void> {
+		if (!ctx.isIdle()) return ctx.ui.notify("Rewind is available after the active agent settles.", "warning");
+		if (!ctx.hasUI) return ctx.ui.notify("Rewind checkpoint selection requires an interactive UI.", "warning");
+		const available = checkpoints(ctx);
+		if (available.length === 0) {
+			try { await rewindFlow(ctx); } catch (error) { ctx.ui.notify(`Rewind failed: ${String(error)}`, "error"); }
+			return;
+		}
+		const labels = available.map(checkpointLabel);
+		const selected = await ctx.ui.select("Rewind to prompt:", flow ? ["Workflow baseline", ...labels] : labels);
+		if (selected === "Workflow baseline") {
+			try { await rewindFlow(ctx); } catch (error) { ctx.ui.notify(`Rewind failed: ${String(error)}`, "error"); }
+			return;
+		}
+		const checkpoint = selected === undefined ? undefined : available[labels.indexOf(selected)];
+		if (!checkpoint) return;
+		const action = await ctx.ui.select("Rewind action:", ["Restore conversation", "Restore code", "Restore code and conversation"]);
+		if (!action) return;
 		try {
-			const result = await withFileMutationQueue(path.join(ctx.cwd, ".git", "pi-plan-rewind"), () =>
-				rewindToFlowBaseline(ctx.cwd, flow!),
-			);
-			flow = undefined;
-			if (lastPlanPath) lastPlanStatus = "approved";
-			planReadyForReview = false;
-			persistState();
-			updateFooter(ctx);
-			ctx.ui.notify(`Rewound. Backup: ${result.stash}.`, "info");
+			if (action === "Restore code and conversation") await validateRewindCheckpoint(ctx.cwd, checkpoint);
+			if (action !== "Restore code") {
+				const prompt = ctx.sessionManager.getEntry(checkpoint.promptEntryId);
+				const navigation = await ctx.navigateTree(prompt?.parentId ?? checkpoint.promptEntryId);
+				if (navigation.cancelled) return ctx.ui.notify("Conversation rewind cancelled.", "info");
+				ctx.ui.setEditorText(checkpoint.prompt);
+			}
+			if (action !== "Restore conversation") {
+				const result = await withFileMutationQueue(path.join(ctx.cwd, ".git", "pi-plan-rewind"), () => restoreRewindCheckpoint(ctx.cwd, checkpoint));
+				ctx.ui.notify(`Code restored. Backup: ${result.stash}.`, "info");
+			}
 		} catch (error) {
 			ctx.ui.notify(`Rewind failed: ${String(error)}`, "error");
 		}
@@ -517,18 +568,19 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 	function installRewindShortcut(ctx: ExtensionContext): void {
 		if (ctx.mode !== "tui") return;
-		const previous = (ctx.ui as any).getEditorComponent?.();
+		const previous = ctx.ui.getEditorComponent();
 		ctx.ui.setEditorComponent((tui, theme, keybindings) => {
 			const editor = previous?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings);
 			const handleInput = editor.handleInput.bind(editor);
 			let lastEscape = 0;
 			editor.handleInput = (data: string) => {
-				if (flow && (data === "\u001b\u001b" || (data === "\u001b" && Date.now() - lastEscape < 600))) {
+				if ((data === "\u001b\u001b" || (data === "\u001b" && Date.now() - lastEscape < 600)) && ctx.isIdle() && !ctx.ui.getEditorText()) {
 					lastEscape = 0;
-					void rewind(ctx);
+					ctx.ui.setEditorText("/rewind");
+					ctx.ui.notify("Press Enter to choose a rewind checkpoint.", "info");
 					return;
 				}
-				lastEscape = data === "\u001b" && flow ? Date.now() : 0;
+				lastEscape = data === "\u001b" ? Date.now() : 0;
 				handleInput(data);
 			};
 			return editor;
@@ -1331,6 +1383,21 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		advisor.sync(ctx);
 		updateFooter(ctx);
 		persistState();
+	});
+
+	pi.on("turn_start", async (_event, ctx) => {
+		if (planModeEnabled) return;
+		const entry = ctx.sessionManager.getLeafEntry();
+		if (entry?.type !== "message" || entry.message.role !== "user" || checkpoints(ctx).some((checkpoint) => checkpoint.promptEntryId === entry.id)) return;
+		const prompt = typeof entry.message.content === "string"
+			? entry.message.content
+			: entry.message.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n");
+		try {
+			const checkpoint = await captureRewindCheckpoint(ctx.cwd, entry.id, prompt);
+			pi.appendEntry(REWIND_CHECKPOINT_TYPE, checkpoint);
+		} catch (error) {
+			ctx.ui.notify(`Rewind checkpoint skipped: ${String(error)}`, "warning");
+		}
 	});
 
 	pi.on("thinking_level_select", async (event, ctx) => {

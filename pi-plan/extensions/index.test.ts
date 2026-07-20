@@ -12,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import piPlanExtension, { snapshotUntrackedFiles } from "./index";
 import { BLOCKED_TOOLS, PLAN_ONLY_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
-import { createHandoff, rewindToFlowBaseline } from "./lib/lifecycle";
+import { captureRewindCheckpoint, createHandoff, restoreRewindCheckpoint, rewindToFlowBaseline } from "./lib/lifecycle";
 import { registerAdvisor } from "./commands/advisor";
 import { formatSpecsProgress, invalidExistingTargets, specSlug } from "./commands/specs";
 import { workspaceContext } from "./lib/workspace-context";
@@ -62,6 +62,51 @@ describe("workflow snapshots", () => {
 });
 
 describe("state lifecycle", () => {
+	it("captures and restores a prompt checkpoint", async () => {
+		const cwd = createGitRepo("pi-plan-checkpoint-");
+		writeFileSync(path.join(cwd, "README.md"), "checkpoint\n");
+		writeFileSync(path.join(cwd, "keep.ts"), "export const keep = true;\n");
+		const checkpoint = await captureRewindCheckpoint(cwd, "prompt-1", "Try this implementation", "2026-01-01T00:00:00.000Z");
+		writeFileSync(path.join(cwd, "README.md"), "broken\n");
+		writeFileSync(path.join(cwd, "bad.ts"), "broken\n");
+
+		const result = await restoreRewindCheckpoint(cwd, checkpoint);
+		assert.notEqual(result.stash, "none");
+		assert.equal(readFileSync(path.join(cwd, "README.md"), "utf8"), "checkpoint\n");
+		assert.equal(readFileSync(path.join(cwd, "keep.ts"), "utf8"), "export const keep = true;\n");
+		assert.equal(existsSync(path.join(cwd, "bad.ts")), false);
+
+		execFileSync("git", ["add", "README.md"], { cwd });
+		execFileSync("git", ["commit", "-m", "diverged"], { cwd });
+		await assert.rejects(restoreRewindCheckpoint(cwd, checkpoint), /HEAD to match the checkpoint baseline/);
+	});
+
+	it("keeps empty directories for legacy and current snapshots", async () => {
+		const cwd = createGitRepo("pi-plan-legacy-snapshot-");
+		mkdirSync(path.join(cwd, "legacy"));
+		const baseline = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+		await rewindToFlowBaseline(cwd, { baseline, phase: "implement", reviewPass: 0, initialUntrackedSnapshot: "[]" });
+		assert.equal(existsSync(path.join(cwd, "legacy")), true);
+		const checkpoint = await captureRewindCheckpoint(cwd, "prompt-1", "Prompt");
+		mkdirSync(path.join(cwd, "new-empty"));
+		await restoreRewindCheckpoint(cwd, checkpoint);
+		assert.equal(existsSync(path.join(cwd, "new-empty")), true);
+	});
+
+	it("restores the whole repository when started from a subdirectory", async () => {
+		const cwd = createGitRepo("pi-plan-subdir-");
+		const subdir = path.join(cwd, "sub");
+		mkdirSync(subdir);
+		writeFileSync(path.join(cwd, "sibling.ts"), "checkpoint\n");
+		writeFileSync(path.join(subdir, "child.ts"), "checkpoint\n");
+		const checkpoint = await captureRewindCheckpoint(subdir, "prompt-1", "Prompt");
+		writeFileSync(path.join(cwd, "sibling.ts"), "broken\n");
+		writeFileSync(path.join(subdir, "child.ts"), "broken\n");
+		await restoreRewindCheckpoint(subdir, checkpoint);
+		assert.equal(readFileSync(path.join(cwd, "sibling.ts"), "utf8"), "checkpoint\n");
+		assert.equal(readFileSync(path.join(subdir, "child.ts"), "utf8"), "checkpoint\n");
+	});
+
 	it("writes a compact handoff and restores the workflow baseline", async () => {
 		const cwd = createGitRepo("pi-plan-lifecycle-");
 		const plan = path.join(cwd, ".agents", "plans", "plan.md");
@@ -209,6 +254,7 @@ function fakeCtx(overrides: Record<string, any> = {}): any {
 			confirm: async (_title: string, _body: string) => false,
 			editor: async (_title: string, _default: string) => "",
 			setEditorText: (_text: string) => {},
+			getEditorText: () => "",
 		},
 		sessionManager: {
 			getBranch: () => [],
@@ -1100,6 +1146,77 @@ describe("execution handoff", () => {
 		assert.ok(!activeTools.includes("edit"), "saved plan mode hides mutators");
 		assert.equal(lastEntry.data?.lastPlanStatus, undefined, "lastPlanStatus not inherited — absent from saved entry");
 		assert.equal(lastEntry.data?.flow, undefined, "flow not inherited — absent from saved entry");
+	});
+});
+
+describe("rewind checkpoints", () => {
+	it("captures a normal user turn and restores its conversation prompt", async () => {
+		const { commands, entries, handlers } = createFakePi(["read"]);
+		const cwd = createGitRepo("pi-plan-command-rewind-");
+		const checkpoint = await captureRewindCheckpoint(cwd, "prompt-1", "Restore me", "2026-01-01T00:00:00.000Z");
+		let editorText = "";
+		let navigatedTo = "";
+		let cancelled = false;
+		const branch = [
+			{ id: "parent", type: "message", parentId: null, message: { role: "assistant", content: [] } },
+			{ id: "prompt-1", type: "message", parentId: "parent", message: { role: "user", content: "Restore me" } },
+			{ id: "checkpoint", type: "custom", customType: "pi-plan-rewind", data: checkpoint },
+		];
+		const ctx = fakeCtx({
+			cwd,
+			ui: {
+				select: async (_title: string, options: string[]) => options[0] === "Restore conversation" ? "Restore conversation" : options[0],
+				setEditorText: (text: string) => { editorText = text; },
+				notify: () => {},
+			},
+			sessionManager: {
+				getBranch: () => branch,
+				getLeafEntry: () => branch[1],
+				getEntry: (id: string) => branch.find((entry) => entry.id === id),
+			},
+			navigateTree: async (id: string) => { navigatedTo = id; return { cancelled }; },
+		});
+		await commands.rewind.handler("", ctx);
+		assert.equal(navigatedTo, "parent");
+		assert.equal(editorText, "Restore me");
+		cancelled = true;
+		editorText = "unchanged";
+		await commands.rewind.handler("", ctx);
+		assert.equal(editorText, "unchanged");
+
+		await handlers.turn_start?.[0]({}, fakeCtx({
+			cwd,
+			sessionManager: { getBranch: () => [], getLeafEntry: () => branch[1] },
+		}));
+		assert.ok(entries.some((entry) => entry.customType === "pi-plan-rewind"));
+	});
+
+	it("preflights combined rewind before changing the conversation", async () => {
+		const { commands } = createFakePi(["read"]);
+		const cwd = createGitRepo("pi-plan-combined-rewind-");
+		const checkpoint = await captureRewindCheckpoint(cwd, "prompt-1", "Restore me");
+		writeFileSync(path.join(cwd, "README.md"), "diverged\n");
+		execFileSync("git", ["add", "README.md"], { cwd });
+		execFileSync("git", ["commit", "-m", "diverged"], { cwd });
+		let navigations = 0;
+		let editorText = "unchanged";
+		const branch = [
+			{ id: "parent", type: "message", parentId: null, message: { role: "assistant", content: [] } },
+			{ id: "prompt-1", type: "message", parentId: "parent", message: { role: "user", content: "Restore me" } },
+			{ id: "checkpoint", type: "custom", customType: "pi-plan-rewind", data: checkpoint },
+		];
+		await commands.rewind.handler("", fakeCtx({
+			cwd,
+			ui: {
+				select: async (_title: string, options: string[]) => options.includes("Restore code") ? "Restore code and conversation" : options[0],
+				setEditorText: (text: string) => { editorText = text; },
+				notify: () => {},
+			},
+			sessionManager: { getBranch: () => branch, getEntry: (id: string) => branch.find((entry) => entry.id === id) },
+			navigateTree: async () => { navigations++; return { cancelled: false }; },
+		}));
+		assert.equal(navigations, 0);
+		assert.equal(editorText, "unchanged");
 	});
 });
 
