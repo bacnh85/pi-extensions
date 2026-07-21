@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-sub",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "Pi extension showing subscription usage for supported model providers.",
   "type": "module",
   "license": "MIT",
@@ -38,6 +38,6 @@
     "node": ">=20.3.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.80.8 <0.81.0"
+    "@earendil-works/pi-coding-agent": ">=0.80.8 <0.82.0"
   }
 }

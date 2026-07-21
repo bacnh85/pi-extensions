@@ -24,7 +24,7 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.80.2",
+    "@earendil-works/pi-coding-agent": "^0.81.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.43",
     "mocha": "^10.8.2",

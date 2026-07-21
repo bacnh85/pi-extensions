@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmdir
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "mocha";
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, type ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { discoverAgents, getModelCandidates, invalidateAgentCache } from "../agents.ts";
 import { resolveModel } from "../model.ts";
 import { mapWithConcurrencyLimit, isFailedResult, getResultOutput, getFinalOutput, runSubAgent, startHeartbeat } from "../runner.ts";
@@ -368,14 +369,13 @@ describe("runner helpers", () => {
 describe("runSubAgent retry lifecycle", () => {
 	it("recovers once from a transient WebSocket error and then stops retrying", async function () {
 		this.timeout(10_000);
-		// Register with the pi-ai instance bundled inside pi-coding-agent, which owns AgentSession's provider registry.
-		const { registerFauxProvider } = await import("../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/compat.js");
-		const { fauxAssistantMessage } = await import("../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/faux.js");
-		const faux = registerFauxProvider({ api: "pi-subagent-retry-test", provider: "pi-subagent-retry-test" });
+		// Register a faux provider on the pi-ai instance bundled inside pi-coding-agent,
+		// then attach it to a ModelRuntime that owns AgentSession's provider registry.
+		const { fauxProvider, fauxAssistantMessage } = await import("../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/faux.js");
+		const faux = fauxProvider({ api: "pi-subagent-retry-test", provider: "pi-subagent-retry-test" });
 		const model = faux.getModel();
-		const authStorage = AuthStorage.inMemory();
-		authStorage.setRuntimeApiKey(model.provider, "test-key");
-		const modelRegistry = ModelRegistry.inMemory(authStorage);
+		const modelRuntime = await ModelRuntime.create({ modelsPath: null, credentials: new InMemoryCredentialStore() });
+		modelRuntime.registerNativeProvider(faux.provider);
 		const websocketError = () => fauxAssistantMessage("", { stopReason: "error", errorMessage: "WebSocket error" });
 		const run = (timeoutMs?: number) => runSubAgent({
 			cwd: process.cwd(),
@@ -383,8 +383,7 @@ describe("runSubAgent retry lifecycle", () => {
 			task: "Respond",
 			tools: [],
 			model,
-			authStorage,
-			modelRegistry,
+			modelRuntime,
 			agentName: "test",
 			timeoutMs,
 		});
@@ -422,7 +421,7 @@ describe("runSubAgent retry lifecycle", () => {
 			assert.equal(timedOut.exitCode, 1);
 			assert.equal(timedOut.errorMessage, "Idle timeout after 25ms");
 		} finally {
-			faux.unregister();
+			modelRuntime.unregisterProvider(faux.provider.id);
 		}
 	});
 });
