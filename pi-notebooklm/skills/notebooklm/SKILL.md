@@ -55,20 +55,22 @@ notebooklm args=["download", "audio", "-a", "<artifact-id>", "output.mp3"]
 
 | Category | Commands |
 |----------|----------|
-| **Auth/health** | `auth check --test --json`, `doctor --json`, `status`, `use <id>`, `clear` (requires `confirm: true`, no `-y`) |
+| **Auth/health** | `auth check --test --json`, `doctor --json`, `status` (top-level; `auth status` is invalid), `use <id\|partial>` (partial prefix matches, e.g. `use eadca411` → `eadca411-33e4-…`), `clear` (requires `confirm: true`, no `-y`) |
 | **Notebooks** | `list --json`, `create <title> --json`, `rename -n <id> "New Title"`, `delete -n <id> -y` (with `confirm: true`), `summary -n <id>`, `metadata -n <id> --json` |
-| **Sources** | `source add <content> -n <id> --json` (auto-detects url/file/youtube/text), `source add-drive <file-id> <title> -n <id>`, `source add-research "<query>" -n <id> --mode deep --no-wait`, `source list -n <id> --json`, `source wait <src-id> -n <id> --json`, `source get <src-id>`, `source fulltext <src-id>`, `source guide <src-id>`, `source refresh <src-id>`, `source stale <src-id>`, `source rename <src-id> "New Title"`, `source delete -y <src-id>`, `source delete-by-title <title> -n <id> -y` |
+| **Sources** | `source add <content> -n <id> --json` (auto-detects url/file/youtube/text), `source add-drive <file-id> <title> -n <id>`, `source add-research "<query>" -n <id> --mode deep --no-wait`, `source list -n <id> --json`, `source wait <src-id> -n <id> --json`, `source get <src-id>`, `source fulltext <src-id>`, `source guide <src-id>`, `source refresh <src-id>`, `source stale <src-id>`, `source rename <src-id> "New Title"`, `source delete -y <src-id>`, `source delete-by-title <title> -n <id> -y`, `source clean -n <id>` (auto-remove duplicate/error/blocked sources) |
 | **Grounded chat** | `ask <question> -n <id> --json` (returns citations via `references[]`), `ask --new -y <question> -n <id> --json` (new conversation, requires `confirm: true` + `-y`), `ask -c <conv-id> "follow up"`, `configure -n <id> --persona <text>`, `history -n <id> --json` |
 | **Research** | `research status -n <id> --json`, `research wait -n <id> --json`, `source add-research "<query>" -n <id> --mode deep --no-wait` |
-| **Studio generation** | `generate audio -n <id>`, `generate video -n <id>`, `generate slide-deck -n <id>`, `generate report -n <id>`, `generate infographic -n <id>`, `generate quiz -n <id>`, `generate flashcards -n <id>`, `generate mind-map -n <id>`, `generate data-table -n <id>`, `generate cinematic-video -n <id>` |
-| **Artifacts** | `artifact list -n <id> --json`, `artifact get <art-id>`, `artifact poll <task-id> -n <id> --json`, `artifact wait <task-id> -n <id> --json`, `artifact retry <task-id>`, `artifact rename <art-id> "New Name"`, `artifact delete -y <art-id>`, `artifact export <art-id> --title "..." --type [docs\|sheets]` |
+| **Studio generation** | `generate audio -n <id>`, `generate video -n <id>`, `generate slide-deck -n <id>`, `generate report -n <id>`, `generate infographic -n <id>`, `generate quiz -n <id>`, `generate flashcards -n <id>`, `generate mind-map -n <id>`, `generate data-table -n <id>`, `generate cinematic-video -n <id>`, `generate revise-slide` (edit one slide in an existing deck) |
+| **Artifacts** | `artifact list -n <id> --json`, `artifact get <art-id>`, `artifact poll <task-id> -n <id> --json`, `artifact wait <task-id> -n <id> --json`, `artifact retry <task-id>`, `artifact suggestions -n <id>` (AI-suggested report topics), `artifact rename <art-id> "New Name"`, `artifact delete -y <art-id>`, `artifact export <art-id> --title "..." --type [docs\|sheets]` |
 | **Downloads** | `download audio [output-path] -a <artifact-id>`, `download video [output-path] -a <artifact-id>`, `download slide-deck [output-path] -a <artifact-id>` (also: `--all`, `--latest`, `--name <title>`, `--dry-run`) |
 | **Notes** | `note list -n <id> --json`, `note get <note-id>`, `note create <content> -n <id> -t "Title"`, `note rename <note-id> "New Title"`, `note save <note-id> --title "..." --content "..."`, `note delete -y <note-id>` |
 | **Sharing** | `share status -n <id> --json`, `share public --enable\|--disable`, `share add <email> --permission viewer\|editor`, `share remove <email>`, `share update <email> --permission <level>`, `share view-level full\|chat` |
 | **Organization** | `language set <code>`, `language get`, `language list`, `profile list --json`, `profile switch <name>`, `profile create <name>`, `profile rename <name> "New Name"`, `profile delete -y <name>` |
+| **Agent & skills** | `agent show {codex\|claude}` (print agent integration instructions), `skill install\|show\|status\|uninstall` (manage the NotebookLM→agent skill bridge; `install --force` overwrites — requires `confirm: true`) |
 
 ## Rules
 
+- **Navigation: always key on full IDs.** The `created_at` field returned by `list`/`metadata`/`use`/`status` is **not** the real creation time — it mutates nearly every call (tracks "last touched"), and `status` even returns a date-only value. Do **not** sort, order, or dedup by `created_at`. The `list` order and the `index` field are unstable too (order swaps between calls), so never reference a notebook/source/artifact by `index` — always use the full `id`. Partial-prefix IDs also work for `use` and source/artifact IDs (e.g. `use eadca411` resolves to `eadca411-…`). Root cause is upstream (notebooklm-py); see "Known upstream limitations" below.
 - **Use full notebook IDs** and explicit `-n` in parallel agent workflows. Shared `notebooklm use` context can race across calls.
 - **Wait for sources** before chat or generation: `source wait <src-id> -n <id> --json` or check with `source list -n <id> --json`.
 - **Async generation**: call `generate <type> -n <id>` → get task ID → poll with `artifact poll <task-id> -n <id> --json` or block with `artifact wait`.
@@ -98,3 +100,7 @@ Add `--json` for machine-readable output. Key shapes:
 | `exit 2` | Timeout or CLI error | Increase `timeout_ms` or check args |
 | CLI not found | Missing install | `uv tool install "notebooklm-py[browser]"` |
 | `BrowserType.launch_persistent_context` | Missing Playwright browser | Auto-installed on first `notebooklm login`; if fails, run `uv tool run --from 'notebooklm-py[browser]' playwright install chromium` |
+
+## Known upstream limitations
+
+- **`created_at` and `list` ordering are unstable in notebooklm-py** (upstream). The `created_at` value changes across `list`/`metadata`/`use`/`status` calls for the same notebook, and `list` index order shifts between calls. Key on full IDs only — never sort, dedup, or reference by `index`/`created_at`. See "Navigation: always key on full IDs" in Rules.
