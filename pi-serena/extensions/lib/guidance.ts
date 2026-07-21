@@ -7,11 +7,11 @@ export const SERENA_MISS_GUIDANCE = "Use serena_get_symbols_overview for source-
 const BLOCKED_TOOLS = new Set(["read", "bash"]);
 
 export function shouldBlockSemanticMiss(toolName: string, input: Record<string, unknown>): boolean {
-	if (!BLOCKED_TOOLS.has(toolName)) return false;
-	if (toolName === "read") return pathLooksLikeCode(input.path) && !pathLooksNonSemantic(input.path);
-	if (toolName === "bash") {
-		const command = input.command;
-		return typeof command === "string" && commandLooksLikeSemanticCodeSearch(command);
-	}
-	return false;
+  if (!BLOCKED_TOOLS.has(toolName)) return false;
+  if (toolName === "read") return pathLooksLikeCode(input.path) && !pathLooksNonSemantic(input.path);
+  if (toolName === "bash") {
+    const command = input.command;
+    return typeof command === "string" && commandLooksLikeSemanticCodeSearch(command);
+  }
+  return false;
 }

@@ -4,24 +4,24 @@ import os from "node:os";
 import path from "node:path";
 
 export type SerenaWorkerResponse = {
-	id: string | null;
-	ok: boolean;
-	result?: string;
-	error?: string;
-	[key: string]: unknown;
+  id: string | null;
+  ok: boolean;
+  result?: string;
+  error?: string;
+  [key: string]: unknown;
 };
 
 type Pending = {
-	resolve: (value: SerenaWorkerResponse) => void;
-	reject: (error: Error) => void;
-	timer: NodeJS.Timeout;
+  resolve: (value: SerenaWorkerResponse) => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
 };
 
 type QueuedRequest = {
-	payload: Record<string, unknown>;
-	timeoutMs: number;
-	resolve: (value: SerenaWorkerResponse) => void;
-	reject: (error: Error) => void;
+  payload: Record<string, unknown>;
+  timeoutMs: number;
+  resolve: (value: SerenaWorkerResponse) => void;
+  reject: (error: Error) => void;
 };
 
 const PYTHON_BRIDGE = String.raw`
@@ -381,267 +381,267 @@ if __name__ == "__main__":
 `;
 
 function runSync(command: string, args: string[]): string | undefined {
-	try {
-		const result = spawnSync(command, args, { encoding: "utf8" });
-		if (result.status === 0) return String(result.stdout).trim().replace(/\u001b\[[0-9;]*m/g, "");
-	} catch {
-		// ignore discovery failures
-	}
-	return undefined;
+  try {
+    const result = spawnSync(command, args, { encoding: "utf8" });
+    if (result.status === 0) return String(result.stdout).trim().replace(/\u001b\[[0-9;]*m/g, "");
+  } catch {
+    // ignore discovery failures
+  }
+  return undefined;
 }
 
 function serenaPythonCandidates(): string[] {
-	const candidates: string[] = [];
-	const configured = process.env.SERENA_PYTHON;
-	if (configured) candidates.push(configured);
+  const candidates: string[] = [];
+  const configured = process.env.SERENA_PYTHON;
+  if (configured) candidates.push(configured);
 
-	const addToolDirCandidates = (toolDir: string | undefined) => {
-		if (!toolDir) return;
-		candidates.push(
-			path.join(toolDir, "serena-agent", "Scripts", "python.exe"),
-			path.join(toolDir, "serena-agent", "bin", "python"),
-		);
-	};
+  const addToolDirCandidates = (toolDir: string | undefined) => {
+    if (!toolDir) return;
+    candidates.push(
+      path.join(toolDir, "serena-agent", "Scripts", "python.exe"),
+      path.join(toolDir, "serena-agent", "bin", "python"),
+    );
+  };
 
-	addToolDirCandidates(runSync("uv", ["tool", "dir"]));
+  addToolDirCandidates(runSync("uv", ["tool", "dir"]));
 
-	const uvFromBash = runSync("bash", ["-lc", "command -v uv"]);
-	if (uvFromBash) addToolDirCandidates(runSync(uvFromBash, ["tool", "dir"]));
+  const uvFromBash = runSync("bash", ["-lc", "command -v uv"]);
+  if (uvFromBash) addToolDirCandidates(runSync(uvFromBash, ["tool", "dir"]));
 
-	addToolDirCandidates(path.join(os.homedir(), ".local", "share", "uv", "tools"));
-	addToolDirCandidates(path.join(os.homedir(), "AppData", "Roaming", "uv", "tools"));
+  addToolDirCandidates(path.join(os.homedir(), ".local", "share", "uv", "tools"));
+  addToolDirCandidates(path.join(os.homedir(), "AppData", "Roaming", "uv", "tools"));
 
-	return [...new Set(candidates)];
+  return [...new Set(candidates)];
 }
 
 function findSerenaPython(): string | undefined {
-	return serenaPythonCandidates().find((candidate) => fs.existsSync(candidate));
+  return serenaPythonCandidates().find((candidate) => fs.existsSync(candidate));
 }
 
 export class SerenaWorkerClient {
-	private process?: ChildProcessWithoutNullStreams;
-	private buffer = "";
-	private nextId = 1;
-	private pending = new Map<string, Pending>();
-	private queue: QueuedRequest[] = [];
-	private processing = false;
-	private stopping = false;
-	private generation = 0;
-	private spawning = false;
+  private process?: ChildProcessWithoutNullStreams;
+  private buffer = "";
+  private nextId = 1;
+  private pending = new Map<string, Pending>();
+  private queue: QueuedRequest[] = [];
+  private processing = false;
+  private stopping = false;
+  private generation = 0;
+  private spawning = false;
 
-	constructor(private readonly onStatus?: (text: string | undefined) => void) {}
+  constructor(private readonly onStatus?: (text: string | undefined) => void) {}
 
-	async request(payload: Record<string, unknown>, timeoutMs = 120_000): Promise<SerenaWorkerResponse> {
-		return new Promise((resolve, reject) => {
-			this.queue.push({ payload, timeoutMs, resolve, reject });
-			this.processQueue();
-		});
-	}
+  async request(payload: Record<string, unknown>, timeoutMs = 120_000): Promise<SerenaWorkerResponse> {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ payload, timeoutMs, resolve, reject });
+      this.processQueue();
+    });
+  }
 
-	async stop(): Promise<void> {
-		this.stopping = true;
-		this.rejectQueued(new Error("Serena worker stopped"));
-		this.failAll(new Error("Serena worker stopped"));
-		const proc = this.process;
-		if (!proc) {
-			this.stopping = false;
-			return;
-		}
-		try {
-			await new Promise<void>((resolve) => {
-				const id = String(this.nextId++);
-				const timer = setTimeout(() => {
-					this.pending.delete(id);
-					resolve();
-				}, 2000);
-				this.pending.set(id, {
-					resolve: () => { clearTimeout(timer); this.pending.delete(id); resolve(); },
-					reject: () => { clearTimeout(timer); this.pending.delete(id); resolve(); },
-					timer,
-				});
-				try {
-					proc.stdin.write(`${JSON.stringify({ id, action: "shutdown" })}\n`);
-				} catch {
-					clearTimeout(timer);
-					this.pending.delete(id);
-					resolve();
-				}
-			});
-		} catch {
-			// ignore
-		} finally {
-			proc.kill();
-			if (this.process === proc) {
-				this.process = undefined;
-				this.processing = false;
-				this.onStatus?.(undefined);
-			}
-			this.stopping = false;
-		}
-	}
+  async stop(): Promise<void> {
+    this.stopping = true;
+    this.rejectQueued(new Error("Serena worker stopped"));
+    this.failAll(new Error("Serena worker stopped"));
+    const proc = this.process;
+    if (!proc) {
+      this.stopping = false;
+      return;
+    }
+    try {
+      await new Promise<void>((resolve) => {
+        const id = String(this.nextId++);
+        const timer = setTimeout(() => {
+          this.pending.delete(id);
+          resolve();
+        }, 2000);
+        this.pending.set(id, {
+          resolve: () => { clearTimeout(timer); this.pending.delete(id); resolve(); },
+          reject: () => { clearTimeout(timer); this.pending.delete(id); resolve(); },
+          timer,
+        });
+        try {
+          proc.stdin.write(`${JSON.stringify({ id, action: "shutdown" })}\n`);
+        } catch {
+          clearTimeout(timer);
+          this.pending.delete(id);
+          resolve();
+        }
+      });
+    } catch {
+      // ignore
+    } finally {
+      proc.kill();
+      if (this.process === proc) {
+        this.process = undefined;
+        this.processing = false;
+        this.onStatus?.(undefined);
+      }
+      this.stopping = false;
+    }
+  }
 
-	restart(): void {
-		if (this.process) this.process.kill();
-		this.rejectQueued(new Error("Serena worker restarted"));
-		this.failAll(new Error("Serena worker restarted"));
-		this.process = undefined;
-		this.processing = false;
-		this.ensureStarted();
-	}
+  restart(): void {
+    if (this.process) this.process.kill();
+    this.rejectQueued(new Error("Serena worker restarted"));
+    this.failAll(new Error("Serena worker restarted"));
+    this.process = undefined;
+    this.processing = false;
+    this.ensureStarted();
+  }
 
-	private ensureStarted(): void {
-		if (this.spawning) return;
-		if (this.process && !this.process.killed && this.process.exitCode === null && this.process.signalCode === null) return;
-		this.spawning = true;
-		try {
-			const python = findSerenaPython();
-			if (!python) {
-				const checked = serenaPythonCandidates().map((candidate) => `- ${candidate}`).join("\n") || "- none";
-				throw new Error(
-					`Could not find Serena Python. Install with: uv tool install -p 3.13 serena-agent && serena init, or set SERENA_PYTHON to the serena-agent Python executable. Checked:\n${checked}`
-				);
-			}
+  private ensureStarted(): void {
+    if (this.spawning) return;
+    if (this.process && !this.process.killed && this.process.exitCode === null && this.process.signalCode === null) return;
+    this.spawning = true;
+    try {
+      const python = findSerenaPython();
+      if (!python) {
+        const checked = serenaPythonCandidates().map((candidate) => `- ${candidate}`).join("\n") || "- none";
+        throw new Error(
+          `Could not find Serena Python. Install with: uv tool install -p 3.13 serena-agent && serena init, or set SERENA_PYTHON to the serena-agent Python executable. Checked:\n${checked}`
+        );
+      }
 
-			this.generation += 1;
-			const proc = spawn(python, ["-u", "-c", PYTHON_BRIDGE], {
-				env: { ...process.env, SERENA_USAGE_REPORTING: process.env.SERENA_USAGE_REPORTING ?? "false" },
-				stdio: "pipe",
-			});
-			this.process = proc;
-			this.buffer = "";
-			this.onStatus?.(`Serena worker pid ${proc.pid} gen ${this.generation}`);
-			this.spawning = false;
+      this.generation += 1;
+      const proc = spawn(python, ["-u", "-c", PYTHON_BRIDGE], {
+        env: { ...process.env, SERENA_USAGE_REPORTING: process.env.SERENA_USAGE_REPORTING ?? "false" },
+        stdio: "pipe",
+      });
+      this.process = proc;
+      this.buffer = "";
+      this.onStatus?.(`Serena worker pid ${proc.pid} gen ${this.generation}`);
+      this.spawning = false;
 
-			proc.stdout.setEncoding('utf8');
-			proc.stdout.on("data", (chunk) => this.onStdout(String(chunk)));
-			proc.stderr.on("data", (chunk) => process.stderr.write(`[serena-worker] ${String(chunk)}`));
-			proc.stdin.on('error', () => {});
-			proc.on('error', (err) => {
-				if (this.process === proc) {
-					this.process = undefined;
-					this.onStatus?.(undefined);
-					this.processing = false;
-					this.failAll(new Error(`Serena worker process error: ${err.message}`));
-				}
-			});
-			proc.on("exit", (code, signal) => {
-				if (this.process === proc) {
-					this.process = undefined;
-					this.onStatus?.(undefined);
-					this.processing = false;
-					this.failAll(new Error(`Serena worker exited code=${code} signal=${signal}`));
-				}
-			});
-		} catch (error) {
-			this.spawning = false;
-			throw error;
-		}
-	}
+      proc.stdout.setEncoding('utf8');
+      proc.stdout.on("data", (chunk) => this.onStdout(String(chunk)));
+      proc.stderr.on("data", (chunk) => process.stderr.write(`[serena-worker] ${String(chunk)}`));
+      proc.stdin.on('error', () => {});
+      proc.on('error', (err) => {
+        if (this.process === proc) {
+          this.process = undefined;
+          this.onStatus?.(undefined);
+          this.processing = false;
+          this.failAll(new Error(`Serena worker process error: ${err.message}`));
+        }
+      });
+      proc.on("exit", (code, signal) => {
+        if (this.process === proc) {
+          this.process = undefined;
+          this.onStatus?.(undefined);
+          this.processing = false;
+          this.failAll(new Error(`Serena worker exited code=${code} signal=${signal}`));
+        }
+      });
+    } catch (error) {
+      this.spawning = false;
+      throw error;
+    }
+  }
 
-	private processQueue(): void {
-		if (this.processing || this.stopping) return;
-		const item = this.queue.shift();
-		if (!item) return;
-		this.processing = true;
-		try {
-			this.ensureStarted();
-		} catch (error) {
-			this.processing = false;
-			item.reject(error instanceof Error ? error : new Error(String(error)));
-			queueMicrotask(() => this.processQueue());
-			return;
-		}
-		const id = String(this.nextId++);
-		const request = { id, ...item.payload };
-		const finish = () => {
-			this.processing = false;
-			queueMicrotask(() => this.processQueue());
-		};
-		const timer = setTimeout(() => {
-			this.pending.delete(id);
-			this.killAndReset(false);
-			finish();
-			item.reject(new Error(
-				`Serena worker request timed out: ${item.payload.action ?? "unknown"}. ` +
-				`Worker has been restarted; retry if needed.`
-			));
-		}, item.timeoutMs);
-		this.pending.set(id, {
-			resolve: (value) => {
-				finish();
-				item.resolve(value);
-			},
-			reject: (error) => {
-				finish();
-				item.reject(error);
-			},
-			timer,
-		});
-		try {
-			this.process?.stdin.write(`${JSON.stringify(request)}\n`);
-		} catch (err) {
-			clearTimeout(timer);
-			this.pending.delete(id);
-			this.processing = false;
-			item.reject(err instanceof Error ? err : new Error(String(err)));
-			queueMicrotask(() => this.processQueue());
-		}
-	}
+  private processQueue(): void {
+    if (this.processing || this.stopping) return;
+    const item = this.queue.shift();
+    if (!item) return;
+    this.processing = true;
+    try {
+      this.ensureStarted();
+    } catch (error) {
+      this.processing = false;
+      item.reject(error instanceof Error ? error : new Error(String(error)));
+      queueMicrotask(() => this.processQueue());
+      return;
+    }
+    const id = String(this.nextId++);
+    const request = { id, ...item.payload };
+    const finish = () => {
+      this.processing = false;
+      queueMicrotask(() => this.processQueue());
+    };
+    const timer = setTimeout(() => {
+      this.pending.delete(id);
+      this.killAndReset(false);
+      finish();
+      item.reject(new Error(
+        `Serena worker request timed out: ${item.payload.action ?? "unknown"}. ` +
+        `Worker has been restarted; retry if needed.`
+      ));
+    }, item.timeoutMs);
+    this.pending.set(id, {
+      resolve: (value) => {
+        finish();
+        item.resolve(value);
+      },
+      reject: (error) => {
+        finish();
+        item.reject(error);
+      },
+      timer,
+    });
+    try {
+      this.process?.stdin.write(`${JSON.stringify(request)}\n`);
+    } catch (err) {
+      clearTimeout(timer);
+      this.pending.delete(id);
+      this.processing = false;
+      item.reject(err instanceof Error ? err : new Error(String(err)));
+      queueMicrotask(() => this.processQueue());
+    }
+  }
 
-	private onStdout(chunk: string): void {
-		this.buffer += chunk;
-		let index: number;
-		while ((index = this.buffer.indexOf("\n")) >= 0) {
-			const line = this.buffer.slice(0, index).trim();
-			this.buffer = this.buffer.slice(index + 1);
-			if (!line) continue;
-			let response: SerenaWorkerResponse;
-			try {
-				response = JSON.parse(line) as SerenaWorkerResponse;
-			} catch {
-				process.stderr.write(`[serena-worker] non-json stdout: ${line}\n`);
-				continue;
-			}
-			const id = response.id;
-			if (!id) {
-				// Responses with null/undefined id are not tied to a pending request.
-				// Surface errors (e.g. Python bridge import failures) so they aren't silently lost.
-				if (response.ok === false && response.error) {
-					process.stderr.write(`[serena-worker] error (no id): ${response.error}\n`);
-				}
-				continue;
-			}
-			const pending = this.pending.get(id);
-			if (!pending) continue;
-			this.pending.delete(id);
-			clearTimeout(pending.timer);
-			pending.resolve(response);
-		}
-	}
+  private onStdout(chunk: string): void {
+    this.buffer += chunk;
+    let index: number;
+    while ((index = this.buffer.indexOf("\n")) >= 0) {
+      const line = this.buffer.slice(0, index).trim();
+      this.buffer = this.buffer.slice(index + 1);
+      if (!line) continue;
+      let response: SerenaWorkerResponse;
+      try {
+        response = JSON.parse(line) as SerenaWorkerResponse;
+      } catch {
+        process.stderr.write(`[serena-worker] non-json stdout: ${line}\n`);
+        continue;
+      }
+      const id = response.id;
+      if (!id) {
+        // Responses with null/undefined id are not tied to a pending request.
+        // Surface errors (e.g. Python bridge import failures) so they aren't silently lost.
+        if (response.ok === false && response.error) {
+          process.stderr.write(`[serena-worker] error (no id): ${response.error}\n`);
+        }
+        continue;
+      }
+      const pending = this.pending.get(id);
+      if (!pending) continue;
+      this.pending.delete(id);
+      clearTimeout(pending.timer);
+      pending.resolve(response);
+    }
+  }
 
-	private killAndReset(rejectPending = true): void {
-		if (this.process) {
-			this.process.kill();
-			this.process = undefined;
-			this.onStatus?.(undefined);
-		}
-		if (rejectPending) {
-			this.processing = false;
-			this.failAll(new Error("Serena worker killed due to timeout, restarted"));
-		}
-		this.buffer = "";
-	}
+  private killAndReset(rejectPending = true): void {
+    if (this.process) {
+      this.process.kill();
+      this.process = undefined;
+      this.onStatus?.(undefined);
+    }
+    if (rejectPending) {
+      this.processing = false;
+      this.failAll(new Error("Serena worker killed due to timeout, restarted"));
+    }
+    this.buffer = "";
+  }
 
-	private rejectQueued(error: Error): void {
-		for (const item of this.queue.splice(0)) item.reject(error);
-	}
+  private rejectQueued(error: Error): void {
+    for (const item of this.queue.splice(0)) item.reject(error);
+  }
 
-	private failAll(error: Error): void {
-		this.processing = false;
-		for (const [id, pending] of this.pending) {
-			clearTimeout(pending.timer);
-			pending.reject(error);
-			this.pending.delete(id);
-		}
-	}
+  private failAll(error: Error): void {
+    this.processing = false;
+    for (const [id, pending] of this.pending) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+      this.pending.delete(id);
+    }
+  }
 }

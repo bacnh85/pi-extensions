@@ -14,13 +14,13 @@ import * as path from "node:path";
 
 /** Tools that child agents may use. The subagent tool is never included. */
 export const ALLOWED_CHILD_TOOLS = [
-	"read",
-	"grep",
-	"find",
-	"ls",
-	"bash",
-	"edit",
-	"write",
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "bash",
+  "edit",
+  "write",
 ] as const;
 
 export const READ_ONLY_TOOLS: readonly string[] = ["read", "grep", "find", "ls"];
@@ -53,11 +53,11 @@ const PARTIAL_REASONS = new Set(["length", "max_tokens", "context_limit"]);
 
 /** Pi SDK stop reasons that indicate a provider or tool error. */
 const ERROR_REASONS = new Set([
-	"error",
-	"tool_error",
-	"authentication_error",
-	"provider_error",
-	"content_filter",
+  "error",
+  "tool_error",
+  "authentication_error",
+  "provider_error",
+  "content_filter",
 ]);
 
 /**
@@ -68,18 +68,18 @@ const ERROR_REASONS = new Set([
  * from their own abort controllers.
  */
 export function classifyStopReason(
-	reason: string | undefined,
-	isAborted: boolean,
-	isTimeout: boolean,
+  reason: string | undefined,
+  isAborted: boolean,
+  isTimeout: boolean,
 ): SubagentStatus {
-	if (isAborted) return "aborted";
-	if (isTimeout) return "timeout";
-	if (!reason) return "success";
-	if (SUCCESS_REASONS.has(reason)) return "success";
-	if (PARTIAL_REASONS.has(reason)) return "partial";
-	if (ERROR_REASONS.has(reason)) return "error";
-	// Unknown stop reason — classify conservatively.
-	return "error";
+  if (isAborted) return "aborted";
+  if (isTimeout) return "timeout";
+  if (!reason) return "success";
+  if (SUCCESS_REASONS.has(reason)) return "success";
+  if (PARTIAL_REASONS.has(reason)) return "partial";
+  if (ERROR_REASONS.has(reason)) return "error";
+  // Unknown stop reason — classify conservatively.
+  return "error";
 }
 
 // ---------------------------------------------------------------------------
@@ -87,20 +87,20 @@ export function classifyStopReason(
 // ---------------------------------------------------------------------------
 
 export interface SafeCwdOptions {
-	/** The workspace root (parent session's cwd). Must be an absolute path. */
-	workspaceRoot: string;
-	/** The child's requested working directory, if any. */
-	childCwd?: string;
-	/**
-	 * Trusted user setting that allows child cwd outside the workspace.
-	 * Must never come from the tool-calling model.
-	 */
-	allowExternalCwd?: boolean;
+  /** The workspace root (parent session's cwd). Must be an absolute path. */
+  workspaceRoot: string;
+  /** The child's requested working directory, if any. */
+  childCwd?: string;
+  /**
+   * Trusted user setting that allows child cwd outside the workspace.
+   * Must never come from the tool-calling model.
+   */
+  allowExternalCwd?: boolean;
 }
 
 export interface SafeCwdResult {
-	path: string;
-	error?: string;
+  path: string;
+  error?: string;
 }
 
 /**
@@ -117,51 +117,51 @@ export interface SafeCwdResult {
  * - Paths that are files instead of directories are rejected.
  */
 export function resolveSafeCwd(options: SafeCwdOptions): SafeCwdResult {
-	const { workspaceRoot, childCwd, allowExternalCwd } = options;
+  const { workspaceRoot, childCwd, allowExternalCwd } = options;
 
-	// Normalise workspace root to an absolute canonical path.
-	const resolvedRoot = resolveCanonical(workspaceRoot);
-	if (!resolvedRoot) {
-		return { path: "", error: `Workspace root does not exist: ${workspaceRoot}` };
-	}
-	if (!isDirectorySync(resolvedRoot)) {
-		return { path: "", error: `Workspace root is not a directory: ${workspaceRoot}` };
-	}
+  // Normalise workspace root to an absolute canonical path.
+  const resolvedRoot = resolveCanonical(workspaceRoot);
+  if (!resolvedRoot) {
+    return { path: "", error: `Workspace root does not exist: ${workspaceRoot}` };
+  }
+  if (!isDirectorySync(resolvedRoot)) {
+    return { path: "", error: `Workspace root is not a directory: ${workspaceRoot}` };
+  }
 
-	// No child cwd → use workspace root.
-	if (!childCwd) {
-		return { path: resolvedRoot };
-	}
+  // No child cwd → use workspace root.
+  if (!childCwd) {
+    return { path: resolvedRoot };
+  }
 
-	// Resolve the child path.
-	const absPath = path.resolve(resolvedRoot, childCwd);
+  // Resolve the child path.
+  const absPath = path.resolve(resolvedRoot, childCwd);
 
-	// If the resolved path escapes the workspace via `..`, the resolved path
-	// will differ from the canonical workspace root prefix. We check by
-	// resolving the canonical absolute path.
-	const canonicalPath = resolveCanonical(absPath);
-	if (!canonicalPath) {
-		return { path: "", error: `Child working directory does not exist: ${childCwd}` };
-	}
+  // If the resolved path escapes the workspace via `..`, the resolved path
+  // will differ from the canonical workspace root prefix. We check by
+  // resolving the canonical absolute path.
+  const canonicalPath = resolveCanonical(absPath);
+  if (!canonicalPath) {
+    return { path: "", error: `Child working directory does not exist: ${childCwd}` };
+  }
 
-	if (!isDirectorySync(canonicalPath)) {
-		return { path: "", error: `Child working directory is a file, not a directory: ${childCwd}` };
-	}
+  if (!isDirectorySync(canonicalPath)) {
+    return { path: "", error: `Child working directory is a file, not a directory: ${childCwd}` };
+  }
 
-	// Check if the child path is inside the workspace.
-	if (!isPathInside(canonicalPath, resolvedRoot)) {
-		if (allowExternalCwd) {
-			return { path: canonicalPath };
-		}
-		return {
-			path: "",
-			error:
-				`Child working directory "${childCwd}" is outside the workspace root "${workspaceRoot}". ` +
-				`Paths outside the workspace are rejected by default.`,
-		};
-	}
+  // Check if the child path is inside the workspace.
+  if (!isPathInside(canonicalPath, resolvedRoot)) {
+    if (allowExternalCwd) {
+      return { path: canonicalPath };
+    }
+    return {
+      path: "",
+      error:
+        `Child working directory "${childCwd}" is outside the workspace root "${workspaceRoot}". ` +
+        `Paths outside the workspace are rejected by default.`,
+    };
+  }
 
-	return { path: canonicalPath };
+  return { path: canonicalPath };
 }
 
 /**
@@ -169,34 +169,34 @@ export function resolveSafeCwd(options: SafeCwdOptions): SafeCwdResult {
  * to canonical paths. Rejects `..` traversal that escapes `parent`.
  */
 function isPathInside(child: string, parent: string): boolean {
-	// Both must be absolute.
-	if (!path.isAbsolute(child) || !path.isAbsolute(parent)) return false;
+  // Both must be absolute.
+  if (!path.isAbsolute(child) || !path.isAbsolute(parent)) return false;
 
-	const relative = path.relative(parent, child);
-	// relative must not start with ".." and must not be an absolute path.
-	return !relative.startsWith("..") && !path.isAbsolute(relative);
+  const relative = path.relative(parent, child);
+  // relative must not start with ".." and must not be an absolute path.
+  return !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
 /**
  * Resolve a path to its canonical real path, or return null if it doesn't exist.
  */
 function resolveCanonical(p: string): string | null {
-	try {
-		return fs.realpathSync(p);
-	} catch {
-		return null;
-	}
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Synchronously check if a path is a directory.
  */
 function isDirectorySync(p: string): boolean {
-	try {
-		return fs.statSync(p).isDirectory();
-	} catch {
-		return false;
-	}
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -204,17 +204,17 @@ function isDirectorySync(p: string): boolean {
 // ---------------------------------------------------------------------------
 
 export interface ValidateToolsOptions {
-	/** Tool names from the agent definition or service override. */
-	tools: string[];
-	/** When true, only read-only tools are permitted. Mutation/execution tools are rejected. */
-	readOnly?: boolean;
+  /** Tool names from the agent definition or service override. */
+  tools: string[];
+  /** When true, only read-only tools are permitted. Mutation/execution tools are rejected. */
+  readOnly?: boolean;
 }
 
 export interface ValidateToolsResult {
-	/** Deduplicated and validated tool names. */
-	tools: string[];
-	/** Validation errors, if any. Empty array means valid. */
-	errors: string[];
+  /** Deduplicated and validated tool names. */
+  tools: string[];
+  /** Validation errors, if any. Empty array means valid. */
+  errors: string[];
 }
 
 /**
@@ -225,43 +225,43 @@ export interface ValidateToolsResult {
  * When `readOnly` is true, only READ_ONLY_TOOLS are permitted.
  */
 export function validateAgentTools(options: ValidateToolsOptions): ValidateToolsResult {
-	const { readOnly = false } = options;
-	const seen = new Set<string>();
-	const tools: string[] = [];
-	const errors: string[] = [];
+  const { readOnly = false } = options;
+  const seen = new Set<string>();
+  const tools: string[] = [];
+  const errors: string[] = [];
 
-	for (const raw of options.tools) {
-		const tool = raw.trim();
-		if (!tool) continue;
+  for (const raw of options.tools) {
+    const tool = raw.trim();
+    if (!tool) continue;
 
-		// Reject subagent regardless of casing (Pi tool names are case-sensitive
-		// but "subagent" should never pass through).
-		if (tool.toLowerCase() === "subagent") {
-			errors.push(`Tool "subagent" is not allowed in child agents (recursive delegation is prevented).`);
-			continue;
-		}
+    // Reject subagent regardless of casing (Pi tool names are case-sensitive
+    // but "subagent" should never pass through).
+    if (tool.toLowerCase() === "subagent") {
+      errors.push(`Tool "subagent" is not allowed in child agents (recursive delegation is prevented).`);
+      continue;
+    }
 
-		// Check against allowlist
-		if (!ALLOWED_CHILD_TOOLS.includes(tool as any)) {
-			errors.push(`Unknown tool "${tool}". Allowed tools: ${ALLOWED_CHILD_TOOLS.join(", ")}.`);
-			continue;
-		}
+    // Check against allowlist
+    if (!ALLOWED_CHILD_TOOLS.includes(tool as any)) {
+      errors.push(`Unknown tool "${tool}". Allowed tools: ${ALLOWED_CHILD_TOOLS.join(", ")}.`);
+      continue;
+    }
 
-		// Check read-only constraint
-		if (readOnly && !READ_ONLY_TOOLS.includes(tool)) {
-			errors.push(
-				`Tool "${tool}" is not allowed in read-only mode. Read-only tools: ${READ_ONLY_TOOLS.join(", ")}.`,
-			);
-			continue;
-		}
+    // Check read-only constraint
+    if (readOnly && !READ_ONLY_TOOLS.includes(tool)) {
+      errors.push(
+        `Tool "${tool}" is not allowed in read-only mode. Read-only tools: ${READ_ONLY_TOOLS.join(", ")}.`,
+      );
+      continue;
+    }
 
-		// Deduplicate
-		if (seen.has(tool)) continue;
-		seen.add(tool);
-		tools.push(tool);
-	}
+    // Deduplicate
+    if (seen.has(tool)) continue;
+    seen.add(tool);
+    tools.push(tool);
+  }
 
-	return { tools, errors };
+  return { tools, errors };
 }
 
 // ---------------------------------------------------------------------------
@@ -269,19 +269,19 @@ export function validateAgentTools(options: ValidateToolsOptions): ValidateTools
 // ---------------------------------------------------------------------------
 
 export interface NormalizeTimeoutOptions {
-	/** Requested timeout value from tool params, if any. */
-	requested?: number;
-	/** Global default when no timeout is specified. */
-	defaultValue?: number;
-	/** Absolute maximum allowed value. */
-	maxValue?: number;
+  /** Requested timeout value from tool params, if any. */
+  requested?: number;
+  /** Global default when no timeout is specified. */
+  defaultValue?: number;
+  /** Absolute maximum allowed value. */
+  maxValue?: number;
 }
 
 export interface NormalizeTimeoutResult {
-	/** The validated timeout in milliseconds, or undefined if none was set and no default applies. */
-	timeoutMs: number | undefined;
-	/** Error message if the value is invalid. */
-	error?: string;
+  /** The validated timeout in milliseconds, or undefined if none was set and no default applies. */
+  timeoutMs: number | undefined;
+  /** Error message if the value is invalid. */
+  error?: string;
 }
 
 /**
@@ -295,33 +295,33 @@ export interface NormalizeTimeoutResult {
  * - Returns undefined only when no value and no default are configured.
  */
 export function normalizeTimeout(options: NormalizeTimeoutOptions): NormalizeTimeoutResult {
-	const { requested, defaultValue = DEFAULT_TIMEOUT_MS, maxValue = MAX_TIMEOUT_MS } = options;
+  const { requested, defaultValue = DEFAULT_TIMEOUT_MS, maxValue = MAX_TIMEOUT_MS } = options;
 
-	if (requested === undefined || requested === null) {
-		// No explicit timeout — apply default.
-		return { timeoutMs: defaultValue };
-	}
+  if (requested === undefined || requested === null) {
+    // No explicit timeout — apply default.
+    return { timeoutMs: defaultValue };
+  }
 
-	if (typeof requested !== "number" || !Number.isFinite(requested)) {
-		return { timeoutMs: undefined, error: "Timeout must be a finite number." };
-	}
+  if (typeof requested !== "number" || !Number.isFinite(requested)) {
+    return { timeoutMs: undefined, error: "Timeout must be a finite number." };
+  }
 
-	if (!Number.isInteger(requested)) {
-		return { timeoutMs: undefined, error: "Timeout must be an integer (milliseconds)." };
-	}
+  if (!Number.isInteger(requested)) {
+    return { timeoutMs: undefined, error: "Timeout must be an integer (milliseconds)." };
+  }
 
-	if (requested <= 0) {
-		return { timeoutMs: undefined, error: "Timeout must be a positive integer." };
-	}
+  if (requested <= 0) {
+    return { timeoutMs: undefined, error: "Timeout must be a positive integer." };
+  }
 
-	if (requested > maxValue) {
-		return {
-			timeoutMs: undefined,
-			error: `Timeout ${requested}ms exceeds maximum allowed ${maxValue}ms (${maxValue / 60_000} minutes).`,
-		};
-	}
+  if (requested > maxValue) {
+    return {
+      timeoutMs: undefined,
+      error: `Timeout ${requested}ms exceeds maximum allowed ${maxValue}ms (${maxValue / 60_000} minutes).`,
+    };
+  }
 
-	return { timeoutMs: requested };
+  return { timeoutMs: requested };
 }
 
 // ---------------------------------------------------------------------------
@@ -339,57 +339,57 @@ export function normalizeTimeout(options: NormalizeTimeoutOptions): NormalizeTim
  * Callers MUST call `cleanup()` in a `finally` block.
  */
 export function createCombinedAbortSignal(
-	signals: (AbortSignal | undefined | null | false)[],
+  signals: (AbortSignal | undefined | null | false)[],
 ): { signal: AbortSignal; cleanup: () => void } {
-	const valid = signals.filter(Boolean) as AbortSignal[];
+  const valid = signals.filter(Boolean) as AbortSignal[];
 
-	if (valid.length === 0) {
-		const controller = new AbortController();
-		return { signal: controller.signal, cleanup: () => {} };
-	}
+  if (valid.length === 0) {
+    const controller = new AbortController();
+    return { signal: controller.signal, cleanup: () => {} };
+  }
 
-	if (valid.length === 1) {
-		return { signal: valid[0], cleanup: () => {} };
-	}
+  if (valid.length === 1) {
+    return { signal: valid[0], cleanup: () => {} };
+  }
 
-	// Check if any is already aborted.
-	for (const sig of valid) {
-		if (sig.aborted) {
-			const controller = new AbortController();
-			controller.abort(sig.reason);
-			return { signal: controller.signal, cleanup: () => {} };
-		}
-	}
+  // Check if any is already aborted.
+  for (const sig of valid) {
+    if (sig.aborted) {
+      const controller = new AbortController();
+      controller.abort(sig.reason);
+      return { signal: controller.signal, cleanup: () => {} };
+    }
+  }
 
-	// Use native AbortSignal.any when available.
-	if (typeof (AbortSignal as any).any === "function") {
-		const combined = (AbortSignal as any).any(valid);
-		return { signal: combined, cleanup: () => {} };
-	}
+  // Use native AbortSignal.any when available.
+  if (typeof (AbortSignal as any).any === "function") {
+    const combined = (AbortSignal as any).any(valid);
+    return { signal: combined, cleanup: () => {} };
+  }
 
-	// Manual fallback: create a controller and forward all signals.
-	const controller = new AbortController();
-	const listeners: Array<() => void> = [];
+  // Manual fallback: create a controller and forward all signals.
+  const controller = new AbortController();
+  const listeners: Array<() => void> = [];
 
-	for (const sig of valid) {
-		const handler = () => {
-			controller.abort(sig.reason);
-		};
-		sig.addEventListener("abort", handler, { once: true });
-		listeners.push(() => sig.removeEventListener("abort", handler));
-	}
+  for (const sig of valid) {
+    const handler = () => {
+      controller.abort(sig.reason);
+    };
+    sig.addEventListener("abort", handler, { once: true });
+    listeners.push(() => sig.removeEventListener("abort", handler));
+  }
 
-	const cleanup = () => {
-		for (const remove of listeners) {
-			try {
-				remove();
-			} catch {
-				// Best-effort cleanup.
-			}
-		}
-	};
+  const cleanup = () => {
+    for (const remove of listeners) {
+      try {
+        remove();
+      } catch {
+        // Best-effort cleanup.
+      }
+    }
+  };
 
-	return { signal: controller.signal, cleanup };
+  return { signal: controller.signal, cleanup };
 }
 
 // ---------------------------------------------------------------------------
@@ -403,16 +403,16 @@ export const PER_TASK_OUTPUT_CAP = 50 * 1024; // 50 KB
 export const MAX_INSTRUCTIONS_LENGTH = 16 * 1024; // 16 KB
 
 export interface ValidateExecutionRequestOptions {
-	agentName?: string;
-	task?: string;
-	tasks?: unknown[];
-	chain?: unknown[];
-	timeout?: number;
+  agentName?: string;
+  task?: string;
+  tasks?: unknown[];
+  chain?: unknown[];
+  timeout?: number;
 }
 
 export interface ValidationError {
-	field: string;
-	message: string;
+  field: string;
+  message: string;
 }
 
 /**
@@ -421,85 +421,85 @@ export interface ValidationError {
  * internal callers that bypass the public tool schema.
  */
 export function validateExecutionRequest(
-	options: ValidateExecutionRequestOptions,
+  options: ValidateExecutionRequestOptions,
 ): ValidationError[] {
-	const errors: ValidationError[] = [];
+  const errors: ValidationError[] = [];
 
-	// Agent name
-	if (options.agentName !== undefined) {
-		if (typeof options.agentName !== "string" || options.agentName.trim().length === 0) {
-			errors.push({ field: "agent", message: "Agent name must be a non-empty string." });
-		}
-	}
+  // Agent name
+  if (options.agentName !== undefined) {
+    if (typeof options.agentName !== "string" || options.agentName.trim().length === 0) {
+      errors.push({ field: "agent", message: "Agent name must be a non-empty string." });
+    }
+  }
 
-	// Task
-	if (options.task !== undefined) {
-		if (typeof options.task !== "string") {
-			errors.push({ field: "task", message: "Task must be a string." });
-		}
-	}
+  // Task
+  if (options.task !== undefined) {
+    if (typeof options.task !== "string") {
+      errors.push({ field: "task", message: "Task must be a string." });
+    }
+  }
 
-	// Parallel tasks
-	if (options.tasks !== undefined) {
-		if (!Array.isArray(options.tasks)) {
-			errors.push({ field: "tasks", message: "Tasks must be an array." });
-		} else {
-			if (options.tasks.length > MAX_PARALLEL_TASKS) {
-				errors.push({
-					field: "tasks",
-					message: `Too many parallel tasks (${options.tasks.length}). Maximum is ${MAX_PARALLEL_TASKS}.`,
-				});
-			}
-			for (let i = 0; i < options.tasks.length; i++) {
-				const t = options.tasks[i] as Record<string, unknown>;
-				if (!t || typeof t.agent !== "string" || !t.agent.trim()) {
-					errors.push({ field: `tasks[${i}].agent`, message: "Agent name must be a non-empty string." });
-				}
-				if (typeof t.task !== "string") {
-					errors.push({ field: `tasks[${i}].task`, message: "Task must be a string." });
-				}
-			}
-		}
-	}
+  // Parallel tasks
+  if (options.tasks !== undefined) {
+    if (!Array.isArray(options.tasks)) {
+      errors.push({ field: "tasks", message: "Tasks must be an array." });
+    } else {
+      if (options.tasks.length > MAX_PARALLEL_TASKS) {
+        errors.push({
+          field: "tasks",
+          message: `Too many parallel tasks (${options.tasks.length}). Maximum is ${MAX_PARALLEL_TASKS}.`,
+        });
+      }
+      for (let i = 0; i < options.tasks.length; i++) {
+        const t = options.tasks[i] as Record<string, unknown>;
+        if (!t || typeof t.agent !== "string" || !t.agent.trim()) {
+          errors.push({ field: `tasks[${i}].agent`, message: "Agent name must be a non-empty string." });
+        }
+        if (typeof t.task !== "string") {
+          errors.push({ field: `tasks[${i}].task`, message: "Task must be a string." });
+        }
+      }
+    }
+  }
 
-	// Chain
-	if (options.chain !== undefined) {
-		if (!Array.isArray(options.chain)) {
-			errors.push({ field: "chain", message: "Chain must be an array." });
-		} else {
-			if (options.chain.length > MAX_CHAIN_LENGTH) {
-				errors.push({
-					field: "chain",
-					message: `Too many chain steps (${options.chain.length}). Maximum is ${MAX_CHAIN_LENGTH}.`,
-				});
-			}
-			for (let i = 0; i < options.chain.length; i++) {
-				const s = options.chain[i] as Record<string, unknown>;
-				if (!s || typeof s.agent !== "string" || !s.agent.trim()) {
-					errors.push({ field: `chain[${i}].agent`, message: "Agent name must be a non-empty string." });
-				}
-				if (typeof s.task !== "string") {
-					errors.push({ field: `chain[${i}].task`, message: "Task must be a string." });
-				}
-			}
-		}
-	}
+  // Chain
+  if (options.chain !== undefined) {
+    if (!Array.isArray(options.chain)) {
+      errors.push({ field: "chain", message: "Chain must be an array." });
+    } else {
+      if (options.chain.length > MAX_CHAIN_LENGTH) {
+        errors.push({
+          field: "chain",
+          message: `Too many chain steps (${options.chain.length}). Maximum is ${MAX_CHAIN_LENGTH}.`,
+        });
+      }
+      for (let i = 0; i < options.chain.length; i++) {
+        const s = options.chain[i] as Record<string, unknown>;
+        if (!s || typeof s.agent !== "string" || !s.agent.trim()) {
+          errors.push({ field: `chain[${i}].agent`, message: "Agent name must be a non-empty string." });
+        }
+        if (typeof s.task !== "string") {
+          errors.push({ field: `chain[${i}].task`, message: "Task must be a string." });
+        }
+      }
+    }
+  }
 
-	return errors;
+  return errors;
 }
 
 /**
  * Truncate parallel task output to the per-task cap.
  */
 export function truncateParallelOutput(output: string): string {
-	const byteLength = Buffer.byteLength(output, "utf8");
-	if (byteLength <= PER_TASK_OUTPUT_CAP) return output;
+  const byteLength = Buffer.byteLength(output, "utf8");
+  if (byteLength <= PER_TASK_OUTPUT_CAP) return output;
 
-	let truncated = output.slice(0, PER_TASK_OUTPUT_CAP);
-	while (Buffer.byteLength(truncated, "utf8") > PER_TASK_OUTPUT_CAP) {
-		truncated = truncated.slice(0, -1);
-	}
-	return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted.]`;
+  let truncated = output.slice(0, PER_TASK_OUTPUT_CAP);
+  while (Buffer.byteLength(truncated, "utf8") > PER_TASK_OUTPUT_CAP) {
+    truncated = truncated.slice(0, -1);
+  }
+  return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted.]`;
 }
 
 // ---------------------------------------------------------------------------
@@ -507,19 +507,19 @@ export function truncateParallelOutput(output: string): string {
 // ---------------------------------------------------------------------------
 
 const RATE_LIMIT_PATTERNS = [
-	/\b429\b/,
-	/\b529\b/,
-	/rate[\s_]limit/i,
-	/ratelimit/i,
-	/too[\s_]many[\s_]requests/i,
-	/quota[\s_]exhausted/i,
-	/quota[\s_]exceeded/i,
-	/exceeded[\s_](?:your[\s_])?(?:current[\s_])?quota/i,
-	/insufficient_quota/i,
-	/resource[\s_]exhausted/i,
-	/capacity[\s_]exceeded/i,
-	/usage[\s_]limit/i,
-	/overloaded/i,
+  /\b429\b/,
+  /\b529\b/,
+  /rate[\s_]limit/i,
+  /ratelimit/i,
+  /too[\s_]many[\s_]requests/i,
+  /quota[\s_]exhausted/i,
+  /quota[\s_]exceeded/i,
+  /exceeded[\s_](?:your[\s_])?(?:current[\s_])?quota/i,
+  /insufficient_quota/i,
+  /resource[\s_]exhausted/i,
+  /capacity[\s_]exceeded/i,
+  /usage[\s_]limit/i,
+  /overloaded/i,
 ];
 
 /**
@@ -529,5 +529,5 @@ const RATE_LIMIT_PATTERNS = [
  * primary model candidate hits a 429 or similar server-side capacity error.
  */
 export function isRateLimitError(message: string): boolean {
-	return RATE_LIMIT_PATTERNS.some(p => p.test(message));
+  return RATE_LIMIT_PATTERNS.some(p => p.test(message));
 }

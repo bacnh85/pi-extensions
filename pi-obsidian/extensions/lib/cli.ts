@@ -5,40 +5,40 @@ import { spawnSync } from "node:child_process";
  * Returns stdout and parsed JSON (if stdout is valid JSON).
  */
 export function execObsidian(args: string[], formatJson = false, timeoutMs = 30_000): { stdout: string; parsed: unknown } {
-	const allArgs = formatJson ? [...args, "format=json"] : args;
-	const result = spawnSync("obsidian", allArgs, {
-		encoding: "utf8",
-		timeout: timeoutMs,
-		windowsHide: true,
-	});
+  const allArgs = formatJson ? [...args, "format=json"] : args;
+  const result = spawnSync("obsidian", allArgs, {
+    encoding: "utf8",
+    timeout: timeoutMs,
+    windowsHide: true,
+  });
 
-	const stdout = (result.stdout ?? "")
-		.split("\n")
-		.filter((line) => !/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d Loading updated app package /.test(line) && !line.includes("Your Obsidian installer is out of date. Please download the latest installer which includes better CLI support"))
-		.join("\n");
-	const stderr = result.stderr ?? "";
+  const stdout = (result.stdout ?? "")
+    .split("\n")
+    .filter((line) => !/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d Loading updated app package /.test(line) && !line.includes("Your Obsidian installer is out of date. Please download the latest installer which includes better CLI support"))
+    .join("\n");
+  const stderr = result.stderr ?? "";
 
-	if (result.signal) {
-		throw new Error(`obsidian CLI killed by signal ${result.signal}`);
-	}
-	const exitCode = result.status ?? 1;
+  if (result.signal) {
+    throw new Error(`obsidian CLI killed by signal ${result.signal}`);
+  }
+  const exitCode = result.status ?? 1;
 
-	if ((result.error as any)?.code === "ENOENT") {
-		throw new Error("obsidian CLI not found in PATH. Install Obsidian 1.12+ and enable CLI in Settings → General.");
-	}
+  if ((result.error as any)?.code === "ENOENT") {
+    throw new Error("obsidian CLI not found in PATH. Install Obsidian 1.12+ and enable CLI in Settings → General.");
+  }
 
-	if (exitCode !== 0) {
-		throw new Error(
-			`obsidian command failed (exit ${exitCode})\n` +
-			`  Cmd: obsidian ${allArgs.join(" ")}\n` +
-			`  Stderr: ${(stderr || "(empty)").slice(0, 800)}\n` +
-			`  Stdout: ${(stdout || "(empty)").slice(0, 400)}`
-		);
-	}
+  if (exitCode !== 0) {
+    throw new Error(
+      `obsidian command failed (exit ${exitCode})\n` +
+      `  Cmd: obsidian ${allArgs.join(" ")}\n` +
+      `  Stderr: ${(stderr || "(empty)").slice(0, 800)}\n` +
+      `  Stdout: ${(stdout || "(empty)").slice(0, 400)}`
+    );
+  }
 
-	let parsed: unknown = stdout;
-	try { parsed = JSON.parse(stdout); } catch { /* not JSON, keep raw */ }
-	return { stdout, parsed };
+  let parsed: unknown = stdout;
+  try { parsed = JSON.parse(stdout); } catch { /* not JSON, keep raw */ }
+  return { stdout, parsed };
 }
 
 
