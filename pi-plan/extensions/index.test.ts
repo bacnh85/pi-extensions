@@ -12,8 +12,9 @@ import { execFileSync } from "node:child_process";
 import piPlanExtension, { snapshotUntrackedFiles } from "./index";
 import { BLOCKED_TOOLS, PLAN_ONLY_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
-import { captureRewindCheckpoint, createHandoff, restoreRewindCheckpoint, rewindToFlowBaseline } from "./lib/lifecycle";
+import { captureRewindCheckpoint, restoreRewindCheckpoint, rewindToFlowBaseline } from "./lib/lifecycle";
 import { registerAdvisor } from "./commands/advisor";
+import { buildFinalPrompt } from "./commands/handoff";
 import { formatSpecsProgress, invalidExistingTargets, specSlug } from "./commands/specs";
 import { workspaceContext } from "./lib/workspace-context";
 import { parseModel } from "./lib/utility-config";
@@ -107,7 +108,7 @@ describe("state lifecycle", () => {
 		assert.equal(readFileSync(path.join(subdir, "child.ts"), "utf8"), "checkpoint\n");
 	});
 
-	it("writes a compact handoff and restores the workflow baseline", async () => {
+	it("restores the workflow baseline and file modes", async () => {
 		const cwd = createGitRepo("pi-plan-lifecycle-");
 		const plan = path.join(cwd, ".agents", "plans", "plan.md");
 		mkdirSync(path.dirname(plan), { recursive: true });
@@ -123,10 +124,6 @@ describe("state lifecycle", () => {
 		const initialUnstagedPatch = execFileSync("git", ["diff", "--binary"], { cwd, encoding: "utf8" });
 		writeFileSync(path.join(cwd, "README.md"), "broken");
 		writeFileSync(path.join(cwd, "bad.ts"), "broken");
-
-		const handoff = await createHandoff(cwd, { lastPlanPath: plan, lastPlanTitle: "Plan", lastPlanStatus: "executing", flow: { baseline, phase: "implement", reviewPass: 0 } });
-		assert.equal(handoff.snippet, "Read .pi-handoff.md; continue the next milestone.");
-		assert.match(readFileSync(handoff.path, "utf8"), /next: implement/);
 
 		await rewindToFlowBaseline(cwd, { baseline, phase: "implement", reviewPass: 0, initialCachedPatch, initialUnstagedPatch, initialUntrackedSnapshot });
 		assert.equal(readFileSync(path.join(cwd, "README.md"), "utf8"), "unstaged\n");
@@ -1146,6 +1143,107 @@ describe("execution handoff", () => {
 		assert.ok(!activeTools.includes("edit"), "saved plan mode hides mutators");
 		assert.equal(lastEntry.data?.lastPlanStatus, undefined, "lastPlanStatus not inherited — absent from saved entry");
 		assert.equal(lastEntry.data?.flow, undefined, "flow not inherited — absent from saved entry");
+	});
+});
+
+describe("handoff", () => {
+	it("buildFinalPrompt prepends the parent-session reference", () => {
+		assert.equal(buildFinalPrompt("body", undefined), "body");
+		const prompt = buildFinalPrompt("body", "/test/session.jsonl");
+		assert.match(prompt, /Parent session.*\/test\/session\.jsonl/);
+		assert.ok(prompt.endsWith("body"));
+	});
+
+	it("requires a goal argument", async () => {
+		const { commands } = createFakePi(["read"]);
+		const notifies: Array<{ msg: string; level: string }> = [];
+		const newSessionCalls: any[] = [];
+		const ctx = fakeCtx({
+			mode: "tui",
+			ui: { notify: (msg: string, level: string) => notifies.push({ msg, level }) },
+			newSession: async (options: any) => { newSessionCalls.push(options); return { cancelled: false }; },
+		});
+		await commands["handoff"].handler("", ctx);
+		assert.ok(notifies.some((n) => /Usage: \/handoff/.test(n.msg)), "usage notify shown");
+		assert.equal(newSessionCalls.length, 0, "newSession not called without a goal");
+	});
+
+	it("rejects non-TUI modes (RPC returns no custom UI)", async () => {
+		const { commands } = createFakePi(["read"]);
+		const notifies: Array<{ msg: string; level: string }> = [];
+		const newSessionCalls: any[] = [];
+		const ctx = fakeCtx({
+			mode: "rpc",
+			hasUI: true,
+			ui: { custom: async () => undefined, notify: (msg: string, level: string) => notifies.push({ msg, level }) },
+			newSession: async (options: any) => { newSessionCalls.push(options); return { cancelled: false }; },
+		});
+		await commands["handoff"].handler("do something", ctx);
+		assert.ok(notifies.some((n) => /interactive mode/.test(n.msg)), "interactive-mode error shown");
+		assert.equal(newSessionCalls.length, 0, "newSession not called in RPC mode");
+	});
+
+	it("spawns a parent-linked session with the edited prompt", async () => {
+		const { commands } = createFakePi(["read"]);
+		const newSessionCalls: any[] = [];
+		const editorTexts: string[] = [];
+		const ctx = fakeCtx({
+			mode: "tui",
+			ui: {
+				custom: async () => ({ prompt: "## Task\nDo X" }),
+				editor: async (_title: string, prefill: string) => prefill,
+				notify: () => {},
+				setEditorText: (text: string) => editorTexts.push(text),
+			},
+			sessionManager: {
+				getBranch: () => [],
+				getSessionFile: () => "/test/session.jsonl",
+				getEntries: () => [
+					{ id: "1", type: "message", message: { role: "user", content: [{ type: "text", text: "hello" }] } },
+					{ id: "2", type: "message", message: { role: "assistant", content: [{ type: "text", text: "hi there" }] } },
+				],
+				getLeafId: () => "2",
+			},
+			newSession: async (options: any) => {
+				newSessionCalls.push(options);
+				await options.withSession?.({ ui: { setEditorText: (text: string) => editorTexts.push(text), notify: () => {} } });
+				return { cancelled: false };
+			},
+		});
+
+		await commands["handoff"].handler("finish phase two", ctx);
+
+		assert.equal(newSessionCalls.length, 1, "newSession called once");
+		assert.equal(newSessionCalls[0].parentSession, "/test/session.jsonl", "parent session linked");
+		assert.ok(editorTexts.some((text) => /Parent session/.test(text) && /Do X/.test(text)), "editor prefilled with parent ref and task");
+	});
+
+	it("cancels when the editor prompt is dismissed", async () => {
+		const { commands } = createFakePi(["read"]);
+		const notifies: Array<{ msg: string; level: string }> = [];
+		const newSessionCalls: any[] = [];
+		const ctx = fakeCtx({
+			mode: "tui",
+			ui: {
+				custom: async () => ({ prompt: "## Task\nDo X" }),
+				editor: async () => undefined,
+				notify: (msg: string, level: string) => notifies.push({ msg, level }),
+			},
+			sessionManager: {
+				getBranch: () => [],
+				getSessionFile: () => "/test/session.jsonl",
+				getEntries: () => [
+					{ id: "1", type: "message", message: { role: "user", content: [{ type: "text", text: "hello" }] } },
+					{ id: "2", type: "message", message: { role: "assistant", content: [{ type: "text", text: "hi there" }] } },
+				],
+				getLeafId: () => "2",
+			},
+			newSession: async (options: any) => { newSessionCalls.push(options); return { cancelled: false }; },
+		});
+
+		await commands["handoff"].handler("finish phase two", ctx);
+		assert.ok(notifies.some((n) => /Handoff cancelled/.test(n.msg)), "cancellation notify shown");
+		assert.equal(newSessionCalls.length, 0, "newSession not called on cancel");
 	});
 });
 

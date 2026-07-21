@@ -1,12 +1,11 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 const MAX_SNAPSHOT_BYTES = 50 * 1024;
-const HANDOFF_FILE = ".pi-handoff.md";
 
 type SnapshotEntry =
 	| { path: string; hash: string; content: string; mode?: number; kind?: "file" }
@@ -26,12 +25,6 @@ export interface LifecycleFlow {
 	blockingFindings?: Array<{ issue: string; evidence: string }>;
 }
 
-export interface LifecycleState {
-	lastPlanPath?: string;
-	lastPlanTitle?: string;
-	lastPlanStatus?: string;
-	flow?: LifecycleFlow;
-}
 
 export interface RewindCheckpoint {
 	promptEntryId: string;
@@ -56,18 +49,6 @@ async function repositoryRoot(cwd: string): Promise<string> {
 	const root = await git(cwd, ["rev-parse", "--show-toplevel"]);
 	if (root.code !== 0 || !root.stdout.trim()) throw new Error("Rewind requires a Git working tree.");
 	return root.stdout.trim();
-}
-
-function clip(value: string | undefined, max = 400): string {
-	const text = value?.trim().replace(/\s+/g, " ") || "-";
-	return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}
-
-function planMilestones(content: string): { done: string; next: string } {
-	const lines = content.split("\n").map((line) => line.trim()).filter(Boolean);
-	const done = lines.filter((line) => /^[-*]\s+\[[xX]\]/.test(line)).slice(0, 6).map((line) => line.replace(/^[-*]\s+\[[xX]\]\s*/, ""));
-	const next = lines.filter((line) => /^(?:[-*]\s+\[ \]|\d+[.)])\s+/.test(line) && !/^[-*]\s+\[[xX]\]/.test(line)).slice(0, 3).map((line) => line.replace(/^(?:[-*]\s+\[ \]|\d+[.)])\s+/, ""));
-	return { done: done.join(" | ") || "-", next: next.join(" | ") || "-" };
 }
 
 function safeRelative(cwd: string, file: string): string | undefined {
@@ -146,35 +127,6 @@ export async function snapshotUntrackedFiles(cwd: string): Promise<string> {
 		if (directory.kind === "dir") directories.set(directory.path, directory);
 	}
 	return JSON.stringify([...entries, ...directories.values()]);
-}
-
-export async function createHandoff(cwd: string, state: LifecycleState): Promise<{ path: string; snippet: string }> {
-	const [root, status, files] = await Promise.all([
-		git(cwd, ["rev-parse", "--show-toplevel"]),
-		git(cwd, ["status", "--porcelain"]),
-		git(cwd, ["diff", "--name-only", "HEAD"]),
-	]);
-	let plan = "";
-	if (state.lastPlanPath && safeRelative(cwd, state.lastPlanPath)) plan = await readFile(state.lastPlanPath, "utf8").catch(() => "");
-	const milestones = planMilestones(plan);
-	const active = [...new Set(`${files.stdout}\n${status.stdout}`.split("\n").map((line) => line.trim().replace(/^(?:[ MADRCU?!]{2}\s+)?/, "")).filter(Boolean))].slice(0, 12).join(" | ") || "-";
-	const errors = state.flow?.blockingFindings?.slice(0, 3).map((finding) => clip(`${finding.issue}: ${finding.evidence}`, 240)).join(" | ") || clip(state.flow?.verificationSummary);
-	const content = [
-		"# pi-plan handoff",
-		`plan: ${clip(state.lastPlanTitle)} (${clip(state.lastPlanStatus)})`,
-		`flow: ${state.flow ? `${state.flow.phase}/${state.flow.reviewPass} base=${state.flow.baseline}` : "-"}`,
-		`done: ${milestones.done}`,
-		`next: ${milestones.next}`,
-		`files: ${active}`,
-		"stack: @bacnh85/pi-plan · TypeScript · Node · Git",
-		`errors: ${errors}`,
-		`git: ${root.code === 0 ? `root=${path.basename(root.stdout.trim())} dirty=${status.stdout.trim() ? "yes" : "no"}` : "unavailable"}`,
-		"resume: Read .pi-handoff.md; continue the next milestone; verify before changing state.",
-		"",
-	].join("\n");
-	const destination = path.join(cwd, HANDOFF_FILE);
-	await writeFile(destination, content, "utf8");
-	return { path: destination, snippet: "Read .pi-handoff.md; continue the next milestone." };
 }
 
 export async function captureRewindCheckpoint(cwd: string, promptEntryId: string, prompt: string, timestamp = new Date().toISOString()): Promise<RewindCheckpoint> {

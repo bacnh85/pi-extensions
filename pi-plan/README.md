@@ -35,7 +35,7 @@ pi --plan
 | `/plan-approve [current|new|flow]` | Open approval choices or execute a specific handoff through Pi's command router. |
 | `/flow status` | Show the active workflow phase and review pass. |
 | `/flow stop` | Abort review and stop the active workflow. |
-| `/handoff` | Write a compact `.pi-handoff.md` and print the fresh-session resume line. |
+| `/handoff <goal>` | Summarize the session into a reviewable prompt and start a focused new Pi session linked to the parent. |
 | `/rewind` | Select a saved prompt checkpoint and restore its code, conversation, or both. |
 | `/advisor [model hint\|off]` | Configure a transcript-aware strategic advisor with `/model`-style search. |
 | `/btw [query]` | Ask a context-aware side question; completed answers persist as transcript cards. Without a query, reopens the last answer. |
@@ -60,7 +60,7 @@ pi --plan
 
 Non-blocking review findings do not enter the fix loop, but remain available in the workflow result details instead of being reported as a clean review. Automated review uses a 3-minute activity-resettable inactivity window and a 20-minute hard cap; only real reviewer progress resets the window.
 
-`/handoff` records the active plan, workflow phase, compact milestones, changed paths, stack, and critical review/verification errors without injecting that ledger into the current model context. Start a fresh session with the printed line. `/rewind` captures the current Git workspace before each normal user prompt and presents the latest 100 reachable checkpoints. Select a checkpoint to restore its conversation, code, or both; code restore stashes current staged, unstaged, and untracked work, then restores the checkpoint's bounded 50 KB patch/untracked snapshot. It requires Git with unchanged `HEAD`, refuses committed divergence, and can overwrite concurrent or external changes to files restored by Pi.
+`/handoff <goal>` summarizes the current session (seeded with the active plan/workflow state) into a focused, self-contained prompt, lets you review and edit it, then starts a **new Pi session** linked to the parent so the next agent can continue without the old context window. It does not carry plan mode or flow state into the new session — use `/plan-approve new|flow` to continue the same plan execution. `/rewind` captures the current Git workspace before each normal user prompt and presents the latest 100 reachable checkpoints. Select a checkpoint to restore its conversation, code, or both; code restore stashes current staged, unstaged, and untracked work, then restores the checkpoint's bounded 50 KB patch/untracked snapshot. It requires Git with unchanged `HEAD`, refuses committed divergence, and can overwrite concurrent or external changes to files restored by Pi.
 
 Fresh-session replacement is intentionally initiated by `/plan-approve`: extension-originated messages bypass Pi's slash-command router and cannot call command-only session APIs. The automated choice requires `pi-review` and `pi-subagent`. It never resets files or Git state; initial dirty paths are recorded for reviewer context. Untracked content snapshots are lossless up to the same 50 KB evidence limit as tracked dirty patches and fail closed above it. The implementer must report exact checks with `[verification: pass]` or `[verification: fail]`.
 

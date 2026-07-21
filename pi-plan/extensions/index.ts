@@ -14,11 +14,12 @@ import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
-import { captureRewindCheckpoint, createHandoff, restoreRewindCheckpoint, rewindToFlowBaseline, snapshotUntrackedFiles, validateRewindCheckpoint, type RewindCheckpoint } from "./lib/lifecycle";
+import { captureRewindCheckpoint, restoreRewindCheckpoint, rewindToFlowBaseline, snapshotUntrackedFiles, validateRewindCheckpoint, type RewindCheckpoint } from "./lib/lifecycle";
 import { BLOCKED_TOOLS, PLAN_ONLY_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 import { registerAdvisor } from "./commands/advisor";
 import { registerBtw } from "./commands/btw";
 import { registerDoctor } from "./commands/doctor";
+import { registerHandoff } from "./commands/handoff";
 import { registerSpecs } from "./commands/specs";
 
 const STATUS_KEY = "pi-plan";
@@ -34,7 +35,6 @@ const REVIEW_HARD_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_DIRTY_PATCH_BYTES = 50 * 1024;
 const MAX_UNTRACKED_REVIEW_BYTES = 12 * 1024;
 const PREFERENCES_FILE = path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "pi-plan", "preferences.json");
-const HANDOFF_FILE = ".pi-handoff.md";
 const REWIND_CHECKPOINT_TYPE = "pi-plan-rewind";
 const MAX_REWIND_CHECKPOINTS = 100;
 const THINKING_LEVELS = [
@@ -497,18 +497,6 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			if (specGateActive) return ctx.ui.notify("/specs gate is active. Run /specs-approve before leaving plan mode.", "warning");
 			leavePlanMode(ctx);
 		} else enterPlanMode(ctx);
-	}
-
-	async function handoff(ctx: ExtensionContext): Promise<void> {
-		persistState();
-		try {
-			const result = await withFileMutationQueue(path.join(ctx.cwd, HANDOFF_FILE), () =>
-				createHandoff(ctx.cwd, { lastPlanPath, lastPlanTitle, lastPlanStatus, flow }),
-			);
-			ctx.ui.notify(result.snippet, "info");
-		} catch (error) {
-			ctx.ui.notify(`Handoff failed: ${String(error)}`, "error");
-		}
 	}
 
 	function checkpoints(ctx: ExtensionContext): RewindCheckpoint[] {
@@ -1261,9 +1249,13 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	registerSpecs(pi, activateSpecGate, approveSpecGate);
 	registerDoctor(pi);
 
-	pi.registerCommand("handoff", {
-		description: "Write a compact state handoff ledger",
-		handler: async (_args, ctx) => handoff(ctx),
+	registerHandoff(pi, {
+		getPlanContext: (cwd) => {
+			const lines: string[] = [];
+			if (lastPlanPath) lines.push(`- plan: ${lastPlanTitle ?? "Plan"} (${lastPlanStatus ?? "draft"}) — ${relativeToCwd(cwd, lastPlanPath)}`);
+			if (flow && !["done", "stopped"].includes(flow.phase)) lines.push(`- workflow: ${flow.phase}, review pass ${flow.reviewPass}`);
+			return lines.join("\n");
+		},
 	});
 
 	pi.registerCommand("rewind", {
