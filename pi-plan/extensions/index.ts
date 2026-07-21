@@ -1385,8 +1385,13 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		persistState();
 	});
 
-	pi.on("turn_start", async (_event, ctx) => {
+	pi.on("message_start", async (event, ctx) => {
 		if (planModeEnabled) return;
+		// The user message is persisted on its message_end, which fires before the
+		// assistant message_start. turn_start fires too early (leaf is still the
+		// prior assistant), so capture here, where the user leaf is in the tree
+		// and the agent has not yet edited any files.
+		if (event.message?.role !== "assistant") return;
 		const entry = ctx.sessionManager.getLeafEntry();
 		if (entry?.type !== "message" || entry.message.role !== "user" || checkpoints(ctx).some((checkpoint) => checkpoint.promptEntryId === entry.id)) return;
 		const prompt = typeof entry.message.content === "string"

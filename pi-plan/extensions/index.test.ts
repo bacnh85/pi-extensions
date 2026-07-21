@@ -1184,11 +1184,28 @@ describe("rewind checkpoints", () => {
 		await commands.rewind.handler("", ctx);
 		assert.equal(editorText, "unchanged");
 
+		const assistantStart = { type: "message_start", message: { role: "assistant" } };
+		// turn_start fires before the user message is persisted (leaf is still the prior
+		// assistant), so it must not capture. No turn_start handler is registered now.
 		await handlers.turn_start?.[0]({}, fakeCtx({
 			cwd,
 			sessionManager: { getBranch: () => [], getLeafEntry: () => branch[1] },
 		}));
+		assert.equal(entries.some((entry) => entry.customType === "pi-plan-rewind"), false);
+		// message_start(assistant) fires after the user leaf is in the tree, before any
+		// edits: capture happens here.
+		await handlers.message_start?.[0](assistantStart, fakeCtx({
+			cwd,
+			sessionManager: { getBranch: () => [], getLeafEntry: () => branch[1] },
+		}));
 		assert.ok(entries.some((entry) => entry.customType === "pi-plan-rewind"));
+		// A non-user leaf (e.g. toolResult on a continuation turn) must not capture.
+		const before = entries.length;
+		await handlers.message_start?.[0](assistantStart, fakeCtx({
+			cwd,
+			sessionManager: { getBranch: () => [], getLeafEntry: () => branch[0] },
+		}));
+		assert.equal(entries.length, before);
 	});
 
 	it("preflights combined rewind before changing the conversation", async () => {
