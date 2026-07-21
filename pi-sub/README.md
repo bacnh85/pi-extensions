@@ -2,7 +2,7 @@
 
 Pi extension that shows subscription usage for the currently selected supported model provider.
 
-Supports OpenAI Codex (`openai-codex`) with live usage windows from ChatGPT's usage endpoint, OpenCode Go (`opencode-go`) with session cost tracking, and Z.ai (`zai`) with GLM Coding Plan quota monitoring. Displays a subscription footer status after Pi's built-in status/token usage line.
+Supports OpenAI Codex (`openai-codex`) with live usage windows from ChatGPT's usage endpoint, OpenCode Go (`opencode-go`) with session cost tracking, and Z.ai GLM Coding Plan — both the international (`zai`) and China (`zai-coding-cn`, `open.bigmodel.cn`) endpoints — with quota monitoring. Displays a subscription footer status after Pi's built-in status/token usage line.
 
 ## Install
 
@@ -51,6 +51,14 @@ Z.ai (GLM Coding Plan) shows the active account/key label, 5-hour rolling and we
 
 ```text
 (Z.ai key#1a2b3c4d) R:55%/2H W:80%/3D 42 tok/s
+```
+
+### Z.ai Coding Plan (China)
+
+The built-in `zai-coding-cn` provider targets the domestic BigModel endpoint (`open.bigmodel.cn`) and returns the same GLM Coding Plan quota format as the international `zai` provider, so the footer and `/sub` detail behave identically, distinguished only by the `Z.ai (CN)` label:
+
+```text
+(Z.ai (CN) key#1a2b3c4d) R:55%/2H W:80%/3D 42 tok/s
 ```
 
 ### Tokens per second
@@ -104,6 +112,8 @@ Last response: 42 tok/s · Session avg: 39 tok/s
 * Z.ai key#1a2b3c4d  Pro   55%/2H        80%/3D            Now
 ```
 
+For Z.ai Coding Plan (China), the `/sub` detail is the same with a `Z.ai (CN)` provider/account label:
+
 ## Refresh behavior
 
 `pi-sub` refreshes usage data:
@@ -123,9 +133,10 @@ Refreshes are cached briefly to avoid excessive usage endpoint calls.
 - **OpenAI Codex**: Pi auth must contain an `openai-codex` OAuth entry in `~/.pi/agent/auth.json` or `$PI_CODING_AGENT_DIR/auth.json`. The entry must include `access` and `accountId` fields.
 - **OpenCode Go**: Pi auth must contain an `opencode-go` API key entry (via `/login` or env var). The entry must have a `key` field or an `accountId` field. OpenCode Go/Zen usage windows and Zen balance are not shown because no public API is currently documented for those values.
 - **Z.ai**: Pi auth must contain a `zai` entry in `auth.json` with a `key` field (the same API key used for Z.ai model access via `@czottmann/pi-zai-api`). The Z.ai provider must be registered (e.g., `pi install npm:@czottmann/pi-zai-api`).
+- **Z.ai Coding Plan (China)**: The built-in `zai-coding-cn` provider targets `https://open.bigmodel.cn/api/coding/paas/v4`. Pi auth must contain a `zai-coding-cn` entry with a `key` field (set via `/login` or the `ZAI_CODING_CN_API_KEY` env var). Quota is read from the BigModel endpoint `https://open.bigmodel.cn/api/monitor/usage/quota/limit`.
 - For API-key-only providers, account labels come from stored auth metadata (`email`, `label`, `name`, or `accountId`) when available; otherwise `pi-sub` displays a non-secret SHA-256 key fingerprint such as `Z.ai key#1a2b3c4d`.
 - `pi-sub` redacts auth/token-related errors and never prints credentials.
 
 ## Design notes
 
-The extension is named `pi-sub` rather than `pi-codex-usage` so future subscription providers can be added as separate adapters. Supports OpenAI Codex (live usage API) and OpenCode Go (session cost only).
+The extension is named `pi-sub` rather than `pi-codex-usage` so future subscription providers can be added as separate adapters. Supports OpenAI Codex (live usage API), OpenCode Go (session cost only), and the Z.ai GLM Coding Plan (international `zai` and China `zai-coding-cn`, which share a quota response format and are served by one parameterized adapter).

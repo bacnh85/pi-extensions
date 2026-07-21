@@ -13,6 +13,8 @@ const CODEX_PROVIDER = "openai-codex";
 const OPC_PROVIDER = "opencode-go";
 const ZAI_PROVIDER = "zai";
 const ZAI_USAGE_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
+const ZAI_CODING_CN_PROVIDER = "zai-coding-cn";
+const ZAI_CODING_CN_USAGE_URL = "https://open.bigmodel.cn/api/monitor/usage/quota/limit";
 
 type ModelLike = { provider?: string; id?: string } | undefined;
 
@@ -99,6 +101,10 @@ function isOpenCodeGoModel(model: ModelLike): boolean {
 
 function isZaiModel(model: ModelLike): boolean {
 	return (model?.provider?.toLowerCase() ?? "") === ZAI_PROVIDER;
+}
+
+function isZaiCodingCnModel(model: ModelLike): boolean {
+	return (model?.provider?.toLowerCase() ?? "") === ZAI_CODING_CN_PROVIDER;
 }
 
 function piAuthPath(): string {
@@ -279,10 +285,10 @@ async function readOpenCodeGoAuth(): Promise<SubscriptionAccountSnapshot> {
 	return authAccountSnapshot("OpenCode Go", entry, { plan: "Go" });
 }
 
-async function readZaiAuth(): Promise<{ key: string; account: SubscriptionAccountSnapshot }> {
-	const entry = readStoredCredential(ZAI_PROVIDER, piAuthPath()) as PiAuthEntry | undefined;
-	if (!entry?.key) throw new Error("Missing zai API key in Pi auth");
-	return { key: entry.key, account: authAccountSnapshot("Z.ai", entry) };
+async function readZaiAuth(providerId: string, label: string): Promise<{ key: string; account: SubscriptionAccountSnapshot }> {
+	const entry = readStoredCredential(providerId, piAuthPath()) as PiAuthEntry | undefined;
+	if (!entry?.key) throw new Error(`Missing ${providerId} API key in Pi auth`);
+	return { key: entry.key, account: authAccountSnapshot(label, entry) };
 }
 
 async function fetchUsageFromPiAuth(entry: PiAuthEntry, signal?: AbortSignal): Promise<UsageApiSnapshot | undefined> {
@@ -372,6 +378,7 @@ interface ZaiUsageApiResponse {
 		plan?: string;
 		plan_type?: string;
 		packageName?: string;
+		level?: string;
 	};
 }
 
@@ -399,75 +406,81 @@ function zaiLimitToUsageWindow(limit: ZaiLimitEntry): UsageWindow | undefined {
 
 function zaiPlanLabel(response: ZaiUsageApiResponse): string | undefined {
 	const data = response.data;
-	return planLabel(firstString(data?.planName, data?.plan, data?.plan_type, data?.packageName));
+	return planLabel(firstString(data?.planName, data?.plan, data?.plan_type, data?.packageName, data?.level));
 }
 
-async function fetchZaiUsage(signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> {
-	try {
-		const { key: apiKey, account: authAccount } = await readZaiAuth();
-		const timeoutSignal = AbortSignal.timeout(7_000);
-		const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+// Factory: the international `zai` and China `zai-coding-cn` endpoints share an
+// identical quota response; only the provider id, host, and label differ.
+function zaiUsageAdapter(providerId: string, usageUrl: string, displayName: string): { fetchUsage(signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> } {
+	async function fetchUsage(signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> {
+		try {
+			const { key: apiKey, account: authAccount } = await readZaiAuth(providerId, displayName);
+			const timeoutSignal = AbortSignal.timeout(7_000);
+			const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 
-		const response = await fetch(ZAI_USAGE_URL, {
-			headers: {
-				Accept: "application/json",
-				Authorization: `Bearer ${apiKey}`,
-				"User-Agent": "pi-sub/0.1.0",
-			},
-			signal: combinedSignal,
-		});
+			const response = await fetch(usageUrl, {
+				headers: {
+					Accept: "application/json",
+					Authorization: `Bearer ${apiKey}`,
+					"User-Agent": "pi-sub/0.1.0",
+				},
+				signal: combinedSignal,
+			});
 
-		const body = await response.json();
+			const body = await response.json();
 
-		// Z.ai returns HTTP 200 even on auth errors: {"code":401,"msg":"...","success":false}
-		// Also handle missing success field, empty msg, or presence of code.
-		const apiError = body as ZaiUsageApiError;
-		if (apiError.code >= 400 || (typeof apiError.success === "boolean" && !apiError.success) || (apiError.msg && apiError.msg.length > 0 && apiError.success === undefined)) {
-			const message = apiError.msg || `HTTP status ${apiError.code}`;
-			throw new Error(`Z.ai API error: ${message}`);
+			// Z.ai / BigModel return HTTP 200 even on auth errors: {"code":401,"msg":"...","success":false}
+			// Also handle missing success field, empty msg, or presence of code.
+			const apiError = body as ZaiUsageApiError;
+			if (apiError.code >= 400 || (typeof apiError.success === "boolean" && !apiError.success) || (apiError.msg && apiError.msg.length > 0 && apiError.success === undefined)) {
+				const message = apiError.msg || `HTTP status ${apiError.code}`;
+				throw new Error(`${displayName} API error: ${message}`);
+			}
+
+			const parsed = body as ZaiUsageApiResponse;
+			const tokenLimits = (parsed.data?.limits ?? [])
+				.filter((l) => l.type === "TOKENS_LIMIT")
+				.sort((a, b) => (a.nextResetTime ?? 0) - (b.nextResetTime ?? 0));
+
+			if (tokenLimits.length === 0) {
+				throw new Error(`No TOKENS_LIMIT entries in ${displayName} usage response`);
+			}
+
+			// The limit with the nearest reset is the 5-hour rolling window;
+			// the next one (if present) is the weekly window.
+			const fiveHour = zaiLimitToUsageWindow(tokenLimits[0]);
+			const weekly = tokenLimits.length >= 2 ? zaiLimitToUsageWindow(tokenLimits[1]) : undefined;
+
+			const account: SubscriptionAccountSnapshot = {
+				...authAccount,
+				plan: zaiPlanLabel(parsed) ?? authAccount.plan,
+				fiveHour,
+				weekly,
+			};
+
+			return {
+				providerDisplayName: displayName,
+				accounts: [account],
+				activeAccount: account,
+				fetchedAt: Date.now(),
+			};
+		} catch (error) {
+			return {
+				providerDisplayName: displayName,
+				accounts: [],
+				fetchedAt: Date.now(),
+				error: redactedError(error, displayName),
+			};
 		}
-
-		const parsed = body as ZaiUsageApiResponse;
-		const tokenLimits = (parsed.data?.limits ?? [])
-			.filter((l) => l.type === "TOKENS_LIMIT")
-			.sort((a, b) => (a.nextResetTime ?? 0) - (b.nextResetTime ?? 0));
-
-		if (tokenLimits.length === 0) {
-			throw new Error("No TOKENS_LIMIT entries in Z.ai usage response");
-		}
-
-		// The limit with the nearest reset is the 5-hour rolling window;
-		// the next one (if present) is the weekly window.
-		const fiveHour = zaiLimitToUsageWindow(tokenLimits[0]);
-		const weekly = tokenLimits.length >= 2 ? zaiLimitToUsageWindow(tokenLimits[1]) : undefined;
-
-		const account: SubscriptionAccountSnapshot = {
-			...authAccount,
-			plan: zaiPlanLabel(parsed) ?? authAccount.plan,
-			fiveHour,
-			weekly,
-		};
-
-		return {
-			providerDisplayName: "Z.ai",
-			accounts: [account],
-			activeAccount: account,
-			fetchedAt: Date.now(),
-		};
-	} catch (error) {
-		return {
-			providerDisplayName: "Z.ai",
-			accounts: [],
-			fetchedAt: Date.now(),
-			error: redactedError(error, "Z.ai"),
-		};
 	}
+	return { fetchUsage };
 }
 
 function supportedAdapter(model: ModelLike): SubscriptionProviderAdapter | undefined {
 	if (isCodexModel(model)) return { id: CODEX_PROVIDER, displayName: "Codex", fetchUsage: fetchCodexUsage };
 	if (isOpenCodeGoModel(model)) return { id: OPC_PROVIDER, displayName: "OpenCode Go", fetchUsage: fetchOpenCodeGoUsage };
-	if (isZaiModel(model)) return { id: ZAI_PROVIDER, displayName: "Z.ai", fetchUsage: fetchZaiUsage };
+	if (isZaiModel(model)) return { id: ZAI_PROVIDER, displayName: "Z.ai", ...zaiUsageAdapter(ZAI_PROVIDER, ZAI_USAGE_URL, "Z.ai") };
+	if (isZaiCodingCnModel(model)) return { id: ZAI_CODING_CN_PROVIDER, displayName: "Z.ai (CN)", ...zaiUsageAdapter(ZAI_CODING_CN_PROVIDER, ZAI_CODING_CN_USAGE_URL, "Z.ai (CN)") };
 	return undefined;
 }
 
