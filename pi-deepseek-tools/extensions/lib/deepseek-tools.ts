@@ -271,14 +271,27 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
     : activeTools.includes("fffind")
       ? "fffind"
       : "find";
-  const lines: string[] = ["OpenCode Go DeepSeek V4 — pick the right tool on the first try:", ""];
+  const lines: string[] = [
+    "OpenCode Go DeepSeek V4 — pick the right tool on the first try:",
+    "",
+    "FIRST-TOOL QUICK MAP — match the user's intent, then call ONLY that tool on turn 1 (no discovery preamble):",
+    '  • "run the tests" / "run unit tests" / "build" / "lint" → bash  (e.g. `npm test`, `cd pi-deepseek-tools && npm test`, `pytest`, `make`)  ← NOT find/ls/read first; you do not need to locate tests to run them',
+    '  • "find where <name> is defined" / "definition of <name>" → serena_find_symbol',
+    '  • "find references/usages of <name>" / "before changing <name>" → serena_find_referencing_symbols',
+    '  • "inspect/outline symbols in <file>" / "summarize <file>" → serena_get_symbols_overview',
+    '  • "list files in <dir>" → ls',
+    '  • a bare filename "under <dir>" rarely sits at <dir>/<file> — when the exact nested path is not given, call find first, then read the exact path find returns (a guessed path is a wasted turn)',
+    '  • "find test files" / "find *.ts files" / "find files named X" → find',
+    '  • "search README/docs/config for <text>" → grep',
+    "",
+  ];
 
   const lookups: string[] = [
     ...(activeTools.includes("obsidian")
       ? ["  • Obsidian vault operation (read, search, create, edit, move, delete) → obsidian only; never bash, read, write, or edit for vault files."]
       : []),
     `  • File location uncertain → ${workspaceFinder} before read inside the workspace; use find with the checkout root for external temporary clones. Never guess subdirectories from naming conventions — a guessed path that doesn't exist is a wasted turn. Discover first.`,
-    "  • Analyze a GitHub repository/codebase URL → bash git clone to a temporary directory, then inspect the local checkout with Serena/read; use web tools only for webpage content such as issues, PRs, releases, or individual pages",
+    "  • Analyze a GitHub repository/codebase URL → bash git clone to a temporary directory, then inspect the local checkout with Serena/read; use web tools only for webpage content such as issues, PRs, releases, or individual pages. Do NOT delete the clone afterward with rm -rf — it is blocked by the safety guard and unnecessary; /tmp is ephemeral.",
   ];
   if (serenaActive) {
     lookups.push(
@@ -363,6 +376,26 @@ export function categorizeToolError(toolName: string, errorResult: unknown): Err
 // Env-var config helpers (move these here to keep parsing
 // testable alongside the other toggle functions).
 // ────────────────────────────────────────────────────────
+
+/**
+ * Detect a clear RUN/BUILD/EXECUTE intent in the user prompt and return a
+ * targeted first-tool hint that forces bash on turn 1. Returns undefined for
+ * discovery/explanation tasks so we never misdirect find/list/search work.
+ *
+ * Why: DeepSeek V4 Flash non-deterministically calls find/ls/read to "locate"
+ * tests before running them. Prompt-aware reinforcement (appended at the most
+ * salient position) makes bash-first deterministic for execution tasks.
+ */
+export function runTaskFirstToolHint(prompt: string): string | undefined {
+  const p = (prompt || "").toLowerCase();
+  // Execution verbs. "test" alone is intentionally excluded: "find test files"
+  // is a discovery task, not an execution task.
+  const hasExecVerb = /\b(run|running|execute|executing|build|building|compile|compiling|lint|linting|format|typecheck|type-check|deploy|install|start)\b/.test(p);
+  if (!hasExecVerb) return undefined;
+  // Don't misdirect prompts that are really about locating/explaining/analyzing.
+  if (/\b(find|list|show|where|definition|references|outline|inspect|explain|summarize|analyze|analyse|how (do|does|to)|what)\b/.test(p)) return undefined;
+  return "⚠️ THIS request is a RUN / BUILD / EXECUTE task → your FIRST tool call MUST be bash (e.g. `npm test`, `cd <pkg> && npm test`, `pytest`, `make`, `npm run <script>`). Do NOT call find / ls / read / grep first — you do not need to locate anything to run a standard command.";
+}
 
 /**
  * Maximum tracked tool errors in the error history.

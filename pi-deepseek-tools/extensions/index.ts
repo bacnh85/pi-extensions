@@ -13,6 +13,7 @@ import {
 import {
   isRecord,
   deepSeekSelectionGuidance,
+  runTaskFirstToolHint,
   isSemanticMissToolCall,
   missedDedicatedTool,
   selectionGuidanceEnabled,
@@ -308,6 +309,20 @@ export default function (pi: ExtensionAPI) {
       }
     } else {
       debugLog("guidance: skipped (disabled)");
+    }
+
+    // Prompt-aware first-tool reinforcement for RUN/BUILD/EXECUTE tasks.
+    // Appended at the very end of the system prompt (most salient position) to
+    // make bash-first deterministic — fixes non-deterministic find-before-bash.
+    const activeForHint = Array.isArray(event.systemPromptOptions?.selectedTools) && event.systemPromptOptions.selectedTools.length > 0
+      ? event.systemPromptOptions.selectedTools
+      : pi.getActiveTools();
+    if (activeForHint.includes("bash")) {
+      const runHint = runTaskFirstToolHint(event.prompt || "");
+      if (runHint) {
+        systemPrompt = `${systemPrompt}\n\n${runHint}`;
+        debugLog("run-task hint: injected");
+      }
     }
 
     if (prefixParts.length > 0) {

@@ -44,7 +44,9 @@ Then reload Pi:
 
 ## Features
 
-**Tool-selection guidance** — Injects concise, model-specific rules before each agent turn when relevant tools are active, including clone-first GitHub repository analysis and discover-before-read handling for uncertain file paths. When the `obsidian` tool is active, vault reading, search, creation, edits, moves, and deletion are routed to `obsidian` instead of generic filesystem tools. Results are cached per tool-set combination.
+**Tool-selection guidance** — Injects concise, model-specific rules before each agent turn when relevant tools are active, including a first-tool quick map (intent → tool), clone-first GitHub repository analysis, and discover-before-read handling for uncertain file paths. When the `obsidian` tool is active, vault reading, search, creation, edits, moves, and deletion are routed to `obsidian` instead of generic filesystem tools. Results are cached per tool-set combination.
+
+**Run/build first-tool reinforcement** — When the user prompt is a RUN / BUILD / EXECUTE / LINT task (and `bash` is active), a short directive is appended at the most salient position (end of system prompt) forcing `bash` on turn 1. This closes DeepSeek V4 Flash's non-deterministic tendency to call `find`/`ls`/`read` to “locate” tests before running them. Discovery and explanation prompts (find/list/inspect/where/definition/…) are explicitly excluded so they are never misdirected.
 
 **Tool-input repair** — Wraps Pi's built-in file/shell tools to fix common recoverable argument mistakes before validation:
 - `null` on optional fields → omitted
@@ -215,6 +217,14 @@ Tests use Node's built-in test runner with tsx and `node:assert`. No framework m
 - [ ] Publish: `npm publish`
 
 ## Changelog
+
+### 0.12.8
+
+- Tool-selection guidance now leads with a first-tool quick map (intent → tool) for the most common intents.
+- Run/build/execute/lint prompts get a prompt-aware `bash`-FIRST reinforcement appended at the most salient position, closing Flash's non-deterministic find-before-run tendency; discovery/explanation prompts are excluded.
+- GitHub-repository guidance now tells the model not to `rm -rf` temp clones (blocked by the safety guard; `/tmp` is ephemeral).
+- First-tool selection accuracy for `opencode-go/deepseek-v4-flash` improved from 92.3% (12/13) to 97.4% (38/39 over 3 trials) on the 13-case eval; `legit-shell` is now deterministic.
+- Restored the `extensions/scripts/eval-tool-selection.mjs` dev eval harness (dev-only, not published) and fixed a stale symbol in its `references-before-change` fixture.
 
 ### 0.12.6
 

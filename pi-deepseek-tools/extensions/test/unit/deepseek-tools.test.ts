@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import extension from "../../index";
 import {
   deepSeekSelectionGuidance,
+  runTaskFirstToolHint,
   isOpenCodeGoDeepSeekV4Model,
   isSemanticMissToolCall,
   missedDedicatedTool,
@@ -169,6 +170,9 @@ describe("deepSeekSelectionGuidance", () => {
 
     assert.match(g, /pick the right tool on the first try/);
     assert.match(g, /GitHub repository\/codebase URL.*git clone.*local checkout/);
+    assert.match(g, /Do NOT delete the clone afterward with rm -rf.*ephemeral/);
+    assert.match(g, /FIRST-TOOL QUICK MAP/);
+    assert.match(g, /"run the tests".*bash.*NOT find\/ls\/read first/);
     assert.match(g, /File location uncertain.*find before read.*external temporary clones.*Never guess subdirectories/);
     assert.match(g, /exact path is verified.*read/);
     assert.match(g, /serena_get_symbols_overview/);
@@ -208,6 +212,27 @@ describe("deepSeekSelectionGuidance", () => {
     assert.notEqual(a, c); // different input → different output
     assert.match(deepSeekSelectionGuidance(["read", "resolve_file"]), /resolve_file before read/);
     assert.match(deepSeekSelectionGuidance(["read", "fffind"]), /fffind before read/);
+  });
+});
+
+describe("runTaskFirstToolHint", () => {
+  it("fires a bash-FIRST hint for run/build/execute tasks", () => {
+    assert.match(runTaskFirstToolHint("Run the pi-deepseek-tools unit tests.")!, /FIRST tool call MUST be bash/i);
+    assert.ok(runTaskFirstToolHint("Build the project and report errors."));
+    assert.ok(runTaskFirstToolHint("Lint the source files."));
+    assert.ok(runTaskFirstToolHint("Execute the test suite."));
+    assert.ok(runTaskFirstToolHint("Compile the TypeScript."));
+  });
+
+  it("returns undefined for discovery/explanation tasks (no false positives)", () => {
+    assert.equal(runTaskFirstToolHint("Find all test files for pi-deepseek-tools."), undefined);
+    assert.equal(runTaskFirstToolHint("Find TypeScript test files under extensions/test."), undefined);
+    assert.equal(runTaskFirstToolHint("Inspect symbols in index.ts and summarize them."), undefined);
+    assert.equal(runTaskFirstToolHint("Find the definition of deepSeekSelectionGuidance."), undefined);
+    assert.equal(runTaskFirstToolHint("Analyze the codebase at https://github.com/octocat/Hello-World."), undefined);
+    assert.equal(runTaskFirstToolHint("List files in pi-deepseek-tools."), undefined);
+    assert.equal(runTaskFirstToolHint("How does the test runner work?"), undefined);
+    assert.equal(runTaskFirstToolHint(""), undefined);
   });
 });
 
