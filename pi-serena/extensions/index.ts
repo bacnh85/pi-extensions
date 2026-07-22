@@ -5,6 +5,7 @@ import path from "node:path";
 import { SerenaWorkerClient, type SerenaWorkerResponse } from "./worker";
 import { SERENA_FIRST_GUIDANCE, SERENA_MISS_GUIDANCE, shouldBlockSemanticMiss } from "./lib/guidance";
 import { normalizeProject, normalizeContext, normalizeTimeoutMs, stripControlParams } from "./lib/normalize";
+import { repairSymbolNameKey } from "./lib/symbol-key";
 
 const DEFAULT_CONTEXT = "ide";
 
@@ -278,6 +279,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     promptSnippet: "Find symbols by name path",
     promptGuidelines: ["Navigate to named symbols before grep or read."],
     parameters: findSymbolSchema,
+    prepareArguments: (args) => repairSymbolNameKey(args, true),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return callSerena(ctx, "find_symbol", params);
     },
@@ -290,6 +292,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     promptSnippet: "Find references/usages of a known symbol",
     promptGuidelines: ["Use before changing public behavior or renames."],
     parameters: referencingSchema,
+    prepareArguments: (args) => repairSymbolNameKey(args, false),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return callSerena(ctx, "find_referencing_symbols", params);
     },
@@ -302,6 +305,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     promptSnippet: "Replace a known symbol body",
     promptGuidelines: ["Use only after find_symbol identifies the target."],
     parameters: replaceBodySchema,
+    prepareArguments: (args) => repairSymbolNameKey(args, false),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return callSerena(ctx, "replace_symbol_body", params, lockPathForRelativeFile(params));
     },
@@ -314,6 +318,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     promptSnippet: "Insert code before a known symbol definition",
     promptGuidelines: ["Insert code adjacent to a located symbol's definition."],
     parameters: insertSchema,
+    prepareArguments: (args) => repairSymbolNameKey(args, false),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return callSerena(ctx, "insert_before_symbol", params, lockPathForRelativeFile(params));
     },
@@ -326,6 +331,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     promptSnippet: "Insert code after a known symbol definition",
     promptGuidelines: ["Add sibling/helper symbols after a located definition."],
     parameters: insertSchema,
+    prepareArguments: (args) => repairSymbolNameKey(args, false),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return callSerena(ctx, "insert_after_symbol", params, lockPathForRelativeFile(params));
     },
@@ -338,6 +344,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     promptSnippet: "Rename a known symbol across references",
     promptGuidelines: ["Cross-file renames after finding the exact symbol."],
     parameters: renameSchema,
+    prepareArguments: (args) => repairSymbolNameKey(args, false),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return callSerena(ctx, "rename_symbol", params, lockPathForProject(params));
     },
@@ -350,6 +357,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     promptSnippet: "Safely delete an unreferenced symbol",
     promptGuidelines: ["Delete an unreferenced symbol safely."],
     parameters: safeDeleteSchema,
+    prepareArguments: (args) => repairSymbolNameKey(args, true),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return callSerena(ctx, "safe_delete_symbol", params, lockPathForRelativeFile(params));
     },
@@ -510,6 +518,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     promptSnippet: "Find a symbol's declaration",
     promptGuidelines: ["Navigate to the definition of a known symbol."],
     parameters: symbolRefSchema,
+    prepareArguments: (args) => repairSymbolNameKey(args, false),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return callWorkerAction(ctx, "find_declaration", params);
     },
@@ -522,6 +531,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     promptSnippet: "Find implementations of a given symbol",
     promptGuidelines: ["Locate implementations of interfaces, abstract methods, or base classes."],
     parameters: symbolRefSchema,
+    prepareArguments: (args) => repairSymbolNameKey(args, false),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return callWorkerAction(ctx, "find_implementations", params);
     },

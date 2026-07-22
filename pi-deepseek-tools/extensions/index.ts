@@ -14,6 +14,7 @@ import {
   isRecord,
   deepSeekSelectionGuidance,
   runTaskFirstToolHint,
+  readUncertainPathHint,
   isSemanticMissToolCall,
   missedDedicatedTool,
   selectionGuidanceEnabled,
@@ -322,6 +323,13 @@ export default function (pi: ExtensionAPI) {
       if (runHint) {
         systemPrompt = `${systemPrompt}\n\n${runHint}`;
         debugLog("run-task hint: injected");
+      }
+    }
+    if (activeForHint.includes("find")) {
+      const readHint = readUncertainPathHint(event.prompt || "");
+      if (readHint) {
+        systemPrompt = `${systemPrompt}\n\n${readHint}`;
+        debugLog("read-uncertain hint: injected");
       }
     }
 

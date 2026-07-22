@@ -398,6 +398,27 @@ export function runTaskFirstToolHint(prompt: string): string | undefined {
 }
 
 /**
+ * Detect a READ request whose target is a source file referenced only by a bare
+ * filename (no directory path), and return a hint forcing find-first. Returns
+ * undefined for symbol/navigation tasks (Serena) and for files given with an
+ * exact dir/file path. Why: DeepSeek V4 Flash non-deterministically guesses
+ * dir/filename and calls read, hitting the path-not-found block.
+ */
+export function readUncertainPathHint(prompt: string): string | undefined {
+  const p = (prompt || "").toLowerCase();
+  const isReadTask = /\b(read|show|open|view|display|cat|head|tail|first \d+ lines?|last \d+ lines?|top \d+ lines?)\b/.test(p);
+  if (!isReadTask) return undefined;
+  // Symbol/navigation work uses Serena, not find — never misdirect it.
+  if (/\b(symbols?|outline|definition|where is .+ defined|references?|declaration|implementations?|inspect)\b/.test(p)) return undefined;
+  // A code file referenced by a bare name that is NOT part of a dir/file path → uncertain.
+  const codeExt = "(?:ts|tsx|js|jsx|mjs|cjs|mts|cts|py|go|rs|java|kt|kts|scala|rb|php|cs|cpp|cc|cxx|c|h|hpp|swift|sh|bash|zsh|lua|r|jl|ex|vue|svelte)";
+  const files = p.match(new RegExp("\\b[a-z0-9_-]+\\." + codeExt + "\\b", "g")) || [];
+  const hasBareCodeFile = files.some((f) => !p.includes("/" + f));
+  if (!hasBareCodeFile) return undefined;
+  return "⚠️ THIS request reads a source file referenced only by a bare filename with no directory path — its exact location is uncertain. Call find FIRST to resolve the path, THEN read the exact path find returns. Do NOT guess the path and call read first (a guessed path that doesn't exist is a blocked, wasted turn).";
+}
+
+/**
  * Maximum tracked tool errors in the error history.
  * Default: 100. Invalid/negative values fall back to 100.
  */

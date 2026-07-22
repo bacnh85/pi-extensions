@@ -11,6 +11,7 @@ import {
 import { SEMANTIC_MISS_THRESHOLD } from "./lib/detect";
 import { SERENA_FIRST_GUIDANCE, SERENA_MISS_GUIDANCE, shouldBlockSemanticMiss } from "./lib/guidance";
 import { normalizeTimeoutMs, stripControlParams } from "./lib/normalize";
+import { repairSymbolNameKey } from "./lib/symbol-key";
 
 describe("Serena tool-selection guidance", () => {
   it("uses procedural Serena-first wording", () => {
@@ -37,6 +38,28 @@ describe("SEMANTIC_MISS_THRESHOLD", () => {
   it("is 2, not the old threshold of 4", () => {
     // Changed from 4 to 2 so the agent gets a reminder sooner
     expect(SEMANTIC_MISS_THRESHOLD).to.equal(2);
+  });
+});
+
+describe("repairSymbolNameKey", () => {
+  it("rewrites name_path -> name_path_pattern for pattern-key tools (find_symbol, safe_delete)", () => {
+    expect(repairSymbolNameKey({ name_path: "Foo", relative_path: "a.ts" }, true))
+      .to.deep.equal({ name_path_pattern: "Foo", relative_path: "a.ts" });
+  });
+
+  it("rewrites name_path_pattern -> name_path for the name_path tools", () => {
+    expect(repairSymbolNameKey({ name_path_pattern: "Foo", relative_path: "a.ts" }, false))
+      .to.deep.equal({ name_path: "Foo", relative_path: "a.ts" });
+  });
+
+  it("is a no-op when the expected key is already present", () => {
+    expect(repairSymbolNameKey({ name_path_pattern: "X" }, true)).to.deep.equal({ name_path_pattern: "X" });
+    expect(repairSymbolNameKey({ name_path: "X", relative_path: "." }, false)).to.deep.equal({ name_path: "X", relative_path: "." });
+  });
+
+  it("passes non-objects through unchanged", () => {
+    expect(repairSymbolNameKey(undefined, true)).to.equal(undefined);
+    expect(repairSymbolNameKey([1, 2], false)).to.deep.equal([1, 2]);
   });
 });
 

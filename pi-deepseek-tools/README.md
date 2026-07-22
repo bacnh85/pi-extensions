@@ -48,6 +48,8 @@ Then reload Pi:
 
 **Run/build first-tool reinforcement** — When the user prompt is a RUN / BUILD / EXECUTE / LINT task (and `bash` is active), a short directive is appended at the most salient position (end of system prompt) forcing `bash` on turn 1. This closes DeepSeek V4 Flash's non-deterministic tendency to call `find`/`ls`/`read` to “locate” tests before running them. Discovery and explanation prompts (find/list/inspect/where/definition/…) are explicitly excluded so they are never misdirected.
 
+**Uncertain-path read reinforcement** — When the user prompt asks to read a source file referenced only by a bare filename with no directory path (and `find` is active), a directive forces `find` first to resolve the path. Files given with an exact `dir/file` path and symbol/navigation tasks are excluded. Together with the run/build reinforcement this brings DeepSeek V4 Flash first-tool selection accuracy to 100% on the 13-case eval.
+
 **Tool-input repair** — Wraps Pi's built-in file/shell tools to fix common recoverable argument mistakes before validation:
 - `null` on optional fields → omitted
 - JSON strings parsed where the schema expects an array/object
@@ -217,6 +219,12 @@ Tests use Node's built-in test runner with tsx and `node:assert`. No framework m
 - [ ] Publish: `npm publish`
 
 ## Changelog
+
+### 0.12.9
+
+- New `readUncertainPathHint()`: when the prompt reads a source file by a bare filename with no directory path (and `find` is active), append a find-first directive at the most salient position. Excludes exact `dir/file` paths and symbol/navigation tasks.
+- Wired into `before_agent_start` alongside the run/build hint. DeepSeek V4 Flash first-tool selection accuracy is now 100% (39/39 over 3 trials) on the 13-case eval; `unknown-file-location` is deterministic.
+- Removed a non-viable Serena `name_path` repair from the `tool_call` hook — schema validation (`pi-agent-core` `prepareToolCall`) runs *before* `beforeToolCall`, so `event.input` mutation cannot repair args pre-validation. The correct fix lives in pi-serena's `prepareArguments` (see pi-serena 0.9.2).
 
 ### 0.12.8
 

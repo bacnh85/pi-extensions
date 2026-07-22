@@ -4,6 +4,7 @@ import extension from "../../index";
 import {
   deepSeekSelectionGuidance,
   runTaskFirstToolHint,
+  readUncertainPathHint,
   isOpenCodeGoDeepSeekV4Model,
   isSemanticMissToolCall,
   missedDedicatedTool,
@@ -233,6 +234,24 @@ describe("runTaskFirstToolHint", () => {
     assert.equal(runTaskFirstToolHint("List files in pi-deepseek-tools."), undefined);
     assert.equal(runTaskFirstToolHint("How does the test runner work?"), undefined);
     assert.equal(runTaskFirstToolHint(""), undefined);
+  });
+});
+
+describe("readUncertainPathHint", () => {
+  it("fires a find-FIRST hint for bare-filename reads with no directory path", () => {
+    assert.match(readUncertainPathHint("Read the first 20 lines of deepseek-tools.ts under pi-deepseek-tools.")!, /Call find FIRST/i);
+    assert.ok(readUncertainPathHint("Show me the contents of cli.py."));
+    assert.ok(readUncertainPathHint("Read auth.ts."));
+  });
+
+  it("returns undefined when an exact dir/file path is given or for non-read/symbol tasks", () => {
+    assert.equal(readUncertainPathHint("Read only the first 20 lines of pi-deepseek-tools/README.md."), undefined);
+    assert.equal(readUncertainPathHint("Read the pi-deepseek-tools README scope section."), undefined);
+    assert.equal(readUncertainPathHint("Inspect symbols in pi-deepseek-tools/extensions/index.ts and summarize them."), undefined);
+    assert.equal(readUncertainPathHint("Find the definition of deepSeekSelectionGuidance."), undefined);
+    assert.equal(readUncertainPathHint("Read src/config/app.ts carefully."), undefined); // exact path given
+    assert.equal(readUncertainPathHint("Run the unit tests."), undefined);
+    assert.equal(readUncertainPathHint(""), undefined);
   });
 });
 

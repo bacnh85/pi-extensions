@@ -4,6 +4,10 @@ Pi extension that registers Pi-native `serena_*` tools backed by a persistent Ty
 
 Note: Serena itself is a Python package. The TypeScript worker owns lifecycle, request/response handling, and Pi integration, and uses an embedded Python bridge subprocess only to call Serena internals because Serena does not provide a JavaScript SDK and its non-MCP project HTTP server is read-only.
 
+## Symbol-key auto-repair
+
+Models intermittently confuse Serena's two symbol keys. `serena_find_symbol` and `serena_safe_delete_symbol` take `name_path_pattern`; every other name-bearing Serena tool (`find_referencing_symbols`, `find_declaration`, `find_implementations`, `replace_symbol_body`, `insert_before_symbol`, `insert_after_symbol`, `rename_symbol`) takes `name_path`. Each name-bearing tool now normalises the key in `prepareArguments` **before schema validation** — a wrong key is silently moved to the expected one; correct input is a no-op. This runs for all models (it is a generic argument-shape fix).
+
 ## Install
 
 Install the published package from npm:
