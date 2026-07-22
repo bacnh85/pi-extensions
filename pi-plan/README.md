@@ -39,8 +39,8 @@ pi --plan
 | `/rewind` | Select a saved prompt checkpoint and restore its code, conversation, or both. |
 | `/advisor [model hint\|off]` | Configure a transcript-aware strategic advisor with `/model`-style search. |
 | `/btw [query]` | Ask a context-aware side question; completed answers persist as transcript cards. Without a query, reopens the last answer. |
-| `/specs <intent>` | Write an EARS specification and hard-lock workspace writes. |
-| `/specs-approve` | Release the active specs write gate. |
+| `/specs <intent>` | Write a reviewable, spec-first EARS specification and hard-lock workspace writes. |
+| `/specs-approve` | Release the gate and prefill the implementation instruction. |
 | `/doctor` | Show compact workspace, Git, Node, model-auth, and tool health. |
 | `Esc Esc` | With an empty idle editor, prefill `/rewind` in the TUI. |
 | `Ctrl+Alt+P` | Toggle plan mode. |
@@ -98,7 +98,7 @@ Optional Pi settings (global `~/.pi/agent/settings.json` or trusted project `.pi
 
 `/btw` without a query recalls the latest answer from the current session branch, including after reload or resume.
 
-`/specs` uses an isolated model call and keeps the existing plan-mode read gate active until `/specs-approve` is explicitly run.
+`/specs <intent>` uses an isolated model call to write one spec-first Markdown artifact under `.agents/specs/`. It includes scope, exclusions, workspace-grounded target files, EARS requirements, assumptions/open questions, and independently checkable acceptance criteria. It keeps the plan-mode write gate active until `/specs-approve` is explicitly run. Approval does not start an agent run: in the TUI it preloads an instruction to implement the approved spec and verify each criterion; non-TUI modes receive the same copyable instruction.
 
 ## Reasoning levels
 

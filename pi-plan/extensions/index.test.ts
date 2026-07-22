@@ -15,7 +15,7 @@ import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
 import { captureRewindCheckpoint, restoreRewindCheckpoint, rewindToFlowBaseline } from "./lib/lifecycle";
 import { registerAdvisor } from "./commands/advisor";
 import { buildFinalPrompt } from "./commands/handoff";
-import { formatSpecsProgress, invalidExistingTargets, specSlug } from "./commands/specs";
+import { formatSpecsProgress, invalidExistingTargets, specExecutionPrompt, specSlug } from "./commands/specs";
 import { workspaceContext } from "./lib/workspace-context";
 import { parseModel } from "./lib/utility-config";
 
@@ -287,6 +287,36 @@ describe("workspace utility commands", () => {
     assert.match(formatSpecsProgress("specification failed", "red", now), /^\x1b\[31m\[/);
   });
 
+  it("prefills a scoped implementation prompt after approving specs in TUI", async () => {
+    const { commands, handlers } = createFakePi(["read", "edit"]);
+    const specPath = path.join(TMP, ".agents", "specs", "spec.md");
+    let editorText = "";
+    const ctx = fakeCtx({
+      mode: "tui",
+      ui: { theme: { fg: (_style: string, text: string) => text }, setStatus: () => {}, setWidget: () => {}, notify: () => {}, getEditorComponent: () => undefined, setEditorComponent: () => {}, setEditorText: (text: string) => { editorText = text; } },
+      sessionManager: { getBranch: () => [{ type: "custom", customType: "pi-plan", data: { enabled: true, specGateActive: true, specGatePlanMode: false, specPath } }] },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await commands["specs-approve"].handler("", ctx);
+    assert.equal(editorText, specExecutionPrompt(".agents/specs/spec.md"));
+    const result = await handlers.tool_call?.[0]({ toolName: "edit", input: { path: "x" } }, ctx);
+    assert.equal(result, undefined, "approval releases the write gate");
+  });
+
+  it("reports the implementation prompt outside TUI", async () => {
+    const { commands, handlers } = createFakePi(["read"]);
+    const specPath = path.join(TMP, ".agents", "specs", "spec.md");
+    const notices: string[] = [];
+    const ctx = fakeCtx({
+      mode: "rpc",
+      ui: { theme: { fg: (_style: string, text: string) => text }, setStatus: () => {}, setWidget: () => {}, notify: (message: string) => notices.push(message) },
+      sessionManager: { getBranch: () => [{ type: "custom", customType: "pi-plan", data: { enabled: true, specGateActive: true, specGatePlanMode: false, specPath } }] },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await commands["specs-approve"].handler("", ctx);
+    assert.ok(notices.includes(specExecutionPrompt(".agents/specs/spec.md")));
+  });
+
   it("grounds specs targets in the supplied workspace context", () => {
     const context = { files: new Set(["known.ts", "src/existing.ts"]), directories: new Set(["", "src", "lib"]) };
     const cases: Array<[string, string[]]> = [
@@ -316,7 +346,7 @@ describe("workspace utility commands", () => {
 
   it("hard-blocks all non-read tools while a restored specs gate is active", async () => {
     const { handlers } = createFakePi(["read", "edit"], {});
-    const ctx = fakeCtx({ sessionManager: { getBranch: () => [{ type: "custom", customType: "pi-plan", data: { enabled: true, specGateActive: true, specGatePlanMode: false } }] } });
+    const ctx = fakeCtx({ sessionManager: { getBranch: () => [{ type: "custom", customType: "pi-plan", data: { enabled: true, specGateActive: true, specGatePlanMode: false, specPath: path.join(TMP, ".agents", "specs", "spec.md") } }] } });
     await handlers.session_start?.[0]({ reason: "startup" }, ctx);
     const result = await handlers.tool_call?.[0]({ toolName: "edit", input: { path: "x" } }, ctx);
     assert.ok(result?.block);
@@ -562,6 +592,18 @@ describe("plan mode prompt composition", () => {
     assert.ok(result.systemPrompt.includes("read-only planning mode"), "read-only mode stated");
     assert.ok(result.systemPrompt.includes("Strict single read-only bash commands"), "safe bash auto-run stated");
     assert.ok(!result.systemPrompt.includes("Read-only bash commands (ls, grep, find, git status) require user confirmation"));
+  });
+
+  it("names the active spec while the write gate is locked", async () => {
+    const { handlers } = createFakePi(["read"], {});
+    const specPath = path.join(TMP, ".agents", "specs", "spec.md");
+    const ctx = fakeCtx({
+      sessionManager: { getBranch: () => [{ type: "custom", customType: "pi-plan", data: { enabled: true, specGateActive: true, specGatePlanMode: false, specPath } }] },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const result = await handlers.before_agent_start?.[0]({ systemPrompt: "[Base]", systemPromptOptions: {} }, ctx);
+    assert.ok(result?.systemPrompt.includes("An active draft specification is at .agents/specs/spec.md"));
+    assert.ok(result?.systemPrompt.includes("workspace writes remain locked until /specs-approve"));
   });
 
   it("does not inject plan prompt when not in plan mode", async () => {

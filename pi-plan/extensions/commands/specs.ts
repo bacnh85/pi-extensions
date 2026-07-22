@@ -4,7 +4,7 @@ import { withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from 
 import { runIsolated } from "../lib/isolated-model";
 import { type WorkspaceContext, workspaceContext } from "../lib/workspace-context";
 
-const SYSTEM = `Write a formal technical specification in Markdown. Use EARS requirements: WHEN/IF/THEN/SHALL. Include scope, exclusions, target files, assumptions, and acceptance criteria. Every existing Target Files path MUST be a file in the supplied workspace tree. If no existing file applies, write "no existing target file" and label the proposed path "new"; its parent directory MUST be in the tree. Do not invent product routes, frameworks, or directories. Do not add prose before the document.`;
+const SYSTEM = `Write a compact formal technical specification in Markdown. Use exactly these headings: Intent and Scope, Exclusions, Target Files, Requirements, Assumptions and Open Questions, Acceptance Criteria. Use EARS requirements: WHEN/IF/THEN/SHALL. Every acceptance criterion MUST be independently checkable. Every existing Target Files path MUST be a file in the supplied workspace tree. If no existing file applies, write "no existing target file" and label the proposed path "new"; its parent directory MUST be in the tree. Do not invent product routes, frameworks, or directories. Do not add prose before the document.`;
 const KEY = "pi-plan-specs";
 const COLOR = { cyan: "\x1b[36m", green: "\x1b[32m", red: "\x1b[31m", reset: "\x1b[0m" } as const;
 type ProgressColor = "cyan" | "green" | "red";
@@ -13,6 +13,10 @@ export function specSlug(intent: string): string { return intent.toLowerCase().r
 
 export function formatSpecsProgress(step: string, color: ProgressColor = "cyan", now = new Date()): string {
   return `${COLOR[color]}[${now.toISOString()}] ${step}${COLOR.reset}`;
+}
+
+export function specExecutionPrompt(file: string): string {
+  return `Implement the approved specification at \`${file}\`. Read it first, stay within its scope and exclusions, and verify every acceptance criterion before finishing.`;
 }
 
 /** Reject target paths that are absent from the supplied workspace context. */
@@ -33,7 +37,7 @@ async function destination(cwd: string, intent: string): Promise<string> {
   for (let n = 0; ; n++) { const file = path.join(dir, `${base}${n ? `-${n + 1}` : ""}.md`); try { const handle = await open(file, "wx"); await handle.close(); return file; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; } }
 }
 
-export function registerSpecs(pi: ExtensionAPI, activate: (file: string, ctx: ExtensionContext) => void, approve: (ctx: ExtensionContext) => boolean): void {
+export function registerSpecs(pi: ExtensionAPI, activate: (file: string, ctx: ExtensionContext) => void, approve: (ctx: ExtensionContext) => string | undefined): void {
   pi.registerCommand("specs", { description: "Compile intent into an EARS specification and lock writes", handler: async (args, ctx) => {
     const intent = args.trim(); if (!intent) return ctx.ui.notify("Usage: /specs <intent>", "warning");
     let file: string | undefined;
@@ -58,5 +62,11 @@ export function registerSpecs(pi: ExtensionAPI, activate: (file: string, ctx: Ex
     } catch (error) { if (file) await (await import("node:fs/promises")).rm(file, { force: true }); showProgress(`specification failed: ${String(error)}`, "red"); }
     finally { ctx.ui.setStatus(KEY, undefined); ctx.ui.setWidget(KEY, undefined); }
   } });
-  pi.registerCommand("specs-approve", { description: "Release the active specs write gate", handler: async (_args, ctx) => { if (!approve(ctx)) ctx.ui.notify("No active specs gate.", "warning"); } });
+  pi.registerCommand("specs-approve", { description: "Release the active specs write gate and prefill implementation", handler: async (_args, ctx) => {
+    const file = approve(ctx);
+    if (!file) return ctx.ui.notify("No active specs gate.", "warning");
+    const prompt = specExecutionPrompt(path.relative(ctx.cwd, file));
+    if (ctx.mode === "tui") ctx.ui.setEditorText(prompt);
+    else ctx.ui.notify(prompt, "info");
+  } });
 }
