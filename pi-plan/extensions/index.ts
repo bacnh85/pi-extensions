@@ -16,7 +16,9 @@ import path from "node:path";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
 import { captureRewindCheckpoint, restoreRewindCheckpoint, rewindToFlowBaseline, snapshotUntrackedFiles, validateRewindCheckpoint, type RewindCheckpoint } from "./lib/lifecycle";
 import { BLOCKED_TOOLS, PLAN_ONLY_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
+import { loadUtilityConfig } from "./lib/utility-config";
 import { registerAdvisor } from "./commands/advisor";
+import { advanceGoal, DEFAULT_GOAL_MAX_TURNS, registerGoal, type GoalAccessors, type GoalState } from "./commands/goal";
 import { registerBtw } from "./commands/btw";
 import { registerDoctor } from "./commands/doctor";
 import { registerHandoff } from "./commands/handoff";
@@ -92,6 +94,7 @@ interface PlanState {
   specGatePlanMode?: boolean;
   specPath?: string;
   flow?: FlowState;
+  goal?: GoalState;
 }
 
 interface PlanPreferences {
@@ -102,6 +105,7 @@ interface PlanPreferences {
     { planThinking: ThinkingLevel; normalThinking: ThinkingLevel }
   >;
   advisorModel?: string;
+  goalModel?: string;
 }
 
 interface WritePlanParams {
@@ -303,6 +307,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   let specGatePlanMode = false;
   let specPath: string | undefined;
   let advisor: { sync(ctx: ExtensionContext): void };
+  let goal: GoalState | undefined;
 
   // ── UI helpers ──────────────────────────────────────────────
 
@@ -310,13 +315,19 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     ctx.ui.setWidget(STATUS_KEY, undefined);
   }
 
+  function isFlowActive(): boolean {
+    return !!flow && !["done", "stopped"].includes(flow.phase);
+  }
+
   function updateFooter(ctx: ExtensionContext): void {
-    const flowStatus = flow && !["done", "stopped"].includes(flow.phase)
-      ? `flow: ${flow.phase} · review ${flow.reviewPass}/${MAX_REVIEW_PASSES}`
+    const flowStatus = isFlowActive()
+      ? `flow: ${flow!.phase} · review ${flow!.reviewPass}/${MAX_REVIEW_PASSES}`
       : undefined;
-    ctx.ui.setStatus(STATUS_KEY, flowStatus
-      ? ctx.ui.theme.fg("accent", flowStatus)
-      : planModeEnabled ? ctx.ui.theme.fg("accent", "Plan mode") : undefined);
+    const goalStatus = goal?.active
+      ? `goal · turn ${goal.turns}/${goal.maxTurns}${goal.paused ? " (paused)" : ""}`
+      : undefined;
+    const label = flowStatus ?? goalStatus ?? (planModeEnabled ? "Plan mode" : undefined);
+    ctx.ui.setStatus(STATUS_KEY, label ? ctx.ui.theme.fg("accent", label) : undefined);
   }
 
   function persistState(): void {
@@ -333,6 +344,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       specGatePlanMode,
       specPath,
       flow,
+      goal,
     } satisfies PlanState);
   }
 
@@ -361,6 +373,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       specGateActive = false;
       specGatePlanMode = false;
       specPath = undefined;
+      goal = undefined;
       return;
     }
     // ponytail: treat saved state as authoritative — no ?? fallback to
@@ -377,6 +390,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     specGatePlanMode = saved.data.specGatePlanMode === true;
     specPath = typeof saved.data.specPath === "string" ? saved.data.specPath : undefined;
     flow = saved.data.flow ?? undefined;
+    goal = saved.data.goal ?? undefined;
   }
 
   function enablePlanTools(): void {
@@ -1246,6 +1260,31 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
         : toolsBeforePlan.filter((tool) => tool !== "advisor");
     },
   });
+  const goalAccessors: GoalAccessors = {
+    getModel: () => preferences?.goalModel,
+    setModel: async (model) => {
+      if (!preferences) throw new Error("Goal preferences are unavailable.");
+      const previous = preferences.goalModel;
+      preferences.goalModel = model;
+      try {
+        await savePreferences(preferences);
+      } catch (error) {
+        preferences.goalModel = previous;
+        throw error;
+      }
+    },
+    getGoal: () => goal,
+    commit: (ctx, next) => { goal = next ?? undefined; persistState(); updateFooter(ctx); },
+    isPlanMode: () => planModeEnabled,
+    isFlowActive,
+    loadConfig: async (ctx) => {
+      const config = await loadUtilityConfig(ctx);
+      return { model: config.goal.model, maxTurns: config.goal.maxTurns ?? DEFAULT_GOAL_MAX_TURNS };
+    },
+    sendUserMessage: (content, options) => pi.sendUserMessage(content, options),
+    sendMessage: (message) => pi.sendMessage(message),
+  };
+  registerGoal(pi, goalAccessors);
   registerBtw(pi);
   registerSpecs(pi, activateSpecGate, approveSpecGate);
   registerDoctor(pi);
@@ -1325,6 +1364,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
     // ponytail: restore state from current branch (shared with session_tree)
     restoreStateFromBranch(ctx);
+
+    // Goal loop counters reset on resume (per Claude Code /goal semantics)
+    if (goal?.active) { goal = { ...goal, turns: 0, startedAt: Date.now() }; persistState(); }
 
     // ponytail: ensure write_plan is always visible — covers --plan and normal-mode starts
     if (!pi.getActiveTools().includes(PLAN_TOOL))
@@ -1488,6 +1530,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   pi.on("agent_settled", async (_event, ctx) => {
     if (flow && !planModeEnabled && ["implement", "fix"].includes(flow.phase)) {
       await advanceFlow(ctx);
+      return;
+    }
+    if (goal?.active && !planModeEnabled && !isFlowActive()) {
+      await advanceGoal(ctx, goalAccessors);
       return;
     }
     if (

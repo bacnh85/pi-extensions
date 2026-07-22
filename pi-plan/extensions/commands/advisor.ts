@@ -1,7 +1,8 @@
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, buildSessionContext, convertToLlm, ModelSelectorComponent, truncateHead, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, buildSessionContext, convertToLlm, truncateHead, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { runIsolated } from "../lib/isolated-model";
+import { chooseModel, exactModel, modelAvailable, modelRef, modelSearchText } from "../lib/model-picker";
 import { parseModel } from "../lib/utility-config";
 
 const TOOL = "advisor";
@@ -11,31 +12,6 @@ interface AdvisorState {
   getModel(): string | undefined;
   setModel(model: string | undefined): Promise<void> | void;
   onAvailabilityChange?(available: boolean): void;
-}
-
-type Model = ReturnType<ExtensionContext["modelRegistry"]["getAvailable"]>[number];
-
-function modelRef(model: Pick<Model, "provider" | "id">): string {
-  return `${model.provider}/${model.id}`;
-}
-
-function exactModel(models: Model[], reference: string): Model | undefined {
-  const value = reference.trim().toLowerCase();
-  if (!value) return undefined;
-  const canonical = models.filter((model) => modelRef(model).toLowerCase() === value);
-  if (canonical.length === 1) return canonical[0];
-  if (canonical.length > 1) return undefined;
-  const ids = models.filter((model) => model.id.toLowerCase() === value);
-  return ids.length === 1 ? ids[0] : undefined;
-}
-
-function available(ctx: ExtensionContext, modelId: string | undefined): boolean {
-  return !!modelId && !!exactModel(ctx.modelRegistry.getAvailable(), modelId);
-}
-
-function modelSearchText(model: Model): string {
-  const ref = modelRef(model);
-  return `${model.id} ${model.provider} ${ref} ${model.provider} ${model.id}${model.name ? ` ${model.name}` : ""}`;
 }
 
 function evidence(ctx: ExtensionContext, modelId: string, messages: any[]): string {
@@ -71,30 +47,9 @@ function evidence(ctx: ExtensionContext, modelId: string, messages: any[]): stri
 export function registerAdvisor(pi: ExtensionAPI, state: AdvisorState): { sync(ctx: ExtensionContext): void } {
   let registry: ExtensionContext["modelRegistry"] | undefined;
 
-  async function choose(ctx: ExtensionContext, hint?: string): Promise<string | undefined> {
-    if (ctx.mode !== "tui") return undefined;
-    const current = state.getModel() ? exactModel(ctx.modelRegistry.getAvailable(), state.getModel()!) : undefined;
-    // ponytail: adapt the public picker without letting it save Pi's primary model.
-    const runtime = {
-      getAvailableSnapshot: () => ctx.modelRegistry.getAvailable(),
-      refresh: async ({ signal }: { signal?: AbortSignal } = {}) => {
-        if (signal?.aborted) return { aborted: true, errors: new Map() };
-        try { await ctx.modelRegistry.refresh(); return { aborted: false, errors: new Map() }; }
-        catch (error) { return { aborted: false, errors: new Map([["models", error]]) }; }
-      },
-      getModel: (provider: string, id: string) => ctx.modelRegistry.find(provider, id),
-      getError: () => ctx.modelRegistry.getError(),
-    };
-    const settings = { setDefaultModelAndProvider: () => {} };
-    return ctx.ui.custom((tui, _theme, _keybindings, done) => new ModelSelectorComponent(
-      tui, current, settings as any, runtime as any, [],
-      (model) => done(modelRef(model)), () => done(undefined), hint,
-    ));
-  }
-
   function sync(ctx: ExtensionContext): void {
     registry = ctx.modelRegistry;
-    const enabled = available(ctx, state.getModel());
+    const enabled = modelAvailable(ctx, state.getModel());
     const active = pi.getActiveTools();
     pi.setActiveTools(enabled
       ? [...new Set([...active, TOOL])]
@@ -125,7 +80,7 @@ export function registerAdvisor(pi: ExtensionAPI, state: AdvisorState): { sync(c
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, signal, onUpdate, ctx) {
       const model = state.getModel();
-      if (!model || !available(ctx, model)) throw new Error("Configured advisor model is unavailable. Run /advisor to select another model or /advisor off.");
+      if (!model || !modelAvailable(ctx, model)) throw new Error("Configured advisor model is unavailable. Run /advisor to select another model or /advisor off.");
       const transcript = buildSessionContext(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId());
       const transcriptEvidence = evidence(ctx, model, transcript.messages);
       let output = "";
@@ -163,7 +118,7 @@ export function registerAdvisor(pi: ExtensionAPI, state: AdvisorState): { sync(c
       try { await ctx.modelRegistry.refresh(); } catch { /* use cached models */ }
       const match = value ? exactModel(ctx.modelRegistry.getAvailable(), value) : undefined;
       if (match) return await set(modelRef(match), ctx);
-      const choice = await choose(ctx, value || undefined);
+      const choice = await chooseModel(ctx, state.getModel(), value || undefined);
       if (choice) return await set(choice, ctx);
       if (ctx.mode !== "tui") throw new Error("Usage: /advisor <provider/model|off>");
     },

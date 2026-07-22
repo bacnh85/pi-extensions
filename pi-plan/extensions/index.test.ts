@@ -14,6 +14,7 @@ import { BLOCKED_TOOLS, PLAN_ONLY_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tool
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
 import { captureRewindCheckpoint, restoreRewindCheckpoint, rewindToFlowBaseline } from "./lib/lifecycle";
 import { registerAdvisor } from "./commands/advisor";
+import { advanceGoal, registerGoal, DEFAULT_GOAL_MAX_TURNS, type GoalAccessors, type GoalState } from "./commands/goal";
 import { buildFinalPrompt } from "./commands/handoff";
 import { formatSpecsProgress, invalidExistingTargets, specExecutionPrompt, specSlug } from "./commands/specs";
 import { workspaceContext } from "./lib/workspace-context";
@@ -540,6 +541,342 @@ describe("btw", () => {
     await commands.btw.handler("", ctx);
     assert.ok(editorTitle.startsWith("BTW recall:"));
     assert.equal(editorContent, "file.ts");
+  });
+});
+
+describe("goal", () => {
+  function evaluatorResponse(text: string): any {
+    return {
+      async *[Symbol.asyncIterator]() { yield { type: "text_delta", delta: text }; },
+      result: async () => ({ stopReason: "stop", content: [{ type: "text", text }] }),
+    };
+  }
+
+  function setupGoal(models: any[] = [{ provider: "test", id: "model-1", contextWindow: 8192 }]) {
+    let evaluatorText = '{"met": false, "reason": "still working"}';
+    let config = { maxTurns: DEFAULT_GOAL_MAX_TURNS };
+    let goal: GoalState | undefined;
+    let goalModel: string | undefined;
+    let planMode = false;
+    let flowActive = false;
+    let captured: any;
+    const sent: { content: string; options?: any }[] = [];
+    const messages: any[] = [];
+    const notices: string[] = [];
+    const modelSets: (string | undefined)[] = [];
+    const commands: Record<string, any> = {};
+    const pi: any = {
+      registerCommand(name: string, def: any) { commands[name] = def; },
+      getActiveTools: () => [], setActiveTools: () => {},
+    };
+    const accessors: GoalAccessors = {
+      getModel: () => goalModel,
+      setModel: async (m) => { goalModel = m; modelSets.push(m); },
+      getGoal: () => goal,
+      commit: (_ctx, next) => { goal = next ?? undefined; },
+      isPlanMode: () => planMode,
+      isFlowActive: () => flowActive,
+      loadConfig: async () => config,
+      sendUserMessage: (content, options) => { sent.push({ content, options }); },
+      sendMessage: (m) => { messages.push(m); },
+    };
+    registerGoal(pi, accessors);
+    const ctx: any = {
+      mode: "print", hasUI: false, cwd: TMP,
+      model: { provider: models[0].provider, id: models[0].id },
+      modelRegistry: {
+        getAvailable: () => models,
+        find: (p: string, id: string) => models.find((m) => m.provider === p && m.id === id),
+        getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k", headers: {}, env: {} }),
+        getRegisteredProviderConfig: () => ({ streamSimple: (_m: any, context: any) => { captured = context; return evaluatorResponse(evaluatorText); } }),
+        refresh: async () => {}, getError: () => undefined,
+      },
+      sessionManager: {
+        getEntries: () => [{ type: "message", id: "1", parentId: null, timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "do the work" }], timestamp: 1 } }],
+        getLeafId: () => "1",
+      },
+      ui: { notify: (m: string) => { notices.push(m); }, setStatus: () => {}, custom: async () => undefined },
+    };
+    return {
+      commands, accessors, ctx, sent, messages, notices, modelSets,
+      getGoal: () => goal,
+      setEvaluator: (t: string) => { evaluatorText = t; },
+      setConfig: (maxTurns: number) => { config = { maxTurns }; },
+      setPlanMode: (v: boolean) => { planMode = v; },
+      setFlowActive: (v: boolean) => { flowActive = v; },
+      captured: () => captured,
+    };
+  }
+
+  it("registers /goal and /goal-model", () => {
+    const { commands } = setupGoal();
+    assert.ok(commands.goal, "/goal registered");
+    assert.ok(commands["goal-model"], "/goal-model registered");
+  });
+
+  it("sets an active goal and starts the first turn", async () => {
+    const { commands, ctx, sent, getGoal } = setupGoal();
+    await commands.goal.handler("All tests pass", ctx);
+    const g = getGoal()!;
+    assert.equal(g.condition, "All tests pass");
+    assert.equal(g.active, true);
+    assert.equal(g.turns, 0);
+    assert.equal(g.maxTurns, DEFAULT_GOAL_MAX_TURNS);
+    assert.deepEqual(sent[0].options, { deliverAs: "followUp" });
+    assert.match(sent[0].content, /All tests pass/);
+  });
+
+  it("refuses to set in plan mode or during an active flow", async () => {
+    const r = setupGoal();
+    r.setPlanMode(true);
+    await r.commands.goal.handler("x", r.ctx);
+    assert.equal(r.getGoal(), undefined);
+    assert.equal(r.sent.length, 0);
+    assert.match(r.notices[r.notices.length - 1], /Exit plan mode/);
+    r.setPlanMode(false);
+    r.setFlowActive(true);
+    await r.commands.goal.handler("y", r.ctx);
+    assert.equal(r.getGoal(), undefined);
+    assert.equal(r.sent.length, 0);
+    assert.match(r.notices[r.notices.length - 1], /workflow is active/);
+  });
+
+  it("evaluator 'met' clears the goal and records an achievement", async () => {
+    const r = setupGoal();
+    await r.commands.goal.handler("Ship it", r.ctx);
+    r.setEvaluator('{"met": true, "reason": "build is green"}');
+    await advanceGoal(r.ctx, r.accessors);
+    assert.equal(r.getGoal(), undefined, "goal cleared on met");
+    assert.equal(r.messages.length, 1);
+    assert.equal(r.messages[0].customType, "pi-plan-goal");
+    assert.match(r.messages[0].content, /Goal achieved/);
+    assert.match(r.notices[r.notices.length - 1], /achieved/);
+  });
+
+  it("evaluator 'not met' continues with a followUp and counts the turn", async () => {
+    const r = setupGoal();
+    await r.commands.goal.handler("Migrate the module", r.ctx);
+    r.setEvaluator('{"met": false, "reason": "2 call sites remain"}');
+    await advanceGoal(r.ctx, r.accessors);
+    const g = r.getGoal()!;
+    assert.equal(g.active, true);
+    assert.equal(g.turns, 1);
+    assert.equal(g.lastReason, "2 call sites remain");
+    assert.match(r.sent[r.sent.length - 1].content, /Goal not yet met: 2 call sites remain/);
+  });
+
+  it("stops at the maxTurns cap without sending another turn", async () => {
+    const r = setupGoal();
+    r.setConfig(1);
+    await r.commands.goal.handler("Work", r.ctx);
+    r.setEvaluator('{"met": false, "reason": "nope"}');
+    await advanceGoal(r.ctx, r.accessors);
+    const g = r.getGoal()!;
+    assert.equal(g.active, false, "goal deactivated at cap");
+    assert.equal(g.turns, 1);
+    assert.equal(r.sent.length, 1, "only the initial turn was sent");
+    assert.match(r.notices[r.notices.length - 1], /stopped after/);
+  });
+
+  it("parses the evaluator conservatively when JSON is malformed", async () => {
+    const r = setupGoal();
+    await r.commands.goal.handler("Make build green", r.ctx);
+    r.setEvaluator("the work is basically done maybe");
+    await advanceGoal(r.ctx, r.accessors);
+    const g = r.getGoal()!;
+    assert.equal(g.active, true, "unparseable is treated as not-met, never a false success");
+    assert.equal(g.turns, 1);
+  });
+
+  it("does not overlap evaluations (re-entrancy guard)", async () => {
+    const r = setupGoal();
+    await r.commands.goal.handler("Work", r.ctx);
+    let release!: () => void;
+    const hang = new Promise<void>((done) => { release = done; });
+    let evalCalls = 0;
+    r.ctx.modelRegistry.getRegisteredProviderConfig = () => ({
+      streamSimple: () => ({
+        async *[Symbol.asyncIterator]() { evalCalls += 1; await hang; yield { type: "text_delta", delta: '{"met": false, "reason": "x"}' }; },
+        result: async () => { await hang; return { stopReason: "stop", content: [{ type: "text", text: '{"met": false, "reason": "x"}' }] }; },
+      }),
+    });
+    const first = advanceGoal(r.ctx, r.accessors);
+    await Promise.resolve();
+    const sentBefore = r.sent.length;
+    await advanceGoal(r.ctx, r.accessors);
+    assert.equal(evalCalls, 0, "overlapping call did not start a second evaluation (iterator not entered)");
+    assert.equal(r.sent.length, sentBefore, "no followUp while the first evaluation is in flight");
+    release();
+    await first;
+    assert.ok(r.sent.length > sentBefore, "first evaluation sent a followUp after release");
+  });
+
+  it("ignores a stale evaluation when the goal is replaced mid-eval (same condition)", async () => {
+    const r = setupGoal();
+    await r.commands.goal.handler("Same condition", r.ctx);
+    const original = r.getGoal()!;
+    let release!: () => void;
+    const hang = new Promise<void>((done) => { release = done; });
+    r.ctx.modelRegistry.getRegisteredProviderConfig = () => ({
+      streamSimple: () => ({
+        async *[Symbol.asyncIterator]() { await hang; yield { type: "text_delta", delta: '{"met": true, "reason": "done"}' }; },
+        result: async () => { await hang; return { stopReason: "stop", content: [{ type: "text", text: '{"met": true, "reason": "done"}' }] }; },
+      }),
+    });
+    const first = advanceGoal(r.ctx, r.accessors);
+    await Promise.resolve();
+    // Clear + re-set the SAME condition while the evaluation is in flight
+    await r.commands.goal.handler("clear", r.ctx);
+    await r.commands.goal.handler("Same condition", r.ctx);
+    const replacement = r.getGoal()!;
+    assert.notEqual(replacement, original, "re-set created a new goal object");
+    assert.equal(replacement.turns, 0, "replacement starts fresh");
+    release();
+    await first;
+    const after = r.getGoal()!;
+    assert.equal(after, replacement, "stale met-true did not clear the replacement");
+    assert.equal(after.turns, 0, "stale result did not increment the replacement's turns");
+    assert.equal(after.active, true, "replacement remains active");
+  });
+
+  it("pauses the goal when the evaluator fails (no clear, no followUp)", async () => {
+    const r = setupGoal();
+    await r.commands.goal.handler("Work", r.ctx);
+    const sentBefore = r.sent.length;
+    // runIsolated throws when stopReason !== "stop" (isolated-model.ts) — exercise that path
+    r.ctx.modelRegistry.getRegisteredProviderConfig = () => ({
+      streamSimple: () => ({
+        async *[Symbol.asyncIterator]() { /* evaluator error: no deltas */ },
+        result: async () => ({ stopReason: "length", errorMessage: "context limit hit" }),
+      }),
+    });
+    await advanceGoal(r.ctx, r.accessors);
+    const g = r.getGoal()!;
+    assert.equal(g.active, true, "goal stays active (paused, not cleared)");
+    assert.equal(g.paused, true, "goal paused on evaluator failure");
+    assert.equal(r.sent.length, sentBefore, "no followUp sent on failure");
+    assert.match(r.notices[r.notices.length - 1], /paused/);
+  });
+
+  it("injects the condition and a transcript into the evaluator prompt", async () => {
+    const r = setupGoal();
+    await r.commands.goal.handler("Make build green", r.ctx);
+    await advanceGoal(r.ctx, r.accessors);
+    const prompt = r.captured().messages[0].content[0].text;
+    assert.match(prompt, /Make build green/);
+    assert.match(prompt, /<conversation>/);
+    assert.match(r.captured().systemPrompt, /STRICT JSON/);
+  });
+
+  it("pause stops the loop and resume restarts it", async () => {
+    const r = setupGoal();
+    await r.commands.goal.handler("Work", r.ctx);
+    await r.commands.goal.handler("pause", r.ctx);
+    assert.equal(r.getGoal()!.paused, true);
+    const before = r.sent.length;
+    r.setEvaluator('{"met": false, "reason": "x"}');
+    await advanceGoal(r.ctx, r.accessors);
+    assert.equal(r.sent.length, before, "paused goal does not continue");
+    await r.commands.goal.handler("resume", r.ctx);
+    assert.equal(r.getGoal()!.paused, false);
+    assert.match(r.sent[r.sent.length - 1].content, /Resuming goal/);
+  });
+
+  it("clears via every alias", async () => {
+    const r = setupGoal();
+    for (const alias of ["clear", "stop", "off", "reset", "none", "cancel"]) {
+      await r.commands.goal.handler("Work " + alias, r.ctx);
+      assert.ok(r.getGoal()?.active, `${alias}: goal set`);
+      await r.commands.goal.handler(alias, r.ctx);
+      assert.equal(r.getGoal(), undefined, `${alias}: goal cleared`);
+    }
+  });
+
+  it("reports status with condition, turns, and cap", async () => {
+    const r = setupGoal();
+    await r.commands.goal.handler("", r.ctx);
+    assert.match(r.notices[r.notices.length - 1], /No goal set/);
+    await r.commands.goal.handler("Ship it", r.ctx);
+    await r.commands.goal.handler("", r.ctx);
+    assert.match(r.notices[r.notices.length - 1], /Ship it[\s\S]*Turn 0\/50/);
+  });
+
+  it("/goal-model selects by ref and bare id, clears with off, rejects headless ambiguity", async () => {
+    const models = [
+      { provider: "test", id: "goal-eval", contextWindow: 256 },
+      { provider: "test", id: "unique", contextWindow: 256 },
+      { provider: "openai", id: "shared", contextWindow: 256 },
+      { provider: "other", id: "shared", contextWindow: 256 },
+    ];
+    const r = setupGoal(models);
+    await r.commands["goal-model"].handler("test/goal-eval", r.ctx);
+    assert.equal(r.modelSets[r.modelSets.length - 1], "test/goal-eval");
+    await r.commands["goal-model"].handler("unique", r.ctx);
+    assert.equal(r.modelSets[r.modelSets.length - 1], "test/unique", "bare id selects");
+    await assert.rejects(() => r.commands["goal-model"].handler("shared", r.ctx), /Usage: \/goal-model/);
+    assert.equal(r.modelSets[r.modelSets.length - 1], "test/unique", "ambiguity leaves the model unchanged");
+    await r.commands["goal-model"].handler("off", r.ctx);
+    assert.equal(r.modelSets[r.modelSets.length - 1], undefined);
+  });
+});
+
+describe("goal integration", () => {
+  it("agent_settled drives the goal loop after /goal is set", async () => {
+    const { handlers, commands, sentMessages, customMessages } = createFakePi(["read"]);
+    let evaluatorText = '{"met": false, "reason": "not done"}';
+    const response: any = {
+      async *[Symbol.asyncIterator]() { yield { type: "text_delta", delta: evaluatorText }; },
+      result: async () => ({ stopReason: "stop", content: [{ type: "text", text: evaluatorText }] }),
+    };
+    const ctx = fakeCtx({
+      hasUI: true,
+      model: { provider: "test", id: "m" },
+      isProjectTrusted: () => false,
+      modelRegistry: {
+        getAvailable: () => [{ provider: "test", id: "m", contextWindow: 8192 }],
+        find: (p: string, id: string) => ({ provider: p, id, contextWindow: 8192 }),
+        getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k", headers: {}, env: {} }),
+        getRegisteredProviderConfig: () => ({ streamSimple: () => response }),
+      },
+      sessionManager: {
+        getBranch: () => [],
+        getEntries: () => [{ type: "message", id: "1", parentId: null, timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "go" }], timestamp: 1 } }],
+        getLeafId: () => "1",
+        getSessionFile: () => "/t/s.jsonl",
+      },
+      ui: { notify: () => {}, setStatus: () => {}, theme: { fg: (_s: string, t: string) => t } },
+    });
+
+    await commands.goal.handler("Finish the migration", ctx);
+    assert.equal(sentMessages.length, 1, "first turn sent on set");
+
+    await handlers.agent_settled?.[0]({}, ctx);
+    assert.equal(sentMessages.length, 2, "followUp sent when not met");
+
+    evaluatorText = '{"met": true, "reason": "migration complete"}';
+    await handlers.agent_settled?.[0]({}, ctx);
+    assert.equal(sentMessages.length, 2, "no further turn once met");
+    assert.ok(customMessages.some((m: any) => m.message.customType === "pi-plan-goal"), "achievement recorded as a transcript entry");
+  });
+
+  it("session_start resets an active goal's turn counter and timer (per-segment cap)", async () => {
+    const oldStart = 1_000;
+    const { handlers, entries } = createFakePi(["read"]);
+    const ctx = fakeCtx({
+      hasUI: true,
+      isProjectTrusted: () => false,
+      sessionManager: {
+        getBranch: () => [{ type: "custom", customType: "pi-plan", data: { enabled: false, planThinking: "high", normalThinking: "medium", goal: { condition: "Finish it", active: true, paused: false, startedAt: oldStart, turns: 40, maxTurns: 50 } } }],
+      },
+      ui: { notify: () => {}, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_s: string, t: string) => t } },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const planEntries = entries.filter((e: any) => e.customType === "pi-plan");
+    const last = planEntries[planEntries.length - 1];
+    assert.ok(last, "session_start persisted state for the active goal");
+    assert.equal(last.data.goal.active, true);
+    assert.equal(last.data.goal.turns, 0, "turn counter reset on session_start");
+    assert.ok(last.data.goal.startedAt > oldStart, "timer refreshed on session_start");
   });
 });
 

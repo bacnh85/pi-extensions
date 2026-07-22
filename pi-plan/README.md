@@ -42,6 +42,8 @@ pi --plan
 | `/specs <intent>` | Write a reviewable, spec-first EARS specification and hard-lock workspace writes. |
 | `/specs-approve` | Release the gate and prefill the implementation instruction. |
 | `/doctor` | Show compact workspace, Git, Node, model-auth, and tool health. |
+| `/goal [objective\|status\|pause\|resume\|clear]` | Keep the agent working toward a verifiable condition across turns until a small-fast-model evaluator confirms it is met. |
+| `/goal-model [model hint\|off]` | Configure the `/goal` evaluator model with `/model`-style search. |
 | `Esc Esc` | With an empty idle editor, prefill `/rewind` in the TUI. |
 | `Ctrl+Alt+P` | Toggle plan mode. |
 
@@ -99,6 +101,25 @@ Optional Pi settings (global `~/.pi/agent/settings.json` or trusted project `.pi
 `/btw` without a query recalls the latest answer from the current session branch, including after reload or resume.
 
 `/specs <intent>` uses an isolated model call to write one spec-first Markdown artifact under `.agents/specs/`. It includes scope, exclusions, workspace-grounded target files, EARS requirements, assumptions/open questions, and independently checkable acceptance criteria. It keeps the plan-mode write gate active until `/specs-approve` is explicitly run. Approval does not start an agent run: in the TUI it preloads an instruction to implement the approved spec and verify each criterion; non-TUI modes receive the same copyable instruction.
+
+## Goal loop
+
+`/goal <objective>` sets a durable condition and the agent keeps working toward it across turns without you prompting each step — a pi-native analogue of Claude Code's `/goal` and Codex's `/goal`. After each turn settles (`agent_settled`), the condition plus a compact transcript window are sent to an isolated **evaluator model** (default: the active model; configure a cheaper one with `/goal-model` or `pi-plan.goal.model`). It returns a strict-JSON `{ met, reason }` verdict:
+
+- `met: true` → the goal clears and an achievement is recorded in the transcript.
+- `met: false` → the agent takes another turn, with the reason as guidance.
+
+Write the objective as something the agent can prove in conversation ("`npm test` exits 0", "the queue is empty", "every call site compiles"). The evaluator judges only what the agent has surfaced — it runs no tools. One goal per session/branch; setting a new one replaces the active one. `/goal` with no argument shows status (condition, turns/cap, duration, last reason); `/goal clear` (aliases `stop|off|reset|none|cancel`) stops it; `/goal pause` and `/goal resume` let you interject a manual turn without losing the goal.
+
+A goal is an execution-time feature, so it cannot be set while plan mode or an implement→verify→review workflow is active. A hard turn cap (`pi-plan.goal.maxTurns`, default 50) stops runaway loops; include an explicit bound in the condition too (e.g. `or stop after 20 turns`). An active goal is restored on resume with its turn count and timer reset, matching Claude Code's semantics — so `maxTurns` bounds a single run segment, not cumulative turns across resumes. Optional Pi settings select the evaluator model and cap:
+
+```json
+{
+  "pi-plan": {
+    "goal": { "model": "provider/model", "maxTurns": 20 }
+  }
+}
+```
 
 ## Reasoning levels
 
