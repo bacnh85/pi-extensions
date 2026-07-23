@@ -16,14 +16,14 @@ Requires Node.js >= 20.18.
 
 | Role | Ordered model preferences | Thinking | Tools |
 | --- | --- | --- | --- |
-| `scout` | `zai-coding-cn/glm-5-turbo` → `opencode-go/deepseek-v4-flash` → `nvidia/openai/gpt-oss-20b` | off | read, grep, find, ls |
-| `tester` | `zai-coding-cn/glm-5-turbo` → `opencode-go/deepseek-v4-flash` → `nvidia/openai/gpt-oss-20b` | off | read, bash, grep, find, ls |
-| `worker` | `zai-coding-cn/glm-5.1` → `opencode-go/deepseek-v4-flash` → `nvidia/moonshotai/kimi-k2.6` → `openrouter/nvidia/nemotron-3-super-120b-a12b:free` | medium | read, bash, edit, write, grep, find, ls |
-| `general-purpose` | `zai-coding-cn/glm-5.1` → `opencode-go/deepseek-v4-flash` → `nvidia/moonshotai/kimi-k2.6` → `openrouter/nvidia/nemotron-3-super-120b-a12b:free` | medium | read, bash, edit, write, grep, find, ls |
-| `planner` | `zai-coding-cn/glm-5.2` → `nvidia/z-ai/glm-5.2` → `opencode-go/deepseek-v4-pro` → `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` | high | read, grep, find, ls |
-| `reviewer` | `zai-coding-cn/glm-5.2` → `nvidia/z-ai/glm-5.2` → `opencode-go/deepseek-v4-pro` → `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` | high | read, grep, find, ls |
+| `scout` | `zai-coding-cn/glm-5-turbo` → `nvidia/openai/gpt-oss-20b` → `opencode-go/deepseek-v4-flash` | off | read, grep, find, ls |
+| `tester` | `zai-coding-cn/glm-5-turbo` → `nvidia/openai/gpt-oss-20b` → `opencode-go/deepseek-v4-flash` | off | read, bash, grep, find, ls |
+| `worker` | `zai-coding-cn/glm-5.1` → `nvidia/mistralai/mistral-small-4-119b-2603` → `openrouter/nvidia/nemotron-3-super-120b-a12b:free` → `opencode-go/deepseek-v4-flash` | medium | read, bash, edit, write, grep, find, ls |
+| `general-purpose` | `zai-coding-cn/glm-5.1` → `nvidia/mistralai/mistral-small-4-119b-2603` → `openrouter/nvidia/nemotron-3-super-120b-a12b:free` → `opencode-go/deepseek-v4-flash` | medium | read, bash, edit, write, grep, find, ls |
+| `planner` | `zai-coding-cn/glm-5.2` → `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` → `opencode-go/deepseek-v4-pro` | high | read, grep, find, ls |
+| `reviewer` | `zai-coding-cn/glm-5.2` → `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` → `opencode-go/deepseek-v4-pro` | high | read, grep, find, ls |
 
-Each role uses the first authenticated preference available through Pi's model registry, then falls back to the authenticated parent model. Chains are provider-diverse and cost-ascending on failure: **zai-coding-cn** (free GLM, primary) → **opencode-go** (one DeepSeek per role, matched to strength: `deepseek-v4-flash` for fast/strong-coding, `deepseek-v4-pro` for deep reasoning) → **nvidia** (free NIM) → **openrouter** (`:free` models, last resort — omitted from scout/tester, whose `thinking: off` is incompatible with reasoning-mandatory `:free` models). opencode-go is metered — its GLM models cost ~$1.40/$4.40 per M versus zai-coding-cn's free GLM, so GLM stays on zai-coding-cn and opencode-go contributes only its DeepSeek models. User/project agent files remain stronger overrides and may set legacy `model`, ordered `models`, and `thinking`.
+Each role uses the first authenticated preference available through Pi's model registry, then falls back to the authenticated parent model. Chains are **free-first** to conserve the metered opencode-go budget: **zai-coding-cn** (free GLM, primary) → free **nvidia** NIM and **openrouter** `:free` models → **opencode-go** (paid DeepSeek, last resort — one per role: `deepseek-v4-flash` for fast/strong-coding, `deepseek-v4-pro` for deep reasoning). opencode-go's GLM models cost ~$1.40/$4.40 per M versus zai-coding-cn's free GLM, so GLM stays on zai-coding-cn. Fallback models were live-verified on 2026-07-24; `nvidia/moonshotai/kimi-k2.6` and `nvidia/z-ai/glm-5.2` return 404/timeout on the user's account and were removed — non-rate-limit failures kill the subagent instead of advancing the chain. User/project agent files remain stronger overrides and may set legacy `model`, ordered `models`, and `thinking`.
 
 ## Agent files
 
@@ -36,8 +36,8 @@ description: Locate relevant files and symbols
 tools: read, grep, find, ls
 models:
   - zai-coding-cn/glm-5-turbo
-  - opencode-go/deepseek-v4-flash
   - nvidia/openai/gpt-oss-20b
+  - opencode-go/deepseek-v4-flash
 ---
 
 Return concise evidence with file/symbol anchors.

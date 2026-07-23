@@ -4,9 +4,9 @@ description: General-purpose sub-agent for any delegated task. Use when no speci
 tools: read, bash, edit, write, grep, find, ls
 models:
   - zai-coding-cn/glm-5.1
-  - opencode-go/deepseek-v4-flash
-  - nvidia/moonshotai/kimi-k2.6
+  - nvidia/mistralai/mistral-small-4-119b-2603
   - openrouter/nvidia/nemotron-3-super-120b-a12b:free
+  - opencode-go/deepseek-v4-flash
 thinking: medium
 color: yellow
 ---

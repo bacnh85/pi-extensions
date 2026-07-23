@@ -4,9 +4,8 @@ description: Code review specialist. Use for correctness, security, regression, 
 tools: read, grep, find, ls
 models:
   - zai-coding-cn/glm-5.2
-  - nvidia/z-ai/glm-5.2
-  - opencode-go/deepseek-v4-pro
   - openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+  - opencode-go/deepseek-v4-pro
 thinking: high
 color: purple
 sandbox: read-only

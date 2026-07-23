@@ -4,8 +4,8 @@ description: Focused verification agent. Use for cheap routine test, typecheck, 
 tools: read, bash, grep, find, ls
 models:
   - zai-coding-cn/glm-5-turbo
-  - opencode-go/deepseek-v4-flash
   - nvidia/openai/gpt-oss-20b
+  - opencode-go/deepseek-v4-flash
 thinking: off
 color: orange
 ---

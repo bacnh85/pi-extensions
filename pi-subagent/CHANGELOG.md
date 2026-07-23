@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.0 (2026-07-24)
+
+### Model routing
+
+- Chains are now **free-first** to conserve the metered opencode-go budget: paid DeepSeek moves to the **last** position so free nvidia/openrouter fallbacks are tried first. Previously DeepSeek sat at position 2 and burned quota whenever the free GLM primary rate-limited.
+- **Removed two dead fallbacks** found by live-testing every free model on 2026-07-24: `nvidia/moonshotai/kimi-k2.6` (HTTP 404, NVCF not provisioned for the account) and `nvidia/z-ai/glm-5.2` (timeout). These are non-rate-limit failures, so the rate-limit retry loop did not advance past them — a subagent that reached them died instead of falling through to the working `:free` entries behind them.
+- New chains: scout/tester `glm-5-turbo` → `nvidia/gpt-oss-20b` → `deepseek-v4-flash`; worker/general-purpose `glm-5.1` → `nvidia/mistral-small-4-119b-2603` → `nemotron-3-super:free` → `deepseek-v4-flash`; planner/reviewer `glm-5.2` → `nemotron-3-ultra:free` → `deepseek-v4-pro`.
+- Verified-working free additions: `nvidia/openai/gpt-oss-20b` (1.2s), `nvidia/mistralai/mistral-small-4-119b-2603` (2.6s, 119B reasoning), `openrouter/nvidia/nemotron-3-nano-30b-a3b:free` (1.2s).
+
 ## 0.11.0 (2026-07-23)
 
 ### Model routing
