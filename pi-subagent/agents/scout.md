@@ -3,10 +3,10 @@ name: scout
 description: Fast codebase recon that returns compressed context for handoff. Use for finding files, understanding structure, locating symbols.
 tools: read, grep, find, ls
 models:
+  - zai-coding-cn/glm-5-turbo
   - opencode-go/deepseek-v4-flash
-  - openai-codex/gpt-5.6-luna
-  - opencode-go/mimo-v2.5
-thinking: low
+  - nvidia/openai/gpt-oss-20b
+thinking: off
 color: cyan
 sandbox: read-only
 ---

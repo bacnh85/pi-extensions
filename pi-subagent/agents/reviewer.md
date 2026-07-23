@@ -3,8 +3,10 @@ name: reviewer
 description: Code review specialist. Use for correctness, security, regression, and meaningful test-gap review.
 tools: read, grep, find, ls
 models:
-  - openai-codex/gpt-5.6-sol
+  - zai-coding-cn/glm-5.2
+  - nvidia/z-ai/glm-5.2
   - opencode-go/deepseek-v4-pro
+  - openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
 thinking: high
 color: purple
 sandbox: read-only

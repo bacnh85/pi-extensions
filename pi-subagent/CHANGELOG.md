@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.0 (2026-07-23)
+
+### Model routing
+
+- Bundled roles now route through **zai-coding-cn** (GLM) as the primary provider, with a provider-diverse fallback chain: `zai-coding-cn` (free GLM) → `opencode-go` (cheap `deepseek-v4-flash`) → `nvidia` (free NIM) → `openrouter` (`:free` models, last resort).
+- Fast tier (scout, tester) uses `glm-5-turbo` with `thinking: off` (GLM reasoning is ~11× slower; these are mechanical roles).
+- Strong-coding tier (worker, general-purpose) uses `glm-5.1`; deep-reasoning tier (planner, reviewer) uses `glm-5.2` (the only GLM with reasoning-effort control).
+- opencode-go contributes one DeepSeek model per role, matched to strength: `deepseek-v4-flash` for scout/tester/worker/general-purpose, `deepseek-v4-pro` for planner/reviewer — never its GLM models, which cost ~$1.40/$4.40 per M versus zai-coding-cn's free GLM.
+- Chains are cost-ascending on failure and spread load 2/2/2 across the GLM tiers to respect GLM's low concurrency; the existing rate-limit retry walks the chain on 429s.
+- Free-model fallbacks verified live against the OpenRouter API: `nemotron-3-super:free` (worker/general-purpose) and `nemotron-3-ultra:free` (planner/reviewer) respond correctly with reasoning on. scout/tester omit a `:free` entry because their `thinking: off` conflicts with reasoning-mandatory `:free` models (`gpt-oss-20b:free` returns HTTP 400 when reasoning is disabled; `gemma-4-31b:free` rate-limits, `cohere/north-mini-code:free` returns empty).
+
 ## 0.9.2 (2026-07-16)
 
 ### Pi SDK compatibility

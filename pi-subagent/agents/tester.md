@@ -3,10 +3,10 @@ name: tester
 description: Focused verification agent. Use for cheap routine test, typecheck, lint, build, and regression checks without editing files.
 tools: read, bash, grep, find, ls
 models:
-  - openai-codex/gpt-5.6-luna
-  - opencode-go/mimo-v2.5
+  - zai-coding-cn/glm-5-turbo
   - opencode-go/deepseek-v4-flash
-thinking: low
+  - nvidia/openai/gpt-oss-20b
+thinking: off
 color: orange
 ---
 

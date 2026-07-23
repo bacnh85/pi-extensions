@@ -68,8 +68,10 @@ Read-only service execution (used by `pi-review`) restricts tools to the read-on
 Pi selects the first authenticated/configured model reported by the parent session's `ModelRegistry`. Resolution order is legacy `model`, then each `models` entry, then the authenticated parent model. Duplicate candidates are ignored. If no candidate is available, the error lists every attempted model.
 
 ```yaml
-model: openai-codex/gpt-5.6-terra
-models: opencode-go/deepseek-v4-pro, opencode-go/mimo-v2.5
+models:
+  - zai-coding-cn/glm-5.2
+  - opencode-go/deepseek-v4-flash
+  - nvidia/moonshotai/kimi-k2.6
 ```
 
 The registry includes OAuth subscriptions, API-key subscriptions such as OpenCode Go, environment/runtime credentials, and custom `models.json` providers. Use provider-qualified IDs for predictable routing.

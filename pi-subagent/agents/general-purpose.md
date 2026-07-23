@@ -3,8 +3,10 @@ name: general-purpose
 description: General-purpose sub-agent for any delegated task. Use when no specialized agent fits. Good for complex research, multi-step operations, and code modifications.
 tools: read, bash, edit, write, grep, find, ls
 models:
-  - openai-codex/gpt-5.6-terra
-  - opencode-go/deepseek-v4-pro
+  - zai-coding-cn/glm-5.1
+  - opencode-go/deepseek-v4-flash
+  - nvidia/moonshotai/kimi-k2.6
+  - openrouter/nvidia/nemotron-3-super-120b-a12b:free
 thinking: medium
 color: yellow
 ---

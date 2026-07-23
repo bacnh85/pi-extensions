@@ -2,8 +2,10 @@
 name: worker
 description: General-purpose coding agent with full tool access. Use only when explicitly requested for isolated implementation.
 models:
-  - openai-codex/gpt-5.6-terra
-  - opencode-go/deepseek-v4-pro
+  - zai-coding-cn/glm-5.1
+  - opencode-go/deepseek-v4-flash
+  - nvidia/moonshotai/kimi-k2.6
+  - openrouter/nvidia/nemotron-3-super-120b-a12b:free
 thinking: medium
 color: green
 ---

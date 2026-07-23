@@ -16,14 +16,14 @@ Requires Node.js >= 20.18.
 
 | Role | Ordered model preferences | Thinking | Tools |
 | --- | --- | --- | --- |
-| `scout` | `opencode-go/deepseek-v4-flash` → `openai-codex/gpt-5.6-luna` → `opencode-go/mimo-v2.5` | low | read, grep, find, ls |
-| `tester` | `openai-codex/gpt-5.6-luna` → `opencode-go/mimo-v2.5` → `opencode-go/deepseek-v4-flash` | low | read, bash, grep, find, ls |
-| `worker` | `openai-codex/gpt-5.6-terra` → `opencode-go/deepseek-v4-pro` | medium | read, bash, edit, write, grep, find, ls |
-| `general-purpose` | `openai-codex/gpt-5.6-terra` → `opencode-go/deepseek-v4-pro` | medium | read, bash, edit, write, grep, find, ls |
-| `planner` | `openai-codex/gpt-5.6-sol` → `opencode-go/deepseek-v4-pro` | high | read, grep, find, ls |
-| `reviewer` | `openai-codex/gpt-5.6-sol` → `opencode-go/deepseek-v4-pro` | high | read, grep, find, ls |
+| `scout` | `zai-coding-cn/glm-5-turbo` → `opencode-go/deepseek-v4-flash` → `nvidia/openai/gpt-oss-20b` | off | read, grep, find, ls |
+| `tester` | `zai-coding-cn/glm-5-turbo` → `opencode-go/deepseek-v4-flash` → `nvidia/openai/gpt-oss-20b` | off | read, bash, grep, find, ls |
+| `worker` | `zai-coding-cn/glm-5.1` → `opencode-go/deepseek-v4-flash` → `nvidia/moonshotai/kimi-k2.6` → `openrouter/nvidia/nemotron-3-super-120b-a12b:free` | medium | read, bash, edit, write, grep, find, ls |
+| `general-purpose` | `zai-coding-cn/glm-5.1` → `opencode-go/deepseek-v4-flash` → `nvidia/moonshotai/kimi-k2.6` → `openrouter/nvidia/nemotron-3-super-120b-a12b:free` | medium | read, bash, edit, write, grep, find, ls |
+| `planner` | `zai-coding-cn/glm-5.2` → `nvidia/z-ai/glm-5.2` → `opencode-go/deepseek-v4-pro` → `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` | high | read, grep, find, ls |
+| `reviewer` | `zai-coding-cn/glm-5.2` → `nvidia/z-ai/glm-5.2` → `opencode-go/deepseek-v4-pro` → `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` | high | read, grep, find, ls |
 
-Each role uses the first authenticated preference available through Pi's model registry, then falls back to the authenticated parent model. User/project agent files remain stronger overrides and may set legacy `model`, ordered `models`, and `thinking`.
+Each role uses the first authenticated preference available through Pi's model registry, then falls back to the authenticated parent model. Chains are provider-diverse and cost-ascending on failure: **zai-coding-cn** (free GLM, primary) → **opencode-go** (one DeepSeek per role, matched to strength: `deepseek-v4-flash` for fast/strong-coding, `deepseek-v4-pro` for deep reasoning) → **nvidia** (free NIM) → **openrouter** (`:free` models, last resort — omitted from scout/tester, whose `thinking: off` is incompatible with reasoning-mandatory `:free` models). opencode-go is metered — its GLM models cost ~$1.40/$4.40 per M versus zai-coding-cn's free GLM, so GLM stays on zai-coding-cn and opencode-go contributes only its DeepSeek models. User/project agent files remain stronger overrides and may set legacy `model`, ordered `models`, and `thinking`.
 
 ## Agent files
 
@@ -34,8 +34,10 @@ Create `~/.pi/agent/agents/*.md` or `.pi/agents/*.md`:
 name: scout-fast
 description: Locate relevant files and symbols
 tools: read, grep, find, ls
-model: openai-codex/gpt-5.6-luna
-models: opencode-go/mimo-v2.5, opencode-go/deepseek-v4-flash
+models:
+  - zai-coding-cn/glm-5-turbo
+  - opencode-go/deepseek-v4-flash
+  - nvidia/openai/gpt-oss-20b
 ---
 
 Return concise evidence with file/symbol anchors.
