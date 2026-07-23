@@ -785,6 +785,11 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     stopTimer(state);
+    // ponytail: session is being torn down (new/fork/switch/reload). Pi invalidates
+    // this ctx next; no-op any in-flight fetch .then that captured it, and drop the
+    // stale promise so the next session fetches fresh instead of returning it.
+    state.inFlight = undefined;
+    state.refreshGeneration++;
     ctx.ui.setStatus(STATUS_KEY, undefined);
   });
 
