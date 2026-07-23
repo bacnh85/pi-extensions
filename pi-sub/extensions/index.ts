@@ -56,6 +56,9 @@ interface SubscriptionAccountSnapshot {
   plan?: string;
   fiveHour?: UsageWindow;
   weekly?: UsageWindow;
+  // Z.ai-only extras surfaced in the /sub detail view.
+  mcpMonthly?: UsageWindow; // from TIME_LIMIT already present in the quota response
+  usageBreakdown?: string; // per-model / per-tool summary line(s)
   lastActivity?: string;
 }
 
@@ -409,6 +412,56 @@ function zaiPlanLabel(response: ZaiUsageApiResponse): string | undefined {
   return planLabel(firstString(data?.planName, data?.plan, data?.plan_type, data?.packageName, data?.level));
 }
 
+function compactCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  return String(n);
+}
+
+// ponytail: trailing-24h window matches Z.ai dashboard intent (chelper uses ~48h).
+function zaiUsageTimeWindow(): string {
+  const fmt = (d: Date) => {
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  };
+  const now = new Date();
+  return `?startTime=${encodeURIComponent(fmt(new Date(now.getTime() - 86_400_000)))}&endTime=${encodeURIComponent(fmt(now))}`;
+}
+
+// Z.ai model-usage / tool-usage are time-series responses (verified live, CN host).
+// Per-model totals live in data.totalUsage.modelSummaryList[]; tool totals are
+// named scalars in data.totalUsage. Return undefined on any mismatch so the
+// quota table is never affected.
+function parseZaiModelUsage(body: unknown): string | undefined {
+  const tu = (body as any)?.data?.totalUsage;
+  const list = tu?.modelSummaryList;
+  if (!Array.isArray(list)) return undefined;
+  const entries = list
+    .map((m: any) => ({ name: m?.modelName, count: m?.totalTokens }))
+    .filter((e: { name: string; count: number }) => typeof e.name === "string" && e.name && typeof e.count === "number" && e.count > 0)
+    .sort((a, b) => b.count - a.count);
+  if (entries.length === 0) return undefined;
+  const calls = typeof tu.totalModelCallCount === "number" && tu.totalModelCallCount > 0 ? ` (${tu.totalModelCallCount} calls)` : "";
+  return `Models: ${entries.map((e) => `${e.name} ${compactCount(e.count)}`).join(" · ")}${calls}`;
+}
+
+function parseZaiToolUsage(body: unknown): string | undefined {
+  const u = (body as any)?.data?.totalUsage;
+  if (!u || typeof u !== "object") return undefined;
+  // ponytail: fixed label map — Z.ai returns named scalar counts, not a list.
+  const labels: Record<string, string> = {
+    totalNetworkSearchCount: "search",
+    totalWebReadMcpCount: "web-read",
+    totalZreadMcpCount: "zread",
+    totalSearchMcpCount: "search-mcp",
+  };
+  const entries = Object.entries(labels)
+    .map(([field, label]) => ({ label, count: u[field] }))
+    .filter((e: { label: string; count: number }) => typeof e.count === "number" && e.count > 0);
+  if (entries.length === 0) return undefined;
+  return `Tools: ${entries.map((e) => `${e.label} ${e.count}`).join(" · ")}`;
+}
+
 // Factory: the international `zai` and China `zai-coding-cn` endpoints share an
 // identical quota response; only the provider id, host, and label differ.
 function zaiUsageAdapter(providerId: string, usageUrl: string, displayName: string): { fetchUsage(signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> } {
@@ -418,14 +471,12 @@ function zaiUsageAdapter(providerId: string, usageUrl: string, displayName: stri
       const timeoutSignal = AbortSignal.timeout(7_000);
       const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 
-      const response = await fetch(usageUrl, {
-        headers: {
-          Accept: "application/json",
-          Authorization: `Bearer ${apiKey}`,
-          "User-Agent": "pi-sub/0.1.0",
-        },
-        signal: combinedSignal,
-      });
+      const headers = {
+        Accept: "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        "User-Agent": "pi-sub/0.1.0",
+      };
+      const response = await fetch(usageUrl, { headers, signal: combinedSignal });
 
       const body = await response.json();
 
@@ -438,9 +489,12 @@ function zaiUsageAdapter(providerId: string, usageUrl: string, displayName: stri
       }
 
       const parsed = body as ZaiUsageApiResponse;
-      const tokenLimits = (parsed.data?.limits ?? [])
+      const limits = parsed.data?.limits ?? [];
+      const tokenLimits = limits
         .filter((l) => l.type === "TOKENS_LIMIT")
         .sort((a, b) => (a.nextResetTime ?? 0) - (b.nextResetTime ?? 0));
+      // TIME_LIMIT is the MCP/month allowance already present in this response.
+      const timeLimit = limits.find((l) => l.type === "TIME_LIMIT");
 
       if (tokenLimits.length === 0) {
         throw new Error(`No TOKENS_LIMIT entries in ${displayName} usage response`);
@@ -450,12 +504,29 @@ function zaiUsageAdapter(providerId: string, usageUrl: string, displayName: stri
       // the next one (if present) is the weekly window.
       const fiveHour = zaiLimitToUsageWindow(tokenLimits[0]);
       const weekly = tokenLimits.length >= 2 ? zaiLimitToUsageWindow(tokenLimits[1]) : undefined;
+      const mcpMonthly = timeLimit ? zaiLimitToUsageWindow(timeLimit) : undefined;
+
+      // Best-effort: per-model tokens + per-tool calls. Any failure is silent; the
+      // quota table above is the source of truth and never depends on these.
+      const window = zaiUsageTimeWindow();
+      const modelUrl = usageUrl.replace(/\/quota\/limit$/, "/model-usage") + window;
+      const toolUrl = usageUrl.replace(/\/quota\/limit$/, "/tool-usage") + window;
+      const [modelRes, toolRes] = await Promise.allSettled([
+        fetch(modelUrl, { headers, signal: combinedSignal }).then((r) => r.json()),
+        fetch(toolUrl, { headers, signal: combinedSignal }).then((r) => r.json()),
+      ]);
+      const breakdowns = [
+        modelRes.status === "fulfilled" ? parseZaiModelUsage(modelRes.value) : undefined,
+        toolRes.status === "fulfilled" ? parseZaiToolUsage(toolRes.value) : undefined,
+      ].filter((s): s is string => !!s);
 
       const account: SubscriptionAccountSnapshot = {
         ...authAccount,
         plan: zaiPlanLabel(parsed) ?? authAccount.plan,
         fiveHour,
         weekly,
+        mcpMonthly,
+        usageBreakdown: breakdowns.length > 0 ? breakdowns.join("\n") : undefined,
       };
 
       return {
@@ -664,6 +735,10 @@ function buildDetails(snapshot: SubscriptionUsageSnapshot | undefined, state: St
   if (!hasFiveHour && !hasWeekly) {
     lines.push("", `${snapshot.providerDisplayName} does not expose usage windows.`);
   }
+  // Z.ai extras: MCP/month allowance (from TIME_LIMIT) + per-model/per-tool breakdown.
+  const mcpAcct = snapshot.accounts.find((a) => a.mcpMonthly);
+  if (mcpAcct && mcpAcct.mcpMonthly) lines.push("", `MCP/month: ${formatRemaining(mcpAcct.mcpMonthly)}`);
+  for (const a of snapshot.accounts) if (a.usageBreakdown) lines.push("", a.usageBreakdown);
   return lines.join("\n");
 }
 
