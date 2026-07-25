@@ -401,7 +401,7 @@ describe("advisor", () => {
       getActiveTools() { return [...this.active]; },
       setActiveTools(next: string[]) { this.active = next; },
     };
-    const advisor = registerAdvisor(pi, { getModel: () => selected, setModel: (model) => { selected = model; } });
+    const advisor = registerAdvisor(pi, { getModel: () => selected, setModel: (model) => { selected = model; }, getThinking: () => undefined });
     const response: any = {
       async *[Symbol.asyncIterator]() { yield { type: "text_delta", delta: "Check the existing test." }; },
       result: async () => ({ stopReason: "stop", content: [{ type: "text", text: "Check the existing test." }] }),

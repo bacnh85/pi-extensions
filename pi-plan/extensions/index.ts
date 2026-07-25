@@ -633,14 +633,15 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     });
   }
 
-  function beginCurrentSessionExecution(
+  async function beginCurrentSessionExecution(
     ctx: ExtensionContext,
     relativePlan: string,
-  ): void {
+  ): Promise<void> {
     planModeEnabled = false;
     planReadyForReview = false;
     lastPlanStatus = "approved";
     restoreTools();
+    await applyModeModel(ctx);
     applyThinking(normalThinking);
     updateFooter(ctx);
     clearPlanWidget(ctx);
@@ -969,7 +970,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       return;
     }
     if (mode === "current") {
-      beginCurrentSessionExecution(ctx, relativePlan);
+      await beginCurrentSessionExecution(ctx, relativePlan);
       return;
     }
     await leavePlanMode(ctx, true);
@@ -1296,6 +1297,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
         throw error;
       }
     },
+    getThinking: () => normalThinking,
     onAvailabilityChange: (enabled) => {
       if (!toolsBeforePlan) return;
       toolsBeforePlan = enabled

@@ -11,6 +11,8 @@ const SYSTEM = "You are a strategic advisor to another coding agent. Give concis
 interface AdvisorState {
   getModel(): string | undefined;
   setModel(model: string | undefined): Promise<void> | void;
+  /** Returns the session's current thinking level, or undefined for no thinking. */
+  getThinking(): string | undefined;
   onAvailabilityChange?(available: boolean): void;
 }
 
@@ -85,6 +87,7 @@ export function registerAdvisor(pi: ExtensionAPI, state: AdvisorState): { sync(c
       const transcriptEvidence = evidence(ctx, model, transcript.messages);
       let output = "";
       onUpdate?.({ content: [{ type: "text", text: `Consulting ${model}…` }], details: { model } });
+      const reasoning = state.getThinking();
       output = await runIsolated(ctx, model, {
         systemPrompt: `${SYSTEM}\n\nPRIMARY AGENT SYSTEM PROMPT:\n${ctx.getSystemPrompt()}`,
         messages: [{
@@ -95,7 +98,7 @@ export function registerAdvisor(pi: ExtensionAPI, state: AdvisorState): { sync(c
       }, (delta) => {
         output += delta;
         onUpdate?.({ content: [{ type: "text", text: output }], details: { model } });
-      }, signal);
+      }, signal, reasoning);
       const result = truncateHead(output, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
       return {
         content: [{ type: "text", text: `Advice from ${model}:\n${result.content}` }],
@@ -114,13 +117,18 @@ export function registerAdvisor(pi: ExtensionAPI, state: AdvisorState): { sync(c
     handler: async (args, ctx) => {
       registry = ctx.modelRegistry;
       const value = args.trim();
+
+      // /advisor off — disable
       if (value.toLowerCase() === "off") return await set(undefined, ctx);
+
+      // Model selection
       try { await ctx.modelRegistry.refresh(); } catch { /* use cached models */ }
       const match = value ? exactModel(ctx.modelRegistry.getAvailable(), value) : undefined;
       if (match) return await set(modelRef(match), ctx);
-      const choice = await chooseModel(ctx, state.getModel(), value || undefined);
-      if (choice) return await set(choice, ctx);
       if (ctx.mode !== "tui") throw new Error("Usage: /advisor <provider/model|off>");
+      const choice = await chooseModel(ctx, state.getModel(), value || undefined);
+      if (!choice) return;
+      await set(choice, ctx);
     },
   });
 

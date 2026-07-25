@@ -17,6 +17,7 @@ export async function runIsolated(
   context: IsolatedContext,
   onDelta?: (delta: string) => void,
   signal?: AbortSignal,
+  reasoning?: string,
 ): Promise<string> {
   const parsed = modelId ? parseModel(modelId) : undefined;
   if (modelId && !parsed) throw new Error(`Invalid model: ${modelId}`);
@@ -25,10 +26,12 @@ export async function runIsolated(
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) throw new Error(auth.error);
   const provider = ctx.modelRegistry.getRegisteredProviderConfig(model.provider);
-  const options = { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, signal };
+  const options: Record<string, unknown> = { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, signal, reasoning };
+  // ponytail: providers accept SimpleStreamOptions which expects ThinkingLevel for reasoning
+  const streamOptions = options as any;
   const response = provider?.streamSimple
-    ? provider.streamSimple(model, context, options)
-    : streamSimple(model, context, options);
+    ? provider.streamSimple(model, context, streamOptions)
+    : streamSimple(model, context, streamOptions);
   for await (const event of response) if (event.type === "text_delta") onDelta?.(event.delta);
   const result = await response.result();
   if (result.stopReason !== "stop") throw new Error(result.errorMessage ?? `Model stopped: ${result.stopReason}`);
