@@ -23,6 +23,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-sub** | 0.1.10 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | **pi-windows-tools** | 0.2.0 | Windows-specific tools for Pi. |
 | **pi-kicad** | 0.1.0 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon (no MCP SDK). |
+| **pi-9router** | 0.1.0 | Connect to a 9router AI routing proxy instance via its OpenAI-compatible API with interactive login. |
 
 ## Repository Structure
 
@@ -39,6 +40,7 @@ pi-extensions/
   pi-review/            # TS extension for isolated/local code review
   pi-fff/               # TS extension for FFF-powered find/grep/autocomplete
   pi-rtk/               # TS extension for RTK bash command rewriting
+  pi-9router/           # TS extension to connect to a 9router AI routing proxy.
   pi-sub/               # TS extension for subscription usage footer
   .github/workflows/    # publish.yml + test.yml (matrix across packages)
   .agents/skills/       # shared skills (skill-creator)
@@ -108,6 +110,7 @@ cd pi-<name> && npm test
 # pi-review:     cd extensions && mocha                (mocha + tsx)
 # pi-rtk:        npm pack --dry-run                    (packaging check)
 # pi-sub:        npm pack --dry-run                    (packaging check)
+# pi-9router:    node --import tsx --node test          (node:test + tsx)
 ```
 
 Test files use unit-test style (no fixture frameworks, consistent with ponytail

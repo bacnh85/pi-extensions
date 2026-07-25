@@ -39,7 +39,7 @@ jobs:
             pi-deepseek-tools: pi-deepseek-tools/**
             pi-obsidian: pi-obsidian/**
             pi-windows-tools: pi-windows-tools/**
-            pi-kicad: pi-kicad/**
+            pi-9router: pi-9router/**
 
       - name: Build matrix
         id: set-matrix
@@ -62,7 +62,7 @@ jobs:
               { pkg: 'pi-deepseek-tools', cmd: 'npm ci && npm test' },
               { pkg: 'pi-obsidian', cmd: 'npm ci && npm test' },
               { pkg: 'pi-windows-tools', cmd: 'npm ci && npm test && npm run typecheck' },
-              { pkg: 'pi-kicad', cmd: 'npm ci && npm test && npm run typecheck' },
+              { pkg: 'pi-9router', cmd: 'npm ci && npm test && npm run typecheck' },
             ];
 
             const selected = '${{ github.event_name }}' === 'workflow_dispatch'
