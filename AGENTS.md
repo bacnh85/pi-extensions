@@ -22,6 +22,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-rtk** | 0.1.8 | Bash command token rewriting through RTK. |
 | **pi-sub** | 0.1.10 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | **pi-windows-tools** | 0.2.0 | Windows-specific tools for Pi. |
+| **pi-kicad** | 0.1.0 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon (no MCP SDK). |
 
 ## Repository Structure
 
@@ -117,7 +118,7 @@ spec). pi-ponytail uses `node --test` with no mocha or tsx dependency at all.
 
 Two GitHub Actions workflows in `.github/workflows/`:
 
-- **test.yml** — runs on push to main and PRs. Matrix across all 15 packages.
+- **test.yml** — runs on push to main and PRs. Matrix across all 16 packages.
   pi-ponytail uses `node --test` directly, pi-rtk and pi-sub use `npm pack --dry-run`, others use `npm ci && npm test`.
 - **publish.yml** — runs on push to main. Checks each package's `package.json`
   version against the npm registry and publishes if different.

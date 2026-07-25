@@ -121,14 +121,31 @@ A goal is an execution-time feature, so it cannot be set while plan mode or an i
 }
 ```
 
-## Reasoning levels
+## Reasoning levels and per-mode model
 
-pi-plan remembers two reasoning levels:
+pi-plan remembers two configurations — one for **plan mode** and one for **normal/execution** —
+and restores the right one when you toggle modes or restart the session:
 
-- Change Pi's active reasoning level while plan mode is active to update the planning level.
-- Change Pi's active reasoning level in normal mode to update the normal/execution level.
+- **Reasoning level.** Change Pi's active reasoning level while plan mode is active to update
+  the planning level; change it in normal mode to update the execution level.
+- **Model.** Change Pi's active model with `/model` (or `Ctrl+P`) while plan mode is active to
+  set the planning model; change it in normal mode to set the execution model.
 
-Levels are persisted per model ID across sessions under your user Pi agent directory.
+Both are observed automatically and persisted per model ID across sessions under your user Pi
+agent directory. This makes it natural to plan with a strong model and implement with a fast
+one — e.g. plan with `zai-coding-cn/glm-5.2`, then implement with `opencode-go/deepseek-v4-flash`:
+the model switches automatically when you enter/leave plan mode.
+
+Notes:
+- A per-mode model is only applied when you have set one for that mode. By default (nothing
+  configured), Pi's current model is left untouched when toggling modes.
+- Switching models persists the model as Pi's global default in `settings.json` on each change
+  (Pi's own `/model` does the same). pi-plan always re-applies the correct per-mode model on
+  the next mode toggle or session start.
+- To clear a per-mode model, switch it back to your desired default while in that mode, or edit
+  the `planModel`/`normalModel` fields out of `~/.pi/agent/pi-plan/preferences.json`.
+- If the configured model is unavailable (no API key or not found), the switch is skipped with a
+  warning and the current model is kept.
 
 ## Packaging
 

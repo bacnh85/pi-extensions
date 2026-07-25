@@ -37,7 +37,7 @@ async function destination(cwd: string, intent: string): Promise<string> {
   for (let n = 0; ; n++) { const file = path.join(dir, `${base}${n ? `-${n + 1}` : ""}.md`); try { const handle = await open(file, "wx"); await handle.close(); return file; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; } }
 }
 
-export function registerSpecs(pi: ExtensionAPI, activate: (file: string, ctx: ExtensionContext) => void, approve: (ctx: ExtensionContext) => string | undefined): void {
+export function registerSpecs(pi: ExtensionAPI, activate: (file: string, ctx: ExtensionContext) => Promise<void>, approve: (ctx: ExtensionContext) => Promise<string | undefined>): void {
   pi.registerCommand("specs", { description: "Compile intent into an EARS specification and lock writes", handler: async (args, ctx) => {
     const intent = args.trim(); if (!intent) return ctx.ui.notify("Usage: /specs <intent>", "warning");
     let file: string | undefined;
@@ -58,12 +58,12 @@ export function registerSpecs(pi: ExtensionAPI, activate: (file: string, ctx: Ex
       if (invalid.length) throw new Error(`Generated spec references invalid target(s): ${invalid.join(", ")}`);
       file = await destination(ctx.cwd, intent);
       await withFileMutationQueue(file, async () => { await (await import("node:fs/promises")).writeFile(file!, `${content.trim()}\n`, "utf8"); });
-      activate(file, ctx); showProgress(`specification written: ${path.relative(ctx.cwd, file)}`, "green");
+      await activate(file, ctx); showProgress(`specification written: ${path.relative(ctx.cwd, file)}`, "green");
     } catch (error) { if (file) await (await import("node:fs/promises")).rm(file, { force: true }); showProgress(`specification failed: ${String(error)}`, "red"); }
     finally { ctx.ui.setStatus(KEY, undefined); ctx.ui.setWidget(KEY, undefined); }
   } });
   pi.registerCommand("specs-approve", { description: "Release the active specs write gate and prefill implementation", handler: async (_args, ctx) => {
-    const file = approve(ctx);
+    const file = await approve(ctx);
     if (!file) return ctx.ui.notify("No active specs gate.", "warning");
     const prompt = specExecutionPrompt(path.relative(ctx.cwd, file));
     if (ctx.mode === "tui") ctx.ui.setEditorText(prompt);

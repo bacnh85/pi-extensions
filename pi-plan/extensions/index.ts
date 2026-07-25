@@ -16,7 +16,7 @@ import path from "node:path";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
 import { captureRewindCheckpoint, restoreRewindCheckpoint, rewindToFlowBaseline, snapshotUntrackedFiles, validateRewindCheckpoint, type RewindCheckpoint } from "./lib/lifecycle";
 import { BLOCKED_TOOLS, PLAN_ONLY_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
-import { loadUtilityConfig } from "./lib/utility-config";
+import { loadUtilityConfig, parseModel } from "./lib/utility-config";
 import { registerAdvisor } from "./commands/advisor";
 import { advanceGoal, DEFAULT_GOAL_MAX_TURNS, registerGoal, type GoalAccessors, type GoalState } from "./commands/goal";
 import { registerBtw } from "./commands/btw";
@@ -36,7 +36,9 @@ const REVIEW_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
 const REVIEW_HARD_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_DIRTY_PATCH_BYTES = 50 * 1024;
 const MAX_UNTRACKED_REVIEW_BYTES = 12 * 1024;
-const PREFERENCES_FILE = path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "pi-plan", "preferences.json");
+function preferencesFile(): string {
+  return path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "pi-plan", "preferences.json");
+}
 const REWIND_CHECKPOINT_TYPE = "pi-plan-rewind";
 const MAX_REWIND_CHECKPOINTS = 100;
 const THINKING_LEVELS = [
@@ -106,6 +108,8 @@ interface PlanPreferences {
   >;
   advisorModel?: string;
   goalModel?: string;
+  planModel?: string;
+  normalModel?: string;
 }
 
 interface WritePlanParams {
@@ -223,7 +227,7 @@ function getEffectiveThinking(prefs: PlanPreferences, model: { provider?: string
 
 async function loadPreferences(): Promise<PlanPreferences | undefined> {
   try {
-    const raw = await readFile(PREFERENCES_FILE, "utf8");
+    const raw = await readFile(preferencesFile(), "utf8");
     const parsed = JSON.parse(raw) as Record<string, any>;
     if (parsed.version !== 2 || !isThinkingLevel(parsed.defaults?.planThinking) || !isThinkingLevel(parsed.defaults?.normalThinking) || typeof parsed.perModel !== "object" || parsed.perModel === null) {
       return undefined;
@@ -241,6 +245,8 @@ async function loadPreferences(): Promise<PlanPreferences | undefined> {
       defaults: parsed.defaults,
       perModel,
       advisorModel: typeof parsed.advisorModel === "string" && parsed.advisorModel.trim() ? parsed.advisorModel.trim() : undefined,
+      planModel: typeof parsed.planModel === "string" && parsed.planModel.trim() ? parsed.planModel.trim() : undefined,
+      normalModel: typeof parsed.normalModel === "string" && parsed.normalModel.trim() ? parsed.normalModel.trim() : undefined,
     };
   } catch {
     return undefined;
@@ -248,10 +254,11 @@ async function loadPreferences(): Promise<PlanPreferences | undefined> {
 }
 
 async function savePreferences(preferences: PlanPreferences): Promise<void> {
-  await mkdir(path.dirname(PREFERENCES_FILE), { recursive: true });
-  const tmp = `${PREFERENCES_FILE}.${process.pid}.tmp`;
+  const file = preferencesFile();
+  await mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
   await writeFile(tmp, `${JSON.stringify(preferences, null, 2)}\n`, "utf8");
-  await rename(tmp, PREFERENCES_FILE);
+  await rename(tmp, file);
 }
 
 function isReviewFinding(value: unknown): value is ReviewFinding {
@@ -294,6 +301,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   let lastPlanTitle: string | undefined;
   let lastPlanStatus: PlanStatus | undefined;
   let applyingStoredThinking = false;
+  let applyingStoredModel = false;
   /** Set on successful write_plan, cleared after first agent_settled prompt. */
   let planReadyForReview = false;
   /** Suppress --plan flag during fresh-session handoff. */
@@ -440,7 +448,40 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     persistPreferences();
   }
 
-  function enterPlanMode(ctx: ExtensionContext): void {
+  async function applyModeModel(ctx: ExtensionContext): Promise<void> {
+    const target = planModeEnabled ? preferences?.planModel : preferences?.normalModel;
+    if (!target) return;
+    const current = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+    if (target === current) return; // ponytail: avoid settings.json churn; core no-ops on equal anyway
+    const parsed = parseModel(target);
+    const model = parsed ? ctx.modelRegistry.find(parsed.provider, parsed.id) : undefined;
+    if (!model) {
+      ctx.ui.notify(`Configured ${planModeEnabled ? "plan" : "code"} model unavailable: ${target}`, "warning");
+      return;
+    }
+    applyingStoredModel = true;
+    try {
+      await pi.setModel(model); // rejects on missing auth
+    } catch (error) {
+      ctx.ui.notify(`${planModeEnabled ? "Plan" : "Code"} model switch failed: ${String(error)}`, "warning");
+    } finally {
+      applyingStoredModel = false;
+    }
+  }
+
+  function recordActiveModel(ref: string): void {
+    if (!preferences) return;
+    if (planModeEnabled) {
+      if (preferences.planModel === ref) return;
+      preferences.planModel = ref;
+    } else {
+      if (preferences.normalModel === ref) return;
+      preferences.normalModel = ref;
+    }
+    persistPreferences();
+  }
+
+  async function enterPlanMode(ctx: ExtensionContext): Promise<void> {
     planModeEnabled = true;
     // ponytail: after approval, start fresh plan path
     if (lastPlanStatus === "approved" || lastPlanStatus === "executing") {
@@ -450,6 +491,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       lastPlanStatus = undefined;
     }
     enablePlanTools();
+    await applyModeModel(ctx);
     applyThinking(planThinking);
     updateFooter(ctx);
     clearPlanWidget(ctx);
@@ -460,13 +502,14 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     );
   }
 
-  function leavePlanMode(
+  async function leavePlanMode(
     ctx: ExtensionContext,
     restoreThinking = true,
-  ): void {
+  ): Promise<void> {
     planModeEnabled = false;
     planReadyForReview = false;
     restoreTools();
+    await applyModeModel(ctx);
     if (restoreThinking) applyThinking(normalThinking);
     updateFooter(ctx);
     clearPlanWidget(ctx);
@@ -474,22 +517,22 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     ctx.ui.notify("Plan mode disabled.", "info");
   }
 
-  function activateSpecGate(file: string, ctx: ExtensionContext): void {
+  async function activateSpecGate(file: string, ctx: ExtensionContext): Promise<void> {
     specGatePlanMode = planModeEnabled;
     specGateActive = true;
     specPath = file;
-    if (!planModeEnabled) enterPlanMode(ctx);
+    if (!planModeEnabled) await enterPlanMode(ctx);
     persistState();
   }
 
-  function approveSpecGate(ctx: ExtensionContext): string | undefined {
+  async function approveSpecGate(ctx: ExtensionContext): Promise<string | undefined> {
     if (!specGateActive || !specPath) return undefined;
     const approvedPath = specPath;
     specGateActive = false;
     specPath = undefined;
     const keepPlanMode = specGatePlanMode;
     specGatePlanMode = false;
-    if (!keepPlanMode) leavePlanMode(ctx);
+    if (!keepPlanMode) await leavePlanMode(ctx);
     else persistState();
     ctx.ui.notify("Specs approved; write gate released.", "info");
     return approvedPath;
@@ -510,8 +553,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     }
     if (planModeEnabled) {
       if (specGateActive) return ctx.ui.notify("/specs gate is active. Run /specs-approve before leaving plan mode.", "warning");
-      leavePlanMode(ctx);
-    } else enterPlanMode(ctx);
+      await leavePlanMode(ctx);
+    } else await enterPlanMode(ctx);
   }
 
   function checkpoints(ctx: ExtensionContext): RewindCheckpoint[] {
@@ -929,7 +972,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       beginCurrentSessionExecution(ctx, relativePlan);
       return;
     }
-    leavePlanMode(ctx, true);
+    await leavePlanMode(ctx, true);
     lastPlanStatus = "approved";
     persistState();
     await beginNewSessionExecution(ctx, mode === "flow");
@@ -1339,8 +1382,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     handler: async (ctx) => {
       if (planModeEnabled) {
         if (specGateActive) return ctx.ui.notify("/specs gate is active. Run /specs-approve before leaving plan mode.", "warning");
-        leavePlanMode(ctx);
-      } else enterPlanMode(ctx);
+        await leavePlanMode(ctx);
+      } else await enterPlanMode(ctx);
     },
   });
 
@@ -1380,6 +1423,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     ) {
       planModeEnabled = true;
     }
+    await applyModeModel(ctx);
     if (planModeEnabled) {
       enablePlanTools();
       applyThinking(planThinking);
@@ -1394,6 +1438,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
   pi.on("model_select", async (event, ctx) => {
     if (!preferences) return;
+    if (applyingStoredModel || event.source === "restore") return;
+    recordActiveModel(`${event.model.provider}/${event.model.id}`);
     const effective = getEffectiveThinking(preferences, event.model);
     // ponytail: always update both stored levels, then apply active one
     planThinking = effective.plan;

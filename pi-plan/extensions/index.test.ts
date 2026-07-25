@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { before, describe, it } from "mocha";
+import { after, afterEach, before, describe, it } from "mocha";
 import os from "node:os";
 import path from "node:path";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -22,7 +22,21 @@ import { parseModel } from "./lib/utility-config";
 
 /** Real temp directory for tests that write files. */
 const TMP = path.join(os.tmpdir(), "pi-plan-test-" + process.pid);
-before(() => { mkdirSync(TMP, { recursive: true }); });
+const REAL_HOMEDIR = os.homedir;
+before(() => {
+  os.homedir = () => TMP; // isolate ~/.pi/agent/pi-plan/preferences.json from the real home
+  mkdirSync(TMP, { recursive: true });
+});
+after(() => { os.homedir = REAL_HOMEDIR; });
+afterEach(cleanPrefs); // keep the isolated preferences file hermetic between tests
+
+function prefsPath(): string {
+  return path.join(TMP, ".pi", "agent", "pi-plan", "preferences.json");
+}
+function cleanPrefs(): void {
+  mkdirSync(path.dirname(prefsPath()), { recursive: true });
+  writeFileSync(prefsPath(), JSON.stringify({ version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {} }));
+}
 
 function createGitRepo(prefix: string): string {
   const cwd = mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -148,6 +162,8 @@ interface FakePi {
   shortcuts: Record<string, any>;
   activeTools: string[];
   thinkingLevel: string | null;
+  modelSets: any[];
+  setModelReject?: boolean;
   entries: any[];
   sentMessages: any[];
   customMessages: any[];
@@ -169,6 +185,7 @@ function createFakePi(
     shortcuts: {},
     activeTools: [...initialTools],
     thinkingLevel: null,
+    modelSets: [],
     entries: [],
     sentMessages: [],
     customMessages: [],
@@ -203,6 +220,10 @@ function createFakePi(
     },
     setThinkingLevel(level: string) {
       state.thinkingLevel = level;
+    },
+    setModel(model: any) {
+      state.modelSets.push(model);
+      return state.setModelReject ? Promise.reject(new Error("No API key for model")) : Promise.resolve();
     },
     appendEntry(customType: string, data?: any) {
       state.entries.push({ customType, data });
@@ -240,7 +261,7 @@ function fakeCtx(overrides: Record<string, any> = {}): any {
     cwd: overrides.cwd ?? TMP,
     hasUI: overrides.hasUI ?? true,
     model: overrides.model ?? { provider: "test", id: "model-1" },
-    modelRegistry: { getAvailable: () => [] },
+    modelRegistry: { getAvailable: () => [], find: () => undefined },
     getContextUsage: () => ({ percent: 50 }),
     isIdle: () => true,
     ui: {
@@ -1736,6 +1757,123 @@ describe("thinking level preferences", () => {
       );
     }
     // No crash = success
+  });
+});
+
+describe("per-mode model preferences", () => {
+  function modelCtx(model: any): any {
+    return fakeCtx({
+      model,
+      modelRegistry: {
+        getAvailable: () => [],
+        find: (p: string, i: string) =>
+          p === "zai-coding-cn" && i === "glm-5.2" ? { provider: p, id: i }
+          : p === "opencode-go" && i === "deepseek-v4-flash" ? { provider: p, id: i }
+          : undefined,
+      },
+    });
+  }
+
+  it("records a plan-mode model and re-applies it on re-entry", async () => {
+    cleanPrefs();
+    const ext = createFakePi(["read"], {});
+    const ctx = modelCtx({ provider: "test", id: "model-1" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    await ext.commands["plan"].handler("", ctx); // enter plan mode
+    // user picks glm-5.2 via /model while in plan mode -> recorded as planModel
+    await ext.handlers.model_select?.[0]({ model: { provider: "zai-coding-cn", id: "glm-5.2" }, previousModel: { provider: "test", id: "model-1" }, source: "set" }, ctx);
+
+    await ext.commands["plan"].handler("", ctx); // leave (normalModel unset -> no switch)
+    ext.modelSets.length = 0;
+    await ext.commands["plan"].handler("", ctx); // re-enter -> applyModeModel switches to planModel
+    assert.ok(ext.modelSets.some((m: any) => m.provider === "zai-coding-cn" && m.id === "glm-5.2"),
+      "re-entering plan mode switches to the recorded plan model");
+  });
+
+  it("keeps plan and normal model selections separate", async () => {
+    cleanPrefs();
+    const ext = createFakePi(["read"], {});
+    const ctx = modelCtx({ provider: "test", id: "model-1" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    // normal mode: pick deepseek -> normalModel
+    await ext.handlers.model_select?.[0]({ model: { provider: "opencode-go", id: "deepseek-v4-flash" }, previousModel: { provider: "test", id: "model-1" }, source: "set" }, ctx);
+    // enter plan mode and pick glm-5.2 -> planModel
+    await ext.commands["plan"].handler("", ctx);
+    await ext.handlers.model_select?.[0]({ model: { provider: "zai-coding-cn", id: "glm-5.2" }, previousModel: { provider: "test", id: "model-1" }, source: "set" }, ctx);
+
+    ext.modelSets.length = 0;
+    await ext.commands["plan"].handler("", ctx); // leave -> applyModeModel targets normalModel
+    assert.ok(ext.modelSets.some((m: any) => m.provider === "opencode-go" && m.id === "deepseek-v4-flash"),
+      "leaving plan mode restores the normal/execute model");
+  });
+
+  it("does not record model on session restore (source restore)", async () => {
+    cleanPrefs();
+    const ext = createFakePi(["read"], {});
+    const ctx = modelCtx({ provider: "test", id: "model-1" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.commands["plan"].handler("", ctx); // enter plan mode
+    await ext.handlers.model_select?.[0]({ model: { provider: "zai-coding-cn", id: "glm-5.2" }, previousModel: { provider: "test", id: "model-1" }, source: "set" }, ctx);
+    await ext.commands["plan"].handler("", ctx); // leave (records normalModel=glm-5.2 from set)
+
+    // Simulate a different model being restored
+    ext.modelSets.length = 0;
+    await ext.handlers.model_select?.[0]({ model: { provider: "opencode-go", id: "deepseek-v4-flash" }, previousModel: { provider: "test", id: "model-1" }, source: "restore" }, ctx);
+
+    // Normal mode should still be the SET one (glm-5.2), not the restored one
+    await ext.commands["plan"].handler("", ctx); // enter -> applyModeModel targets planModel (set as glm-5.2)
+    await ext.commands["plan"].handler("", ctx); // leave -> applyModeModel targets normalModel (should be glm-5.2, not deepseek)
+    assert.ok(ext.modelSets.some((m: any) => m.provider === "zai-coding-cn" && m.id === "glm-5.2"),
+      "restored model did not overwrite the previously set normal preference");
+  });
+
+  it("survives a model switch failure (missing auth) without throwing", async () => {
+    cleanPrefs();
+    const ext = createFakePi(["read"], {});
+    ext.setModelReject = true;
+    const notices: string[] = [];
+    const ctx = modelCtx({ provider: "test", id: "model-1" });
+    ctx.ui.notify = (m: string) => notices.push(m);
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.commands["plan"].handler("", ctx);
+    await ext.handlers.model_select?.[0]({ model: { provider: "zai-coding-cn", id: "glm-5.2" }, previousModel: { provider: "test", id: "model-1" }, source: "set" }, ctx);
+
+    await assert.doesNotReject(ext.commands["plan"].handler("", ctx)); // leave (normalModel unset)
+    await assert.doesNotReject(ext.commands["plan"].handler("", ctx)); // re-enter -> setModel rejects -> caught
+    assert.ok(notices.some((n) => /switch failed/i.test(n)), "failure is reported as a warning");
+  });
+
+  it("skips setModel when the configured model is already active", async () => {
+    cleanPrefs();
+    const ext = createFakePi(["read"], {});
+    const ctx = modelCtx({ provider: "test", id: "model-1" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.commands["plan"].handler("", ctx);
+    await ext.handlers.model_select?.[0]({ model: { provider: "zai-coding-cn", id: "glm-5.2" }, previousModel: { provider: "test", id: "model-1" }, source: "set" }, ctx);
+    ctx.model = { provider: "zai-coding-cn", id: "glm-5.2" }; // active == configured planModel
+
+    ext.modelSets.length = 0;
+    await ext.commands["plan"].handler("", ctx); // leave (normalModel unset -> no switch)
+    await ext.commands["plan"].handler("", ctx); // re-enter: target == current -> short-circuit
+    assert.equal(ext.modelSets.length, 0, "no switch when the configured model is already active");
+  });
+
+  it("tolerates a legacy prefs file, then restores a persisted planModel on startup", async () => {
+    cleanPrefs(); // legacy file: no planModel/normalModel
+    const ext = createFakePi(["read"], { plan: true });
+    const ctx = modelCtx({ provider: "test", id: "model-1" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx); // --plan, planModel unset -> no switch
+    assert.equal(ext.modelSets.length, 0, "no switch when planModel is absent (backward compatible)");
+
+    mkdirSync(path.dirname(prefsPath()), { recursive: true });
+    writeFileSync(prefsPath(), JSON.stringify({ version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {}, planModel: "zai-coding-cn/glm-5.2" }));
+    const fresh = createFakePi(["read"], { plan: true });
+    const ctx2 = modelCtx({ provider: "test", id: "model-1" });
+    await fresh.handlers.session_start?.[0]({ reason: "startup" }, ctx2);
+    assert.ok((fresh as any).modelSets.some((m: any) => m.provider === "zai-coding-cn" && m.id === "glm-5.2"),
+      "session_start applies a persisted planModel under --plan");
   });
 });
 
