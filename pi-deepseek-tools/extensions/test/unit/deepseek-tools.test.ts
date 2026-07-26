@@ -17,7 +17,7 @@ import {
   dedicatedToolForShellCommand,
   OPENCODE_GO_PROVIDER,
   reasoningStripEnabled,
-  directDeepSeekEnabled,
+
   repairEnabled,
   isDeepSeekV4ModelByModel,
   categorizeToolError,
@@ -84,11 +84,6 @@ describe("environment toggles", () => {
     assert.equal(reasoningStripEnabled({ PI_DEEPSEEK_TOOLS_STRIP_REASONING: "on" }), true);
   });
 
-  it("directDeepSeekEnabled defaults to disabled", () => {
-    assert.equal(directDeepSeekEnabled({}), false);
-    assert.equal(directDeepSeekEnabled({ PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK: "1" }), true);
-    assert.equal(directDeepSeekEnabled({ PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK: "true" }), true);
-  });
 
   it("repairEnabled defaults to enabled", () => {
     assert.equal(repairEnabled({}), true);
@@ -138,29 +133,31 @@ describe("env-var config parsing", () => {
   });
 });
 
-describe("direct DeepSeek provider support", () => {
-  it("isDeepSeekV4ModelByModel matches opencode-go by default", () => {
+describe("provider-agnostic V4 detection", () => {
+  it("matches from any provider by model id", () => {
+    // opencode-go (the original case)
     assert.equal(isDeepSeekV4ModelByModel({ provider: "opencode-go", id: "deepseek-v4-flash" }), true);
     assert.equal(isDeepSeekV4ModelByModel({ provider: "opencode-go", id: "deepseek-v4-pro" }), true);
+    // direct deepseek API (was opt-in, now default)
+    assert.equal(isDeepSeekV4ModelByModel({ provider: "deepseek", id: "deepseek-v4-flash" }), true);
+    assert.equal(isDeepSeekV4ModelByModel({ provider: "deepseek", id: "deepseek-v4-pro" }), true);
+    // openrouter-style id (vendor/model)
+    assert.equal(isDeepSeekV4ModelByModel({ provider: "openrouter", id: "deepseek/deepseek-v4-flash" }), true);
+    // nvidia/NIM-style id (vendor-ai/model)
+    assert.equal(isDeepSeekV4ModelByModel({ provider: "nvidia", id: "deepseek-ai/deepseek-v4-pro" }), true);
   });
 
-  it("isDeepSeekV4ModelByModel rejects non-DeepSeek by default", () => {
-    assert.equal(isDeepSeekV4ModelByModel({ provider: "deepseek", id: "deepseek-v4-flash" }), false);
-    assert.equal(isDeepSeekV4ModelByModel({ provider: "deepseek", id: "deepseek-v4-pro" }), false);
+  it("rejects non-V4 DeepSeek models", () => {
+    assert.equal(isDeepSeekV4ModelByModel({ provider: "opencode-go", id: "deepseek-v3" }), false);
+    assert.equal(isDeepSeekV4ModelByModel({ provider: "opencode-go", id: "deepseek-reasoner" }), false);
+    assert.equal(isDeepSeekV4ModelByModel({ provider: "opencode-go", id: "deepseek-r1" }), false);
+    assert.equal(isDeepSeekV4ModelByModel({ provider: "opencode-go", id: "deepseek-coder" }), false);
+  });
+
+  it("rejects non-DeepSeek models", () => {
     assert.equal(isDeepSeekV4ModelByModel({ provider: "openai-codex", id: "gpt-5.5" }), false);
-  });
-
-  it("isDeepSeekV4ModelByModel matches direct deepseek when env is set", () => {
-    const previous = process.env.PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK;
-    process.env.PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK = "1";
-    try {
-      assert.equal(isDeepSeekV4ModelByModel({ provider: "deepseek", id: "deepseek-v4-flash" }), true);
-      assert.equal(isDeepSeekV4ModelByModel({ provider: "deepseek", id: "deepseek-v4-pro" }), true);
-      assert.equal(isDeepSeekV4ModelByModel({ provider: "opencode-go", id: "deepseek-v4-flash" }), true);
-    } finally {
-      if (previous === undefined) delete process.env.PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK;
-      else process.env.PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK = previous;
-    }
+    assert.equal(isDeepSeekV4ModelByModel({ provider: "zai-coding-cn", id: "glm-5.2" }), false);
+    assert.equal(isDeepSeekV4ModelByModel({ provider: "anthropic", id: "claude-sonnet-4" }), false);
   });
 });
 
@@ -328,13 +325,14 @@ describe("extension runtime scoping", () => {
       const event = { systemPrompt: "base", systemPromptOptions: { selectedTools: activeTools } };
 
       const flash = beforeAgentStart(event, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
-      assert.match(flash.systemPrompt, /OpenCode Go DeepSeek V4/);
+      assert.match(flash.systemPrompt, /DeepSeek V4/);
 
       const pro = beforeAgentStart(event, { model: { provider: "opencode-go", id: "deepseek-v4-pro" } });
-      assert.match(pro.systemPrompt, /OpenCode Go DeepSeek V4/);
+      assert.match(pro.systemPrompt, /DeepSeek V4/);
 
       const direct = beforeAgentStart(event, { model: { provider: "deepseek", id: "deepseek-v4-flash" } });
-      assert.equal(direct, undefined);
+      assert.ok(direct, "should now match provider-agnostic deepseek V4");
+      assert.match(direct.systemPrompt, /DeepSeek V4/);
 
       const gpt = beforeAgentStart(event, { model: { provider: "openai-codex", id: "gpt-5.5" } });
       assert.equal(gpt, undefined);
@@ -346,6 +344,31 @@ describe("extension runtime scoping", () => {
 
 
 
+  it("activates via session-captured model when ctx.model is rewritten by a proxy fallback", () => {
+    const previous = process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE;
+    delete process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE;
+    try {
+      const { handlers } = createFakePi(activeTools);
+      const beforeAgentStart = handlers.before_agent_start[0];
+      const event = { systemPrompt: "base", systemPromptOptions: { selectedTools: activeTools } };
+
+      // session_start sees the requested DeepSeek V4 model (e.g. 9router/ocg/deepseek-v4-flash)
+      handlers.session_start[0]({}, { model: { provider: "9router", id: "ocg/deepseek-v4-flash" } });
+
+      // before_agent_start sees the actually-served model after proxy fallback (e.g. glm-5.2)
+      const result = beforeAgentStart(event, { model: { provider: "9router", id: "glm/glm-5.2" } });
+      assert.ok(result, "should inject guidance via session-captured model");
+      assert.match(result.systemPrompt, /DeepSeek V4/);
+
+      // Non-DeepSeek session with a non-DeepSeek served model → no guidance
+      handlers.session_start[0]({}, { model: { provider: "openai-codex", id: "gpt-5.5" } });
+      const gpt = beforeAgentStart(event, { model: { provider: "9router", id: "glm/glm-5.2" } });
+      assert.equal(gpt, undefined, "should not inject when neither model is DeepSeek V4");
+    } finally {
+      if (previous === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE;
+      else process.env.PI_DEEPSEEK_TOOLS_SELECTION_GUIDANCE = previous;
+    }
+  });
   it("injects guidance when obsidian is the only relevant tool", () => {
     const { handlers } = createFakePi(["obsidian"]);
     const result = handlers.before_agent_start[0](
@@ -621,7 +644,7 @@ describe("Super Power Mode", () => {
   it("superPowerPromptContent returns base prompt when no custom env", () => {
     const result = superPowerPromptContent({});
     assert.ok(result.length > 100, "base prompt should be substantial");
-    assert.match(result, /DEEPSEEK-V4-FLASH-SUPERPOWER/);
+    assert.match(result, /DEEPSEEK-V4-SUPERPOWER/);
     assert.match(result, /NEVER refuse/);
   });
 
@@ -640,9 +663,9 @@ describe("Super Power Mode", () => {
       const event = { systemPrompt: "base prompt", systemPromptOptions: { selectedTools: ["read", "bash"] } };
       const result = beforeAgentStart(event, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
       assert.ok(result, "should return a modified system prompt");
-      assert.match(result.systemPrompt, /DEEPSEEK-V4-FLASH-SUPERPOWER/);
+      assert.match(result.systemPrompt, /DEEPSEEK-V4-SUPERPOWER/);
       assert.match(result.systemPrompt, /base prompt/);
-      assert.ok(result.systemPrompt.indexOf("DEEPSEEK-V4-FLASH-SUPERPOWER") < result.systemPrompt.indexOf("base prompt"),
+      assert.ok(result.systemPrompt.indexOf("DEEPSEEK-V4-SUPERPOWER") < result.systemPrompt.indexOf("base prompt"),
         "super power prompt should appear before the base system prompt");
     } finally {
       if (previous === undefined) delete process.env.PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE;
@@ -717,8 +740,8 @@ describe("Super Power Mode", () => {
       const result = beforeAgentStart(event, { model: { provider: "opencode-go", id: "deepseek-v4-flash" } });
       assert.ok(result);
       const sys = result.systemPrompt;
-      const spIdx = sys.indexOf("DEEPSEEK-V4-FLASH-SUPERPOWER");
-      const guidanceIdx = sys.indexOf("OpenCode Go DeepSeek V4");
+      const spIdx = sys.indexOf("DEEPSEEK-V4-SUPERPOWER");
+      const guidanceIdx = sys.indexOf("DeepSeek V4 — pick the right tool");
       const baseIdx = sys.indexOf("base prompt");
       assert.ok(spIdx >= 0, "should contain super power prompt");
       assert.ok(guidanceIdx >= 0, "should contain guidance");

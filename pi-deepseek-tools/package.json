@@ -1,7 +1,7 @@
 {
     "name": "@bacnh85/pi-deepseek-tools",
-    "version": "0.12.9",
-    "description": "Pi extension that improves DeepSeek V4 tool calling, argument repair, reasoning cleanup, and diagnostics for OpenCode Go models.",
+    "version": "0.13.0",
+    "description": "Pi extension that improves DeepSeek V4 tool calling, argument repair, reasoning cleanup, and diagnostics for DeepSeek V4 models from any provider.",
     "type": "module",
     "license": "MIT",
     "publishConfig": {
@@ -49,6 +49,7 @@
     },
     "devDependencies": {
         "@types/node": "^20.19.43",
-        "tsx": "^4.23.1"
+        "tsx": "^4.23.1",
+        "typescript": "^5.9.3"
     }
 }

@@ -68,6 +68,11 @@ async function main() {
   assert.equal(typeof ext, "function", "extension default export is a function");
   console.log("✓ extension module loads");
 
+  // Import detection function for assertion phase
+  const { isDeepSeekV4ModelByModel } = await import(`${root}/lib/deepseek-tools.ts`);
+  assert.equal(typeof isDeepSeekV4ModelByModel, "function", "imported isDeepSeekV4ModelByModel");
+  console.log("✓ detection function imported");
+
   // ── Basic registration ──────────────────────────────────
   {
     const { pi, handlers, commands, tools } = mockPi();
@@ -117,14 +122,12 @@ async function main() {
     "bash only":   ["bash"],
   };
 
-  // For direct DeepSeek provider tests, enable the env var so the extension activates.
-  process.env.PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK = "1";
+
 
   for (const [setLabel, activeTools] of Object.entries(toolSets)) {
     for (const [modelLabel, model] of Object.entries(MODELS)) {
       const isOCG = model.provider === "opencode-go";
-      // All four models are DeepSeek V4 variants; OCG + direct deepseek both active
-      const isDS = model.provider === "opencode-go" || model.provider === "deepseek";
+      const isDS = isDeepSeekV4ModelByModel(model);
 
       // before_provider_request: leaked content cleaning
       {

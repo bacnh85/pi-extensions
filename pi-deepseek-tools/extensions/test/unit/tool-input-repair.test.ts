@@ -158,7 +158,7 @@ describe("DeepSeek Flash built-in wrappers", () => {
     assert.deepEqual(read.prepareArguments({ path: "README.md", limit: 5 }), { path: "README.md", limit: 5 });
   });
 
-  it("enables wrapper repairs for Pro but not for direct DeepSeek or OpenAI turns", () => {
+  it("enables wrapper repairs for Pro (and now any DeepSeek V4) but not for OpenAI turns", () => {
     const { handlers, tools } = createFakePi();
     handlers.session_start[0]({}, { cwd: process.cwd() });
     const read = tools.read;
@@ -169,7 +169,6 @@ describe("DeepSeek Flash built-in wrappers", () => {
     handlers.agent_end[0]({}, {});
 
     for (const model of [
-      { provider: "deepseek", id: DEEPSEEK_V4_FLASH_MODEL },
       { provider: "openai-codex", id: "gpt-5.5" },
     ]) {
       handlers.before_agent_start[0]({ systemPrompt: "base", systemPromptOptions: { selectedTools: ["read"] } }, { model });

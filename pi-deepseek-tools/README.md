@@ -1,14 +1,14 @@
 # pi-deepseek-tools
 
-Pi extension that improves **DeepSeek V4** (Flash and Pro) tool calling for **OpenCode Go** models. Fixes common tool-input mistakes, strips leaked thinking content, provides context-aware error recovery, and offers optional safety guardrails.
+Pi extension that improves **DeepSeek V4** (Flash and Pro) tool calling for DeepSeek V4 models from any provider. Fixes common tool-input mistakes, strips leaked thinking content, provides context-aware error recovery, and offers optional safety guardrails.
 
-**Scope:** `opencode-go/deepseek-v4-flash` and `opencode-go/deepseek-v4-pro`. Optionally also `deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4-pro` (direct). Never affects GPT/OpenAI or other providers.
+**Scope:** Any provider serving a DeepSeek V4 model — detected when the model id contains `deepseek` and `v4`. Never affects GPT/OpenAI or other models.
 
 The extension does not print prompts, tool schemas, API keys, or response bodies.
 
 ## Who should use this
 
-- Pi users using OpenCode Go DeepSeek V4 Flash/Pro
+- Pi users using any DeepSeek V4 model
 - Users seeing invalid tool arguments
 - Users seeing repeated wrong tool selection
 - Users seeing reasoning-content related API errors
@@ -34,13 +34,10 @@ Then reload Pi:
 
 ## Supported models
 
-| Provider | Model | Default behavior |
+| Detection | Model id pattern | Behavior |
 |---|---|---|
-| opencode-go | deepseek-v4-flash | enabled |
-| opencode-go | deepseek-v4-pro | enabled |
-| deepseek | deepseek-v4-flash | opt-in (`PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK=1`) |
-| deepseek | deepseek-v4-pro | opt-in (`PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK=1`) |
-| openai-codex / gpt | any | never modified |
+| Automatic (no config needed) | id contains `deepseek` + `v4` (case-insensitive, e.g. `deepseek-v4-flash`, `deepseek/deepseek-v4-pro`, `deepseek-ai/deepseek-v4-flash`) | All features enabled |
+| Not matched | any id without both `deepseek` and `v4` | Never modified |
 
 ## Features
 
@@ -90,7 +87,7 @@ Valid inputs pass through unchanged (except for path auto-link cleanup). TypeBox
 | `PI_DEEPSEEK_TOOLS_STRICT_SERENA=1` | off | `1`/`on`/`true` to enable | Block simple bash substitutes for dedicated tools |
 | `PI_DEEPSEEK_TOOLS_STRIP_REASONING=1` | off | `1`/`on`/`true` to enable | Strip reasoning fields from prior assistant messages |
 | `PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS=2048` | unlimited | positive integer | Truncate prior reasoning values after this many characters |
-| `PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK=1` | off | `1`/`on`/`true` to enable | Also apply to direct `deepseek` provider |
+
 | `PI_DEEPSEEK_TOOLS_REPAIR_ENABLED=0` | on | `0`/`off`/`false` to disable | Tool-input argument repair |
 | `PI_DEEPSEEK_TOOLS_DEBUG=1` | off | `1`/`on`/`true` to enable | stderr debug logging |
 | `PI_DEEPSEEK_TOOLS_LOG_FORMAT=json` | plain | `json` | Structured JSON log lines |
@@ -149,12 +146,12 @@ export PI_DEEPSEEK_TOOLS_CUSTOM_SUPERPOWER_PROMPT="You are an elite coder. No li
 | Reasoning 400 errors only on long responses | Provider has content-length limit | Set `PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS=1024` |
 | 400 errors on tool-heavy turns | Thinking budget too large | Set `PI_DEEPSEEK_TOOLS_THINKING_BUDGET=512` |
 | Tool calls still fail | Model omits required fields entirely | Set `PI_DEEPSEEK_TOOLS_DEBUG=1` and check stderr |
-| `deepseek` provider not matched | Direct support is opt-in | Set `PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK=1` |
+| DeepSeek V4 model not matched | Model id doesn't contain both `deepseek` and `v4` | Check your Pi model configuration for the exact model id |
 | Excessive reminder messages | Model consistently mis-selects tools | Set `PI_DEEPSEEK_TOOLS_STRICT_SERENA=1` |
 | `/deepseek-tools-status` not found | Extension not loaded | Check settings.json and run `/reload` |
 | Repeated same-tool errors | Model isn't adapting | Extension auto-escalates hints after 2+ failures |
 | Leaked `Reasoning:` text in responses | V4 sometimes emits thinking as plaintext | Leaked content cleaning is always on |
-| Super Power Mode not injecting prompt | Model is not DeepSeek V4, or `PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE=0` | Set `PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE=1` (or remove the `=0` to use the default) and verify model is `opencode-go/deepseek-v4-flash` or `deepseek-v4-pro` |
+| Super Power Mode not injecting prompt | Model is not DeepSeek V4, or `PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE=0` | Set `PI_DEEPSEEK_TOOLS_SUPERPOWER_MODE=1` (or remove the `=0` to use the default) and verify model id contains `deepseek` and `v4` |
 | Custom Super Power prompt not loading | `PI_DEEPSEEK_TOOLS_CUSTOM_SUPERPOWER_PROMPT` not set | Set the env var to your desired prompt text |
 
 ## Trust and security
@@ -170,8 +167,7 @@ If you are uncomfortable running unverified Pi extensions, you can inspect each 
 ## Known limitations
 
 - **Tool-input repair** handles structural mismatches but not missing required fields. If the model omits a required argument entirely, the provider still rejects the call.
-- **Reasoning-content stripping** is opt-in because OpenCode Go DeepSeek V4 can reject follow-up turns when provider history is mutated. It preserves the current turn's reasoning to avoid disrupting thinking continuity.
-- **Direct DeepSeek provider** support is opt-in and may not work perfectly with all API configurations.
+- **Reasoning-content stripping** is opt-in because some providers can reject follow-up turns when provider history is mutated. It preserves the current turn's reasoning to avoid disrupting thinking continuity.
 - **Auto thinking adjustment** only takes effect when `PI_DEEPSEEK_TOOLS_THINKING_BUDGET` is set. Without it (default), pi 0.80.6+ manages thinking natively via `thinkingLevelMap` — DeepSeek V4 supports `off`, `high`, and `max`.
 - **Dangerous command guard** is on by default and blocks forced recursive deletion of absolute paths plus `dd` writes to common block-device paths. Set `PI_DEEPSEEK_TOOLS_BLOCK_DANGEROUS_COMMANDS=0` to disable. It is not a sandbox and does not replace user review of commands.
 - **Argument repair** is best-effort and focused on recoverable harness mismatches — not malicious or deeply malformed inputs.
@@ -219,6 +215,12 @@ Tests use Node's built-in test runner with tsx and `node:assert`. No framework m
 - [ ] Publish: `npm publish`
 
 ## Changelog
+
+### 0.13.0
+
+- **Provider-agnostic DeepSeek V4 detection**: the extension now activates for DeepSeek V4 models from **any provider** (opencode-go, direct deepseek API, openrouter, nvidia/NIM, etc.) by matching the model id pattern `deepseek…v4` instead of checking provider names. Removed the `PI_DEEPSEEK_TOOLS_DIRECT_DEEPSEEK` opt-in env var — detection is automatic for any provider.
+- Generalized guidance header and Super Power prompt persona (dropped "OpenCode Go" / "FLASH"-only wording).
+- Updated detection tests, README scope, supported-models table, and troubleshooting.
 
 ### 0.12.9
 

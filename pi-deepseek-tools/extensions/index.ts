@@ -23,7 +23,6 @@ import {
   repairEnabled,
   isDeepSeekV4ModelByModel,
   categorizeToolError,
-  directDeepSeekEnabled,
   checkDangerousCommand,
   maxErrorHistory,
   thinkingBudget,
@@ -95,6 +94,10 @@ export default function (pi: ExtensionAPI) {
   let repairThisTurn = false;
   let hasErrorThisTurn = false;
   let lastErrorInfo: ErrorInfo | null = null;
+  // The model requested at session_start. Proxies/subscriptions (opencode-go→9router→GLM)
+  // can rewrite ctx.model to the actually-served model before before_agent_start, so we
+  // capture the requested model here and check both for DeepSeek V4 detection.
+  let sessionModel: { provider?: string; id?: string } | undefined;
 
   const repairCounts = new Map<string, number>();
   const reminderCounts = new Map<string, number>(); // per-tool reminder count for auto-block escalation
@@ -104,6 +107,13 @@ export default function (pi: ExtensionAPI) {
   function recordError(toolName: string, category: ErrorCategory) {
     errorHistory.set(toolName, { count: (errorHistory.get(toolName)?.count ?? 0) + 1, lastCategory: category });
     while (errorHistory.size > maxErrorHistory()) errorHistory.delete(errorHistory.keys().next().value!);
+  }
+
+  // Detection: check both the (possibly rewritten) ctx.model and the requested
+  // session model, so proxies/subscriptions that fall back to another model
+  // (opencode-go→9router→glm-5.2) still activate DeepSeek V4 guidance.
+  function isV4(model?: { provider?: string; id?: string }): boolean {
+    return isDeepSeekV4ModelByModel(model) || isDeepSeekV4ModelByModel(sessionModel);
   }
   // ── Config helpers: imported from deepseek-tools.ts ────
   // autoBlockAfterReminders(), blockDangerousEnabled(), thinkingBudget()
@@ -151,7 +161,7 @@ export default function (pi: ExtensionAPI) {
         `  Reasoning strip: ${reasoningStripEnabled() ? "on" : "off"}`,
         `  Reasoning max characters: ${process.env.PI_DEEPSEEK_TOOLS_REASONING_MAX_TOKENS || "unlimited"}`,
         `  Tool-input repair: ${repairEnabled() ? "on" : "off"}`,
-        `  Direct DeepSeek: ${directDeepSeekEnabled() ? "on" : "off"}`,
+
         `  Debug: ${process.env.PI_DEEPSEEK_TOOLS_DEBUG ? "on" : "off"}`,
         `  Log format: ${logFormat}`,
         `  Error history cap: ${maxErrorHistory()}`,
@@ -187,6 +197,9 @@ export default function (pi: ExtensionAPI) {
   // ── session_start: diagnostic logging + eager startup ──
   pi.on("session_start", (_event, ctx) => {
     debugLog("session_start:", ctx.model?.provider, ctx.model?.id);
+    // Capture the requested model before pi/proxy resolution rewrites ctx.model
+    // to the actually-served model (e.g. opencode-go→9router→glm-5.2 fallback).
+    sessionModel = ctx.model ? { id: ctx.model.id, provider: ctx.model.provider } : undefined;
 
     // ── Reset guidance cache at session boundary ──
     clearGuidanceCache();
@@ -212,7 +225,7 @@ export default function (pi: ExtensionAPI) {
 
   // ── before_provider_request: clean payload, inject thinking budget ───
   pi.on("before_provider_request", (event, ctx) => {
-    if (!isDeepSeekV4ModelByModel(ctx.model)) return;
+    if (!isV4(ctx.model)) return;
 
     // 1. Leaked content cleaning — always on for V4 (low-risk, pure cleanup)
     let payload = cleanLeakedContentFromMessages(event.payload, pi.getAllTools().map((tool) => tool.name));
@@ -245,7 +258,7 @@ export default function (pi: ExtensionAPI) {
 
   // ── tool_execution_end: categorize errors ───────────────
   pi.on("tool_execution_end", (event, ctx) => {
-    if (!event.isError || !isDeepSeekV4ModelByModel(ctx.model)) return;
+    if (!event.isError || !isV4(ctx.model)) return;
     hasErrorThisTurn = true;
     const info = categorizeToolError(event.toolName, event.result);
     lastErrorInfo = info;
@@ -256,7 +269,7 @@ export default function (pi: ExtensionAPI) {
 
   // ── before_agent_start: snapshot tool counts, inject guidance + super power + error hints ───
   pi.on("before_agent_start", (event, ctx) => {
-    const isDeepSeekV4 = isDeepSeekV4ModelByModel(ctx.model);
+    const isDeepSeekV4 = isV4(ctx.model);
     if (isDeepSeekV4) debugLog("model match:", ctx.model?.provider, ctx.model?.id);
     // ponytail: budget override handled in before_provider_request. Native when unset.
 
@@ -349,7 +362,7 @@ export default function (pi: ExtensionAPI) {
 
   // ── tool_call: count tools, intercept misuses, check dangerous commands ──
   pi.on("tool_call", (event, ctx) => {
-    if (!isDeepSeekV4ModelByModel(ctx.model)) return;
+    if (!isV4(ctx.model)) return;
 
     debugLog("tool_call:", event.toolName);
 
