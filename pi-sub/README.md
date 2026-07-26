@@ -61,6 +61,14 @@ The built-in `zai-coding-cn` provider targets the domestic BigModel endpoint (`o
 (Z.ai (CN) key#1a2b3c4d) R:55%/2H W:80%/3D 42 tok/s
 ```
 
+### 9router
+
+9router is a proxy/router with no upstream usage API, so the footer shows the configured endpoint and last response speed:
+
+```text
+9router (172.30.55.22:20128) 145 tok/s
+```
+
 ### Tokens per second
 
 `pi-sub` tracks each response's tokens-per-second (tok/s) speed by measuring the time from provider request to message completion against the response's output token count. The last response's speed is shown in the footer next to usage data. The `/sub` detail view shows both the last response speed and the session-wide average.
