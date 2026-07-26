@@ -108,6 +108,28 @@ function detectThinkingFormat(modelId: string): string {
  *  Levels not in the format's set map to null (disabled in Pi UI).
  *  Levels beyond the format's max cap at the highest available value
  *  (e.g. xhigh→max for deepseek, max→xhigh for openai). */
+// Verified context windows from models.dev (cited by 9router's capabilities.js
+// as its authoritative source). 9router's capabilities.js applies a 200k
+// DEFAULT_CAPABILITIES floor to models without an explicit pattern match,
+// which under-reports models with larger windows (e.g. GLM-5.2 = 1M).
+// This table corrects known gaps client-side.
+// Source: https://models.dev/api.json
+const CONTEXT_OVERRIDES: { pattern: RegExp; contextWindow: number; maxTokens?: number }[] = [
+  // GLM-5.2: 1M context (models.dev: zhipuai/glm-5.2)
+  { pattern: /glm-5\.2/i, contextWindow: 1_000_000, maxTokens: 131_072 },
+  // DeepSeek V4: 1M context (models.dev + 9router codebuddy/nvidia overrides)
+  { pattern: /deepseek-v[34]/i, contextWindow: 1_000_000 },
+];
+
+function lookupContextOverride(modelId: string): { contextWindow?: number; maxTokens?: number } {
+  for (const entry of CONTEXT_OVERRIDES) {
+    if (entry.pattern.test(modelId)) {
+      return { contextWindow: entry.contextWindow, ...(entry.maxTokens ? { maxTokens: entry.maxTokens } : {}) };
+    }
+  }
+  return {};
+}
+
 const FORMAT_TO_LEVEL_MAP: Record<string, Record<string, string | null>> = {
   "openai":      { off:"none", minimal:"minimal", low:"low", medium:"medium", high:"high", xhigh:"xhigh", max:"xhigh" },
   "openai-max":  { off:"none", minimal:"minimal", low:"low", medium:"medium", high:"high", xhigh:"xhigh", max:"max" },
@@ -139,8 +161,9 @@ export function mapModel(raw: NineRouterModelRaw, enableReasoning: boolean): PiM
   const caps = raw.capabilities as
     | { contextWindow?: unknown; maxOutput?: unknown; vision?: unknown }
     | undefined;
-  const contextWindow = parsePositiveInt(caps?.contextWindow) ?? FALLBACK_CONTEXT_WINDOW;
-  const maxTokens = parsePositiveInt(caps?.maxOutput) ?? FALLBACK_MAX_TOKENS;
+  const override = lookupContextOverride(raw.id);
+  const contextWindow = override.contextWindow ?? parsePositiveInt(caps?.contextWindow) ?? FALLBACK_CONTEXT_WINDOW;
+  const maxTokens = override.maxTokens ?? parsePositiveInt(caps?.maxOutput) ?? FALLBACK_MAX_TOKENS;
   const inputTypes: ("text" | "image")[] = caps?.vision ? ["text", "image"] : ["text"];
 
   const compat = {

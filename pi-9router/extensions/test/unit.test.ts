@@ -105,9 +105,10 @@ describe("client", () => {
     assert.deepEqual(result.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
   });
 
-  it("mapModel extracts capabilities from 9router response", async () => {
+  it("mapModel overrides contextWindow for known under-reported models", async () => {
     const { mapModel } = await import("../lib/client.js");
 
+    // 9router reports 200k for glm-5.2 (default floor), but real value is 1M
     const raw = {
       id: "glm/glm-5.2",
       object: "model",
@@ -116,9 +117,26 @@ describe("client", () => {
     };
     const result = mapModel(raw, false);
 
-    assert.equal(result.contextWindow, 200_000);
-    assert.equal(result.maxTokens, 128_000);
+    assert.equal(result.contextWindow, 1_000_000);
+    assert.equal(result.maxTokens, 131_072);
     assert.deepEqual(result.input, ["text"]);
+  });
+
+  it("mapModel falls back to 9router value when no override matches", async () => {
+    const { mapModel } = await import("../lib/client.js");
+
+    // GPT-5.x has no override in CONTEXT_OVERRIDES → retains 9router's 400k
+    const raw = {
+      id: "cx/gpt-5.6-terra",
+      object: "model",
+      owned_by: "cx",
+      capabilities: { vision: true, contextWindow: 400_000, maxOutput: 128_000 },
+    };
+    const result = mapModel(raw, false);
+
+    assert.equal(result.contextWindow, 400_000);
+    assert.equal(result.maxTokens, 128_000);
+    assert.equal(result.input.includes("image"), true);
   });
 
   it("mapModel sets image input for vision-capable models", async () => {
