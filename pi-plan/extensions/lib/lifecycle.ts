@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 
 const MAX_SNAPSHOT_BYTES = 50 * 1024;
+const MAX_UNTRACKED_SNAPSHOT_BYTES = 1024 * 1024; // 1 MB
 
 type SnapshotEntry =
   | { path: string; hash: string; content: string; mode?: number; kind?: "file" }
@@ -99,7 +100,7 @@ export async function snapshotUntrackedFiles(cwd: string): Promise<string> {
     try {
       const stat = await handle.stat();
       if (!stat.isFile()) throw new Error(`untracked path is not a regular file: ${file}`);
-      const remaining = MAX_SNAPSHOT_BYTES - totalBytes;
+      const remaining = MAX_UNTRACKED_SNAPSHOT_BYTES - totalBytes;
       const buffer = Buffer.allocUnsafe(remaining + 1);
       let bytesRead = 0;
       while (bytesRead < buffer.length) {
@@ -107,7 +108,7 @@ export async function snapshotUntrackedFiles(cwd: string): Promise<string> {
         if (!result.bytesRead) break;
         bytesRead += result.bytesRead;
       }
-      if (bytesRead > remaining) throw new Error(`untracked content exceeds ${MAX_SNAPSHOT_BYTES / 1024} KB; commit, stage, or ignore unrelated untracked files before retrying`);
+      if (bytesRead > remaining) throw new Error(`untracked content exceeds ${MAX_UNTRACKED_SNAPSHOT_BYTES / 1024} KB; commit, stage, or ignore unrelated untracked files before retrying`);
       const content = buffer.subarray(0, bytesRead);
       totalBytes += content.length;
       entries.push({ path: file, hash: createHash("sha256").update(content).digest("hex"), content: content.toString("base64"), mode: stat.mode & 0o777, kind: "file" });

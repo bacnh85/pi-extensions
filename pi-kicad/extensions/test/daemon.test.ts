@@ -80,6 +80,7 @@ function makeDaemon(opts: {
       fetchImpl: healthFetch(alive),
       spawnImpl,
       writeFile: async () => {},
+      mkdir: async () => {},
       tmpdir: () => "/tmp",
       now: () => (opts.nowStep ? (n += opts.nowStep) : 0),
       sleep: async () => {},
@@ -104,16 +105,15 @@ describe("daemon", () => {
   });
 
   describe("KonnectDaemon.ensure", () => {
-    it("reuses a healthy daemon already on the preferred port (no spawn)", async () => {
-      const alive = { value: true }; // daemon already up before we start
+    it("does NOT reuse a stranger daemon — spawns its own even if one is healthy on the port", async () => {
+      const alive = { value: true }; // a healthy stranger is up before we start
       const spawnResult: SpawnResult = { child: makeChild(), calls: [] };
       const d = makeDaemon({ alive, spawnResult });
       const port = await d.ensure();
-      assert.equal(port, 31337, "preferred port reused");
-      assert.equal(spawnResult.calls.length, 0, "did not spawn");
+      assert.equal(spawnResult.calls.length, 1, "spawned its own rather than reusing the stranger");
+      assert.isAbove(port, 0);
       const status = await d.getStatus();
-      assert.isTrue(status.reused);
-      assert.isTrue(status.healthy);
+      assert.isFalse(status.reused, "stranger is never marked reused");
     });
 
     it("spawns when the preferred port is empty and becomes healthy", async () => {

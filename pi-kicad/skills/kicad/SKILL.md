@@ -92,11 +92,14 @@ around them where it can:
   `add_schematic_component Device:R`, `power:GND`, etc. all fail. **Build every
   symbol from scratch with `create_symbol`** in a `.kicad_sym` inside the project,
   then place `dcdc:<Name>`.
-- **`add_schematic_component` resolves lib_id ONLY via `KICAD10_SYMBOL_DIR`, not
-  the sym-lib-table.** So that env var must point at the project directory
-  (where your custom `.kicad_sym` lives). pi-kicad sets `KICAD10_SYMBOL_DIR` = the
-  project dir when `KICAD_PROJECT_DIR` is configured — **set
-  `KICAD_PROJECT_DIR=/path/to/project` and reload Pi** before schematic work.
+- **`add_schematic_component` resolves lib_id ONLY via `KICAD10_SYMBOL_DIR`**
+  (a single dir set at daemon start, NOT the sym-lib-table). pi-kicad ALWAYS
+  points it at its **managed symbol dir `~/.pi/kicad-symbols`** (created
+  automatically). So **create your from-scratch symbols there**: `create_symbol`
+  with `library_path=~/.pi/kicad-symbols/<lib>.kicad_sym`, then place
+  `<lib>:<sym>`. No env var or project-dir setup needed — `kicad_status` prints
+  the symbol dir. (The daemon never reuses a stale stranger daemon, so it always
+  runs with the correct env.)
 - **`register_symbol_library` writes the wrong table format** (`(fp_lib_table …)`
   into `sym-lib-table`). Hand-write `sym-lib-table` as `(sym_lib_table …)` if ERC
   warns "configuration does not include the symbol library".
@@ -106,9 +109,32 @@ around them where it can:
   reports success but leaves references as `?`. **Pass explicit `reference`**
   (e.g. `R1`, `U1`) when placing, and don't rely on annotate/delete.
 - **Wiring by net label is the robust path.** `connect_to_net` needs `pin_x`/`pin_y`
-  (not pin numbers): call `get_schematic_pin_locations` first, then
-  `connect_to_net {schematic, pin_x, pin_y, net}` per pin. Use all-`passive` pin
-  types to keep ERC focused on connectivity (avoids power-pin driver rules when
-  power symbols are unavailable).
+  (not pin numbers): call `get_schematic_pin_locations` (or
+  `batch_get_schematic_pin_locations`) first, then
+  `connect_to_net {schematic, pin_x, pin_y, net}` per pin — it adds a **wire stub
+  + label** that KiCad attaches. Use all-`passive` pin types to keep ERC focused
+  on connectivity (avoids power-pin driver rules when power symbols are
+  unavailable).
+  - **⚠ Do NOT use `batch_connect_to_net`** — in Konnect v0.2.0 it places *bare*
+    net labels at pin coords with **no wire stub**, so they FLOAT and do not
+    connect. ERC won't catch it (passive pins aren't flagged) and
+    `list_schematic_nets` just reads label names. Always use `connect_to_net`.
+  - **Verify connectivity with `get_net_connectivity` or the kicad-cli netlist**
+    (`generate_netlist`) — NOT `run_erc` alone (passive pins hide unconnected
+    pins) and NOT `list_schematic_nets` (label names ≠ attached).
+  - **For VISIBLE wires between components** (a real schematic, not just
+    connect-by-name), use **`connect_pins {schematic, ref1, pin1, ref2, pin2}`**
+    which routes an actual wire (L-bend) between two pins. Chain/star same-net
+    pins (e.g. star each net through the regulator). `connect_to_net` only adds
+    a short stub+label (connect-by-name, no inter-component wire) — fine for
+    naming a net, but pair it with `connect_pins` when real wires are expected.
+    Render to PDF/PNG and eyeball it (or ask a vision model) to confirm.
 - **PCB tools need KiCad 10 running** with its API enabled; schematic/export tools
   are file-based and work headless.
+- **Never call file-mutating Konnect tools in parallel** (multiple kicad_call in one
+  message run concurrently). Konnect's read-modify-write + atomic-rename races:
+  concurrent calls lose edits or fail with "No such file or directory" and can
+  corrupt the file (duplicates, lost symbols). **Use `kicad_batch`** for any
+  multi-step flow — it runs the ops strictly sequentially (each awaited). Inside
+  one Konnet tool, prefer the batch_* variants (e.g. `batch_connect_to_net` does
+  a whole net's pins in a single file write).

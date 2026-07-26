@@ -112,6 +112,17 @@ export function kiCadUserDirCandidates(
   return [`${home}/.local/share/kicad`];
 }
 
+/**
+ * pi-kicad's managed symbol directory — the canonical place for from-scratch
+ * symbols. Konnect resolves lib_id ONLY via KICAD10_SYMBOL_DIR (a single dir,
+ * set at daemon start), so we always point it here. This decouples symbol
+ * resolution from any KiCad project and removes the need for KICAD_PROJECT_DIR.
+ * The agent creates symbols at `${managedSymbolDir}/<lib>.kicad_sym`.
+ */
+export function managedSymbolDir(home: string): string {
+  return join(home, ".pi", "kicad-symbols");
+}
+
 // ---------------------------------------------------------------------------
 // Existence resolution
 // ---------------------------------------------------------------------------
@@ -175,12 +186,12 @@ export function resolveConfig(opts: ResolveOptions = {}): ResolvedConfig {
   const projectDir = env.KICAD_PROJECT_DIR && env.KICAD_PROJECT_DIR.length > 0 ? env.KICAD_PROJECT_DIR : null;
   const sharedSupport = resolveFirstExisting(kiCadSharedSupportCandidates(env, home, plat), fsExistsDir);
   // KICAD10_SYMBOL_DIR drives Konnect's ONLY library-resolution path (it ignores
-  // the sym-lib-table). Custom (from-scratch) symbols must live in this dir, so
-  // the project dir wins. An explicit KICAD10_SYMBOL_DIR env beats everything.
+  // the sym-lib-table). Always use the managed dir so from-scratch symbols
+  // resolve without any project/env coupling; an explicit env wins.
   const symbolDir =
     env.KICAD10_SYMBOL_DIR && env.KICAD10_SYMBOL_DIR.length > 0
       ? env.KICAD10_SYMBOL_DIR
-      : projectDir ?? (sharedSupport ? join(sharedSupport, "symbols") : null);
+      : managedSymbolDir(home);
 
   return {
     konnectBinary: resolveFirstExisting(konnectBinaryCandidates(env, home, plat), exists),

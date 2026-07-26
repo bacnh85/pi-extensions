@@ -69,8 +69,8 @@ describe("workflow snapshots", () => {
     assert.equal((third.get(names[1]) as Entry & { mode: number }).mode, 0o755);
     writeFileSync(path.join(cwd, "large.txt"), "x".repeat(14 * 1024));
     assert.ok(JSON.parse(await snapshotUntrackedFiles(cwd)).some((entry: Entry) => entry.path === "large.txt"));
-    writeFileSync(path.join(cwd, "large.txt"), "x".repeat(51 * 1024));
-    await assert.rejects(snapshotUntrackedFiles(cwd), /untracked content exceeds 50 KB; commit, stage, or ignore/);
+    writeFileSync(path.join(cwd, "large.txt"), "x".repeat(1024 * 1024 + 1));
+    await assert.rejects(snapshotUntrackedFiles(cwd), /untracked content exceeds 1024 KB; commit, stage, or ignore/);
     const symlinkRepo = createGitRepo("pi-plan-symlink-");
     symlinkSync("/etc/hosts", path.join(symlinkRepo, "outside"));
     await assert.rejects(snapshotUntrackedFiles(symlinkRepo), /not a regular file: outside/);

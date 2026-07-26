@@ -14,7 +14,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeFile } from "node:fs/promises";
+import { writeFile, mkdir } from "node:fs/promises";
 import {
   buildDaemonConfig,
   generateKonnectToml,
@@ -71,6 +71,7 @@ export interface DaemonDeps {
   fetchImpl?: typeof fetch;
   spawnImpl?: typeof spawn;
   writeFile?: (path: string, data: string) => Promise<void>;
+  mkdir?: (path: string) => Promise<void>;
   tmpdir?: () => string;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -102,6 +103,7 @@ export class KonnectDaemon {
       fetchImpl: deps.fetchImpl ?? fetch,
       spawnImpl: deps.spawnImpl ?? spawn,
       writeFile: deps.writeFile ?? ((p, d) => writeFile(p, d, "utf8")),
+      mkdir: deps.mkdir ?? (async (p) => { await mkdir(p, { recursive: true }); }),
       tmpdir: deps.tmpdir ?? tmpdir,
       now: deps.now ?? Date.now,
       sleep: deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
@@ -114,19 +116,13 @@ export class KonnectDaemon {
 
   /** Ensure a healthy daemon is running; return its port. Idempotent. */
   async ensure(): Promise<number> {
-    // 1. Already running and healthy?
+    // Reuse only a daemon WE spawned this session. We never reuse a stranger
+    // daemon on the preferred port: it may be stale (e.g. from a prior Pi
+    // session with different env) and we can't restart it. pickFreePort avoids
+    // it and we spawn our own with the correct environment.
     if (this.child && this.port !== null && (await this.isHealthy())) {
       return this.port;
     }
-    // 2. Healthy daemon already on the preferred port? Reuse it.
-    if (await probeHealth(this.config.httpPort, { fetchImpl: this.deps.fetchImpl, timeoutMs: 800 })) {
-      this.port = this.config.httpPort;
-      this.reused = true;
-      this.startedAt = this.deps.now();
-      this.child = null;
-      return this.port;
-    }
-    // 3. Spawn our own.
     return this.spawn();
   }
 
@@ -138,6 +134,8 @@ export class KonnectDaemon {
           "On macOS, clear quarantine on a browser download: xattr -d com.apple.quarantine ./konnect",
       );
     }
+    // Ensure the managed symbol dir exists so create_symbol calls can write here.
+    if (this.config.symbolDir) await this.deps.mkdir(this.config.symbolDir).catch(() => {});
     const port = await pickFreePort(this.config.httpPort);
     const daemonCfg = buildDaemonConfig(this.config, port);
     const toml = generateKonnectToml(daemonCfg);

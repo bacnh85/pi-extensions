@@ -7,6 +7,7 @@ import {
   probeHealth,
   type KonnectCallResult,
 } from "./lib/konnect-client.js";
+import { runBatch, summarizeBatch, type BatchOp } from "./lib/batch.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -88,6 +89,59 @@ export default function piKicadExtension(pi: ExtensionAPI) {
     },
   });
 
+  // ── kicad_batch ─────────────────────────────────────────────────────
+  // Konnect's file-mutating tools race under concurrency (atomic-rename window).
+  // This runs N tool calls SEQUENTIALLY (await each) so multi-step schematic
+  // capture works in one shot instead of many serial kicad_call messages.
+  pi.registerTool({
+    name: "kicad_batch",
+    label: "KiCad Batch",
+    description:
+      "Run multiple Konnect tool calls SEQUENTIALLY in one shot (each awaits before the next, " +
+        "so same-file writes don't race). Use for multi-step schematic capture: create symbols, " +
+        "place components, wire nets. Returns a per-op summary; full parsed results in details.",
+    promptSnippet: "Run several KiCad/Konnect tool calls sequentially in one shot",
+    promptGuidelines: [
+      "Parallel kicad_call calls on the same file lose data (Konnect's atomic-rename race). Use kicad_batch for any multi-step flow so ops run strictly sequentially.",
+      "Each op is {tool, arguments}. Check isError per op in the summary; full parsed payloads are in details.results[].result.",
+      "For wiring that needs pin coordinates: run placement + batch_get_schematic_pin_locations in one batch, read the pin coords from details, then connect_to_net in a second batch using those coords.",
+    ],
+    parameters: Type.Object({
+      ops: Type.Array(
+        Type.Object({
+          tool: Type.String({ description: "Konnect tool name" }),
+          arguments: Type.Optional(
+            Type.Record(Type.String(), Type.Unknown(), { description: "Arguments for the tool" }),
+          ),
+        }),
+        { minItems: 1, maxItems: 60 },
+      ),
+      stop_on_error: Type.Optional(
+        Type.Boolean({ description: "Stop after the first error (default false: run all, report each)." }),
+      ),
+    }),
+    async execute(_toolCallId, params, signal) {
+      const daemon = getDaemon();
+      const port = await daemon.ensure();
+      const outcome = await runBatch(
+        params.ops as BatchOp[],
+        (op) =>
+          callKonnect({
+            port,
+            method: "tools/call",
+            params: { name: op.tool, arguments: op.arguments ?? {} },
+            signal: signal ?? undefined,
+            timeoutMs: DEFAULT_CALL_TIMEOUT_MS,
+          }),
+        { stopOnError: params.stop_on_error },
+      );
+      return {
+        content: [{ type: "text" as const, text: summarizeBatch(outcome) }],
+        details: { errors: outcome.errors, stopped: outcome.stopped, results: outcome.results },
+      };
+    },
+  });
+
   // ── kicad_status ────────────────────────────────────────────────────────
   pi.registerTool({
     name: "kicad_status",
@@ -149,6 +203,7 @@ export default function piKicadExtension(pi: ExtensionAPI) {
       lines.push(`konnect binary: ${cfg.konnectBinary ?? "(not found — set KONNECT_BINARY or install via KiCad 10 PCM)"}`);
       lines.push(`kicad-cli:       ${cfg.kicadCli ?? "(not found — set KICAD_CLI or install KiCad)"}`);
       lines.push(`ipc socket:      ${cfg.ipcSocket ?? "(auto-detect from KICAD_API_SOCKET)"}`);
+      lines.push(`symbol dir:      ${cfg.symbolDir ?? "(none)"}  <- create symbols here (lib_id "<file>:<sym>")`);
       lines.push(`daemon:          ${status.running ? (status.reused ? "reused (external)" : "managed") : "down"}`);
       lines.push(`healthy:         ${status.healthy}`);
       lines.push(`port:            ${status.port ?? "—"}`);
