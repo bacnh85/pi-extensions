@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-kicad",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "KiCad CAD-design extension for Pi — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon (no MCP SDK).",
   "type": "module",
   "license": "MIT",

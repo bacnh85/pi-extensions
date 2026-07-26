@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-notebooklm",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Pi extension for Google NotebookLM \u2014 notebooks, sources, chat, research, and Studio artifacts via notebooklm-py CLI bridge.",
   "type": "module",
   "license": "MIT",

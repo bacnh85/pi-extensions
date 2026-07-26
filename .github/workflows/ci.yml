@@ -84,6 +84,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.matrix != '{"include":[]}'
     strategy:
+      fail-fast: false
       matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
     runs-on: ${{ fromJSON(matrix.runner) }}
     defaults:
