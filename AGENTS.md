@@ -8,7 +8,6 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | Package | Version | Description |
 |---------|---------|-------------|
 | **pi-agy** | 0.2.0 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
-| **pi-deepseek-tools** | 0.12.4 | DeepSeek V4 tool calling fixes, argument repair, reasoning cleanup, thinking level compatibility, Super Power Mode. |
 | **pi-notebooklm** | 0.1.0 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | **pi-ponytail** | 0.1.4 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
 | **pi-serena** | 0.8.3 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
@@ -22,6 +21,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-rtk** | 0.1.8 | Bash command token rewriting through RTK. |
 | **pi-sub** | 0.1.10 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | **pi-windows-tools** | 0.2.0 | Windows-specific tools for Pi. |
+| **pi-model-tools** | 0.2.0 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, and defensive leak-cleaning for DeepSeek V4 and GLM model families. |
 | **pi-kicad** | 0.1.0 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon (no MCP SDK). |
 | **pi-9router** | 0.1.0 | Connect to a 9router AI routing proxy instance via its OpenAI-compatible API with interactive login. |
 
@@ -40,6 +40,7 @@ pi-extensions/
   pi-review/            # TS extension for isolated/local code review
   pi-fff/               # TS extension for FFF-powered find/grep/autocomplete
   pi-rtk/               # TS extension for RTK bash command rewriting
+  pi-model-tools/        # TS extension for unified tool-wrapping + DeepSeek guidance + Super Power Mode (DeepSeek V4 + GLM)
   pi-9router/           # TS extension to connect to a 9router AI routing proxy.
   pi-sub/               # TS extension for subscription usage footer
   .github/workflows/    # publish.yml + test.yml (matrix across packages)
@@ -121,7 +122,7 @@ spec). pi-ponytail uses `node --test` with no mocha or tsx dependency at all.
 
 Two GitHub Actions workflows in `.github/workflows/`:
 
-- **test.yml** — runs on push to main and PRs. Matrix across all 16 packages.
+- **test.yml** — runs on push to main and PRs. Matrix across all 17 packages.
   pi-ponytail uses `node --test` directly, pi-rtk and pi-sub use `npm pack --dry-run`, others use `npm ci && npm test`.
 - **publish.yml** — runs on push to main. Checks each package's `package.json`
   version against the npm registry and publishes if different.

@@ -1,7 +1,7 @@
 {
-    "name": "@bacnh85/pi-deepseek-tools",
-    "version": "0.13.1",
-    "description": "Pi extension that improves DeepSeek V4 tool calling, argument repair, reasoning cleanup, and diagnostics for DeepSeek V4 models from any provider.",
+    "name": "@bacnh85/pi-model-tools",
+    "version": "0.2.0",
+    "description": "Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, and defensive leak-cleaning for DeepSeek V4 and GLM model families from any provider.",
     "type": "module",
     "license": "MIT",
     "publishConfig": {
@@ -11,7 +11,7 @@
     "repository": {
         "type": "git",
         "url": "git+https://github.com/bacnh85/pi-extensions.git",
-        "directory": "pi-deepseek-tools"
+        "directory": "pi-model-tools"
     },
     "bugs": {
         "url": "https://github.com/bacnh85/pi-extensions/issues"
@@ -19,17 +19,18 @@
     "keywords": [
         "pi",
         "pi-extension",
+        "tool-calling",
+        "argument-repair",
         "deepseek",
         "deepseek-v4",
-        "opencode-go",
-        "tool-calling",
+        "glm",
+        "super-power",
+        "selection-guidance",
         "agent-tools",
-        "reasoning",
-        "deepseek-v4-flash",
-        "deepseek-v4-pro"
+        "reasoning"
     ],
     "scripts": {
-        "test": "node --import tsx --test extensions/test/unit/deepseek-tools.test.ts extensions/test/unit/reasoning-content.test.ts extensions/test/unit/tool-input-repair.test.ts",
+        "test": "node --import tsx --test extensions/test/unit/*.test.ts",
         "typecheck": "tsc --noEmit"
     },
     "files": [

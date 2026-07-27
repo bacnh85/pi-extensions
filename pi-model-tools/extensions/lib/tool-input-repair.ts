@@ -1,7 +1,15 @@
-import { Compile } from "typebox/compile";
-import { isRecord } from "./deepseek-tools.ts";
+/**
+ * tool-input-repair.ts — unified argument repair for all model families.
+ *
+ * Merges DeepSeek V4 + GLM repairs into one module. The GLM top-level
+ * JSON-string repair is a safe superset (any model can emit a string where
+ * an object is expected), so it runs for all families — no family branching.
+ */
 
-export type RepairKind = "path-markdown-autolink" | "optional-null" | "json-string" | "empty-object-array" | "bare-string-array" | "json-object-wrapped-array";
+import { Compile } from "typebox/compile";
+import { isRecord } from "./model-detection.ts";
+
+export type RepairKind = "path-markdown-autolink" | "optional-null" | "json-string" | "empty-object-array" | "bare-string-array" | "json-object-wrapped-array" | "top-level-json-string";
 
 export type RepairResult = {
   args: unknown;
@@ -11,39 +19,30 @@ export type RepairResult = {
 
 const PATH_FIELD_NAMES = new Set(["path", "filePath", "absolutePath", "relativePath", "relative_path"]);
 
-// ponytail: WeakMap avoids recompiling TypeBox schemas on every tool call.
-// Schemas are long-lived (registered at session_start), so reference identity works.
 const compiledCache = new WeakMap<object, ReturnType<typeof Compile>>();
 
 function getCompiled(schema: unknown): ReturnType<typeof Compile> {
-  if (typeof schema !== "object" || schema === null) {
-    return Compile(schema as never);
-  }
+  if (typeof schema !== "object" || schema === null) return Compile(schema as never);
   let compiled = compiledCache.get(schema as object);
-  if (!compiled) {
-    compiled = Compile(schema as never);
-    compiledCache.set(schema as object, compiled);
-  }
+  if (!compiled) { compiled = Compile(schema as never); compiledCache.set(schema as object, compiled); }
   return compiled;
 }
 
-function compileCheck(schema: unknown, args: unknown): boolean {
-  return getCompiled(schema).Check(args);
-}
+function compileCheck(schema: unknown, args: unknown): boolean { return getCompiled(schema).Check(args); }
 
-function validationErrors(schema: unknown, args: unknown): Array<{ instancePath?: string; path?: string; keyword?: string }> {
-  return Array.from(getCompiled(schema).Errors(args)) as Array<{ instancePath?: string; path?: string; keyword?: string }>;
+function validationErrors(schema: unknown, args: unknown): Array<{ instancePath?: string; path?: string }> {
+  return Array.from(getCompiled(schema).Errors(args)) as Array<{ instancePath?: string; path?: string }>;
 }
 
 function errorPath(error: { instancePath?: string; path?: string }): string[] {
   const path = error.instancePath ?? error.path ?? "";
-  return path.replace(/^\//, "").split("/").filter(Boolean).map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"));
+  return path.replace(/^\//, "").split("/").filter(Boolean).map((p) => p.replace(/~1/g, "/").replace(/~0/g, "~"));
 }
 
 function schemaTypes(schema: unknown): string[] {
   if (!isRecord(schema)) return [];
   if (typeof schema.type === "string") return [schema.type];
-  if (Array.isArray(schema.type)) return schema.type.filter((type): type is string => typeof type === "string");
+  if (Array.isArray(schema.type)) return schema.type.filter((t): t is string => typeof t === "string");
   if (Array.isArray(schema.anyOf)) return schema.anyOf.flatMap(schemaTypes);
   if (Array.isArray(schema.oneOf)) return schema.oneOf.flatMap(schemaTypes);
   return [];
@@ -54,14 +53,8 @@ function schemaAtPath(schema: unknown, path: readonly string[]): unknown {
   for (const part of path) {
     if (!isRecord(current)) return undefined;
     const types = schemaTypes(current);
-    if (types.includes("object") && isRecord(current.properties)) {
-      current = current.properties[part];
-      continue;
-    }
-    if (types.includes("array")) {
-      current = current.items;
-      continue;
-    }
+    if (types.includes("object") && isRecord(current.properties)) { current = current.properties[part]; continue; }
+    if (types.includes("array")) { current = current.items; continue; }
     return undefined;
   }
   return current;
@@ -115,44 +108,27 @@ function isOptionalProperty(rootSchema: unknown, path: readonly string[]): boole
   return Object.hasOwn(parentSchema.properties, path[path.length - 1]) && !required.includes(path[path.length - 1]);
 }
 
-function expects(schema: unknown, type: "array" | "object"): boolean {
-  return schemaTypes(schema).includes(type);
-}
+function expects(schema: unknown, type: "array" | "object"): boolean { return schemaTypes(schema).includes(type); }
 
 function tryRepairPath(rootSchema: unknown, args: unknown, path: readonly string[]): RepairKind | undefined {
   const current = getAtPath(args, path);
   const targetSchema = schemaAtPath(rootSchema, path);
-
   if (current === null && isOptionalProperty(rootSchema, path) && deleteAtPath(args, path)) return "optional-null";
-
   if (typeof current === "string" && (expects(targetSchema, "array") || expects(targetSchema, "object"))) {
     try {
       const parsed = JSON.parse(current);
       if ((expects(targetSchema, "array") && Array.isArray(parsed)) || (expects(targetSchema, "object") && isRecord(parsed))) {
         if (setAtPath(args, path, parsed)) return "json-string";
       }
-      if (expects(targetSchema, "array") && isRecord(parsed)) {
-        if (setAtPath(args, path, [parsed])) return "json-object-wrapped-array";
-      }
-    } catch {
-      // Not JSON; maybe a bare array item below.
-    }
+      if (expects(targetSchema, "array") && isRecord(parsed)) { if (setAtPath(args, path, [parsed])) return "json-object-wrapped-array"; }
+    } catch { /* not JSON */ }
   }
-
-  if (expects(targetSchema, "array") && isRecord(current) && Object.keys(current).length === 0) {
-    if (setAtPath(args, path, [])) return "empty-object-array";
-  }
-
-  if (expects(targetSchema, "array") && typeof current === "string") {
-    if (setAtPath(args, path, [current])) return "bare-string-array";
-  }
-
+  if (expects(targetSchema, "array") && isRecord(current) && Object.keys(current).length === 0) { if (setAtPath(args, path, [])) return "empty-object-array"; }
+  if (expects(targetSchema, "array") && typeof current === "string") { if (setAtPath(args, path, [current])) return "bare-string-array"; }
   return undefined;
 }
 
-function normalizedLinkTarget(value: string): string {
-  return value.replace(/^https?:\/\//i, "").replace(/\s+/g, "").replace(/^\/+/, "");
-}
+function normalizedLinkTarget(value: string): string { return value.replace(/^https?:\/\//i, "").replace(/\s+/g, "").replace(/^\/+/, ""); }
 
 export function unwrapDegenerateMarkdownAutolink(value: string): string {
   return value.replace(/\[([^\]\n]+)\]\((https?:\/\/[^)]+)\)/g, (match, text: string, url: string) => {
@@ -160,7 +136,6 @@ export function unwrapDegenerateMarkdownAutolink(value: string): string {
     const normalizedUrl = normalizedLinkTarget(url);
     if (normalizedUrl === normalizedText) return text;
     const suffix = `/${normalizedText}`;
-    // Degenerate prefix only: empty, dot, whitespace. NOT host/path/file.ext.
     if (normalizedUrl.endsWith(suffix) && /^[\s.]*$/.test(normalizedUrl.slice(0, -suffix.length))) return text;
     return match;
   });
@@ -177,14 +152,19 @@ function cleanPathFields(value: unknown): { value: unknown; changed: boolean } {
     if (Array.isArray(current)) return current.map((item) => visit(item));
     if (!isRecord(current)) return current;
     const next: Record<string, unknown> = {};
-    for (const [entryKey, entryValue] of Object.entries(current)) next[entryKey] = visit(entryValue, entryKey);
+    for (const [k, v] of Object.entries(current)) next[k] = visit(v, k);
     return next;
   };
   const nextValue = visit(value);
   return { value: changed ? nextValue : value, changed };
 }
 
-export function repairDeepSeekToolArguments(_toolName: string, schema: unknown, args: unknown): RepairResult {
+/**
+ * Unified argument repair for all model families.
+ * DeepSeek + GLM repairs are the same logic — GLM adds top-level-json-string
+ * as a safe superset. One function, no family branching needed.
+ */
+export function repairToolArguments(_toolName: string, schema: unknown, args: unknown): RepairResult {
   const pathCleaned = cleanPathFields(args);
   if (compileCheck(schema, pathCleaned.value)) {
     return { args: pathCleaned.value, repaired: pathCleaned.changed, repairs: pathCleaned.changed ? ["path-markdown-autolink"] : [] };
@@ -195,6 +175,20 @@ export function repairDeepSeekToolArguments(_toolName: string, schema: unknown, 
   for (const error of validationErrors(schema, candidate)) {
     const repaired = tryRepairPath(schema, candidate, errorPath(error));
     if (repaired) repairs.push(repaired);
+  }
+
+  if (repairs.length > 0 && compileCheck(schema, candidate)) {
+    return { args: candidate, repaired: true, repairs };
+  }
+
+  // Top-level JSON string → object (safe for any model; originally GLM-4.7 bug)
+  if (typeof candidate === "string" && expects(schema, "object")) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (isRecord(parsed) && compileCheck(schema, parsed)) {
+        return { args: parsed, repaired: true, repairs: [...repairs, "top-level-json-string"] };
+      }
+    } catch { /* not valid JSON */ }
   }
 
   return { args: repairs.length > 0 ? candidate : args, repaired: repairs.length > 0, repairs };

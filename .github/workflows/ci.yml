@@ -36,7 +36,7 @@ jobs:
             pi-notebooklm: pi-notebooklm/**
             pi-rtk: pi-rtk/**
             pi-sub: pi-sub/**
-            pi-deepseek-tools: pi-deepseek-tools/**
+            pi-model-tools: pi-model-tools/**
             pi-obsidian: pi-obsidian/**
             pi-windows-tools: pi-windows-tools/**
             pi-9router: pi-9router/**
@@ -59,7 +59,7 @@ jobs:
               { pkg: 'pi-notebooklm', cmd: 'npm ci && npm test' },
               { pkg: 'pi-rtk', cmd: 'npm pack --dry-run' },
               { pkg: 'pi-sub', cmd: 'npm pack --dry-run' },
-              { pkg: 'pi-deepseek-tools', cmd: 'npm ci && npm test' },
+              { pkg: 'pi-model-tools', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-obsidian', cmd: 'npm ci && npm test' },
               { pkg: 'pi-windows-tools', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-9router', cmd: 'npm ci && npm test && npm run typecheck' },
