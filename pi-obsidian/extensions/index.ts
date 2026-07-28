@@ -211,19 +211,67 @@ const ensureFolder = (notePath: string) =>
   `const p=${JSON.stringify(notePath)}.replace(/\\\\/g,'/').split('/').slice(0,-1).join('/');` +
   `if(p&&!app.vault.getAbstractFileByPath(p))await app.vault.createFolder(p,true);`;
 
+/** Build the chunk-0 eval script for the given mode and base64 chunk. */
+export function buildFirstScript(
+  notePath: string,
+  mode: "create" | "overwrite" | "append" | "prepend",
+  b64Chunk0: string
+): string {
+  const t = JSON.stringify(notePath);
+  const c0 = b64Decode(b64Chunk0);
+  let body: string;
+  if (mode === "create") {
+    body = `const t=${t};if(app.vault.getAbstractFileByPath(t))throw new Error('File already exists: '+t);${ensureFolder(notePath)}await app.vault.create(t,${c0});return 'ok'`;
+  } else if (mode === "overwrite") {
+    body = `const t=${t};const e=app.vault.getAbstractFileByPath(t);const c=${c0};if(e){await app.vault.modify(e,c);return 'ok'}${ensureFolder(notePath)}await app.vault.create(t,c);return 'ok'`;
+  } else if (mode === "append") {
+    body = `const t=${t};const e=app.vault.getAbstractFileByPath(t);const c=${c0};if(e){const o=await app.vault.read(e);await app.vault.modify(e,o+c);return 'ok'}${ensureFolder(notePath)}await app.vault.create(t,c);return 'ok'`;
+  } else { // prepend
+    body = `const t=${t};const e=app.vault.getAbstractFileByPath(t);const c=${c0};if(e){const o=await app.vault.read(e);const m=o.match(/^---\\s*\\n[\\s\\S]*?\\n---\\s*\\n/);const i=m?m[0].length:0;await app.vault.modify(e,o.slice(0,i)+c+o.slice(i));return 'ok'}${ensureFolder(notePath)}await app.vault.create(t,c);return 'ok'`;
+  }
+  return `(async function(){try{${body}}catch(e){return 'Error: '+String(e&&e.message||e)}})()`;
+}
+
+/** Build a chunk-append eval script for chunks 1..N. */
+export function buildChunkScript(notePath: string, b64Chunk: string): string {
+  const t = JSON.stringify(notePath);
+  return `(async function(){try{const f=app.vault.getAbstractFileByPath(${t});if(!f)throw new Error('File not found after chunk 0');const o=await app.vault.read(f);await app.vault.modify(f,o+${b64Decode(b64Chunk)});return 'ok'}catch(e){return 'Error: '+String(e&&e.message||e)}})()`;
+}
+
+/** Build an eval script that reads the file back and returns "length hash". */
+export function buildVerifyScript(notePath: string): string {
+  const t = JSON.stringify(notePath);
+  return `(async function(){try{const f=app.vault.getAbstractFileByPath(${t});if(!f)throw new Error('not found after write');const s=await app.vault.read(f);const b=unescape(encodeURIComponent(s));let h=5381;for(let i=0;i<b.length;i++)h=((h<<5)+h+b.charCodeAt(i))>>>0;return h+' '+b.length}catch(e){return 'Error: '+String(e&&e.message||e)}})()`;
+}
+
+/** Compute a djb2 hash + byte length for a UTF-8 string, matching the in-eval formula. */
+export function djb2Utf8(s: string): { hash: number; bytes: number } {
+  // ponytail: djb2 length+hash; full-content compare if a collision ever bites
+  const buf = Buffer.from(s, "utf8");
+  let h = 5381;
+  for (let i = 0; i < buf.length; i++)
+    h = ((h << 5) + h + buf[i]) >>> 0;
+  return { hash: h, bytes: buf.length };
+}
+
 /**
  * Write note content via base64-encoded eval.  Handles create, overwrite,
  * append, and prepend modes.  Splits large content into base64 chunks that
  * each fit in a single eval call, reassembling via read+modify.
  *
- * Throws on any failure (empty output or eval "Error:" prefix).
+ * After all chunks are written, a read-back verification confirms the content
+ * was written correctly, decoupling success from what the CLI eval echoes.
+ *
+ * Throws on any failure (empty output, eval "Error:" prefix, or verification
+ * mismatch).
  */
-function vaultWrite(
+export function vaultWrite(
   notePath: string,
   content: string,
   mode: "create" | "overwrite" | "append" | "prepend",
   vault?: string,
-  timeoutMs = 30_000
+  timeoutMs = 30_000,
+  exec: (args: string[], formatJson?: boolean, timeoutMs?: number) => { stdout: string; stderr: string; parsed: unknown } = execObsidian
 ): string {
   const j = JSON.stringify;
   const b64 = Buffer.from(content, "utf8").toString("base64");
@@ -235,36 +283,51 @@ function vaultWrite(
     const args: string[] = [];
     if (vault) args.push(`vault=${vault}`);
     args.push("eval", `code=${script}`);
-    const out = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
-    if (!out || /^Error[:\s]/.test(out))
-      throw new Error(`vaultWrite ${label} failed for "${notePath}": ${out || "(no output)"}`);
+    const result = exec(args, false, timeoutMs);
+    const out = result.stdout.trim().replace(/^=>\s?/, "");
+    const stderr = (result.stderr || "").trim();
+    if (!out || /^Error[:\s]/.test(out)) {
+      throw new Error(
+        `vaultWrite ${label} failed for "${notePath}": ${out || "(no output)"}` +
+        (stderr ? `\n  Stderr: ${stderr.slice(0, 500)}` : "") +
+        `\n  Script: ${script.slice(0, 200).replace(/\n/g, "\\n")}...`
+      );
+    }
     return out;
   };
 
   // --- first chunk: mode-specific initial write ---
-  const t = j(notePath);
-  const c0 = b64Decode(b64Chunks[0]);
-  let firstScript: string;
-  if (mode === "create") {
-    firstScript = `(async function(){const t=${t};if(app.vault.getAbstractFileByPath(t))throw new Error('File already exists: '+t);${ensureFolder(notePath)}await app.vault.create(t,${c0});return 'Created: '+t})()`;
-  } else if (mode === "overwrite") {
-    firstScript = `(async function(){const t=${t};const e=app.vault.getAbstractFileByPath(t);const c=${c0};if(e){await app.vault.modify(e,c);return 'Modified: '+t}${ensureFolder(notePath)}await app.vault.create(t,c);return 'Created: '+t})()`;
-  } else if (mode === "append") {
-    firstScript = `(async function(){const t=${t};const e=app.vault.getAbstractFileByPath(t);const c=${c0};if(e){const o=await app.vault.read(e);await app.vault.modify(e,o+c);return 'Appended to: '+t}${ensureFolder(notePath)}await app.vault.create(t,c);return 'Created: '+t})()`;
-  } else { // prepend
-    firstScript = `(async function(){const t=${t};const e=app.vault.getAbstractFileByPath(t);const c=${c0};if(e){const o=await app.vault.read(e);const m=o.match(/^---\\s*\\n[\\s\\S]*?\\n---\\s*\\n/);const i=m?m[0].length:0;await app.vault.modify(e,o.slice(0,i)+c+o.slice(i));return 'Prepended to: '+t}${ensureFolder(notePath)}await app.vault.create(t,c);return 'Created: '+t})()`;
-  }
-  const status = run(firstScript, mode);
+  const status = run(buildFirstScript(notePath, mode, b64Chunks[0]), mode);
 
   // --- remaining chunks: always read+append to end ---
   for (let i = 1; i < b64Chunks.length; i++) {
-    run(
-      `(async function(){const f=app.vault.getAbstractFileByPath(${t});if(!f)throw new Error('File not found after chunk 0');const o=await app.vault.read(f);await app.vault.modify(f,o+${b64Decode(b64Chunks[i])});return 'ok'})()`,
-      `chunk ${i}`
-    );
+    run(buildChunkScript(notePath, b64Chunks[i]), `chunk ${i}`);
   }
 
-  return status;
+  // --- verify: read back and confirm content (only for create/overwrite where content = full file) ---
+  if (mode === "create" || mode === "overwrite") {
+    const verResult = run(buildVerifyScript(notePath), "verify");
+    if (verResult.startsWith("Error:")) {
+      throw new Error(`vaultWrite ${mode} verification failed for "${notePath}": ${verResult}`);
+    }
+    const [verHash, verBytes] = verResult.split(" ", 2).map(Number);
+    const expected = djb2Utf8(content);
+    if (verHash !== expected.hash || verBytes !== expected.bytes) {
+      throw new Error(
+        `vaultWrite ${mode} verification failed for "${notePath}": ` +
+        `written ${verBytes} bytes (hash ${verHash}), expected ${expected.bytes} bytes (hash ${expected.hash})`
+      );
+    }
+  }
+
+  // Return a bridge-constructed success message (decoupled from eval echo)
+  const modeLabels: Record<string, string> = {
+    create: "Created",
+    overwrite: "Updated",
+    append: "Appended to",
+    prepend: "Prepended to",
+  };
+  return `${modeLabels[mode]}: ${notePath}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -730,7 +793,7 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
         }
         const eArgs: string[] = [];
         if (v) eArgs.push(`vault=${v}`);
-        eArgs.push("eval", `code=(async function(){${code}})()`);
+        eArgs.push("eval", `code=(async function(){try{${code}}catch(e){return 'Error: '+String(e&&e.message||e)}})()`);
         const evalOut = execObsidian(eArgs, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
         if (!evalOut || /^Error[:\s]/.test(evalOut)) throw new Error(`eval returned no result or error: ${evalOut || "(empty)"}`);
         return evalOut;

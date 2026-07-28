@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
  * Run obsidian CLI with the given arguments.
  * Returns stdout and parsed JSON (if stdout is valid JSON).
  */
-export function execObsidian(args: string[], formatJson = false, timeoutMs = 30_000): { stdout: string; parsed: unknown } {
+export function execObsidian(args: string[], formatJson = false, timeoutMs = 30_000): { stdout: string; stderr: string; parsed: unknown } {
   const allArgs = formatJson ? [...args, "format=json"] : args;
   const result = spawnSync("obsidian", allArgs, {
     encoding: "utf8",
@@ -38,7 +38,7 @@ export function execObsidian(args: string[], formatJson = false, timeoutMs = 30_
 
   let parsed: unknown = stdout;
   try { parsed = JSON.parse(stdout); } catch { /* not JSON, keep raw */ }
-  return { stdout, parsed };
+  return { stdout, stderr, parsed };
 }
 
 

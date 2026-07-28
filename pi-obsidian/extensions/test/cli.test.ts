@@ -5,12 +5,17 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  buildFirstScript,
+  buildChunkScript,
+  buildVerifyScript,
+  djb2Utf8,
   readQuotedContent,
   parseCliString,
   parseFlags,
   isObsidianVaultCwd,
   isPathInObsidianVault,
   vaultNameForCwd,
+  vaultWrite,
 } from "../index.js";
 
 // ---------------------------------------------------------------------------
@@ -365,6 +370,163 @@ describe("piObsidianExtension tool integration", () => {
     } finally {
       rmSync(vault, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("vaultWrite diagnostics and helpers", () => {
+  // -- Pure helpers: script generation --
+
+  it("buildFirstScript create produces a valid script with vault.create and try/catch", () => {
+    const script = buildFirstScript("test.md", "create", "SGVsbG8=");
+    expect(script).to.include("app.vault.create");
+    expect(script).to.include("try{");
+    expect(script).to.include("catch(e)");
+    expect(script).to.include("return 'Error: ");
+    expect(script).to.not.include("app.vault.modify");
+  });
+
+  it("buildFirstScript overwrite produces a valid script with vault.modify and try/catch", () => {
+    const script = buildFirstScript("existing.md", "overwrite", "TW9kdWxlPQ==");
+    expect(script).to.include("app.vault.modify");
+    expect(script).to.include("try{");
+    expect(script).to.include("catch(e)");
+    expect(script).to.include("return 'ok'");
+  });
+
+  it("buildFirstScript append/prepend also include try/catch", () => {
+    const appendScript = buildFirstScript("note.md", "append", "QXBwZW5kZWQ=");
+    expect(appendScript).to.include("app.vault.modify");
+    expect(appendScript).to.include("try{");
+    expect(appendScript).to.include("catch(e)");
+
+    const prependScript = buildFirstScript("note.md", "prepend", "UHJlcGVuZGVk");
+    expect(prependScript).to.include("app.vault.modify");
+    expect(prependScript).to.include("try{");
+    expect(prependScript).to.include("catch(e)");
+  });
+
+  it("buildChunkScript includes try/catch and vault.modify", () => {
+    const script = buildChunkScript("test.md", "Y2h1bms=");
+    expect(script).to.include("app.vault.modify");
+    expect(script).to.include("try{");
+    expect(script).to.include("catch(e)");
+    expect(script).to.include("return 'ok'");
+  });
+
+  it("buildVerifyScript includes hash formula and try/catch", () => {
+    const script = buildVerifyScript("test.md");
+    expect(script).to.include("unescape(encodeURIComponent");
+    expect(script).to.include("h=5381");
+    expect(script).to.include("try{");
+    expect(script).to.include("catch(e)");
+  });
+
+  // -- djb2Utf8 hash parity --
+
+  it("djb2Utf8 returns correct byte count and stable hash for ASCII", () => {
+    const r = djb2Utf8("hello");
+    expect(r.bytes).to.equal(5);
+    expect(r.hash).to.be.a("number");
+    expect(r.hash).to.be.above(0);
+  });
+
+  it("djb2Utf8 returns 0 bytes and initial hash for empty string", () => {
+    const r = djb2Utf8("");
+    expect(r.bytes).to.equal(0);
+    expect(r.hash).to.equal(5381);
+  });
+
+  it("djb2Utf8 handles special characters consistently", () => {
+    const a = djb2Utf8("\n\t\\");
+    expect(a.bytes).to.equal(3);
+    const b = djb2Utf8("\n\t\\");
+    expect(b.hash).to.equal(a.hash);
+    expect(b.bytes).to.equal(a.bytes);
+  });
+
+  it("djb2Utf8 matches expected value for known input", () => {
+    // djb2 of "abc": buf=[97,98,99]
+    const r = djb2Utf8("abc");
+    expect(r.bytes).to.equal(3);
+    expect(r.hash).to.equal(193485963);
+  });
+
+  // -- vaultWrite error diagnostics (no live vault, inject fake exec) --
+
+  const emptyStdoutFake = (_args: string[], _fmt?: boolean, _ms?: number) =>
+    ({ stdout: "", stderr: "real stderr message", parsed: "" });
+
+  it("vaultWrite with empty stdout error includes stderr + script snippet (regression for '(no output)' blind spot)", () => {
+    try {
+      vaultWrite("test.md", "x", "overwrite", undefined, 100, emptyStdoutFake);
+      expect.fail("Should have thrown");
+    } catch (e: any) {
+      expect(e.message).to.include("real stderr message");
+      expect(e.message).to.include("Script:");
+      expect(e.message).to.include("test.md");
+    }
+  });
+
+  it("vaultWrite with eval Error: from try/catch surfaces the error", () => {
+    const errorFake = (_args: string[], _fmt?: boolean, _ms?: number) =>
+      ({ stdout: "Error: file locked by Nextcloud", stderr: "", parsed: "" });
+    try {
+      vaultWrite("locked.md", "data", "overwrite", undefined, 100, errorFake);
+      expect.fail("Should have thrown");
+    } catch (e: any) {
+      expect(e.message).to.include("Error: file locked");
+      expect(e.message).to.include("locked.md");
+    }
+  });
+
+  // -- vaultWrite success path (inject fake exec with read-back verification) --
+
+  it("vaultWrite overwrite returns Updated: <path> on verification match", () => {
+    const content = "Hello World";
+    const expected = djb2Utf8(content);
+    const okFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("unescape(encodeURIComponent")) {
+        // verify call: return matching hash
+        return { stdout: `${expected.hash} ${expected.bytes}`, stderr: "", parsed: "" };
+      }
+      return { stdout: "ok", stderr: "", parsed: "ok" };
+    };
+    const result = vaultWrite("note.md", content, "overwrite", undefined, 100, okFake);
+    expect(result).to.equal("Updated: note.md");
+  });
+
+  it("vaultWrite create returns Created: <path> on verification match", () => {
+    const content = "# New Note";
+    const expected = djb2Utf8(content);
+    const okFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("unescape(encodeURIComponent")) {
+        return { stdout: `${expected.hash} ${expected.bytes}`, stderr: "", parsed: "" };
+      }
+      return { stdout: "ok", stderr: "", parsed: "ok" };
+    };
+    const result = vaultWrite("fresh.md", content, "create", undefined, 100, okFake);
+    expect(result).to.equal("Created: fresh.md");
+  });
+
+  it("vaultWrite verification mismatch throws expected vs actual", () => {
+    const okFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("unescape(encodeURIComponent")) {
+        // Return WRONG hash/bytes
+        return { stdout: "0 999999", stderr: "", parsed: "" };
+      }
+      return { stdout: "ok", stderr: "", parsed: "ok" };
+    };
+    try {
+      vaultWrite("corrupt.md", "real content", "overwrite", undefined, 100, okFake);
+      expect.fail("Should have thrown");
+    } catch (e: any) {
+      expect(e.message).to.include("verification failed");
+      expect(e.message).to.include("written 999999");
+      expect(e.message).to.include("corrupt.md");
     }
   });
 });
