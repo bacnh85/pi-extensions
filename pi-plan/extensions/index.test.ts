@@ -1875,6 +1875,29 @@ describe("per-mode model preferences", () => {
     assert.ok((fresh as any).modelSets.some((m: any) => m.provider === "zai-coding-cn" && m.id === "glm-5.2"),
       "session_start applies a persisted planModel under --plan");
   });
+
+  it("applies the plan model's per-model thinking on plan-mode entry", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2,
+      defaults: { planThinking: "high", normalThinking: "medium" },
+      perModel: {
+        "opencode-go/deepseek-v4-flash": { planThinking: "off", normalThinking: "high" },
+        "zai-coding-cn/glm-5.2": { planThinking: "high", normalThinking: "high" },
+      },
+      planModel: "zai-coding-cn/glm-5.2",
+      normalModel: "opencode-go/deepseek-v4-flash",
+    }));
+    const ext = createFakePi(["read"], {});
+    const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4-flash" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    // normal mode starts with deepseek; thinking should be deepseek's normal
+    assert.equal(ext.thinkingLevel, "high", "normal mode uses normal model's thinking");
+
+    // enter plan mode — should switch to glm-5.2 and apply ITS planThinking
+    await ext.commands["plan"].handler("", ctx);
+    assert.equal(ext.thinkingLevel, "high", "plan mode applies plan model's planThinking, not the normal model's stale planThinking");
+  });
 });
 
 describe("ask_plan_question validation", () => {

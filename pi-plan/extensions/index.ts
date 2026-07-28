@@ -462,6 +462,12 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     applyingStoredModel = true;
     try {
       await pi.setModel(model); // rejects on missing auth
+      // recompute per-model thinking for the newly-selected model
+      if (preferences) {
+        const effective = getEffectiveThinking(preferences, model);
+        planThinking = effective.plan;
+        normalThinking = effective.normal;
+      }
     } catch (error) {
       ctx.ui.notify(`${planModeEnabled ? "Plan" : "Code"} model switch failed: ${String(error)}`, "warning");
     } finally {
