@@ -8,7 +8,6 @@ import {
   readQuotedContent,
   parseCliString,
   parseFlags,
-  escapeCliValue,
   isObsidianVaultCwd,
   isPathInObsidianVault,
   vaultNameForCwd,
@@ -157,36 +156,6 @@ describe("parseFlags", () => {
 
   it("unescapes quoted values", () => {
     expect(parseFlags('cmd val="a \\"b\\""')).to.deep.equal({ val: 'a "b"' });
-  });
-});
-
-describe("escapeCliValue", () => {
-  it("escapes backslash", () => {
-    expect(escapeCliValue("a\\b")).to.equal("a\\\\b");
-  });
-
-  it("escapes double quote", () => {
-    expect(escapeCliValue('say "hi"')).to.equal('say \\"hi\\"');
-  });
-
-  it("escapes newline", () => {
-    expect(escapeCliValue("line1\nline2")).to.equal("line1\\nline2");
-  });
-
-  it("escapes tab", () => {
-    expect(escapeCliValue("col1\tcol2")).to.equal("col1\\tcol2");
-  });
-
-  it("handles mixed special characters", () => {
-    expect(escapeCliValue('path\\to\\"file"\n\ttest')).to.equal('path\\\\to\\\\\\"file\\"\\n\\ttest');
-  });
-
-  it("handles plain string unchanged", () => {
-    expect(escapeCliValue("hello")).to.equal("hello");
-  });
-
-  it("handles empty string", () => {
-    expect(escapeCliValue("")).to.equal("");
   });
 });
 

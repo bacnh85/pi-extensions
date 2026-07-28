@@ -8,7 +8,7 @@ Pi extension for **Obsidian vault tools** — a single unified tool that runs an
 
 | Bug | Fix |
 |-----|-----|
-| **B1**: `create` content with bare `"` truncates | Auto-escapes bare quotes in `content=`; add `content_from=SourceNote` to read content from a vault note |
+| **B1**: `create` content with bare `"` truncates | Write operations (create/write/append/prepend) now route through base64-encoded `eval` — no escaping issues with `\`, `"`, `|`, literal `\n`, or large payloads. `content_from` reads from a vault note for convenience. |
 | **B2**: `property:set` with array values | Auto-normalizes spaces in array values; rejoin split tokens |
 | **B3**: `create` doesn't create subdirectories | `ensureFolderExists()` creates parent path before writing |
 | **B4**: `files folder="/"` returns nothing | Handles root folder `/` and empty folder string |
@@ -54,8 +54,8 @@ obsidian run="read file=Meeting Notes" vault="My Vault"
 | Category | Example |
 |----------|---------|
 | **Read** | `read file="Meeting Notes"` |
-| **Create** | `create path=folder/note.md overwrite=true content="# Title\n\nBody"` |
-| **Create (from note)** | `create path=note.md content_from=SourceNoteName` | Reads content from an existing vault note (bypasses CLI escaping) |
+| **Create** | `create path=folder/note.md overwrite=true content="# Title\n\nBody"` | Content is base64-encoded via `eval` — no size limit or escaping issues |
+| **Create (from note)** | `create path=note.md content_from=SourceNoteName` | Reads content from an existing vault note (bypasses CLI escaping); same chunking applies |
 | **Append** | `append path=note.md content="More text"` |
 | **Prepend** | `prepend path=note.md content="# Header"` |
 | **Delete** | `delete path=old.md permanent=true` |

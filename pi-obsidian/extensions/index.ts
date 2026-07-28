@@ -190,8 +190,81 @@ export function parseFlags(s: string): Record<string, string> {
   return flags;
 }
 
-export function escapeCliValue(s: string): string {
-  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+// ---------------------------------------------------------------------------
+// Write note content via base64-encoded eval.
+//
+// The Obsidian CLI's content= parser only understands \n and \t escapes —
+// backslashes, quotes, pipes, and literal \n all get corrupted.  And on
+// Windows the argv ceiling (~8 KB) silently truncates large payloads.
+// Base64-encoding the content and decoding inside eval eliminates BOTH
+// problems: no escaping needed, and large content is split into safe
+// base64 chunks that are reassembled via read+modify.
+// ---------------------------------------------------------------------------
+
+const MAX_B64_CHUNK = 6000; // chars per eval call (safe under Windows cmd.exe ~8 KB ceiling)
+
+/** Decode a base64 string to UTF-8 inside the Obsidian app context. */
+const b64Decode = (chunk: string) => `decodeURIComponent(escape(atob(${JSON.stringify(chunk)})))`;
+
+/** Ensure parent folders exist before writing. */
+const ensureFolder = (notePath: string) =>
+  `const p=${JSON.stringify(notePath)}.replace(/\\\\/g,'/').split('/').slice(0,-1).join('/');` +
+  `if(p&&!app.vault.getAbstractFileByPath(p))await app.vault.createFolder(p,true);`;
+
+/**
+ * Write note content via base64-encoded eval.  Handles create, overwrite,
+ * append, and prepend modes.  Splits large content into base64 chunks that
+ * each fit in a single eval call, reassembling via read+modify.
+ *
+ * Throws on any failure (empty output or eval "Error:" prefix).
+ */
+function vaultWrite(
+  notePath: string,
+  content: string,
+  mode: "create" | "overwrite" | "append" | "prepend",
+  vault?: string,
+  timeoutMs = 30_000
+): string {
+  const j = JSON.stringify;
+  const b64 = Buffer.from(content, "utf8").toString("base64");
+  const b64Chunks: string[] = [];
+  for (let i = 0; i < b64.length; i += MAX_B64_CHUNK) b64Chunks.push(b64.slice(i, i + MAX_B64_CHUNK));
+  if (b64Chunks.length === 0) b64Chunks.push("");
+
+  const run = (script: string, label: string): string => {
+    const args: string[] = [];
+    if (vault) args.push(`vault=${vault}`);
+    args.push("eval", `code=${script}`);
+    const out = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
+    if (!out || /^Error[:\s]/.test(out))
+      throw new Error(`vaultWrite ${label} failed for "${notePath}": ${out || "(no output)"}`);
+    return out;
+  };
+
+  // --- first chunk: mode-specific initial write ---
+  const t = j(notePath);
+  const c0 = b64Decode(b64Chunks[0]);
+  let firstScript: string;
+  if (mode === "create") {
+    firstScript = `(async function(){const t=${t};if(app.vault.getAbstractFileByPath(t))throw new Error('File already exists: '+t);${ensureFolder(notePath)}await app.vault.create(t,${c0});return 'Created: '+t})()`;
+  } else if (mode === "overwrite") {
+    firstScript = `(async function(){const t=${t};const e=app.vault.getAbstractFileByPath(t);const c=${c0};if(e){await app.vault.modify(e,c);return 'Modified: '+t}${ensureFolder(notePath)}await app.vault.create(t,c);return 'Created: '+t})()`;
+  } else if (mode === "append") {
+    firstScript = `(async function(){const t=${t};const e=app.vault.getAbstractFileByPath(t);const c=${c0};if(e){const o=await app.vault.read(e);await app.vault.modify(e,o+c);return 'Appended to: '+t}${ensureFolder(notePath)}await app.vault.create(t,c);return 'Created: '+t})()`;
+  } else { // prepend
+    firstScript = `(async function(){const t=${t};const e=app.vault.getAbstractFileByPath(t);const c=${c0};if(e){const o=await app.vault.read(e);const m=o.match(/^---\\s*\\n[\\s\\S]*?\\n---\\s*\\n/);const i=m?m[0].length:0;await app.vault.modify(e,o.slice(0,i)+c+o.slice(i));return 'Prepended to: '+t}${ensureFolder(notePath)}await app.vault.create(t,c);return 'Created: '+t})()`;
+  }
+  const status = run(firstScript, mode);
+
+  // --- remaining chunks: always read+append to end ---
+  for (let i = 1; i < b64Chunks.length; i++) {
+    run(
+      `(async function(){const f=app.vault.getAbstractFileByPath(${t});if(!f)throw new Error('File not found after chunk 0');const o=await app.vault.read(f);await app.vault.modify(f,o+${b64Decode(b64Chunks[i])});return 'ok'})()`,
+      `chunk ${i}`
+    );
+  }
+
+  return status;
 }
 
 // ---------------------------------------------------------------------------
@@ -226,7 +299,9 @@ function createTaskInNote(notePath: string, heading: string, taskText: string, v
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
   args.push("eval", `code=(async function(){${script}})()`);
-  return execObsidian(args, false, timeoutMs).stdout.trim() || `Added task "${taskText}" under heading "${heading}".`;
+  const _out301 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
+  if (!_out301 || /^Error[:\s]/.test(_out301)) return _out301 || `Added task "${taskText}" under heading "${heading}".`;
+  return _out301;
 }
 
 function createFromTemplate(templateName: string, noteName: string, folder: string, fill: Record<string, string>, vault?: string, timeoutMs = 30_000): string {
@@ -257,7 +332,9 @@ function createFromTemplate(templateName: string, noteName: string, folder: stri
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
   args.push("eval", `code=(async function(){${script}})()`);
-  return execObsidian(args, false, timeoutMs).stdout.trim() || `Created note "${notePath}" from template "${templateName}".`;
+  const _out332 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
+  if (!_out332 || /^Error[:\s]/.test(_out332)) return _out332 || `Created note "${notePath}" from template "${templateName}".`;
+  return _out332;
 }
 
 function propertyRename(from: string, to: string, filePath?: string, vault?: string, timeoutMs = 30_000): string {
@@ -284,7 +361,9 @@ function propertyRename(from: string, to: string, filePath?: string, vault?: str
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
   args.push("eval", `code=(async function(){${script}})()`);
-  return execObsidian(args, false, timeoutMs).stdout.trim() || "Done.";
+  const _out359 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
+  if (!_out359 || /^Error[:\s]/.test(_out359)) return _out359 || "Done.";
+  return _out359;
 }
 
 function renameTag(from: string, to: string, preview: boolean, vault?: string, timeoutMs = 30_000): string {
@@ -315,7 +394,9 @@ function renameTag(from: string, to: string, preview: boolean, vault?: string, t
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
   args.push("eval", `code=(async function(){${script}})()`);
-  return execObsidian(args, false, timeoutMs).stdout.trim() || "Done.";
+  const _out390 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
+  if (!_out390 || /^Error[:\s]/.test(_out390)) return _out390 || "Done.";
+  return _out390;
 }
 
 function searchReplace(
@@ -359,7 +440,9 @@ function searchReplace(
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
   args.push("eval", `code=(async function(){${script}})()`);
-  return execObsidian(args, false, timeoutMs).stdout.trim() || "No changes.";
+  const _out434 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
+  if (!_out434 || /^Error[:\s]/.test(_out434)) return _out434 || "No changes.";
+  return _out434;
 }
 
 function filesMissingProperty(property: string, vault?: string, timeoutMs = 30_000): string {
@@ -378,7 +461,9 @@ function filesMissingProperty(property: string, vault?: string, timeoutMs = 30_0
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
   args.push("eval", `code=(async function(){${script}})()`);
-  return execObsidian(args, false, timeoutMs).stdout.trim() || "Done.";
+  const _out453 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
+  if (!_out453 || /^Error[:\s]/.test(_out453)) return _out453 || "Done.";
+  return _out453;
 }
 
 function frontmatterWrap(vault?: string, timeoutMs = 30_000): string {
@@ -410,7 +495,9 @@ function frontmatterWrap(vault?: string, timeoutMs = 30_000): string {
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
   args.push("eval", `code=(async function(){${script}})()`);
-  return execObsidian(args, false, timeoutMs).stdout.trim() || "Done.";
+  const _out485 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
+  if (!_out485 || /^Error[:\s]/.test(_out485)) return _out485 || "Done.";
+  return _out485;
 }
 
 // ---------------------------------------------------------------------------
@@ -494,7 +581,7 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
       "Use obsidian—not bash, read, write, edit, ls, find, or grep—for every operation on files in an Obsidian vault; pass vault=<name> if it is not the focused vault.",
       "Format: `<command> <key=value> ... <flag>`",
       "Quote spaces: `file=\"My Note\"`, content=`# Title`.",
-      "content_from=SourceNoteName for content with quotes.",
+      "content_from=SourceNoteName to clone an existing note's content.",
       "eval file=ScriptNoteName for JS from vault note.",
       "format=json for structured output (search, tasks, tags).",
       "Boolean flags: permanent, overwrite, total, verbose, inline, silent.",
@@ -644,43 +731,31 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
         const eArgs: string[] = [];
         if (v) eArgs.push(`vault=${v}`);
         eArgs.push("eval", `code=(async function(){${code}})()`);
-        return execObsidian(eArgs, false, timeoutMs).stdout.trim() || "Done.";
+        const evalOut = execObsidian(eArgs, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
+        if (!evalOut || /^Error[:\s]/.test(evalOut)) throw new Error(`eval returned no result or error: ${evalOut || "(empty)"}`);
+        return evalOut;
       }
 
-      // --- create/write (B1: normalize file= to path= for CLI) ---
+      // --- create/write/overwrite: route through vaultWrite (base64+eval) ---
       if (cmd === "create" || cmd === "write" || cmd === "overwrite") {
         const path = flags.path || flags.file || "";
-        if (flags.content_from && path) {
+        if (!path) throw new Error("'path=' (or 'file=') is required for create/write/overwrite.");
+        let content = flags.content ?? "";
+        if (flags.content_from) {
           const rArgs: string[] = [];
           if (v) rArgs.push(`vault=${v}`);
           rArgs.push("read", `path=${flags.content_from}`);
-          const content = execObsidian(rArgs, false, timeoutMs).stdout;
-          const cArgs: string[] = [];
-          if (v) cArgs.push(`vault=${v}`);
-          cArgs.push("create", `path=${path}`, `content=${escapeCliValue(content)}`);
-          if (cmd !== "create" || raw.includes("overwrite=true")) cArgs.push("overwrite=true");
-          return execObsidian(cArgs, false, timeoutMs).stdout.trim() || `Created note from "${flags.content_from}".`;
+          content = execObsidian(rArgs, false, timeoutMs).stdout;
         }
-        // Normal create/write: rewrite args so CLI gets path= instead of file=
-        if (path) {
-          const cArgs = cliArgs();
-          // Obsidian CLI has no 'write' command — normalize to 'create'
-          if (cArgs[0] === "write" || cArgs[0] === "overwrite") {
-            cArgs[0] = "create";
-          }
-          // Replace any file= or path= arg with the resolved path=
-          for (let i = 1; i < cArgs.length; i++) {
-            if (cArgs[i].startsWith("file=") || cArgs[i].startsWith("path=")) {
-              cArgs[i] = `path=${path}`;
-              break;
-            }
-          }
-          if (cmd !== "create" || raw.includes("overwrite=true")) {
-            if (!cArgs.includes("overwrite=true")) cArgs.push("overwrite=true");
-          }
-          if (v) cArgs.unshift(`vault=${v}`);
-          return execObsidian(cArgs, false, timeoutMs).stdout.trim() || "Done.";
-        }
+        const overwrite = cmd !== "create" || raw.includes("overwrite=true");
+        return vaultWrite(path, content, overwrite ? "overwrite" : "create", v, timeoutMs);
+      }
+
+      // --- append/prepend with content: route through vaultWrite (base64+eval) ---
+      if ((cmd === "append" || cmd === "prepend") && flags.content !== undefined) {
+        const path = flags.path || flags.file || "";
+        if (!path) throw new Error(`'path=' (or 'file=') is required for ${cmd}.`);
+        return vaultWrite(path, flags.content, cmd, v, timeoutMs);
       }
 
       // --- property:set with array values ---
@@ -698,7 +773,7 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
             fixed.splice(ai, 0, "type=list", `value=${value.slice(1, -1)}`);
             if (v) fixed.unshift(`vault=${v}`);
             const r = execObsidian(fixed, false, timeoutMs);
-            return r.stdout.trim() || "Done.";
+            return r.stdout.trim() || `Command "property:set" produced no output.`;
           }
         }
       }
@@ -738,7 +813,8 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
       if (v) args.unshift(`vault=${v}`);
       const r = execObsidian(args, false, timeoutMs);
       if (r.parsed && typeof r.parsed !== "string") return formatObsidianOutput(raw, r.parsed);
-      return r.stdout.trim() || "Done.";
+      const out = r.stdout.trim();
+      return out || `Command "${cmd}" produced no output.`;
     }),
   });
 }
