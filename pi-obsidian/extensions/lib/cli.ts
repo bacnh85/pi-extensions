@@ -9,6 +9,7 @@ export function execObsidian(args: string[], formatJson = false, timeoutMs = 30_
   const result = spawnSync("obsidian", allArgs, {
     encoding: "utf8",
     timeout: timeoutMs,
+    killSignal: "SIGKILL",
     windowsHide: true,
   });
 
@@ -19,7 +20,11 @@ export function execObsidian(args: string[], formatJson = false, timeoutMs = 30_
   const stderr = result.stderr ?? "";
 
   if (result.signal) {
-    throw new Error(`obsidian CLI killed by signal ${result.signal}`);
+    throw new Error(
+      `obsidian eval timed out (killed via ${result.signal}) after ${timeoutMs}ms — ` +
+      `the Obsidian app may be blocked by a modal or sync conflict; ` +
+      `check/restart Obsidian and retry. Cmd: obsidian ${allArgs.join(" ")}`
+    );
   }
   const exitCode = result.status ?? 1;
 

@@ -198,7 +198,9 @@ export function parseFlags(s: string): Record<string, string> {
 // Windows the argv ceiling (~8 KB) silently truncates large payloads.
 // Base64-encoding the content and decoding inside eval eliminates BOTH
 // problems: no escaping needed, and large content is split into safe
-// base64 chunks that are reassembled via read+modify.
+// base64 chunks that are reassembled via adapter.read+adapter.write
+// (the lower-level DataAdapter, which does NOT go through the vault
+// modify/sync pipeline that can deadlock on open+synced files).
 // ---------------------------------------------------------------------------
 
 const MAX_B64_CHUNK = 6000; // chars per eval call (safe under Windows cmd.exe ~8 KB ceiling)
@@ -211,6 +213,20 @@ const ensureFolder = (notePath: string) =>
   `const p=${JSON.stringify(notePath)}.replace(/\\\\/g,'/').split('/').slice(0,-1).join('/');` +
   `if(p&&!app.vault.getAbstractFileByPath(p))await app.vault.createFolder(p,true);`;
 
+/**
+ * Close any open editor view of this file (prevents the "File changed" reload modal
+ * that blocks all subsequent evals) and ensure parent folders exist.
+ */
+const prepare = (notePath: string) => {
+  const t = JSON.stringify(notePath);
+  return (
+    `const _lv=app.workspace.getLeavesOfType('markdown');` +
+    `for(const _x of _lv){try{const _s=_x.getViewState&&_x.getViewState();` +
+    `if(_s&&_s.state&&_s.state.file===${t})await _x.detach();}catch(_){}}` +
+    ensureFolder(notePath)
+  );
+};
+
 /** Build the chunk-0 eval script for the given mode and base64 chunk. */
 export function buildFirstScript(
   notePath: string,
@@ -218,16 +234,17 @@ export function buildFirstScript(
   b64Chunk0: string
 ): string {
   const t = JSON.stringify(notePath);
+  const tn = `t.replace(/\\\\/g,'/')`; // normalized path for adapter calls
   const c0 = b64Decode(b64Chunk0);
   let body: string;
   if (mode === "create") {
-    body = `const t=${t};if(app.vault.getAbstractFileByPath(t))throw new Error('File already exists: '+t);${ensureFolder(notePath)}await app.vault.create(t,${c0});return 'ok'`;
+    body = `const t=${t};const tn=${tn};if(app.vault.getAbstractFileByPath(t))throw new Error('File already exists: '+t);${prepare(notePath)}await app.vault.adapter.write(tn,${c0});return 'ok'`;
   } else if (mode === "overwrite") {
-    body = `const t=${t};const e=app.vault.getAbstractFileByPath(t);const c=${c0};if(e){await app.vault.modify(e,c);return 'ok'}${ensureFolder(notePath)}await app.vault.create(t,c);return 'ok'`;
+    body = `const t=${t};const tn=${tn};${prepare(notePath)}await app.vault.adapter.write(tn,${c0});return 'ok'`;
   } else if (mode === "append") {
-    body = `const t=${t};const e=app.vault.getAbstractFileByPath(t);const c=${c0};if(e){const o=await app.vault.read(e);await app.vault.modify(e,o+c);return 'ok'}${ensureFolder(notePath)}await app.vault.create(t,c);return 'ok'`;
+    body = `const t=${t};const tn=${tn};const c=${c0};const e=app.vault.getAbstractFileByPath(t);if(e){const o=await app.vault.adapter.read(tn);await app.vault.adapter.write(tn,o+c);return 'ok'}${prepare(notePath)}await app.vault.adapter.write(tn,c);return 'ok'`;
   } else { // prepend
-    body = `const t=${t};const e=app.vault.getAbstractFileByPath(t);const c=${c0};if(e){const o=await app.vault.read(e);const m=o.match(/^---\\s*\\n[\\s\\S]*?\\n---\\s*\\n/);const i=m?m[0].length:0;await app.vault.modify(e,o.slice(0,i)+c+o.slice(i));return 'ok'}${ensureFolder(notePath)}await app.vault.create(t,c);return 'ok'`;
+    body = `const t=${t};const tn=${tn};const c=${c0};const e=app.vault.getAbstractFileByPath(t);if(e){const o=await app.vault.adapter.read(tn);const m=o.match(/^---\\s*\\n[\\s\\S]*?\\n---\\s*\\n/);const i=m?m[0].length:0;await app.vault.adapter.write(tn,o.slice(0,i)+c+o.slice(i));return 'ok'}${prepare(notePath)}await app.vault.adapter.write(tn,c);return 'ok'`;
   }
   return `(async function(){try{${body}}catch(e){return 'Error: '+String(e&&e.message||e)}})()`;
 }
@@ -235,13 +252,15 @@ export function buildFirstScript(
 /** Build a chunk-append eval script for chunks 1..N. */
 export function buildChunkScript(notePath: string, b64Chunk: string): string {
   const t = JSON.stringify(notePath);
-  return `(async function(){try{const f=app.vault.getAbstractFileByPath(${t});if(!f)throw new Error('File not found after chunk 0');const o=await app.vault.read(f);await app.vault.modify(f,o+${b64Decode(b64Chunk)});return 'ok'}catch(e){return 'Error: '+String(e&&e.message||e)}})()`;
+  const tn = `t.replace(/\\\\/g,'/')`;
+  return `(async function(){try{const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('File not found after chunk 0');const o=await app.vault.adapter.read(tn);await app.vault.adapter.write(tn,o+${b64Decode(b64Chunk)});return 'ok'}catch(e){return 'Error: '+String(e&&e.message||e)}})()`;
 }
 
 /** Build an eval script that reads the file back and returns "length hash". */
 export function buildVerifyScript(notePath: string): string {
   const t = JSON.stringify(notePath);
-  return `(async function(){try{const f=app.vault.getAbstractFileByPath(${t});if(!f)throw new Error('not found after write');const s=await app.vault.read(f);const b=unescape(encodeURIComponent(s));let h=5381;for(let i=0;i<b.length;i++)h=((h<<5)+h+b.charCodeAt(i))>>>0;return h+' '+b.length}catch(e){return 'Error: '+String(e&&e.message||e)}})()`;
+  const tn = `t.replace(/\\\\/g,'/')`;
+  return `(async function(){try{const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('not found after write');const s=await app.vault.adapter.read(tn);const b=unescape(encodeURIComponent(s));let h=5381;for(let i=0;i<b.length;i++)h=((h<<5)+h+b.charCodeAt(i))>>>0;return h+' '+b.length}catch(e){return 'Error: '+String(e&&e.message||e)}})()`;
 }
 
 /** Compute a djb2 hash + byte length for a UTF-8 string, matching the in-eval formula. */
@@ -257,10 +276,11 @@ export function djb2Utf8(s: string): { hash: number; bytes: number } {
 /**
  * Write note content via base64-encoded eval.  Handles create, overwrite,
  * append, and prepend modes.  Splits large content into base64 chunks that
- * each fit in a single eval call, reassembling via read+modify.
+ * each fit in a single eval call, reassembling via adapter.read+adapter.write.
  *
  * After all chunks are written, a read-back verification confirms the content
- * was written correctly, decoupling success from what the CLI eval echoes.
+ * was written correctly (via adapter.read, so no stale-cache false negatives),
+ * decoupling success from what the CLI eval echoes.
  *
  * Throws on any failure (empty output, eval "Error:" prefix, or verification
  * mismatch).

@@ -377,38 +377,50 @@ describe("piObsidianExtension tool integration", () => {
 describe("vaultWrite diagnostics and helpers", () => {
   // -- Pure helpers: script generation --
 
-  it("buildFirstScript create produces a valid script with vault.create and try/catch", () => {
+  it("buildFirstScript create produces a valid script with adapter.write and try/catch", () => {
     const script = buildFirstScript("test.md", "create", "SGVsbG8=");
-    expect(script).to.include("app.vault.create");
+    expect(script).to.include("app.vault.adapter.write");
+    expect(script).to.not.include("app.vault.create(");
+    expect(script).to.include("getLeavesOfType('markdown')");
+    expect(script).to.include(".detach()");
     expect(script).to.include("try{");
     expect(script).to.include("catch(e)");
     expect(script).to.include("return 'Error: ");
     expect(script).to.not.include("app.vault.modify");
   });
 
-  it("buildFirstScript overwrite produces a valid script with vault.modify and try/catch", () => {
+  it("buildFirstScript overwrite produces a valid script with adapter.write and try/catch", () => {
     const script = buildFirstScript("existing.md", "overwrite", "TW9kdWxlPQ==");
-    expect(script).to.include("app.vault.modify");
+    expect(script).to.include("app.vault.adapter.write");
+    expect(script).to.not.include("app.vault.modify");
+    expect(script).to.include("getLeavesOfType('markdown')");
+    expect(script).to.include(".detach()");
     expect(script).to.include("try{");
     expect(script).to.include("catch(e)");
     expect(script).to.include("return 'ok'");
   });
 
-  it("buildFirstScript append/prepend also include try/catch", () => {
+  it("buildFirstScript append/prepend also include try/catch and adapter.read/adapter.write", () => {
     const appendScript = buildFirstScript("note.md", "append", "QXBwZW5kZWQ=");
-    expect(appendScript).to.include("app.vault.modify");
+    expect(appendScript).to.include("app.vault.adapter.read");
+    expect(appendScript).to.include("app.vault.adapter.write");
+    expect(appendScript).to.not.include("app.vault.modify");
     expect(appendScript).to.include("try{");
     expect(appendScript).to.include("catch(e)");
 
     const prependScript = buildFirstScript("note.md", "prepend", "UHJlcGVuZGVk");
-    expect(prependScript).to.include("app.vault.modify");
+    expect(prependScript).to.include("app.vault.adapter.read");
+    expect(prependScript).to.include("app.vault.adapter.write");
+    expect(prependScript).to.not.include("app.vault.modify");
     expect(prependScript).to.include("try{");
     expect(prependScript).to.include("catch(e)");
   });
 
-  it("buildChunkScript includes try/catch and vault.modify", () => {
+  it("buildChunkScript includes try/catch and adapter.read/adapter.write", () => {
     const script = buildChunkScript("test.md", "Y2h1bms=");
-    expect(script).to.include("app.vault.modify");
+    expect(script).to.include("app.vault.adapter.read");
+    expect(script).to.include("app.vault.adapter.write");
+    expect(script).to.not.include("app.vault.modify");
     expect(script).to.include("try{");
     expect(script).to.include("catch(e)");
     expect(script).to.include("return 'ok'");
