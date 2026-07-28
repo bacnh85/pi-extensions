@@ -185,6 +185,35 @@ describe("applyPatchToFiles — update", () => {
       assert.ok(out.includes("\r\n"), "CRLF preserved");
     });
   });
+
+  it("collapses @@ anchor repeated as context line", async () => {
+    // Model writes `@@ alpha /  alpha` treating @@ as a locator header.
+    // The duplicate context line is collapsed so only one "alpha" is matched.
+    await withTempDir(async (dir) => {
+      const file = join(dir, "a.ts");
+      await writeFile(file, "alpha\nbeta\n", "utf-8");
+      const parsed = parsePatch(
+        "*** Update File: a.ts\n@@ alpha\n alpha\n-beta\n+BETA\n*** End Patch",
+      );
+      await applyPatchToFiles(parsed, dir);
+      const out = (await readFile(file, "utf-8")).toString();
+      assert.strictEqual(out, "alpha\nBETA\n");
+    });
+  });
+
+  it("collapses @@ anchor repeated as removed line", async () => {
+    // Anchor text equals the first removed line (e.g. @@ line1 / -line1).
+    await withTempDir(async (dir) => {
+      const file = join(dir, "a.ts");
+      await writeFile(file, "X\nfoo\n", "utf-8");
+      const parsed = parsePatch(
+        "*** Update File: a.ts\n@@ X\n-X\n+Y\n*** End Patch",
+      );
+      await applyPatchToFiles(parsed, dir);
+      const out = (await readFile(file, "utf-8")).toString();
+      assert.strictEqual(out, "Y\nfoo\n");
+    });
+  });
 });
 
 describe("applyPatchToFiles — add / delete / multi-file", () => {

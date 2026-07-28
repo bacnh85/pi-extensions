@@ -92,6 +92,9 @@ Rules:
 - Context+removed must match **uniquely** in the file (diverges from Codex's
   first-match for safety, matching `edit`'s philosophy). Add more context lines
   if a match is ambiguous.
+- If the `@@` anchor text repeats as the immediately-following context or
+  removed line (common when models treat `@@` as a diff-style locator header),
+  the duplicate is auto-collapsed — only one occurrence is matched.
 - Matching is progressive-fuzzy (exact → strip-trailing-ws → strip-both-ws →
   Unicode-normalize), so minor whitespace/Unicode differences still apply.
 

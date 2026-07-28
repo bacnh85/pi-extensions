@@ -21,6 +21,10 @@
  * Divergence from Codex: context+removed blocks must match UNIQUELY (Codex
  * takes the first match). Silent wrong-location edits are worse than a clear
  * error, and this matches pi's own `edit` philosophy.
+ *
+ * Leniency: if the @@ anchor text repeats as the immediately-following context
+ * or removed line (common when models treat `@@` as a git-diff-style locator
+ * header), the duplicate is collapsed automatically.
  */
 
 import { readFile, writeFile, unlink } from "node:fs/promises";
@@ -209,6 +213,17 @@ function eqTrim(a: string, b: string) { return a.trim() === b.trim(); }
 function eqUnicode(a: string, b: string) { return normalizeAscii(a) === normalizeAscii(b); }
 
 /**
+ * Loose equality matching seekSequence's 4-pass progression. Used for dedup
+ * so the collapse is consistent with the matcher's own fuzzy boundaries.
+ */
+function linesLooselyEqual(a: string, b: string): boolean {
+  return a === b
+    || a.trimEnd() === b.trimEnd()
+    || a.trim() === b.trim()
+    || normalizeAscii(a) === normalizeAscii(b);
+}
+
+/**
  * Count matches of `pattern` lines within `lines`, trying progressively
  * lenient equality. Returns count and first start index under the strictest
  * pass that yields any match.
@@ -325,12 +340,23 @@ export async function applyPatchToFiles(parsed: ParsedPatch, cwd: string): Promi
         const newHunks: { start: number; removedLen: number; added: string[] }[] = [];
 
         for (const h of hunks) {
-          const anchor = [...h.context, ...h.removed];
-          const { count, firstIndex, exact: hExact } = seekSequence(work, anchor);
+          // ponytail: collapse a redundant @@ anchor the model restated as
+          // the first payload line (context or removed). Models treat `@@` like
+          // a git-diff locator header and repeat it as context/removed, which
+          // would otherwise require the line to appear twice consecutively in
+          // the file. Real Codex makes @@ a pure cursor-advance locator; we keep
+          // it in the match block so unique-match disambiguation still works
+          // (@@ fn / -dup), but drop the duplicate. Upgrade to full cursor
+          // semantics if unique-match is ever relaxed.
+          let matchBlock = [...h.context, ...h.removed];
+          if (matchBlock.length >= 2 && linesLooselyEqual(matchBlock[0], matchBlock[1])) {
+            matchBlock = matchBlock.slice(1);
+          }
+          const { count, firstIndex, exact: hExact } = seekSequence(work, matchBlock);
           if (!hExact) exact = false;
           if (count === 0) throw new Error(`Hunk context not found in ${op.path}. Ensure context lines match the file.`);
           if (count > 1) throw new Error(`Hunk context is ambiguous (${count} matches) in ${op.path}. Add more surrounding context lines to make it unique.`);
-          const removedStart = firstIndex + h.context.length;
+          const removedStart = firstIndex + (matchBlock.length - h.removed.length);
           newHunks.push({ start: removedStart, removedLen: h.removed.length, added: h.added });
         }
 
