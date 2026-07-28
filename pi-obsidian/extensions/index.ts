@@ -206,7 +206,12 @@ export function parseFlags(s: string): Record<string, string> {
 const MAX_B64_CHUNK = 6000; // chars per eval call (safe under Windows cmd.exe ~8 KB ceiling)
 
 /** Decode a base64 string to UTF-8 inside the Obsidian app context. */
-const b64Decode = (chunk: string) => `decodeURIComponent(escape(atob(${JSON.stringify(chunk)})))`;
+const b64Decode = (chunk: string) =>
+  `new TextDecoder('utf-8').decode(Uint8Array.from(atob(${JSON.stringify(chunk)}),c=>c.charCodeAt(0)))`;
+
+/** Wrap an async script body in try/catch so errors are returned on stdout, not lost. */
+const wrapEval = (body: string) =>
+  `(async function(){try{${body}}catch(e){return 'Error: '+String(e&&e.message||e)}})()`;
 
 /** Ensure parent folders exist before writing. */
 const ensureFolder = (notePath: string) =>
@@ -246,21 +251,29 @@ export function buildFirstScript(
   } else { // prepend
     body = `const t=${t};const tn=${tn};const c=${c0};const e=app.vault.getAbstractFileByPath(t);if(e){const o=await app.vault.adapter.read(tn);const m=o.match(/^---\\s*\\n[\\s\\S]*?\\n---\\s*\\n/);const i=m?m[0].length:0;await app.vault.adapter.write(tn,o.slice(0,i)+c+o.slice(i));return 'ok'}${prepare(notePath)}await app.vault.adapter.write(tn,c);return 'ok'`;
   }
-  return `(async function(){try{${body}}catch(e){return 'Error: '+String(e&&e.message||e)}})()`;
+  return wrapEval(body);
 }
 
 /** Build a chunk-append eval script for chunks 1..N. */
 export function buildChunkScript(notePath: string, b64Chunk: string): string {
   const t = JSON.stringify(notePath);
   const tn = `t.replace(/\\\\/g,'/')`;
-  return `(async function(){try{const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('File not found after chunk 0');const o=await app.vault.adapter.read(tn);await app.vault.adapter.write(tn,o+${b64Decode(b64Chunk)});return 'ok'}catch(e){return 'Error: '+String(e&&e.message||e)}})()`;
+  return wrapEval(`const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('File not found after chunk 0');const o=await app.vault.adapter.read(tn);await app.vault.adapter.write(tn,o+${b64Decode(b64Chunk)});return 'ok'`);
 }
 
 /** Build an eval script that reads the file back and returns "length hash". */
 export function buildVerifyScript(notePath: string): string {
   const t = JSON.stringify(notePath);
   const tn = `t.replace(/\\\\/g,'/')`;
-  return `(async function(){try{const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('not found after write');const s=await app.vault.adapter.read(tn);const b=unescape(encodeURIComponent(s));let h=5381;for(let i=0;i<b.length;i++)h=((h<<5)+h+b.charCodeAt(i))>>>0;return h+' '+b.length}catch(e){return 'Error: '+String(e&&e.message||e)}})()`;
+  return wrapEval(`const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('not found after write');const s=await app.vault.adapter.read(tn);const b=new TextEncoder().encode(s);let h=5381;for(let i=0;i<b.length;i++)h=((h<<5)+h+b[i])>>>0;return h+' '+b.length`);
+}
+
+/** Verify that the file ends with the last-appended base64 chunk (for append/prepend). */
+export function buildSuffixScript(notePath: string, lastChunkB64: string): string {
+  const t = JSON.stringify(notePath);
+  const tn = `t.replace(/\\\\/g,'/')`;
+  const decoded = b64Decode(lastChunkB64);
+  return wrapEval(`const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('not found');const s=await app.vault.adapter.read(tn);const suffix=${decoded};const slen=suffix.length;if(s.length<slen||s.slice(-slen)!==suffix)throw new Error('suffix mismatch: file does not end with appended content ('+slen+' bytes)');return 'ok'`);
 }
 
 /** Compute a djb2 hash + byte length for a UTF-8 string, matching the in-eval formula. */
@@ -290,7 +303,7 @@ export function vaultWrite(
   content: string,
   mode: "create" | "overwrite" | "append" | "prepend",
   vault?: string,
-  timeoutMs = 30_000,
+  timeoutMs = 60_000,
   exec: (args: string[], formatJson?: boolean, timeoutMs?: number) => { stdout: string; stderr: string; parsed: unknown } = execObsidian
 ): string {
   const j = JSON.stringify;
@@ -300,6 +313,8 @@ export function vaultWrite(
   if (b64Chunks.length === 0) b64Chunks.push("");
 
   const run = (script: string, label: string): string => {
+    // ponytail: hard guard against transport truncation (belt-and-suspenders over chunking)
+    if (script.length > 7000) throw new Error(`eval payload ${script.length} bytes exceeds transport limit 7000; reduce MAX_B64_CHUNK`);
     const args: string[] = [];
     if (vault) args.push(`vault=${vault}`);
     args.push("eval", `code=${script}`);
@@ -324,7 +339,7 @@ export function vaultWrite(
     run(buildChunkScript(notePath, b64Chunks[i]), `chunk ${i}`);
   }
 
-  // --- verify: read back and confirm content (only for create/overwrite where content = full file) ---
+  // --- verify: read back and confirm content ---
   if (mode === "create" || mode === "overwrite") {
     const verResult = run(buildVerifyScript(notePath), "verify");
     if (verResult.startsWith("Error:")) {
@@ -337,6 +352,16 @@ export function vaultWrite(
         `vaultWrite ${mode} verification failed for "${notePath}": ` +
         `written ${verBytes} bytes (hash ${verHash}), expected ${expected.bytes} bytes (hash ${expected.hash})`
       );
+    }
+  } else if (mode === "append") {
+    // Append: verify the last chunk's content is a suffix of the file
+    const lastChunk = b64Chunks[b64Chunks.length - 1];
+    run(buildSuffixScript(notePath, lastChunk), "verify-suffix");
+  } else {
+    // Prepend: at least confirm the file exists (content is at the beginning, not suffix checkable)
+    const verResult = run(buildVerifyScript(notePath), "verify-exists");
+    if (verResult.startsWith("Error:")) {
+      throw new Error(`vaultWrite ${mode} verification failed for "${notePath}": ${verResult}`);
     }
   }
 
@@ -367,23 +392,23 @@ function createTaskInNote(notePath: string, heading: string, taskText: string, v
   const script = [
     `const f=app.vault.getAbstractFileByPath(${j(notePath)});`,
     `if(!f)return'File not found.';`,
-    `let c=await app.vault.read(f);`,
+    `let c=await app.vault.adapter.read(f.path);`,
     `const ls=c.split('\\n');`,
     `let hi=-1;`,
     `for(let i=0;i<ls.length;i++){const t=ls[i].trim();if(t.startsWith('#')&&t.replace(/^#+\\s*/,'')===${j(heading)}){hi=i;break;}}`,
-    `if(hi<0){await app.vault.modify(f,c+'\\n## '+${j(heading)}+'\\n- [ ] '+${j(taskText)}+'\\n');return'Created heading and task.';}`,
+    `if(hi<0){await app.vault.adapter.write(f.path,c+'\\n## '+${j(heading)}+'\\n- [ ] '+${j(taskText)}+'\\n');return'Created heading and task.';}`,
     `const hlm=ls[hi].match(/^(#+)\\s*/);const hl=hlm?hlm[1].length:1;`,
     `let se=ls.length;`,
     `for(let i=hi+1;i<ls.length;i++){const m=ls[i].match(/^(#+)\\s*/);if(m&&m[1].length<=hl){se=i;break;}}`,
     `ls.splice(se,0,'- [ ] '+${j(taskText)});`,
-    `await app.vault.modify(f,ls.join('\\n'));`,
+    `await app.vault.adapter.write(f.path,ls.join('\\n'));`,
     `return'Task added.';`,
   ].join("");
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
-  args.push("eval", `code=(async function(){${script}})()`);
+  args.push("eval", `code=${wrapEval(script)}`);
   const _out301 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
-  if (!_out301 || /^Error[:\s]/.test(_out301)) return _out301 || `Added task "${taskText}" under heading "${heading}".`;
+  if (!_out301 || /^Error[:\s]/.test(_out301)) throw new Error(`createTaskInNote failed for "${notePath}": ${_out301 || "(no output)"}`);
   return _out301;
 }
 
@@ -403,20 +428,19 @@ function createFromTemplate(templateName: string, noteName: string, folder: stri
     `else if(matches.length>1)return'Multiple templates match \"'+nameToFind+'\". Use full path.';`,
     `}`,
     `if(!tf)return'Template not found: '+nameToFind;`,
-    `let c=await app.vault.read(tf);`,
+    `let c=await app.vault.adapter.read(tf.path);`,
     `const fl=${JSON.stringify(fill)};`,
     `for(const[k,v]of Object.entries(fl))c=c.replace(new RegExp('\\\\{\\\\{\\\\s*'+k.replace(/[.*+?^\${}()|[\\]\\\\]/g,'\\\\$&')+'\\\\s*\\\\}\\\\}','g'),v);`,
     `c=c.replace(/\\{\\{date:([^}]+)\\}\\}/g,(_,f)=>{const d=new Date();return f.replace(/YYYY/g,d.getFullYear()).replace(/MM/g,('0'+(d.getMonth()+1)).slice(-2)).replace(/DD/g,('0'+d.getDate()).slice(-2)).replace(/HH/g,('0'+d.getHours()).slice(-2)).replace(/mm/g,('0'+d.getMinutes()).slice(-2));});`,
-    `const p=${j(notePath)}.replace(/\\\\/g,'/').split('/').slice(0,-1).join('/');`,
-    `if(p&&!app.vault.getAbstractFileByPath(p))await app.vault.createFolder(p,true);`,
-    `await app.vault.create(${j(notePath)},c);`,
+    `${prepare(notePath)}`,
+    `await app.vault.adapter.write(${j(notePath)}.replace(/\\\\/g,'/'),c);`,
     `return'Created.';`,
   ].join("");
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
-  args.push("eval", `code=(async function(){${script}})()`);
+  args.push("eval", `code=${wrapEval(script)}`);
   const _out332 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
-  if (!_out332 || /^Error[:\s]/.test(_out332)) return _out332 || `Created note "${notePath}" from template "${templateName}".`;
+  if (!_out332 || /^Error[:\s]/.test(_out332)) throw new Error(`createFromTemplate failed for "${notePath}": ${_out332 || "(no output)"}`);
   return _out332;
 }
 
@@ -430,22 +454,22 @@ function propertyRename(from: string, to: string, filePath?: string, vault?: str
     `const ff=${j(from)},tt=${j(to)};`,
     `let u=0,s=0;`,
     `for(const f of files){`,
-    `let c=await app.vault.read(f);`,
+    `let c=await app.vault.adapter.read(f.path);`,
     `let m=c.match(/^---\\s*\\n([\\s\\S]*?)\\n---/);`,
     `if(!m){s++;continue;}`,
     `let fm=m[1];`,
     `let nfm=fm.split('\\n').map(l=>l.startsWith(ff+':')?tt+l.slice(ff.length):l).join('\\n');`,
     `if(nfm===fm){s++;continue;}`,
     `c='---\\n'+nfm+'\\n---'+c.slice(m[0].length);`,
-    `await app.vault.modify(f,c);u++;}`,
+    `await app.vault.adapter.write(f.path,c);u++;}`,
     `const scopeMsg=${j(filePath ? `Renamed in "${filePath}".` : "Global rename across all files. Use `file=...` to scope to one file.")};`,
     `return scopeMsg+' '+u+' properties renamed ('+s+' skipped).';`,
   ].join("");
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
-  args.push("eval", `code=(async function(){${script}})()`);
+  args.push("eval", `code=${wrapEval(script)}`);
   const _out359 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
-  if (!_out359 || /^Error[:\s]/.test(_out359)) return _out359 || "Done.";
+  if (!_out359 || /^Error[:\s]/.test(_out359)) throw new Error(`propertyRename failed: ${_out359 || "(no output)"}`);
   return _out359;
 }
 
@@ -456,7 +480,7 @@ function renameTag(from: string, to: string, preview: boolean, vault?: string, t
     `let u=0,s=0;`,
     `const results=[];`,
     `for(const f of app.vault.getMarkdownFiles()){`,
-    `let c=await app.vault.read(f);`,
+    `let c=await app.vault.adapter.read(f.path);`,
     `const o=c;`,
     `let m=c.match(/^---\\s*\\n([\\s\\S]*?)\\n---/);`,
     `if(!m){s++;continue;}`,
@@ -467,7 +491,7 @@ function renameTag(from: string, to: string, preview: boolean, vault?: string, t
     `results.push('[DRY-RUN] '+f.path+': would update tag '+ff+' -> '+tt);`,
     `}else{`,
     `c='---\\n'+nfm+'\\n---'+c.slice(m[0].length);`,
-    `await app.vault.modify(f,c);`,
+    `await app.vault.adapter.write(f.path,c);`,
     `results.push(f.path);`,
     `}`,
     `u++;}`,
@@ -476,9 +500,9 @@ function renameTag(from: string, to: string, preview: boolean, vault?: string, t
   ].join("");
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
-  args.push("eval", `code=(async function(){${script}})()`);
+  args.push("eval", `code=${wrapEval(script)}`);
   const _out390 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
-  if (!_out390 || /^Error[:\s]/.test(_out390)) return _out390 || "Done.";
+  if (!_out390 || /^Error[:\s]/.test(_out390)) throw new Error(`renameTag failed: ${_out390 || "(no output)"}`);
   return _out390;
 }
 
@@ -498,7 +522,7 @@ function searchReplace(
     `const preview=${preview};`,
     `let results=[];`,
     `for(const f of app.vault.getMarkdownFiles()){`,
-    `let c=await app.vault.read(f);`,
+    `let c=await app.vault.adapter.read(f.path);`,
     `let nc=c;`,
     `if(useRegex){`,
     `try{const re=new RegExp(q,'g');nc=c.replace(re,r);}`,
@@ -513,7 +537,7 @@ function searchReplace(
     `const end=Math.min(c.length,idx+q.length+40);`,
     `results.push(f.path+': '+JSON.stringify(c.slice(start,end)));`,
     `}else{`,
-    `await app.vault.modify(f,nc);`,
+    `await app.vault.adapter.write(f.path,nc);`,
     `results.push(f.path);`,
     `}`,
     `}`,
@@ -522,9 +546,9 @@ function searchReplace(
   ].join("");
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
-  args.push("eval", `code=(async function(){${script}})()`);
+  args.push("eval", `code=${wrapEval(script)}`);
   const _out434 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
-  if (!_out434 || /^Error[:\s]/.test(_out434)) return _out434 || "No changes.";
+  if (!_out434 || /^Error[:\s]/.test(_out434)) throw new Error(`searchReplace failed: ${_out434 || "(no output)"}`);
   return _out434;
 }
 
@@ -553,7 +577,7 @@ function frontmatterWrap(vault?: string, timeoutMs = 30_000): string {
   const script = [
     `let u=0,s=0;`,
     `for(const f of app.vault.getMarkdownFiles()){`,
-    `let c=await app.vault.read(f);`,
+    `let c=await app.vault.adapter.read(f.path);`,
     `if(c.match(/^---\\s*\\n/)){s++;continue;}`,
     `const lines=c.split('\\n');`,
     `let firstRealLine=-1;`,
@@ -571,15 +595,15 @@ function frontmatterWrap(vault?: string, timeoutMs = 30_000): string {
     `}`,
     `const fm=lines.slice(firstRealLine,fmEnd).join('\\n');`,
     `const body=lines.slice(fmEnd).join('\\n');`,
-    `await app.vault.modify(f,'---\\n'+fm+'\\n---\\n'+body);u++;`,
+    `await app.vault.adapter.write(f.path,'---\\n'+fm+'\\n---\\n'+body);u++;`,
     `}`,
     `return u+' files wrapped ('+s+' skipped).';`,
   ].join("");
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
-  args.push("eval", `code=(async function(){${script}})()`);
+  args.push("eval", `code=${wrapEval(script)}`);
   const _out485 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
-  if (!_out485 || /^Error[:\s]/.test(_out485)) return _out485 || "Done.";
+  if (!_out485 || /^Error[:\s]/.test(_out485)) throw new Error(`frontmatterWrap failed: ${_out485 || "(no output)"}`);
   return _out485;
 }
 

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  buildSuffixScript,
   buildFirstScript,
   buildChunkScript,
   buildVerifyScript,
@@ -428,7 +429,7 @@ describe("vaultWrite diagnostics and helpers", () => {
 
   it("buildVerifyScript includes hash formula and try/catch", () => {
     const script = buildVerifyScript("test.md");
-    expect(script).to.include("unescape(encodeURIComponent");
+    expect(script).to.include("new TextEncoder().encode");
     expect(script).to.include("h=5381");
     expect(script).to.include("try{");
     expect(script).to.include("catch(e)");
@@ -499,7 +500,7 @@ describe("vaultWrite diagnostics and helpers", () => {
     const expected = djb2Utf8(content);
     const okFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
       const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
-      if (code.includes("unescape(encodeURIComponent")) {
+      if (code.includes("new TextEncoder().encode")) {
         // verify call: return matching hash
         return { stdout: `${expected.hash} ${expected.bytes}`, stderr: "", parsed: "" };
       }
@@ -514,7 +515,7 @@ describe("vaultWrite diagnostics and helpers", () => {
     const expected = djb2Utf8(content);
     const okFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
       const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
-      if (code.includes("unescape(encodeURIComponent")) {
+      if (code.includes("new TextEncoder().encode")) {
         return { stdout: `${expected.hash} ${expected.bytes}`, stderr: "", parsed: "" };
       }
       return { stdout: "ok", stderr: "", parsed: "ok" };
@@ -526,7 +527,7 @@ describe("vaultWrite diagnostics and helpers", () => {
   it("vaultWrite verification mismatch throws expected vs actual", () => {
     const okFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
       const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
-      if (code.includes("unescape(encodeURIComponent")) {
+      if (code.includes("new TextEncoder().encode")) {
         // Return WRONG hash/bytes
         return { stdout: "0 999999", stderr: "", parsed: "" };
       }
@@ -540,5 +541,28 @@ describe("vaultWrite diagnostics and helpers", () => {
       expect(e.message).to.include("written 999999");
       expect(e.message).to.include("corrupt.md");
     }
+  });
+
+  it("buildSuffixScript generates a valid script with try/catch and suffix check", () => {
+    const script = buildSuffixScript("note.md", "U3VmZml4");
+    expect(script).to.include("adapter.read");
+    expect(script).to.include('s.slice(');
+    expect(script).to.include("try{");
+    expect(script).to.include("catch(e)");
+    expect(script).to.include("suffix mismatch");
+  });
+
+  it("vaultWrite append suffix verification passes on suffix match", () => {
+    const okFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      return { stdout: "ok", stderr: "", parsed: "" };
+    };
+    const result = vaultWrite("note.md", "Appended content", "append", undefined, 100, okFake);
+    expect(result).to.equal("Appended to: note.md");
+  });
+
+  it("vaultWrite default timeout is 60s", () => {
+    // Verify the default is 60_000 by checking the function's param default
+    const fnStr = vaultWrite.toString();
+    expect(fnStr).to.match(/6e4|60000|60_000/);
   });
 });
