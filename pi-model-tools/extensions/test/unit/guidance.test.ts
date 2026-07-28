@@ -6,6 +6,7 @@ import {
   runTaskFirstToolHint,
   readUncertainPathHint,
   githubCloneFirstToolHint,
+  applyPatchPreferenceGuidance,
   selectionGuidanceEnabled,
   strictSerenaEnabled,
   superPowerModeEnabled,
@@ -265,5 +266,19 @@ describe("Super Power Mode", () => {
       if (prevSp === undefined) delete process.env.PI_MODEL_TOOLS_SUPERPOWER_MODE;
       else process.env.PI_MODEL_TOOLS_SUPERPOWER_MODE = prevSp;
     }
+  });
+});
+
+describe("applyPatchPreferenceGuidance", () => {
+  it("returns guidance when apply_patch is in active tools", () => {
+    const out = applyPatchPreferenceGuidance(["edit", "apply_patch", "read"]);
+    assert.ok(out, "expected guidance when apply_patch active");
+    assert.match(out!, /apply_patch/);
+    assert.match(out!, /UNIQUELY/i);
+  });
+
+  it("returns undefined when apply_patch is not active", () => {
+    const out = applyPatchPreferenceGuidance(["edit", "read", "bash"]);
+    assert.equal(out, undefined);
   });
 });

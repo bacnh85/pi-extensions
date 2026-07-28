@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname, resolve as resolvePath } from "node:path";
 import {
   createBashToolDefinition,
@@ -9,7 +10,9 @@ import {
   createLsToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
+  defineTool,
 } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import {
   isRecord,
   detectFamily,
@@ -21,6 +24,16 @@ import {
   blockDangerousEnabled,
 } from "./lib/model-detection.ts";
 import { repairToolArguments, type RepairKind } from "./lib/tool-input-repair.ts";
+import {
+  stripReadContamination,
+  computeRetryEdit,
+  nearestBlock,
+  parseFailedEditIndex,
+  isEditMismatchError,
+  stripBom as stripBomStr,
+  normalizeToLF,
+} from "./lib/edit-repair.ts";
+import { parsePatch, applyPatchToFiles, PatchParseError } from "./lib/apply-patch.ts";
 import { stripReasoningContent, cleanLeakedContentFromMessages } from "./lib/reasoning-content.ts";
 import {
   looksLikeCodePath,
@@ -39,6 +52,7 @@ import {
   runTaskFirstToolHint,
   readUncertainPathHint,
   githubCloneFirstToolHint,
+  applyPatchPreferenceGuidance,
   selectionGuidanceEnabled,
   strictSerenaEnabled,
   superPowerModeEnabled,
@@ -60,14 +74,55 @@ function appendReadNote(result: any, note: unknown) {
   return { ...result, content: [...(Array.isArray(result?.content) ? result.content : []), { type: "text", text: note }] };
 }
 
+// Strip read-tool contamination notices from an edit's oldText fields. Mutates
+// in place and reports whether anything changed.
+function decontaminateEditArgs(args: any): boolean {
+  if (!isRecord(args)) return false;
+  const hasOld = Array.isArray(args.edits)
+    ? args.edits.some((e: any) => isRecord(e) && typeof e.oldText === "string")
+    : typeof args.oldText === "string";
+  if (!hasOld) return false;
+  let changed = false;
+  const clean = (s: string): string => {
+    const r = stripReadContamination(s);
+    if (r.changed) changed = true;
+    return r.text;
+  };
+  if (Array.isArray(args.edits)) {
+    for (const e of args.edits) if (isRecord(e) && typeof e.oldText === "string") e.oldText = clean(e.oldText);
+  }
+  if (typeof args.oldText === "string") args.oldText = clean(args.oldText);
+  return changed;
+}
+
+// Locate the file, read it, and report its (BOM-stripped, LF-normalized)
+// content for trim-tolerant retry. Returns null on any I/O problem.
+async function readFileForRetry(filePath: string, cwd: string): Promise<string | null> {
+  const abs = resolvePath(cwd, filePath);
+  try {
+    const buf = await readFile(abs);
+    return normalizeToLF(stripBomStr(buf.toString("utf-8")));
+  } catch {
+    return null;
+  }
+}
+
 function wrapToolDefinition(base: any, factory: (cwd: string) => any, shouldRepair: () => boolean, onRepair: (toolName: string, repairs: readonly RepairKind[]) => void): any {
   return {
     ...base,
     prepareArguments(args: unknown) {
       let prepared = base.prepareArguments ? base.prepareArguments(args as never) : args;
-      if (!shouldRepair()) return prepared;
-      const repaired = repairToolArguments(base.name, base.parameters, prepared);
-      if (repaired.repaired) { onRepair(base.name, repaired.repairs); prepared = repaired.args; }
+      if (shouldRepair()) {
+        const repaired = repairToolArguments(base.name, base.parameters, prepared);
+        if (repaired.repaired) { onRepair(base.name, repaired.repairs); prepared = repaired.args; }
+      }
+      // Strip read-tool contamination from edit oldText (always on — it's a
+      // safe, deterministic fix for the documented mismatch root cause).
+      if (base.name === "edit" && isRecord(prepared)) {
+        if (decontaminateEditArgs(prepared)) {
+          onRepair(base.name, ["read-notice-stripped"]);
+        }
+      }
       return base.name === "read" ? addReadDefaults(prepared) : prepared;
     },
     async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
@@ -75,8 +130,51 @@ function wrapToolDefinition(base: any, factory: (cwd: string) => any, shouldRepa
       const freshDef = factory(cwd);
       const readNote = base.name === "read" && isRecord(params) ? params.__mtReadNote : undefined;
       if (isRecord(params)) delete params.__mtReadNote;
-      const result = await freshDef.execute(toolCallId, params, signal, onUpdate, ctx);
-      return base.name === "read" ? appendReadNote(result, readNote) : result;
+
+      if (base.name !== "edit") {
+        const result = await freshDef.execute(toolCallId, params, signal, onUpdate, ctx);
+        return base.name === "read" ? appendReadNote(result, readNote) : result;
+      }
+
+      // edit: try once; on a match-failure, retry once with trim-tolerant
+      // matching (copying actual file bytes) before giving up with a richer
+      // error that shows the nearest region.
+      try {
+        const result = await freshDef.execute(toolCallId, params, signal, onUpdate, ctx);
+        return result;
+      } catch (err: any) {
+        const message: string = err?.message ? String(err.message) : "";
+        if (!isEditMismatchError(message)) throw err;
+
+        const filePath = typeof params?.path === "string" ? params.path : "";
+        if (!filePath) throw err;
+        const fileContent = await readFileForRetry(filePath, cwd);
+        if (fileContent === null) throw err;
+
+        const edits: { oldText: string; newText: string }[] = Array.isArray(params?.edits) && params.edits.length > 0
+          ? params.edits
+          : (typeof params?.oldText === "string" ? [{ oldText: params.oldText, newText: params.newText }] : []);
+        if (edits.length === 0) throw err;
+
+        const retry = computeRetryEdit(fileContent, edits, parseFailedEditIndex(message));
+        if (retry) {
+          // Rebuild oldText from the file's real bytes (real indentation) so the
+          // core exact matcher succeeds; keep the model's newText as-is.
+          const fixedParams = { ...params };
+          if (Array.isArray(fixedParams.edits)) fixedParams.edits = retry.fixedEdits;
+          else fixedParams.oldText = retry.fixedEdits[0].oldText;
+          onRepair(base.name, ["trim-match-retry"]);
+          return await freshDef.execute(toolCallId, fixedParams, signal, onUpdate, ctx);
+        }
+
+        // Unresolvable: enrich the error with the nearest region so the model
+        // can copy verbatim on the next turn. categorizeToolError checks
+        // edit_mismatch before rate_limit/timeout for the edit tool, so a snippet
+        // containing 'timeout'/'429' cannot misclassify this.
+        const failing = edits[Math.min(parseFailedEditIndex(message), edits.length - 1)];
+        const nearest = failing ? nearestBlock(fileContent, stripReadContamination(failing.oldText).text) : "";
+        throw new Error(nearest ? `${message}\n\n${nearest}` : message);
+      }
     },
   };
 }
@@ -116,6 +214,51 @@ export default function (pi: ExtensionAPI) {
       debugLog("repair:", toolName, repairCounts.get(toolName));
     }));
   }
+
+  // ── apply_patch: Codex-style diff/patch tool (robust for weak models) ──
+  pi.registerTool(defineTool({
+    name: "apply_patch",
+    label: "apply_patch",
+    description: [
+      "Apply a Codex-style V4D patch to edit one or more files. Emit only changed lines plus a little surrounding context (a small diff), which is easier to get right than reproducing a large verbatim block. Supported sections: `*** Add File: <path>` (only `+` lines), `*** Delete File: <path>` (no payload), `*** Update File: <path>` or `*** Update File: <old> → <new>` (rename). Inside an Update section, each hunk is preceded by a `@@` anchor line whose text is an unchanged context line, then `-` removed lines and `+` added lines. Leading-space context lines (` `) are also allowed. Context+removed must match UNIQUELY in the file. Wrap the whole patch in `*** Begin Patch` ... `*** End Patch`.",
+      "",
+      "Example:",
+      "*** Begin Patch", "*** Update File: src/foo.ts", "@@ export function foo()", "-  return 1", "+  return 2", "*** End Patch",
+    ].join("\n"),
+    promptSnippet: "Apply a diff/patch to edit one or more files (Codex V4D format)",
+    promptGuidelines: [
+      "Use apply_patch for multi-line or multi-file edits: emit a small diff (context + -/+ lines) instead of reproducing large verbatim oldText blocks.",
+      "Each Update hunk needs a unique anchor: include enough unchanged context lines so the context+removed block matches exactly once in the file.",
+      "For a single tiny one-line replacement, edit is fine; for anything larger or spanning multiple files, prefer apply_patch.",
+    ],
+    parameters: Type.Object({ patch: Type.String({ description: "The V4D patch text, wrapped in *** Begin Patch ... *** End Patch." }) }),
+    renderShell: "self",
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const cwd = ctx?.cwd || process.cwd();
+      let parsed;
+      try {
+        parsed = parsePatch(params.patch);
+      } catch (err) {
+        const msg = err instanceof PatchParseError ? err.message : String(err);
+        return { content: [{ type: "text", text: `Invalid patch: ${msg}` }], isError: true, details: undefined };
+      }
+      try {
+        const res = await applyPatchToFiles(parsed, cwd);
+        const summary = res.files.map((f) => {
+          if (f.kind === "add") return `Added ${f.path}`;
+          if (f.kind === "delete") return `Deleted ${f.path}`;
+          return `Updated ${f.path}`;
+        }).join("\n");
+        const exactness = res.exact ? "" : "\nNote: some hunks matched via fuzzy (whitespace/Unicode) normalization.";
+        return {
+          content: [{ type: "text", text: `${summary}${exactness}` }],
+          details: { diff: res.diff, files: res.files.map((f) => f.path) },
+        };
+      } catch (err) {
+        return { content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }], isError: true, details: undefined };
+      }
+    },
+  }));
 
   // ── /model-tools-status ──
   pi.registerCommand("model-tools-status", {
@@ -199,6 +342,13 @@ export default function (pi: ExtensionAPI) {
     if (activeForHint.includes("find")) {
       const readHint = readUncertainPathHint(event.prompt || "");
       if (readHint) systemPrompt = `${systemPrompt}\n\n${readHint}`;
+    }
+
+    // apply_patch preference — DeepSeek V4 Flash only (GLM is better with exact-match
+    // edit; apply_patch context anchors confuse it and it lacks agentic fallback).
+    if (activeFamily === "deepseek-v4") {
+      const patchHint = applyPatchPreferenceGuidance(activeForHint);
+      if (patchHint) systemPrompt = `${systemPrompt}\n\n${patchHint}`;
     }
 
     // DeepSeek-only: Super Power Mode + verbose selection guidance (DeepSeek V4

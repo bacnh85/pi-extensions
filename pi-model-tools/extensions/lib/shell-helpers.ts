@@ -133,9 +133,13 @@ export function categorizeToolError(toolName: string, errorResult: unknown): Err
   const text = (isRecord(errorResult) && Array.isArray(errorResult.content)
     ? errorResult.content.map((p) => isRecord(p) && typeof p.text === "string" ? p.text : "").join("\n")
     : String(errorResult ?? "")).toLowerCase();
+  // Edit mismatch is checked before rate_limit/timeout because an enriched edit error may
+  // append a nearest-region file snippet containing 'timeout'/'429'/'rate limit'
+  // strings (e.g. `const timeout = 5000;`, `if (status === 429)`), which would
+  // otherwise misclassify as timeout/rate_limit and give the wrong recovery hint.
+  if (toolName === "edit" && /could not find (?:edits|the exact text)|old ?text must match exactly|found \d+ occurrences|(?:old)?text must be unique|provide more context to make it unique/i.test(text)) return { category: "edit_mismatch", toolName, hint: "Edit requires exact unique matching. Read a narrow range, copy oldText verbatim, include surrounding lines." };
   if (/rate limit|429|too many requests|exceeded.*limit/i.test(text)) return { category: "rate_limit", toolName, hint: "Rate-limited. Wait before retrying or simplify the request." };
   if (/timed? ?out|timeout/i.test(text)) return { category: "timeout", toolName, hint: "Timed out. Use simpler inputs or reduce scope." };
-  if (/could not find edits|oldtext must match exactly|found \d+ occurrences|(?:old)?text must be unique|provide more context to make it unique/i.test(text)) return { category: "edit_mismatch", toolName, hint: "Edit requires exact unique matching. Read a narrow range, copy oldText verbatim, include surrounding lines." };
   if (/validation failed|invalid_type|required|missing.*(field|argument|property)/i.test(text)) return { category: "validation", toolName, hint: "Invalid arguments. Provide all required fields with correct types." };
   if (/enoent|no such file or directory|(?:file|path) not found/i.test(text)) return { category: "path_not_found", toolName, hint: "Path missing or guessed. Discover the exact path with find first." };
   if (/no such tool|unknown tool|is not a function|tool\s+\S+\s+(?:was\s+)?not found/i.test(text)) return { category: "tool_not_found", toolName, hint: "Use only exact Pi tool names. Never invent names like read_file." };

@@ -114,6 +114,19 @@ describe("categorizeToolError", () => {
     assert.match(info.hint, /exact unique matching/i);
   });
 
+  it("classifies edit mismatch even when the enriched nearest-region snippet contains 'timeout'/'429'", () => {
+    // Regression: nearestBlock appends raw file lines; before the fix these
+    // matched the rate_limit/timeout patterns first → wrong recovery hint.
+    const text = "Could not find the exact text in a.ts. The old text must match exactly.\n\nNearest matching region (lines 5-8):\nconst timeout = 5000;\nif (status === 429) { rate limit }";
+    const info = categorizeToolError("edit", { content: [{ type: "text", text }] });
+    assert.equal(info.category, "edit_mismatch");
+  });
+
+  it("still classifies genuine rate_limit for non-edit tools", () => {
+    const info = categorizeToolError("bash", { content: [{ type: "text", text: "429 too many requests" }] });
+    assert.equal(info.category, "rate_limit");
+  });
+
   it("classifies path-not-found", () => {
     const info = categorizeToolError("read", { content: [{ type: "text", text: "ENOENT: no such file or directory" }] });
     assert.equal(info.category, "path_not_found");

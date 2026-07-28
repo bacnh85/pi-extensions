@@ -53,6 +53,8 @@ a family is detected; everything degrades gracefully to a no-op otherwise.
 | **Read-on-guessed-path blocking** | Blocks `read` on a non-existent code-file path, suggests `find` first |
 | **Prompt-aware first-tool hints** | Forces the correct first tool: `bash`-first for RUN/BUILD/EXECUTE tasks, `bash` git-clone-first for analyze-a-repo-URL tasks, and `find`-first for bare-filename reads. Targeted (only fires on matching intent) and applied to all detected families. |
 | **Error categorization** | Classifies tool errors and injects recovery hints on the next turn |
+| **Edit mismatch repair** | Strips `read`-tool truncation notices (`[Showing lines … Use offset=N to continue.]`, etc.) that models copy into `edit` oldText — the documented root cause of "Could not find the exact text" failures. On a match failure, retries once with whitespace-tolerant matching (copying the file's real indentation); on unresolvable matches, enriches the error with the nearest numbered region. Always on. |
+| **`apply_patch` tool** | A Codex-style V4D diff/patch tool: emit only `@@` context + `-`/`+` change lines instead of large verbatim oldText blocks. Robust for multi-line/multi-file edits across all models. DeepSeek/GLM get steering to prefer it for non-trivial edits. |
 
 ### DeepSeek V4 only (verbose steering the Flash model needs)
 
@@ -62,6 +64,39 @@ a family is detected; everything degrades gracefully to a no-op otherwise.
 | **Semantic-miss steering** | Blocks bash/grep for code symbols → suggests the right Serena tool instead |
 | **Strict Serena mode** | Optionally hard-blocks simple `bash` substitutes (`ls`, `grep`, `cat`, `find`, `head`, `tail`) for dedicated tools |
 | **Super Power Mode** | Prepends an unrestricted capability prompt each DeepSeek session (see below) |
+
+## Installation
+
+## `apply_patch` — diff-based editing
+
+`apply_patch` is a Codex-style V4D patch tool. Instead of reproducing a large
+verbatim `oldText` block (where weaker models drift on indentation/quotes),
+you emit only the changed lines plus a little surrounding context:
+
+```
+*** Begin Patch
+*** Update File: src/foo.ts
+@@ export function foo() {
+-  return 1;
++  return 2;
+*** End Patch
+```
+
+Rules:
+- `*** Add File: <path>` — one `+` line per content line (creates the file).
+- `*** Delete File: <path>` — no payload lines.
+- `*** Update File: <path>` — hunks; also `*** Update File: <old> → <new>` to rename.
+- Each Update hunk starts with a `@@ <unchanged context line>` anchor, then
+  `-` removed lines and `+` added lines. Leading-space context lines (` `) are
+  also accepted.
+- Context+removed must match **uniquely** in the file (diverges from Codex's
+  first-match for safety, matching `edit`'s philosophy). Add more context lines
+  if a match is ambiguous.
+- Matching is progressive-fuzzy (exact → strip-trailing-ws → strip-both-ws →
+  Unicode-normalize), so minor whitespace/Unicode differences still apply.
+
+DeepSeek and GLM are steered to prefer `apply_patch` for multi-line/multi-hunk
+edits; Claude/OpenAI keep using `edit` (they're already reliable with it).
 
 ## Installation
 

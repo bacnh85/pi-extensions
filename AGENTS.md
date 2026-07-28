@@ -21,7 +21,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-rtk** | 0.1.8 | Bash command token rewriting through RTK. |
 | **pi-sub** | 0.1.10 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | **pi-windows-tools** | 0.2.0 | Windows-specific tools for Pi. |
-| **pi-model-tools** | 0.2.0 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, and defensive leak-cleaning for DeepSeek V4 and GLM model families. |
+| **pi-model-tools** | 0.3.0 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, and a Codex-style apply_patch diff tool. |
 | **pi-kicad** | 0.1.0 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon (no MCP SDK). |
 | **pi-9router** | 0.1.0 | Connect to a 9router AI routing proxy instance via its OpenAI-compatible API with interactive login. |
 

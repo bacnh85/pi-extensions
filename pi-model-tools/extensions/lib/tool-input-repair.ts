@@ -9,7 +9,7 @@
 import { Compile } from "typebox/compile";
 import { isRecord } from "./model-detection.ts";
 
-export type RepairKind = "path-markdown-autolink" | "optional-null" | "json-string" | "empty-object-array" | "bare-string-array" | "json-object-wrapped-array" | "top-level-json-string";
+export type RepairKind = "path-markdown-autolink" | "optional-null" | "json-string" | "empty-object-array" | "bare-string-array" | "json-object-wrapped-array" | "top-level-json-string" | "read-notice-stripped" | "trim-match-retry";
 
 export type RepairResult = {
   args: unknown;
