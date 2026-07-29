@@ -275,6 +275,9 @@ describe("applyPatchPreferenceGuidance", () => {
     assert.ok(out, "expected guidance when apply_patch active");
     assert.match(out!, /apply_patch/);
     assert.match(out!, /UNIQUELY/i);
+    assert.match(out!, /frontmatter/i, "should mention YAML frontmatter");
+    assert.match(out!, /one-strike/i, "should mention one-strike-switch rule");
+    assert.match(out!, /\≤3 lines/, "should mention ~3-line threshold for edit");
   });
 
   it("returns undefined when apply_patch is not active", () => {

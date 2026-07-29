@@ -7,6 +7,7 @@
 //          --provider opencode-go --model deepseek-v4-flash --thinking high \
 //          --trials 1 --out /tmp/eval.json
 import { spawn } from "node:child_process";
+import { writeFileSync, unlinkSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -58,6 +59,31 @@ const CASES = [
   { name: "legit-shell",
     prompt: "Run the pi-model-tools unit tests.",
     expect: { firstOneOf: ["bash"] } },
+  // ── Edit cases (require fixture files in /tmp) ──
+  { name: "edit-frontmatter-yaml",
+    prompt: "Add `status: draft` to the YAML frontmatter in /tmp/pi-eval-frontmatter.md.",
+    expect: { firstEditToolAcceptable: ["edit", "apply_patch"] },
+    fixture: { path: "/tmp/pi-eval-frontmatter.md", content: `---
+title: "Test Note"
+created: 2025-01-01
+---
+
+# Hello
+
+This is a test.
+` } },
+  { name: "edit-multiline-code",
+    prompt: "Refactor calculate in /tmp/pi-eval-multiline.ts to validate inputs and log the operation — expand the function body from a one-line return to a multi-line block with input validation, operation logging, and the calculation result.",
+    expect: { firstEditToolAcceptable: ["edit", "apply_patch"] },
+    fixture: { path: "/tmp/pi-eval-multiline.ts", content: `function calculate(a: number, b: number): number {
+  return a + b;
+}
+` } },
+  { name: "edit-single-line",
+    prompt: 'In /tmp/pi-eval-single.ts, bump VERSION to "1.0.1".',
+    expect: { firstEditTool: "edit" },
+    fixture: { path: "/tmp/pi-eval-single.ts", content: `const VERSION = "1.0.0";
+` } },
 ];
 
 function captureInput(event) {
@@ -118,6 +144,10 @@ Options:
 }
 
 function runPi(args, testCase) {
+  // Write fixture files for edit cases before spawning pi
+  if (testCase.fixture) {
+    try { writeFileSync(testCase.fixture.path, testCase.fixture.content, "utf-8"); } catch {}
+  }
   return new Promise((resolveRun) => {
     const extFlags = args.extensions.split(",").flatMap((e) => ["-e", e.trim()]);
     const commandArgs = [
@@ -158,19 +188,43 @@ function runPi(args, testCase) {
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     const finish = (result) => { clearTimeout(timer); resolveRun(result); };
-    child.on("close", (code) => finish({ code, tools, firstTool: tools[0], errors, agentEnded, stderr: stderr.slice(-4000), toolCalls: toolCalls.length > 0 ? toolCalls : undefined }));
-    child.on("error", (error) => finish({ code: -1, tools, firstTool: undefined, errors: [{ error: String(error) }], agentEnded, stderr: String(error) }));
+    child.on("close", (code) => {
+      if (testCase.fixture) { try { unlinkSync(testCase.fixture.path); } catch {} }
+      finish({ code, tools, firstTool: tools[0], errors, agentEnded, stderr: stderr.slice(-4000), toolCalls: toolCalls.length > 0 ? toolCalls : undefined });
+    });
+    child.on("error", (error) => {
+      if (testCase.fixture) { try { unlinkSync(testCase.fixture.path); } catch {} }
+      finish({ code: -1, tools, firstTool: undefined, errors: [{ error: String(error) }], agentEnded, stderr: String(error) });
+    });
   });
 }
 
 function score(testCase, run) {
   const expected = testCase.expect;
-  const firstToolOk = expected.firstOneOf.includes(run.firstTool);
+  // First editing tool — first of {edit, apply_patch} in run.tools
+  let firstEditTool = undefined;
+  for (const t of run.tools) {
+    if (t === "edit" || t === "apply_patch") { firstEditTool = t; break; }
+  }
+  const isEditCase = !!(expected.firstEditTool || expected.firstEditToolAcceptable);
+  const editToolOk = isEditCase && expected.firstEditToolAcceptable
+    ? expected.firstEditToolAcceptable.includes(firstEditTool)
+    : isEditCase
+      ? firstEditTool === expected.firstEditTool
+      : true;
+  const hasEditMismatchError = isEditCase && run.errors.some((e) =>
+    /edit_mismatch|could not find|found \\d+ occurrences|text must be unique|provide more context to make it unique|old ?text must match exactly/i.test(String(e.result ?? e.error ?? ""))
+  );
+  // First-tool selection scoring (existing cases)
+  const firstToolOk = expected.firstOneOf ? expected.firstOneOf.includes(run.firstTool) : true;
   const readIndex = run.tools.indexOf("read");
   const firstSerenaIndex = run.tools.findIndex((tool) => tool?.startsWith?.("serena_"));
   const serenaBeforeRead = expected.serenaBeforeRead !== true || (firstSerenaIndex >= 0 && (readIndex < 0 || firstSerenaIndex < readIndex));
   const bashSubstitution = ["file-listing", "test-file-discovery", "exact-readme-search", "docs-read", "read-limit-only", "glob-find"].includes(testCase.name) && run.firstTool === "bash";
-  return { firstToolOk, serenaBeforeRead, bashSubstitution, passed: firstToolOk && serenaBeforeRead && !bashSubstitution && run.code === 0 && run.errors.length === 0 };
+  const passed = isEditCase
+    ? editToolOk && !hasEditMismatchError && run.code === 0 && run.errors.length === 0
+    : firstToolOk && serenaBeforeRead && !bashSubstitution && run.code === 0 && run.errors.length === 0;
+  return { firstToolOk, firstEditTool, editToolOk, hasEditMismatchError, isEditCase, serenaBeforeRead, bashSubstitution, passed };
 }
 
 const args = parseArgs(process.argv.slice(2));
@@ -192,12 +246,24 @@ for (const testCase of selectedCases) {
 const summary = {
   provider: args.provider, model: args.model, thinking: args.thinking, guidance: args.guidance, trials: args.trials,
   total: results.length,
+  editCases: results.filter((r) => r.score.isEditCase).length,
   passed: results.filter((r) => r.score.passed).length,
-  firstToolAccuracy: results.filter((r) => r.score.firstToolOk).length / results.length,
+  firstToolAccuracy: results.filter((r) => !r.score.isEditCase).length > 0
+    ? results.filter((r) => !r.score.isEditCase && r.score.firstToolOk).length / results.filter((r) => !r.score.isEditCase).length
+    : undefined,
+  editAccuracy: results.filter((r) => r.score.isEditCase).length > 0
+    ? results.filter((r) => r.score.isEditCase && r.score.editToolOk).length / results.filter((r) => r.score.isEditCase).length
+    : undefined,
+  editMismatchErrors: results.filter((r) => r.score.hasEditMismatchError).length,
   bashSubstitutions: results.filter((r) => r.score.bashSubstitution).length,
   serenaBeforeReadFailures: results.filter((r) => !r.score.serenaBeforeRead).length,
   invalidToolErrors: results.flatMap((r) => r.errors).filter((e) => /Validation failed|invalid arguments|invalid_type/i.test(String(e.result ?? e.error ?? ""))).length,
-  failures: results.filter((r) => !r.score.passed).map((r) => ({ case: r.case, firstTool: r.firstTool, expected: r.expected.firstOneOf, errors: r.errors })),
+  failures: results.filter((r) => !r.score.passed).map((r) => {
+    const f = { case: r.case, errors: r.errors };
+    if (r.score.isEditCase) { f.firstEditTool = r.score.firstEditTool; f.expectedEditTool = r.expected.firstEditTool; f.expectedEditTools = r.expected.firstEditToolAcceptable; }
+    else { f.expected = r.expected.firstOneOf; f.firstTool = r.firstTool; }
+    return f;
+  }),
   results,
 };
 if (args.out) await writeFile(resolve(args.out), `${JSON.stringify(summary, null, 2)}\n`);

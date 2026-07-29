@@ -345,8 +345,12 @@ export default function (pi: ExtensionAPI) {
       if (readHint) systemPrompt = `${systemPrompt}\n\n${readHint}`;
     }
 
-    // apply_patch preference — DeepSeek V4 Flash only (GLM is better with exact-match
-    // edit; apply_patch context anchors confuse it and it lacks agentic fallback).
+    // apply_patch preference — all DeepSeek V4 (flash+pro); GLM excluded per eval.
+    // Eval (2026-07-29, 15 trials, 3 targets) showed all models use edit with zero
+    // edit_mismatch errors. DeepSeek keeps guidance as a safety net for real-world
+    // multi-file/frontmatter edits beyond the eval's scope; GLM excluded because it
+    // doesn't receive the suite of DeepSeek-specific steering (Super Power, selection
+    // guidance, semantic-miss blocking) and thus doesn't need the companion hint.
     if (activeFamily === "deepseek-v4") {
       const patchHint = applyPatchPreferenceGuidance(activeForHint);
       if (patchHint) systemPrompt = `${systemPrompt}\n\n${patchHint}`;

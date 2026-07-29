@@ -96,18 +96,21 @@ export function deepSeekSelectionGuidance(activeTools: readonly string[]): strin
 // ── apply_patch preference hint (DeepSeek/GLM) ──
 
 /**
- * When apply_patch is available, tell weaker models to prefer it over edit for
- * anything beyond a single tiny replacement. Returns undefined if the tool is
- * not active so it never misdirects. Gated to DeepSeek/GLM by the caller (see
- * index.ts before_agent_start), since Claude/OpenAI are already reliable with edit.
+ * When apply_patch is available, tell the model to prefer it over edit for
+ * anything beyond a small change (>3 lines, YAML frontmatter, or
+ * multi-hunk/multi-file). Returns undefined if the tool is not active so it
+ * never misdirects. Gated per family by the caller (see index.ts
+ * before_agent_start).
  */
 export function applyPatchPreferenceGuidance(activeTools: readonly string[]): string | undefined {
   if (!activeTools.includes("apply_patch")) return undefined;
   return [
     "apply_patch (preferred for non-trivial edits):",
-    "  • For multi-line, multi-hunk, or multi-file edits, emit a small V4D diff (context + -/+ lines) via apply_patch instead of reproducing large verbatim oldText blocks — far fewer match failures.",
+    "  • For multi-line (>3 lines), multi-hunk, or multi-file edits, emit a small V4D diff (context + -/+ lines) via apply_patch instead of reproducing large verbatim oldText blocks — far fewer match failures.",
     "  • Each Update hunk must anchor on enough unchanged context that the context+removed block matches UNIQUELY in the file.",
-    "  • Keep using edit for a single tiny one-line exact replacement.",
+    "  • Keep using edit for a single tiny one-line exact replacement (≤3 lines).",
+    "  • Touching frontmatter (YAML) — always use apply_patch. YAML is whitespace-sensitive; edit\'s exact-match oldText rarely succeeds on the first try.",
+    "  • One-strike rule: if edit fails once, stop — switch to apply_patch, do not retry edit.",
   ].join("\n");
 }
 
