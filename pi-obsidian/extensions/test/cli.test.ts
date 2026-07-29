@@ -1,7 +1,7 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { relative, resolve, isAbsolute, sep, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
@@ -564,5 +564,87 @@ describe("vaultWrite diagnostics and helpers", () => {
     // Verify the default is 60_000 by checking the function's param default
     const fnStr = vaultWrite.toString();
     expect(fnStr).to.match(/6e4|60000|60_000/);
+  });
+
+  it("detects when vault root is inside CWD using relative-path pattern", () => {
+    function isAncestor(cwd: string, vaultRoot: string): boolean {
+      const rel = relative(resolve(cwd), vaultRoot);
+      return !!(rel && !rel.startsWith(".." + sep) && !isAbsolute(rel));
+    }
+    // CWD=/home/user, vault=/home/user/vault → ancestor (block)
+    expect(isAncestor("/home/user", "/home/user/vault")).to.equal(true);
+    // CWD=/tmp, vault=/home/user/vault → not ancestor (no block)
+    expect(isAncestor("/tmp", "/home/user/vault")).to.equal(false);
+    // CWD=/home/user/vault (same as vault root) → not an ancestor (equal, not parent)
+    expect(isAncestor("/home/user/vault", "/home/user/vault")).to.equal(false);
+  });
+
+  it("detects key= instead of name= for property:set", async () => {
+    const { default: piObsidianExtension } = await import("../index.js");
+    let tool: any = null;
+    const mockPi: any = {
+      registerTool(t: any) { tool = t; },
+      on() {},
+    };
+    piObsidianExtension(mockPi);
+    try {
+      await tool.execute("test-id", { run: "property:set key=status value=active file=Note" });
+      expect.fail("Should have thrown");
+    } catch (e: any) {
+      expect(e.message).to.include("'name=' is required (not 'key=')");
+    }
+  });
+
+  it("validateTags is exported and script has no TypeScript annotations", async () => {
+    const { validateTags } = await import("../index.js");
+    expect(validateTags).to.be.a("function");
+    const src = validateTags.toString();
+    expect(src).to.not.include(":unknown");
+    expect(src).to.not.include(":string");
+    expect(src).to.not.include(":number");
+    expect(src).to.not.include(":boolean");
+    expect(src).to.not.match(/\w+\s*:\s*\w+=>/);
+    expect(src).to.include("req.some");
+    expect(src).to.not.match(/type\\\/\|domain\\\//);
+  });
+
+  it("tool execute dispatches validate-tags from bare flag", async () => {
+    const { default: piObsidianExtension } = await import("../index.js");
+    let tool: any = null;
+    const mockPi: any = {
+      registerTool(t: any) { tool = t; },
+      on() {},
+    };
+    piObsidianExtension(mockPi);
+    try {
+      await tool.execute("test-id", { run: "files validate-tags" });
+      expect.fail("Should have thrown (no Obsidian)");
+    } catch (e: any) {
+      expect(e.message).to.not.include("unrecognized");
+      expect(e.message).to.not.include("unknown flag");
+    }
+  });
+
+  it("does NOT dispatch validateTags for folder name containing validate-tags substring", async () => {
+    const { default: piObsidianExtension } = await import("../index.js");
+    let tool: any = null;
+    const mockPi: any = {
+      registerTool(t: any) { tool = t; },
+      on() {},
+    };
+    piObsidianExtension(mockPi);
+    try {
+      await tool.execute("test-id", { run: "files folder=validate-tags-archive" });
+      expect.fail("Should have thrown (no Obsidian — falls through to list/search)");
+    } catch (e: any) {
+      expect(e.message).to.not.include("req.some");
+      expect(e.message).to.not.include("validateTags");
+    }
+  });
+
+  it("parseCliString exact token match guards against substring false-positives", async () => {
+    const { parseCliString } = await import("../index.js");
+    expect(parseCliString("files folder=validate-tags-archive").includes("validate-tags")).to.equal(false);
+    expect(parseCliString("files validate-tags").includes("validate-tags")).to.equal(true);
   });
 });

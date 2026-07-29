@@ -138,6 +138,52 @@ A path belongs to an Obsidian vault if any of these are true:
 **When in doubt, check first:** run `vault` to confirm the vault root,
 then check if your target path falls under it.
 
+## Frontmatter tag validation
+
+### The YAML `#` comment gotcha
+
+In YAML, `#` starts a comment. An **unquoted** tag value like:
+
+```yaml
+tags:
+  - #type/research     # ← YAML sees this as a COMMENT, not a value
+```
+
+is silently discarded — Obsidian's tag pane shows nothing. Always **quote**:
+
+```yaml
+tags:
+  - "#type/research"   # ← YAML sees this as a string value
+```
+
+To detect this, never use `bash grep '#type/'` — that matches raw text and
+can't tell the difference. Use the `validate-tags` subcommand which uses
+Obsidian's own YAML parser:
+
+```
+obsidian run="files validate-tags" vault="My Vault"
+```
+
+This reports any file where the raw text has `#type/` or `#domain/` but
+Obsidian's parser sees zero tags (the unquoted-`#` bug). By default it
+checks for `type/` and `domain/` dimensions. Check custom dimensions:
+
+```
+obsidian run="files validate-tags=type/,domain/,status/" vault="My Vault"
+```
+
+### Set list properties correctly
+
+When setting array properties (tags, aliases), use `type=list`:
+
+```
+obsidian run="property:set name=tags type=list value=#type/research,#domain/ai-agents file=Note"
+```
+
+- `name=` (not `key=`)
+- `type=list` for array values
+- Values are comma-separated, no brackets, no extra quotes
+
 ## Verification checklist
 
 Before submitting any change involving vault files, confirm:

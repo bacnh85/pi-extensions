@@ -72,6 +72,29 @@ function focusedVaultNameForCwd(cwd: string | undefined): string | undefined {
   return vaultNameForCwd(cwd, parseVaultInfo(execObsidian(["vault"]).stdout));
 }
 
+// ---------------------------------------------------------------------------
+// Cross-vault detection (lazy cached)
+// ---------------------------------------------------------------------------
+
+let _allVaultRoots: string[] | null = null;
+
+/**
+ * Lazily cached list of all known vault root paths.
+ * Only the focused vault; multi-vault enumeration needs obsidian vault list --all.
+ */
+function allVaultRoots(): string[] {
+  if (_allVaultRoots !== null) return _allVaultRoots;
+  try {
+    const out = execObsidian(["vault"]).stdout;
+    const path = out.match(/^path\s+(.+)$/m)?.[1]?.trim();
+    _allVaultRoots = path ? [path] : [];
+  } catch {
+    _allVaultRoots = [];
+    return [];
+  }
+  return _allVaultRoots;
+}
+
 function redirectionDestination(command: string): string | undefined {
   let quote = "";
   for (let i = 0; i < command.length; i++) {
@@ -608,6 +631,45 @@ function frontmatterWrap(vault?: string, timeoutMs = 30_000): string {
 }
 
 // ---------------------------------------------------------------------------
+// Frontmatter validation — files validate-tags
+// ---------------------------------------------------------------------------
+
+export function validateTags(requiredDims: string[], vault?: string, timeoutMs = 30_000): string {
+  const j = JSON.stringify;
+  const script = [
+    `const req=${j(requiredDims)};`,
+    `const issues=[];`,
+    `for(const f of app.vault.getMarkdownFiles()){`,
+    `  let cache=app.metadataCache.getFileCache(f);`,
+    `  let tags=cache?.frontmatter?.tags;`,
+    `  let raw=await app.vault.adapter.read(f.path);`,
+    `  let m=raw.match(/^---\\s*\\n([\\s\\S]*?)\\n---/);`,
+    `  if(!tags&&m){`,
+    `    let rawTags=m[1].match(/#[a-zA-Z][a-zA-Z0-9_\/-]+/g);`,
+    `    tags=rawTags||[];`,
+    `  }`,
+    `  let rawHasHash=m&&req.some(function(d){return m[1].indexOf('#'+d)>=0});`,
+    `  let parsedTags=Array.isArray(tags)?tags:(tags?[tags]:[]);`,
+    `  if(parsedTags.length===0){issues.push(f.path+' — no tags found');continue;}`,
+    `  for(const dim of req){`,
+    `    if(!parsedTags.some((t)=>typeof t==='string'&&(t.startsWith(dim)||t.replace(/^#/,'').startsWith(dim)))){`,
+    `      issues.push(f.path+' — missing #'+dim+'*');`,
+    `      break;`,
+    `    }`,
+    `  }`,
+    `}`,
+    `if(issues.length===0)return 'All files have valid tags.';`,
+    `return issues.length+' file(s) with tag issues:\\n'+issues.join('\\n');`,
+  ].join("");
+  const args: string[] = [];
+  if (vault) args.push(`vault=${vault}`);
+  args.push("eval", `code=${wrapEval(script)}`);
+  const _out = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
+  if (!_out || /^Error[:\s]/.test(_out)) throw new Error(`validateTags failed: ${_out || "(no output)"}`);
+  return _out;
+}
+
+// ---------------------------------------------------------------------------
 // Route JSON output to formatters
 // ---------------------------------------------------------------------------
 
@@ -665,17 +727,70 @@ function tool(body: (p: Record<string, unknown>, ctx: { cwd?: string }) => strin
 export default function piObsidianExtension(pi: ExtensionAPI) {
 
   pi.on("tool_call", (event, ctx) => {
-    const vaultRoot = obsidianVaultRoot(ctx.cwd);
-    if (!vaultRoot) return;
+    const cwdVault = obsidianVaultRoot(ctx.cwd);
     const input = event.input as Record<string, unknown>;
-    const path = typeof input.path === "string" ? input.path : undefined;
-    const targetsVault = isPathInObsidianVault(path, ctx.cwd, vaultRoot);
-    if ((["read", "write", "edit", "ls", "find", "grep"].includes(event.toolName) && (targetsVault || (["ls", "find", "grep"].includes(event.toolName) && !path)))
-      || (event.toolName === "bash" && isVaultFilesystemBashCommand(input.command, ctx.cwd, vaultRoot))) {
-      return {
-        block: true,
-        reason: `Obsidian vault detected at ${vaultRoot}. Use obsidian with vault="<vault name>" for vault files; use explicit external paths for non-vault work.`,
-      };
+
+    if (cwdVault) {
+      // CWD is inside an Obsidian vault — existing guard logic
+      const path = typeof input.path === "string" ? input.path : undefined;
+      const targetsVault = isPathInObsidianVault(path, ctx.cwd, cwdVault);
+      if ((["read", "write", "edit", "ls", "find", "grep"].includes(event.toolName) && (targetsVault || (["ls", "find", "grep"].includes(event.toolName) && !path)))
+        || (event.toolName === "bash" && isVaultFilesystemBashCommand(input.command, ctx.cwd, cwdVault))) {
+        return {
+          block: true,
+          reason: `Obsidian vault detected at ${cwdVault}. Use obsidian with vault="<vault name>" for vault files; use explicit external paths for non-vault work.`,
+        };
+      }
+      return;
+    }
+
+    // CWD is NOT in a vault — check if targets hit a known vault
+    const roots = allVaultRoots();
+    if (roots.length === 0) return;
+
+    if (event.toolName === "bash" && typeof input.command === "string") {
+      for (const root of roots) {
+        if (isVaultFilesystemBashCommand(input.command, ctx.cwd, root)) {
+          // Ponytail: isVaultFilesystemBashCommand is over-aggressive for && chains.
+          // Cross-vault guard requires an actual vault path reference in the command.
+          // Only check for the full vault root path or .obsidian marker.
+          const cmd = input.command;
+          const containsVaultPath = cmd.includes(root) || cmd.includes(".obsidian");
+          if (!containsVaultPath) continue;
+          return {
+            block: true,
+            reason: `Command targets Obsidian vault at ${root}. Use the obsidian tool with vault="<vault name>" instead.`,
+          };
+        }
+      }
+      return;
+    }
+    if (["read", "write", "edit", "ls", "find", "grep"].includes(event.toolName)) {
+      const targetPath = typeof input.path === "string" ? input.path : undefined;
+      if (targetPath) {
+        for (const root of roots) {
+          if (isPathInObsidianVault(targetPath, ctx.cwd, root)) {
+            return {
+              block: true,
+              reason: `Path targets Obsidian vault at ${root}. Use the obsidian tool with vault="<vault name>" instead.`,
+            };
+          }
+        }
+      } else if (["ls", "find", "grep"].includes(event.toolName) && ctx.cwd) {
+        // No explicit path — check if CWD is an ancestor of any known vault root
+        // (e.g. CWD=/home/user, vault=/home/user/vault — then ls/find/grep would recurse into vault)
+        const cwdAbs = resolve(ctx.cwd);
+        for (const root of roots) {
+          const rel = relative(cwdAbs, root);
+          // Vault root is inside CWD if relative path doesn't start with ".."
+          if (rel && !rel.startsWith(".." + sep) && !isAbsolute(rel)) {
+            return {
+              block: true,
+              reason: `CWD is a parent directory of vault at ${root}. Use the obsidian tool with vault="<vault name>" for vault files.`,
+            };
+          }
+        }
+      }
     }
   });
 
@@ -704,6 +819,7 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
       "Files by missing property: `files missing-property=created`",
       "Property rename: `property:rename from=date to=created`",
       "Frontmatter wrap: `frontmatter:wrap`",
+      "property:set for lists (tags, aliases): name=tags type=list value=\"#tag1,#tag2\" file=Note",
       "search --replace uses preview=true for dry-run; omit to apply.",
     ],
     parameters: Type.Object({
@@ -729,8 +845,14 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
       const cliArgs = () => parseCliString(raw).filter((arg) => !arg.startsWith("vault="));
       const timeoutMs = (p.timeout_ms as number) ?? (flags.timeout_ms ? parseInt(flags.timeout_ms) : 30_000);
 
-      // --- files: recursive, root, normal, missing-property ---
+      // --- files: recursive, root, normal, missing-property, validate-tags ---
       if (cmd === "files") {
+        if (flags["validate-tags"] || parseCliString(raw).includes("validate-tags")) {
+          const dims = !flags["validate-tags"] || flags["validate-tags"] === "true"
+            ? ["type/", "domain/"]
+            : flags["validate-tags"].split(",").map((s: string) => s.trim());
+          return validateTags(dims, v, timeoutMs);
+        }
         if (flags["missing-property"]) {
           return filesMissingProperty(flags["missing-property"], v, timeoutMs);
         }
@@ -868,6 +990,16 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
       // --- property:set with array values ---
       if (cmd === "property:set") {
         const args = cliArgs();
+        // Ponytail: detect key= vs name= mistake early
+        if (!flags.name && flags.key) {
+          throw new Error("'name=' is required (not 'key='). Example: property:set name=status value=active file=Note");
+        }
+        // Auto-add type=list for tags property if not already specified
+        const ni = args.findIndex(a => a.startsWith("name="));
+        const isTags = ni >= 0 && args[ni].slice(5) === "tags";
+        if (isTags && !args.some(a => a.startsWith("type="))) {
+          args.splice(ni + 1, 0, "type=list");
+        }
         const ai = args.findIndex(a => a.startsWith("value="));
         if (ai >= 0) {
           let end = ai + 1;
@@ -883,6 +1015,11 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
             return r.stdout.trim() || `Command "property:set" produced no output.`;
           }
         }
+        // Execute with the modified args (auto-injected type=list survives here)
+        // Ponytail: normalise args for the Obsidian CLI, same as the standard passthrough below
+        if (v) args.unshift(`vault=${v}`);
+        const r = execObsidian(args, false, timeoutMs);
+        return r.stdout.trim() || `Command "property:set" produced no output.`;
       }
 
       // --- Standard CLI passthrough (B1/B6: normalize file= and bare paths) ---
