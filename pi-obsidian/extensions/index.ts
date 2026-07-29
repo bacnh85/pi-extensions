@@ -837,6 +837,10 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
         throw new Error(`Command "${cmd}" is only available via the Obsidian desktop app and is not supported in CLI mode.`);
       }
       const flags = parseFlags(raw);
+      // ponytail: validate property:set args before vault auto-detection (which shells out)
+      if (cmd === "property:set" && !flags.name && flags.key) {
+        throw new Error("'name=' is required (not 'key='). Example: property:set name=status value=active file=Note");
+      }
       const explicitVault = (p.vault as string | undefined) ?? flags.vault;
       const v = explicitVault ?? focusedVaultNameForCwd(ctx.cwd);
       if (!v && isObsidianVaultCwd(ctx.cwd)) {
@@ -990,10 +994,6 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
       // --- property:set with array values ---
       if (cmd === "property:set") {
         const args = cliArgs();
-        // Ponytail: detect key= vs name= mistake early
-        if (!flags.name && flags.key) {
-          throw new Error("'name=' is required (not 'key='). Example: property:set name=status value=active file=Note");
-        }
         // Auto-add type=list for tags property if not already specified
         const ni = args.findIndex(a => a.startsWith("name="));
         const isTags = ni >= 0 && args[ni].slice(5) === "tags";
