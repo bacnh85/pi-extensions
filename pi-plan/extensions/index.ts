@@ -356,9 +356,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     } satisfies PlanState);
   }
 
-  function persistPreferences(): void {
+  async function persistPreferences(): Promise<void> {
     if (!preferences) return;
-    void savePreferences(preferences).catch(() => undefined);
+    try { await savePreferences(preferences); } catch { /* best-effort persist */ }
   }
 
   // ponytail: shared state restore — session_start and session_tree both need this
@@ -1279,6 +1279,21 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     },
   });
 
+  async function handlePlanModelCommand(args: string, ctx: ExtensionContext): Promise<void> {
+    if (args.trim().toLowerCase() === "clear") {
+      if (!preferences) { ctx.ui.notify("No pi-plan preferences loaded.", "warning"); return; }
+      preferences.planModel = undefined;
+      preferences.normalModel = undefined;
+      await persistPreferences();
+      ctx.ui.notify("Per-mode model override cleared. Fresh sessions use the global default.", "info");
+      return;
+    }
+    ctx.ui.notify(
+      `pi-plan model — plan: ${preferences?.planModel ?? "(global default)"} · normal: ${preferences?.normalModel ?? "(global default)"}`,
+      "info",
+    );
+  }
+
   pi.registerCommand("plan", {
     description: "Toggle pi-plan mode",
     handler: async (args, ctx) =>
@@ -1288,6 +1303,11 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   pi.registerCommand("plan-approve", {
     description: "Approve the current plan for current, fresh, or reviewed execution",
     handler: async (args, ctx) => handlePlanApproval(args, ctx),
+  });
+
+  pi.registerCommand("plan-model", {
+    description: "View or clear the per-mode model override (use clear to reset)",
+    handler: async (args, ctx) => handlePlanModelCommand(args, ctx),
   });
 
   advisor = registerAdvisor(pi, {
@@ -1338,7 +1358,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   registerGoal(pi, goalAccessors);
   registerBtw(pi);
   registerSpecs(pi, activateSpecGate, approveSpecGate);
-  registerDoctor(pi);
+  registerDoctor(pi, () => preferences
+    ? `plan=${preferences.planModel ?? "-"} · normal=${preferences.normalModel ?? "-"}`
+    : "unset");
 
   registerHandoff(pi, {
     getPlanContext: (cwd) => {

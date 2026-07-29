@@ -1860,6 +1860,22 @@ describe("per-mode model preferences", () => {
     assert.equal(ext.modelSets.length, 0, "no switch when the configured model is already active");
   });
 
+  it("clears planModel and normalModel via /plan-model clear", async () => {
+    cleanPrefs();
+    mkdirSync(path.dirname(prefsPath()), { recursive: true });
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {},
+      planModel: "zai-coding-cn/glm-5.2", normalModel: "9router/ocg/deepseek-v4-flash",
+    }));
+    const ext = createFakePi(["read"], {});
+    const ctx = modelCtx({ provider: "test", id: "model-1" });
+    await ext.handlers.session_start?.[0]({ reason: "resume" }, ctx);
+    await ext.commands["plan-model"].handler("clear", ctx);
+    const after = JSON.parse(readFileSync(prefsPath(), "utf8"));
+    assert.equal(after.planModel, undefined);
+    assert.equal(after.normalModel, undefined);
+  });
+
   it("tolerates a legacy prefs file, then restores a persisted planModel on startup", async () => {
     cleanPrefs(); // legacy file: no planModel/normalModel
     const ext = createFakePi(["read"], { plan: true });

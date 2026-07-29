@@ -33,6 +33,7 @@ pi --plan
 | --- | --- |
 | `/plan` | Toggle plan mode. |
 | `/plan-approve [current|new|flow]` | Open approval choices or execute a specific handoff through Pi's command router. |
+| `/plan-model [clear]` | View or clear the remembered per-mode model override. |
 | `/flow status` | Show the active workflow phase and review pass. |
 | `/flow stop` | Abort review and stop the active workflow. |
 | `/handoff <goal>` | Summarize the session into a reviewable prompt and start a focused new Pi session linked to the parent. |
@@ -142,8 +143,8 @@ Notes:
 - Switching models persists the model as Pi's global default in `settings.json` on each change
   (Pi's own `/model` does the same). pi-plan always re-applies the correct per-mode model on
   the next mode toggle or session start.
-- To clear a per-mode model, switch it back to your desired default while in that mode, or edit
-  the `planModel`/`normalModel` fields out of `~/.pi/agent/pi-plan/preferences.json`.
+- To clear a per-mode model, run `/plan-model clear`, switch it back to your desired default while
+  in that mode, or edit the `planModel`/`normalModel` fields out of `~/.pi/agent/pi-plan/preferences.json`.
 - If the configured model is unavailable (no API key or not found), the switch is skipped with a
   warning and the current model is kept.
 
