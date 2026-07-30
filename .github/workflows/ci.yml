@@ -104,6 +104,7 @@ jobs:
 
       - name: Publish
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        shell: bash
         run: |
           PKG=$(node -p "require('./package.json').name")
           VER=$(node -p "require('./package.json').version")
