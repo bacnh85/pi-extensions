@@ -2,6 +2,12 @@
 
 All notable changes to `pi-windows-tools` will be documented in this file.
 
+## 0.4.3 (2026-07-30)
+
+### Improvements
+
+- Bump shell-detect test timeout for GitHub CI.
+
 ## 0.4.2 (2026-07-30)
 
 ### Improvements
