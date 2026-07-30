@@ -1,4 +1,4 @@
-# pi-web v0.5
+# @bacnh85/pi-web
 
 Pi extension for **unified web search, content extraction, site crawling, and page capture**.
 
@@ -8,14 +8,6 @@ Auto-selects the best backend from SearXNG (self-hosted), Brave Search, Firecraw
 
 ```bash
 pi install npm:@bacnh85/pi-web
-```
-
-From this repository:
-
-```bash
-pi install ./extensions/pi-web
-# or test directly
-pi -e ./extensions/pi-web
 ```
 
 ## Configuration
@@ -217,6 +209,10 @@ v0.4 replaces the 14 individual backend-specific tools with 7 unified tools:
 | `web_status` | `web_status` (enhanced with Crawl4AI health) |
 
 All v0.3 tool names were removed in v0.4. Update any agent instructions or skills that reference the old names.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Development
 

@@ -1,17 +1,21 @@
 {
   "name": "@bacnh85/pi-agy",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Google Antigravity CLI (agy) bridge for Pi — delegate bulk scaffolding, refactors, and test generation to a leaner model.",
   "type": "module",
   "license": "MIT",
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "homepage": "https://github.com/bacnh85/pi-extensions#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bacnh85/pi-extensions.git",
     "directory": "pi-agy"
   },
-  "bugs": { "url": "https://github.com/bacnh85/pi-extensions/issues" },
+  "bugs": {
+    "url": "https://github.com/bacnh85/pi-extensions/issues"
+  },
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -22,15 +26,26 @@
     "google-ai",
     "cli"
   ],
-  "scripts": { "test": "cd extensions && npx mocha", "typecheck": "tsc --noEmit" },
+  "scripts": {
+    "test": "cd extensions && npx mocha",
+    "typecheck": "tsc --noEmit"
+  },
   "files": [
     "README.md",
+    "CHANGELOG.md",
     "extensions/index.ts",
     "extensions/lib/cli.ts",
     "extensions/package.json",
     "skills/"
   ],
-  "pi": { "extensions": ["./extensions/index.ts"], "skills": ["./skills"] },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@sinclair/typebox": "*"

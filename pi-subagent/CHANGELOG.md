@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.3 (2026-07-30)
+
+### Improvements
+
+- Patch version bump for release sync and package documentation update.
+
 ## 0.12.0 (2026-07-24)
 
 ### Model routing

@@ -1,59 +1,60 @@
 {
-    "name": "@bacnh85/pi-model-tools",
-    "version": "0.3.2",
-    "description": "Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair (read-notice stripping + trim-tolerant retry), and a Codex-style apply_patch diff tool for DeepSeek V4 and GLM model families from any provider.",
-    "type": "module",
-    "license": "MIT",
-    "publishConfig": {
-        "access": "public"
-    },
-    "homepage": "https://github.com/bacnh85/pi-extensions#readme",
-    "repository": {
-        "type": "git",
-        "url": "git+https://github.com/bacnh85/pi-extensions.git",
-        "directory": "pi-model-tools"
-    },
-    "bugs": {
-        "url": "https://github.com/bacnh85/pi-extensions/issues"
-    },
-    "keywords": [
-        "pi",
-        "pi-extension",
-        "tool-calling",
-        "argument-repair",
-        "deepseek",
-        "deepseek-v4",
-        "glm",
-        "super-power",
-        "selection-guidance",
-        "agent-tools",
-        "reasoning",
-        "apply-patch",
-        "diff-edit",
-        "edit-repair"
-    ],
-    "scripts": {
-        "test": "node --import tsx --test extensions/test/unit/*.test.ts",
-        "typecheck": "tsc --noEmit"
-    },
-    "files": [
-        "README.md",
-        "extensions/index.ts",
-        "extensions/lib/",
-        "LICENSE"
-    ],
-    "pi": {
-        "extensions": [
-            "./extensions/index.ts"
-        ]
-    },
-    "peerDependencies": {
-        "@earendil-works/pi-coding-agent": "*",
-        "typebox": "*"
-    },
-    "devDependencies": {
-        "@types/node": "^20.19.43",
-        "tsx": "^4.23.1",
-        "typescript": "^5.9.3"
-    }
+  "name": "@bacnh85/pi-model-tools",
+  "version": "0.3.3",
+  "description": "Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair (read-notice stripping + trim-tolerant retry), and a Codex-style apply_patch diff tool for DeepSeek V4 and GLM model families from any provider.",
+  "type": "module",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git",
+    "directory": "pi-model-tools"
+  },
+  "bugs": {
+    "url": "https://github.com/bacnh85/pi-extensions/issues"
+  },
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "tool-calling",
+    "argument-repair",
+    "deepseek",
+    "deepseek-v4",
+    "glm",
+    "super-power",
+    "selection-guidance",
+    "agent-tools",
+    "reasoning",
+    "apply-patch",
+    "diff-edit",
+    "edit-repair"
+  ],
+  "scripts": {
+    "test": "node --import tsx --test extensions/test/unit/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "extensions/index.ts",
+    "extensions/lib/",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "tsx": "^4.23.1",
+    "typescript": "^5.9.3"
+  }
 }

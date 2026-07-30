@@ -1,4 +1,4 @@
-# pi-model-tools
+# @bacnh85/pi-model-tools
 
 **Unified model-family support for Pi** — tool-wrapping, argument repair,
 reasoning management, defensive leak-cleaning, DeepSeek V4 selection guidance,
@@ -67,6 +67,10 @@ a family is detected; everything degrades gracefully to a no-op otherwise.
 
 ## Installation
 
+```bash
+pi install npm:@bacnh85/pi-model-tools
+```
+
 ## `apply_patch` — diff-based editing
 
 `apply_patch` is a Codex-style V4D patch tool. Instead of reproducing a large
@@ -100,21 +104,6 @@ Rules:
 
 DeepSeek and GLM are steered to prefer `apply_patch` for multi-line/multi-hunk
 edits; Claude/OpenAI keep using `edit` (they're already reliable with it).
-
-## Installation
-
-```bash
-pi install npm:@bacnh85/pi-model-tools
-```
-
-Or load from source for development:
-
-```bash
-pi -e ./pi-model-tools/extensions/index.ts
-```
-
-Load it alongside `pi-serena` when you want the semantic-miss steering and
-serena-first suggestions to take effect.
 
 ## Commands
 
@@ -171,10 +160,9 @@ export PI_MODEL_TOOLS_CUSTOM_SUPERPOWER_PROMPT="You are an elite coder. No limit
 `/model-tools-status` reports whether Super Power Mode is on, whether a custom
 prompt is in use, and the current turn count.
 
-## Usage
+## Development & Testing
 
 ```bash
-cd pi-model-tools && npm install
 npm test        # unit tests
 npm run typecheck
 npm pack --dry-run
@@ -192,6 +180,10 @@ npm pack --dry-run
 | Super Power prompt not injecting | Model is not DeepSeek V4, or `PI_MODEL_TOOLS_SUPERPOWER_MODE=0` | Set `=1` (or remove the `=0`) and verify the model id |
 | Custom Super Power prompt not loading | `PI_MODEL_TOOLS_CUSTOM_SUPERPOWER_PROMPT` unset | Set the env var to your prompt text |
 | Old config ignored | Still using `PI_DEEPSEEK_TOOLS_*` / `PI_GLM_*` names | Rename to `PI_MODEL_TOOLS_*` (see tables above) |
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Related
 

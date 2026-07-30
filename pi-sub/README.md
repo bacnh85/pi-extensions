@@ -1,4 +1,4 @@
-# pi-sub
+# @bacnh85/pi-sub
 
 Pi extension that shows subscription usage for the currently selected supported model provider.
 
@@ -6,18 +6,8 @@ Supports OpenAI Codex (`openai-codex`) with live usage windows from ChatGPT's us
 
 ## Install
 
-From npm after the package is published:
-
 ```bash
 pi install npm:@bacnh85/pi-sub
-```
-
-From this repository checkout:
-
-```bash
-pi install ./pi-sub
-# or test directly
-pi -e ./pi-sub
 ```
 
 ## What it shows
@@ -144,6 +134,10 @@ Refreshes are cached briefly to avoid excessive usage endpoint calls.
 - **Z.ai Coding Plan (China)**: The built-in `zai-coding-cn` provider targets `https://open.bigmodel.cn/api/coding/paas/v4`. Pi auth must contain a `zai-coding-cn` entry with a `key` field (set via `/login` or the `ZAI_CODING_CN_API_KEY` env var). Quota is read from the BigModel endpoint `https://open.bigmodel.cn/api/monitor/usage/quota/limit`.
 - For API-key-only providers, account labels come from stored auth metadata (`email`, `label`, `name`, or `accountId`) when available; otherwise `pi-sub` displays a non-secret SHA-256 key fingerprint such as `Z.ai key#1a2b3c4d`.
 - `pi-sub` redacts auth/token-related errors and never prints credentials.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Design notes
 

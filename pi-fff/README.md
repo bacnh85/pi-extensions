@@ -23,21 +23,8 @@ A maintained Pi package based on upstream [`@ff-labs/pi-fff`](https://github.com
 
 ## Install
 
-Requirements:
-- pi
-
-### Install as a pi package
-
-**Via npm (recommended):**
-
 ```bash
 pi install npm:@bacnh85/pi-fff
-```
-
-Project-local install:
-
-```bash
-pi install -l npm:@bacnh85/pi-fff
 ```
 
 ## Tools
@@ -131,6 +118,10 @@ Mode precedence:
 Database persistence is opt-in. Without `--fff-frecency-db`/`FFF_FRECENCY_DB` and `--fff-history-db`/`FFF_HISTORY_DB`, FFF 0.9.6 disables frecency and query-history persistence. When paths are provided, FFF stores file access frequency/recency and query-to-file selection history at those paths.
 
 No project files are uploaded anywhere by this extension. It runs locally and only uses the configured LLM through pi itself.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Security
 

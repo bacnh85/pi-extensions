@@ -1,4 +1,4 @@
-# pi-review
+# @bacnh85/pi-review
 
 Read-only local code review for Pi. `/review` uses the isolated `reviewer` role from `pi-subagent` when available and falls back to a corrected one-turn review in the parent session.
 
@@ -7,9 +7,6 @@ Read-only local code review for Pi. `/review` uses the isolated `reviewer` role 
 ```bash
 pi install npm:@bacnh85/pi-subagent
 pi install npm:@bacnh85/pi-review
-# local checkout
-pi install ./pi-subagent
-pi install ./pi-review
 ```
 
 `pi-subagent` is optional; without it, `/review` still works locally.
@@ -36,6 +33,10 @@ In TUI mode, bare `/review` asks for uncommitted, branch, or custom scope. Witho
 - Isolated reviews use a 3-minute activity-resettable inactivity window and a 20-minute absolute cap; transport heartbeats do not count as activity.
 
 The local fallback preserves active safe research tools (Serena, FFF, web, and Munin reads), blocks mutators and unsafe Bash, chains review guidance into the per-turn system prompt, and restores tools/thinking once on `agent_settled`.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Automation
 

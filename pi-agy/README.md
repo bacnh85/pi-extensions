@@ -1,4 +1,4 @@
-# pi-agy
+# @bacnh85/pi-agy
 
 Google Antigravity CLI (`agy`) bridge for the [Pi coding agent](https://github.com/earendil-works/pi-coding-agent).
 
@@ -90,7 +90,13 @@ agy_execute prompt="Review the resulting diff" model=pro-low mode=plan digest=tr
 ## Development
 
 ```bash
-cd pi-agy
-npm install
 npm test
 ```
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
+
+## License
+
+MIT

@@ -1,17 +1,21 @@
 {
   "name": "@bacnh85/pi-subagent",
-  "version": "0.12.2",
+  "version": "0.12.3",
   "description": "In-process subagents for Pi with isolated SDK sessions, parallel and chained delegation, and inspectable threads.",
   "type": "module",
   "license": "MIT",
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-subagent",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bacnh85/pi-extensions.git",
     "directory": "pi-subagent"
   },
-  "bugs": { "url": "https://github.com/bacnh85/pi-extensions/issues" },
+  "bugs": {
+    "url": "https://github.com/bacnh85/pi-extensions/issues"
+  },
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -38,7 +42,11 @@
     "extensions/security.ts",
     "extensions/package.json"
   ],
-  "pi": { "extensions": ["./extensions/index.ts"] },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
   "engines": {
     "node": ">=20.18"
   },

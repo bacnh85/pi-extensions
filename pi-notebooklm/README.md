@@ -1,4 +1,4 @@
-# pi-notebooklm
+# @bacnh85/pi-notebooklm
 
 Pi extension for **Google NotebookLM** (personal/Pro) — one `notebooklm` tool backed by [`notebooklm-py`](https://github.com/teng-lin/notebooklm-py) CLI bridge (v0.7.3).
 
@@ -37,12 +37,6 @@ Covers notebooks, sources, grounded chat, research, Studio artifacts (Audio Over
 
 ```bash
 pi install npm:@bacnh85/pi-notebooklm
-```
-
-From this repository:
-
-```bash
-pi install ./pi-notebooklm
 ```
 
 ## Configuration
@@ -132,22 +126,18 @@ Prefer the latest patch release — RPC drift fixes ship upstream.
 ## Development
 
 ```bash
-# Install deps
-npm ci --prefix pi-notebooklm
-
-# Run tests
-npm test --prefix pi-notebooklm
-
-# Type check
-npm run typecheck --prefix pi-notebooklm
-
-# Verify packaging
-npm pack --dry-run ./pi-notebooklm
+npm test
+npm run typecheck
+npm pack --dry-run
 ```
 
 ## How it works
 
 A single `notebooklm` tool bridges to the `notebooklm-py` CLI via `pi.exec()`, using an argument array rather than a raw `run` string. This avoids shell injection, quote-parsing bugs, and malformed escaping. The extension validates inputs, gates destructive operations using exact command-path matching, truncates oversized output with byte-aware limits, and surfaces actionable error messages — while delegating all NotebookLM protocol handling to the upstream CLI.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 

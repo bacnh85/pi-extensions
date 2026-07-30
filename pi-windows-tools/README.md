@@ -1,10 +1,10 @@
-# pi-windows-tools
+# @bacnh85/pi-windows-tools
 
 Pi extension for Windows-native shell execution, paths, WSL, safety checks, and developer-tool discovery.
 
-## Installation
+## Install
 
-```powershell
+```bash
 pi install npm:@bacnh85/pi-windows-tools
 ```
 
@@ -29,3 +29,11 @@ PI_WSL_DISTRO=Ubuntu-24.04
 3. Git Bash
 4. cmd
 5. WSL
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
+
+## License
+
+MIT

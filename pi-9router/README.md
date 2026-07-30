@@ -1,4 +1,4 @@
-# pi-9router
+# @bacnh85/pi-9router
 
 Pi extension for [9router](https://github.com/decolua/9router) — connect to your 9router AI routing proxy instance.
 
@@ -55,6 +55,10 @@ Shows connection status, model count, and current configuration.
 2. Models are fetched dynamically from `GET /v1/models` on first use
 3. Pi's built-in OpenAI completions API handles all streaming and tool calling
 4. No built-in providers are overridden — `9router/` models are a separate namespace
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 

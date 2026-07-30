@@ -1,4 +1,4 @@
-# pi-subagent
+# @bacnh85/pi-subagent
 
 Isolated in-process subagents for Pi. The `subagent` tool supports single, parallel (8 tasks, 4 concurrent), and chained execution; `/agent` opens inspectable child threads.
 
@@ -6,8 +6,6 @@ Isolated in-process subagents for Pi. The `subagent` tool supports single, paral
 
 ```bash
 pi install npm:@bacnh85/pi-subagent
-# local checkout
-pi install ./pi-subagent
 ```
 
 Requires Node.js >= 20.18.
@@ -171,12 +169,16 @@ The raw `stopReason` from the Pi SDK is preserved in the result.
 
 `pi-subagent` owns the `pi-subagent:run` event contract for one named-agent request. `pi-review` uses it for isolated review. Requests use an immediate boolean `accept()` claim and exactly one `respond()` callback; this suppresses duplicate responders while missing services and timeouts remain caller-controlled.
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
+
 ## Compatibility
 
-- Requires `@earendil-works/pi-coding-agent >=0.80.0 <0.81.0`
-- Requires `@earendil-works/pi-ai >=0.80.0 <0.81.0`
-- Requires `@earendil-works/pi-agent-core >=0.80.0 <0.81.0`
-- Requires `@earendil-works/pi-tui >=0.80.0 <0.81.0`
+- Requires `@earendil-works/pi-coding-agent >=0.80.0 <0.83.0`
+- Requires `@earendil-works/pi-ai >=0.80.0 <0.83.0`
+- Requires `@earendil-works/pi-agent-core >=0.80.0 <0.83.0`
+- Requires `@earendil-works/pi-tui >=0.80.0 <0.83.0`
 - Requires `typebox >=1.3.0 <2.0.0`
 - Requires Node.js >= 20.18
 

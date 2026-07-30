@@ -1,4 +1,4 @@
-# pi-plan
+# @bacnh85/pi-plan
 
 Pi extension that adds a lightweight plan mode inspired by Codex and Claude Code:
 
@@ -13,12 +13,6 @@ Pi extension that adds a lightweight plan mode inspired by Codex and Claude Code
 
 ```bash
 pi install npm:@bacnh85/pi-plan
-```
-
-From a local checkout:
-
-```bash
-pi install ./pi-plan
 ```
 
 Start directly in planning mode:
@@ -147,6 +141,10 @@ Notes:
   in that mode, or edit the `planModel`/`normalModel` fields out of `~/.pi/agent/pi-plan/preferences.json`.
 - If the configured model is unavailable (no API key or not found), the switch is skipped with a
   warning and the current model is kept.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Packaging
 

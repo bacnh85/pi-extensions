@@ -7,23 +7,23 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| **pi-agy** | 0.2.0 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
-| **pi-notebooklm** | 0.1.0 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
-| **pi-ponytail** | 0.1.4 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
-| **pi-serena** | 0.8.3 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
-| **pi-web** | 0.5.3 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
-| **pi-munin** | 0.4.7 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and confirmed cross-project sharing. |
-| **pi-plan** | 0.5.0 | Plan mode with read-only gating and plan → implement → verify → review workflow. |
-| **pi-subagent** | 0.5.0 | Isolated in-process subagents with parallel/chain modes and inspectable threads. |
-| **pi-review** | 0.2.0 | Isolated read-only code review with corrected same-session fallback. |
-| **pi-fff** | 0.7.2 | FFF-powered fuzzy file and content search for Pi. |
-| **pi-obsidian** | 0.6.0 | Obsidian vault integration for Pi. |
-| **pi-rtk** | 0.1.8 | Bash command token rewriting through RTK. |
-| **pi-sub** | 0.1.10 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
-| **pi-windows-tools** | 0.2.0 | Windows-specific tools for Pi. |
-| **pi-model-tools** | 0.3.0 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, and a Codex-style apply_patch diff tool. |
-| **pi-kicad** | 0.1.0 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon (no MCP SDK). |
-| **pi-9router** | 0.1.0 | Connect to a 9router AI routing proxy instance via its OpenAI-compatible API with interactive login. |
+| **pi-9router** | 0.1.4 | Connect to a 9router AI routing proxy instance via its OpenAI-compatible API with interactive login. |
+| **pi-agy** | 0.2.2 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
+| **pi-fff** | 0.7.8 | FFF-powered fuzzy file and content search for Pi. |
+| **pi-kicad** | 0.1.2 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon (no MCP SDK). |
+| **pi-model-tools** | 0.3.3 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, and a Codex-style apply_patch diff tool. |
+| **pi-munin** | 0.4.9 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and confirmed cross-project sharing. |
+| **pi-notebooklm** | 0.1.7 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
+| **pi-obsidian** | 0.8.11 | Obsidian vault integration for Pi. |
+| **pi-plan** | 0.8.5 | Plan mode with read-only gating and plan → implement → verify → review workflow. |
+| **pi-ponytail** | 0.1.9 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
+| **pi-review** | 0.2.6 | Isolated read-only code review with corrected same-session fallback. |
+| **pi-rtk** | 0.1.11 | Bash command token rewriting through RTK. |
+| **pi-serena** | 0.9.4 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
+| **pi-sub** | 0.1.22 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
+| **pi-subagent** | 0.12.3 | Isolated in-process subagents with parallel/chain modes and inspectable threads. |
+| **pi-web** | 0.5.5 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
+| **pi-windows-tools** | 0.4.2 | Windows-specific tools for Pi. |
 
 ## Repository Structure
 
@@ -57,6 +57,7 @@ Every package follows the same layout:
 pi-<name>/
   package.json          # name, version, files[], scripts, pi field, keywords
   README.md             # docs, install, commands, configuration
+  CHANGELOG.md          # version history and release entries
   .gitignore            # node_modules/ and .env.*
 
   extensions/           # Pi extension entrypoint and supporting modules
@@ -75,7 +76,8 @@ pi-<name>/
 **Key conventions:**
 
 - `package.json` root: `"pi": { "extensions": ["./extensions/index.ts"], "skills": ["./skills"] }` — entrypoint extension matches the file (`.ts` or `.js`)
-- `files` in package.json lists everything (not just `dist/` — Pi loads source directly).
+- `files` in package.json includes `"CHANGELOG.md"`, `"README.md"`, source files, etc. (Pi loads source directly).
+- Every package has a standalone `CHANGELOG.md` for user-facing release history.
 - `publishConfig.access: "public"` for scoped packages.
 - `extensions/package.json` is just `{ "type": "module" }` to opt into ESM.
 - Extension code is **plain JS** (pi-ponytail pattern) or **TypeScript** (pi-serena, pi-web, pi-munin) — use TS when the package has sdks/deps that benefit from types.

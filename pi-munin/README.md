@@ -1,28 +1,12 @@
-# pi-munin
+# @bacnh85/pi-munin
 
 Pi extension that exposes Munin long-term memory as native Pi tools.
 
 ## Install
 
-Install the published package from npm:
-
 ```bash
 pi install npm:@bacnh85/pi-munin
 ```
-
-From this repository checkout, install only this extension package:
-
-```bash
-cd pi-munin
-npm install
-cd ..
-
-pi install ./pi-munin
-# or test directly
-pi -e ./pi-munin
-```
-
-The package manifest points Pi directly at `./extensions/index.ts`, so published npm installs and local installs load the same extension entrypoint.
 
 ## Configuration
 
@@ -52,6 +36,10 @@ Delete and share safely cancel in non-interactive modes, where Pi cannot obtain 
 - Treat retrieved memories as leads, not authority. Verify against current repository evidence before relying on them.
 - Never store secrets, credentials, tokens, private keys, or sensitive connection strings.
 - `@kalera/munin-sdk@1.5.0` exposes no client-side encryption-key or crypto-helper API. This extension does not implement or claim client-side E2EE; use a future official SDK integration when one is available.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Troubleshooting
 

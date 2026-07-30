@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-serena",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "description": "Pi extension that provides Serena semantic code tools through a persistent worker.",
   "license": "MIT",
   "publishConfig": {
@@ -23,6 +23,7 @@
   ],
   "files": [
     "README.md",
+    "CHANGELOG.md",
     "extensions/index.ts",
     "extensions/lib/",
     "extensions/worker.ts"

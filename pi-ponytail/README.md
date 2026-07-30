@@ -1,4 +1,4 @@
-# pi-ponytail
+# @bacnh85/pi-ponytail
 
 **Lazy senior dev mode for your [Pi coding agent](https://pi.dev/).**
 
@@ -13,12 +13,6 @@ adapted for the Pi harness.
 ---
 
 ## Install
-
-```bash
-pi install ./pi-ponytail
-```
-
-Or from npm:
 
 ```bash
 pi install npm:@bacnh85/pi-ponytail
@@ -65,6 +59,12 @@ Resolution order (first wins):
    { "defaultMode": "full" }
    ```
 3. **Built-in** — `full`
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ---
 

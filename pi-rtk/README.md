@@ -1,4 +1,4 @@
-# pi-rtk
+# @bacnh85/pi-rtk
 
 Pi extension that rewrites bash tool calls through RTK for token savings.
 
@@ -28,26 +28,16 @@ Pi extension that rewrites bash tool calls through RTK for token savings.
 
 ## Install
 
-Install the published package from npm:
-
 ```bash
 pi install npm:@bacnh85/pi-rtk
 ```
 
-From this repository checkout, install only this extension package:
+## Changelog
 
-```bash
-pi install ./pi-rtk
-```
-
-The package manifest points Pi directly at `./extensions/index.ts`, so published npm installs and local installs load the same extension entrypoint.
-
-Install extensions from their own package directories. This repository intentionally has no root Pi package because multiple extension packages live side by side.
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Test
 
 ```bash
-pi -e ./pi-rtk
-rtk gain --history
 RTK_DISABLED=1 pi -e ./pi-rtk
 ```

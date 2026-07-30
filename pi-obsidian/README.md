@@ -1,19 +1,18 @@
-# pi-obsidian v0.7
+# @bacnh85/pi-obsidian
 
 Pi extension for **Obsidian vault tools** — a single unified tool that runs any Obsidian CLI command: read, write, create, search, delete, move, rename, append, prepend, tasks, properties, history, daily notes, templates, and more. Plus **enhanced operations** like recursive file listing, task creation, task filtering/grouping, and template-based note creation.
 
 **~6,500 fewer tokens per request** vs 43 separate tools (1.6K vs 8.1K).
 
-## v0.5 Fixes
+## Fixes & Improvements
 
-| Bug | Fix |
-|-----|-----|
-| **B1**: `create` content with bare `"` truncates | Write operations (create/write/append/prepend) now route through base64-encoded `eval` — no escaping issues with `\`, `"`, `|`, literal `\n`, or large payloads. `content_from` reads from a vault note for convenience. |
-| **B2**: `property:set` with array values | Auto-normalizes spaces in array values; rejoin split tokens |
-| **B3**: `create` doesn't create subdirectories | `ensureFolderExists()` creates parent path before writing |
-| **B4**: `files folder="/"` returns nothing | Handles root folder `/` and empty folder string |
-| **B5**: No batch tag rename | New `tag-rename from=X to=Y` command scans all files and renames |
-| **B6**: `eval` fragile with complex JS | New `eval file=ScriptNoteName` reads JS from vault note; auto-escapes bare quotes in `code=` |
+| Area | Detail |
+|------|--------|
+| **Write reliability** | Write operations (create/write/append/prepend) route through base64-encoded `eval` — no escaping issues with `\`, `"`, `|`, literal `\n`, or large payloads. `content_from` reads from a vault note for convenience. |
+| **Properties** | `property:set` auto-normalizes spaces in array values; rejoins split tokens. |
+| **Directory handling** | `ensureFolderExists()` creates parent path before writing. Handles root folder `/` and empty folder string. |
+| **Tag operations** | `tag-rename from=X to=Y` command scans all files and renames tags across the vault. |
+| **Script execution** | `eval file=ScriptNoteName` reads JS from a vault note; auto-escapes bare quotes in `code=`. |
 
 ## Requirements
 
@@ -25,12 +24,6 @@ Pi extension for **Obsidian vault tools** — a single unified tool that runs an
 
 ```bash
 pi install npm:@bacnh85/pi-obsidian
-```
-
-From this repository:
-
-```bash
-pi install ./pi-obsidian
 ```
 
 ## Configuration
@@ -103,6 +96,10 @@ These are post-processed by the extension for richer output:
 ## How it works
 
 Previously this extension registered 43 separate tools (`obsidian_read`, `obsidian_create`, `obsidian_search`, etc.), consuming ~8,122 tokens per request. v0.3 consolidated to a single `obsidian` tool that parses the `run` string and dispatches to the Obsidian CLI. v0.4 adds post-processing for recursive file listing, task filtering/grouping, task creation, and template-based note creation — all through the same unified tool.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 

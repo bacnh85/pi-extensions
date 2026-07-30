@@ -1,17 +1,21 @@
 {
   "name": "@bacnh85/pi-kicad",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "KiCad CAD-design extension for Pi — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon (no MCP SDK).",
   "type": "module",
   "license": "MIT",
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "homepage": "https://github.com/bacnh85/pi-extensions#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bacnh85/pi-extensions.git",
     "directory": "pi-kicad"
   },
-  "bugs": { "url": "https://github.com/bacnh85/pi-extensions/issues" },
+  "bugs": {
+    "url": "https://github.com/bacnh85/pi-extensions/issues"
+  },
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -29,12 +33,20 @@
   },
   "files": [
     "README.md",
+    "CHANGELOG.md",
     "extensions/index.ts",
     "extensions/lib/",
     "extensions/package.json",
     "skills/"
   ],
-  "pi": { "extensions": ["./extensions/index.ts"], "skills": ["./skills"] },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@sinclair/typebox": "*"

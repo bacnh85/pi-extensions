@@ -1,4 +1,4 @@
-# pi-serena
+# @bacnh85/pi-serena
 
 Pi extension that registers Pi-native `serena_*` tools backed by a persistent TypeScript/Node worker. This avoids configuring Pi as an MCP client while still using Serena's semantic code APIs.
 
@@ -10,27 +10,9 @@ Models intermittently confuse Serena's two symbol keys. `serena_find_symbol` and
 
 ## Install
 
-Install the published package from npm:
-
 ```bash
 pi install npm:@bacnh85/pi-serena
 ```
-
-From this repository checkout, install only this extension package:
-
-```bash
-pi install ./extensions/pi-serena
-```
-
-For local development from a checkout:
-
-```bash
-pi -e ./extensions/pi-serena
-```
-
-The package manifest points Pi directly at `./index.ts`, so published npm installs and local installs load the same extension entrypoint.
-
-There is intentionally no repository-level Pi package. Install each extension from its own subdirectory, matching `extensions/pi-rtk` and future extensions.
 
 After install or update, restart Pi or run `/reload` in an existing Pi session.
 
@@ -125,6 +107,10 @@ The Pi bridge also implements `serena_get_current_config` and `serena_restart_la
 - `/serena-restart`
 
 The persistent Pi worker keeps one Serena bridge process per Pi process/session. It keeps the dashboard server available by default but does not open a browser tab automatically; use `/serena-dashboard` when you want to open it. Set `SERENA_BRIDGE_WEB_DASHBOARD=0` to disable the dashboard server, or `SERENA_BRIDGE_OPEN_DASHBOARD=1` to restore automatic browser launch. These variables are read from the process environment, current working directory `.env.local`/`.env`, or Pi global config `.env.local`/`.env` under `$PI_CODING_AGENT_DIR` or `~/.pi/agent`.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Worker protocol
 

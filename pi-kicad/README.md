@@ -6,6 +6,12 @@ binary — **no MCP SDK, no generic MCP client**. Konnect is launched once in it
 built-in HTTP mode as a managed local daemon, and each tool call is a single
 stateless `POST /mcp` JSON-RPC request.
 
+## Install
+
+```bash
+pi install npm:@bacnh85/pi-kicad
+```
+
 ## Tools
 
 | Tool | Purpose |
@@ -57,6 +63,10 @@ Pi agent ── kicad_call ──► POST http://127.0.0.1:<port>/mcp   ──�
 The daemon is reused if a healthy one is already running on the port; otherwise
 `pi-kicad` spawns `konnect --config <tmp-toml>` (transport=`http`), polls
 `GET /health`, and kills it on Pi exit.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 
