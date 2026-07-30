@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-plan",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "description": "Plan mode with read-only gating and plan → implement → verify → review workflow for Pi.",
   "license": "MIT",
   "publishConfig": {
@@ -40,15 +40,15 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.80.8 <0.83.0",
-    "@earendil-works/pi-coding-agent": ">=0.80.8 <0.83.0",
-    "@earendil-works/pi-tui": ">=0.80.8 <0.83.0",
+    "@earendil-works/pi-ai": ">=0.80.8 <0.84.0",
+    "@earendil-works/pi-coding-agent": ">=0.80.8 <0.84.0",
+    "@earendil-works/pi-tui": ">=0.80.8 <0.84.0",
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.82.0",
-    "@earendil-works/pi-coding-agent": "^0.82.0",
-    "@earendil-works/pi-tui": "^0.82.0",
+    "@earendil-works/pi-ai": "^0.83.0",
+    "@earendil-works/pi-coding-agent": "^0.83.0",
+    "@earendil-works/pi-tui": "^0.83.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.43",
     "chai": "^4.5.0",

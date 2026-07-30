@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.4 (2026-07-30)
+
+### Improvements
+
+- Widen Pi peer dependency range to <0.84.0 for Pi 0.83.0 compatibility.
+
 ## 0.12.3 (2026-07-30)
 
 ### Improvements

@@ -15,13 +15,13 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-munin** | 0.4.9 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and confirmed cross-project sharing. |
 | **pi-notebooklm** | 0.1.7 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | **pi-obsidian** | 0.8.11 | Obsidian vault integration for Pi. |
-| **pi-plan** | 0.8.5 | Plan mode with read-only gating and plan → implement → verify → review workflow. |
+| **pi-plan** | 0.8.6 | Plan mode with read-only gating and plan → implement → verify → review workflow. |
 | **pi-ponytail** | 0.1.9 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
 | **pi-review** | 0.2.6 | Isolated read-only code review with corrected same-session fallback. |
 | **pi-rtk** | 0.1.11 | Bash command token rewriting through RTK. |
 | **pi-serena** | 0.9.4 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
-| **pi-sub** | 0.1.22 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
-| **pi-subagent** | 0.12.3 | Isolated in-process subagents with parallel/chain modes and inspectable threads. |
+| **pi-sub** | 0.1.23 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
+| **pi-subagent** | 0.12.4 | Isolated in-process subagents with parallel/chain modes and inspectable threads. |
 | **pi-web** | 0.5.5 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
 | **pi-windows-tools** | 0.4.2 | Windows-specific tools for Pi. |
 
@@ -43,7 +43,7 @@ pi-extensions/
   pi-model-tools/        # TS extension for unified tool-wrapping + DeepSeek guidance + Super Power Mode (DeepSeek V4 + GLM)
   pi-9router/           # TS extension to connect to a 9router AI routing proxy.
   pi-sub/               # TS extension for subscription usage footer
-  .github/workflows/    # publish.yml + test.yml (matrix across packages)
+  .github/workflows/    # ci.yml (matrix, GitHub-hosted runners)
   .agents/skills/       # shared skills (skill-creator)
   .env.local            # shared dev credentials (gitignored)
   .gitignore            # .agents/ and .env.*
@@ -122,12 +122,24 @@ spec). pi-ponytail uses `node --test` with no mocha or tsx dependency at all.
 
 ## CI/CD
 
-Two GitHub Actions workflows in `.github/workflows/`:
+A single `.github/workflows/ci.yml` workflow runs on GitHub-hosted runners:
 
-- **test.yml** — runs on push to main and PRs. Matrix across all 17 packages.
-  pi-ponytail uses `node --test` directly, pi-rtk and pi-sub use `npm pack --dry-run`, others use `npm ci && npm test`.
-- **publish.yml** — runs on push to main. Checks each package's `package.json`
-  version against the npm registry and publishes if different.
+- **Triggers:** push to `main`, pull requests, and manual `workflow_dispatch`.
+- **Runner matrix:** Linux on `ubuntu-latest` for all packages; `windows-latest` for `pi-windows-tools`.
+- **Changed-package detection:** `dorny/paths-filter` builds a dynamic matrix so only affected packages are tested.
+- **Test commands:** pi-ponytail uses `node --test`; pi-rtk and pi-sub use `npm pack --dry-run`; all others use `npm ci && npm test` (with `npm run typecheck` for TypeScript packages).
+- **Publishing:** On push to `main`, each changed package is published to npm if its version differs from the registry version.
+
+### Pi version bumps
+
+After each Pi minor release, verify extensions against the new SDK:
+
+1. Check the Pi CHANGELOG for "Breaking Changes" that affect extension APIs (TypeBox imports, ExtensionAPI exports, etc.).
+2. Widen peer caps `<0.x.0` → `<0.(x+1).0` in `pi-plan`, `pi-sub`, and `pi-subagent` (the three packages with bounded peers).
+3. Bump their devDeps from `^0.x.0` to `^0.(x+1).0` (also `pi-review`'s devDep).
+4. Patch-version-bump + CHANGELOG the three capped packages; `pi-review` is devDep-only — no version bump needed.
+5. Refresh lockfiles in all packages so `npm ci` installs the new SDK.
+6. Run tests and typecheck; verify the installed SDK version per package.
 
 ## Development discipline (ponytail)
 
@@ -175,6 +187,28 @@ Non-trivial logic (a branch, a loop, a parser, a money/security path) leaves ONE
 - Skills use SKILL.md with YAML frontmatter under `skills/<name>/SKILL.md`.
 - Never hardcode API URLs/keys; always load through config modules.
 - Keep each package focused on one capability area — tools, commands, skills.
+
+## Adding a new package
+
+To add a new extension package to this monorepo:
+
+1. Create `pi-<name>/` with the standard layout:
+   - `package.json` — set `"pi": { "extensions": ["./extensions/index.ts"] }`, `"publishConfig.access": "public"`, appropriate peer/dev deps, `files[]` including source files + `CHANGELOG.md` + `README.md`.
+   - `extensions/index.ts` — default export `(pi: ExtensionAPI) => { /* register tools/commands/hooks */ }`.
+   - `extensions/package.json` — `{ "type": "module" }` for ESM support.
+   - `extensions/test/*.test.ts` — tests co-located with the extension code.
+   - `skills/<name>/SKILL.md` — optional skill with YAML frontmatter.
+   - `CHANGELOG.md` — one per package with version history.
+2. Add the package to the CI matrix in `.github/workflows/ci.yml` (paths-filter entry + `all` array entry with the appropriate test command + typecheck step if TypeScript).
+3. Add the package row to the table in this file and in `README.md`.
+
+### Agent-specific guidelines
+
+- **Serena** is the primary code-navigation tool for symbols/references — prefer it over grep for code searches.
+- **Subagents** (scout for recon, tester for verification) can parallelize read-heavy exploration.
+- **Munin** stores/reuses durable knowledge across sessions — use `munin_search` before non-trivial work.
+- **Ponytail** is active by default — apply the ladder (YAGNI → stdlib → native → dependency → one line → minimum code).
+- Lockfiles must be refreshed (not just `npm ci`) when the Pi SDK version changes — verify installed SDK version per package before trusting test results.
 
 ## Release Process
 

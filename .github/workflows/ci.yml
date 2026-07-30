@@ -9,7 +9,7 @@ on:
 jobs:
   # Detect which packages have changed, build a dynamic matrix
   changes:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
@@ -39,6 +39,7 @@ jobs:
             pi-model-tools: pi-model-tools/**
             pi-obsidian: pi-obsidian/**
             pi-windows-tools: pi-windows-tools/**
+            pi-kicad: pi-kicad/**
             pi-9router: pi-9router/**
 
       - name: Build matrix
@@ -63,6 +64,7 @@ jobs:
               { pkg: 'pi-obsidian', cmd: 'npm ci && npm test' },
               { pkg: 'pi-windows-tools', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-9router', cmd: 'npm ci && npm test && npm run typecheck' },
+              { pkg: 'pi-kicad', cmd: 'npm ci && npm test && npm run typecheck' },
             ];
 
             const selected = '${{ github.event_name }}' === 'workflow_dispatch'
@@ -74,7 +76,7 @@ jobs:
               'test-command': p.cmd,
               runner: p.pkg === 'pi-windows-tools'
                 ? '"windows-latest"'
-                : '["self-hosted","Linux","X64"]',
+                : '"ubuntu-latest"',
             }));
 
             core.setOutput('matrix', JSON.stringify({ include }));

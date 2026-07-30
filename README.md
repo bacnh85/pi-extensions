@@ -16,13 +16,13 @@ Each package lives in its own directory and can be installed independently. This
 | [`@bacnh85/pi-munin`](./pi-munin) | 0.4.9 | Munin long-term memory tools and skill integration. |
 | [`@bacnh85/pi-notebooklm`](./pi-notebooklm) | 0.1.7 | Google NotebookLM notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | [`@bacnh85/pi-obsidian`](./pi-obsidian) | 0.8.11 | Obsidian vault integration for Pi. |
-| [`@bacnh85/pi-plan`](./pi-plan) | 0.8.5 | Read-only planning plus fresh implement → verify → independent review workflow. |
+| [`@bacnh85/pi-plan`](./pi-plan) | 0.8.6 | Read-only planning plus fresh implement → verify → independent review workflow. |
 | [`@bacnh85/pi-ponytail`](./pi-ponytail) | 0.1.9 | Lazy senior-dev mode: YAGNI, stdlib-first coding discipline, and ponytail skills. |
 | [`@bacnh85/pi-review`](./pi-review) | 0.2.6 | Isolated read-only review with same-session fallback. |
 | [`@bacnh85/pi-rtk`](./pi-rtk) | 0.1.11 | Bash command rewriting through RTK for token savings. |
 | [`@bacnh85/pi-serena`](./pi-serena) | 0.9.4 | Serena semantic code navigation, references, refactors, and diagnostics through a persistent worker. |
-| [`@bacnh85/pi-sub`](./pi-sub) | 0.1.22 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
-| [`@bacnh85/pi-subagent`](./pi-subagent) | 0.12.3 | Isolated in-process subagents, parallel/chain delegation, and inspectable threads. |
+| [`@bacnh85/pi-sub`](./pi-sub) | 0.1.23 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
+| [`@bacnh85/pi-subagent`](./pi-subagent) | 0.12.4 | Isolated in-process subagents, parallel/chain delegation, and inspectable threads. |
 | [`@bacnh85/pi-web`](./pi-web) | 0.5.5 | Web search, page extraction, site mapping/crawling, screenshots, and PDFs. |
 | [`@bacnh85/pi-windows-tools`](./pi-windows-tools) | 0.4.2 | Windows-specific developer tools, shell configuration, and WSL integration. |
 
@@ -83,3 +83,39 @@ pi-extensions/
   pi-windows-tools/
   .github/workflows/
 ```
+
+## Contributing
+
+### Prerequisites
+
+- Node.js 22+ and npm.
+- Pi 0.83.0+ installed globally.
+
+### Development
+
+Each package is standalone. To work on one:
+
+```bash
+cd pi-<name>
+npm install
+npm test                 # or node --test (pi-ponytail) or npm pack --dry-run (pi-rtk, pi-sub)
+npm run typecheck        # TypeScript packages only
+```
+
+### Adding a new package
+
+See [`AGENTS.md`](./AGENTS.md) for the canonical scaffold — every package follows the same layout with `extensions/index.ts`, `extensions/package.json`, co-located tests, and a `CHANGELOG.md`.
+
+### Code style
+
+This repo follows **ponytail** discipline: YAGNI, stdlib-first, shortest working diff. No speculative abstractions.
+
+### Release
+
+1. Bump `version` in `package.json` and add a `CHANGELOG.md` entry.
+2. Commit and push to `main`.
+3. CI tests the changed package(s) and auto-publishes to npm if version differs.
+
+### AI coding agents
+
+[`AGENTS.md`](./AGENTS.md) is the authoritative context file — agents should read it before working on this repository.

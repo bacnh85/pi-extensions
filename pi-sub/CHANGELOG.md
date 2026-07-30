@@ -2,6 +2,12 @@
 
 All notable changes to `pi-sub` will be documented in this file.
 
+## 0.1.23 (2026-07-30)
+
+### Improvements
+
+- Widen Pi peer dependency range to <0.84.0 for Pi 0.83.0 compatibility.
+
 ## 0.1.22 (2026-07-30)
 
 ### Improvements

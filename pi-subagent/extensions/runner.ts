@@ -112,7 +112,9 @@ export async function runSubAgent(options: {
     getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
     getSkills: () => ({ skills: [], diagnostics: [] }), getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }), getAgentsFiles: () => ({ agentsFiles: [] }),
-    getSystemPrompt: () => systemPrompt, getAppendSystemPrompt: () => [], extendResources: () => {}, reload: async () => {},
+    getSystemPrompt: () => systemPrompt, getSystemPromptSource: () => undefined,
+    getAppendSystemPrompt: () => [], getAppendSystemPromptSources: () => [],
+    extendResources: () => {}, reload: async () => {},
   };
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: true, maxRetries: 1 } });
   const startedAt = Date.now();
