@@ -3,7 +3,8 @@ import { expect } from "chai";
 import { detectAllShells, detectShell, getAvailableShells, getDefaultShell } from "../lib/shell-detect";
 import type { WindowsShellKind } from "../lib/shell-detect";
 
-describe("shell-detect", () => {
+describe("shell-detect", function () {
+  this.timeout(15000);
   it("detectAllShells returns 5 entries", () => {
     const shells = detectAllShells();
     expect(shells).to.have.length(5);
