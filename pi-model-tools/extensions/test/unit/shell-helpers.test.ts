@@ -38,6 +38,25 @@ describe("semantic miss detection", () => {
     assert.equal(isSemanticMissToolCall("bash", { command: "npm test" }), false);
     assert.equal(isSemanticMissToolCall("bash", { command: "grep -R PI_MODEL_TOOLS README.md" }), false);
   });
+
+  it("does not flag searches in node_modules or .d.ts (Serena cannot index these)", () => {
+    assert.equal(isSemanticMissToolCall("bash", { command: "grep -rn 'ResourceLoader' node_modules/@earendil-works/types.d.ts" }), false);
+    assert.equal(isSemanticMissToolCall("bash", { command: "grep -F 'ResourceLoader' dist/index.d.ts" }), false);
+    assert.equal(isSemanticMissToolCall("bash", { command: "find node_modules -name '*.d.ts'" }), false);
+    assert.equal(isSemanticMissToolCall("bash", { command: "grep 'ResourceLoader' build/output.d.ts" }), false);
+  });
+
+  it("does not flag quoted grep patterns (literal text search, not symbol lookup)", () => {
+    assert.equal(isSemanticMissToolCall("grep", { pattern: "'exact error string'" }), false);
+    assert.equal(isSemanticMissToolCall("grep", { pattern: "\"getSystemPromptSource\"" }), false);
+    assert.equal(isSemanticMissToolCall("grep", { pattern: "`template literal`" }), false);
+  });
+
+  it("still flags real symbol searches in project source", () => {
+    assert.equal(isSemanticMissToolCall("bash", { command: "grep -rn 'class UserService' src/index.ts" }), true);
+    assert.equal(isSemanticMissToolCall("bash", { command: "rg 'function foo' src/**/*.ts" }), true);
+    assert.equal(isSemanticMissToolCall("grep", { pattern: "UserService", path: "src/index.ts" }), true);
+  });
 });
 
 describe("dedicated tool miss detection", () => {

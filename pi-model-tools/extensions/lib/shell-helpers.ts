@@ -12,6 +12,10 @@ function normalizedTarget(value: unknown): string {
   return (typeof value === "string" ? value.toLowerCase() : "").split(/[?#]/, 1)[0];
 }
 
+// Paths Serena cannot index. Steering should NOT fire for these — Serena returns
+// empty results for node_modules, dist, build, .d.ts, and generated artifacts.
+const SERENA_EXCLUDED_PATH_RE = /\/(node_modules|dist|build|\.git|\.next|\.cache|coverage)\/|\.d\.ts\b/i;
+
 export function looksLikeCodePath(value: unknown): boolean {
   return /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|py|go|rs|java|kt|kts|scala|rb|php|cs|cpp|cc|cxx|c|h|hpp|swift|sh|bash|zsh|fish|lua|r|jl|ex|exs|erl|hrl|clj|cljs|fs|fsx|ml|mli|dart|vue|svelte)$/i.test(normalizedTarget(value));
 }
@@ -22,6 +26,8 @@ export function commandLooksLikeSemanticCodeSearch(command: unknown): boolean {
   if (!/\b(rg|grep|ag|ack|sed|awk|find)\b/.test(lowered)) return false;
   if (/\b(ls|pwd|git\s+status|npm\s+(test|run|install)|pnpm\s+(test|run|install)|yarn\s+(test|run|install))\b/.test(lowered)) return false;
   if (/^sed\s+-n\b/.test(command.trim().toLowerCase())) return false;
+  // Don't steer when the target is outside Serena's indexable scope (node_modules, dist, .d.ts, etc.)
+  if (SERENA_EXCLUDED_PATH_RE.test(lowered)) return false;
   return /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|cpp|cc|cxx|c|h|hpp)\b/.test(lowered)
     || /\b(class|function|def|interface|implements|references?|symbol|declaration|implementation|method|variable|rename|refactor)\b/.test(lowered);
 }
@@ -54,13 +60,18 @@ export function isSemanticMissToolCall(toolName: string, input: unknown): boolea
 }
 
 function grepLooksLikeSymbolSearch(input: Record<string, unknown>): boolean {
-  const pattern = typeof input.pattern === "string" ? input.pattern.trim() : "";
+  const rawPattern = typeof input.pattern === "string" ? input.pattern : "";
+  const pattern = rawPattern.trim();
   if (!pattern) return false;
+  // Quoted pattern = literal text search (error message, exact string), not a symbol lookup
+  if (rawPattern.startsWith("'") || rawPattern.startsWith('"') || rawPattern.startsWith("`")) return false;
   const glob = typeof input.glob === "string" ? input.glob : "";
   if (glob && !/\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|py|go|rs|java|kt|rb|php|cs|cpp|hpp)$/i.test(glob)) return false;
   const searchPath = typeof input.path === "string" ? input.path : "";
   if (searchPath) {
     const target = normalizedTarget(searchPath);
+    // Serena cannot index generated/vendored paths
+    if (SERENA_EXCLUDED_PATH_RE.test(target)) return false;
     if (/(^|\/)(readme|changelog|license|copying|package-lock|pnpm-lock|yarn\.lock)(\.[a-z0-9_-]+)?$/.test(target)
       || /(^|\/)(package|tsconfig|jsconfig|biome|eslint|prettier|vitest|vite|rollup|webpack|babel|jest|mocha|nyc)\.(json|jsonc|ya?ml|toml|js|cjs|mjs)$/.test(target)
       || /(^|\/)\.([a-z0-9_-]+)(rc|ignore)?$/.test(target)
