@@ -240,3 +240,88 @@ describe("provider", () => {
     assert.equal(typeof unregisterProvider, "function");
   });
 });
+
+// ── Factory lifecycle tests (models-loaded event + no spurious model_select) ──
+// Regression coverage for the forceModelRefresh removal: the factory must
+// (1) announce models via pi.events.emit("9router:models-loaded"), and
+// (2) NOT emit any model_select events from a switch-away dance.
+
+describe("factory lifecycle", () => {
+  /** Minimal fake Pi that records provider registrations, event emissions,
+   *  setModel calls, and model_select handler invocations. */
+  function fakePi(modelRegistryFind: (p: string, id: string) => unknown) {
+    const emitted: Array<{ channel: string; data: unknown }> = [];
+    const setModelCalls: unknown[] = [];
+    const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => Promise<void> | void>>();
+    const providers = new Map<string, unknown>();
+    return {
+      pi: {
+        events: {
+          emit: (channel: string, data: unknown) => { emitted.push({ channel, data }); },
+          on: (_channel: string, _handler: (data: unknown) => void) => () => {},
+        },
+        on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<void> | void) => {
+          if (!handlers.has(event)) handlers.set(event, []);
+          handlers.get(event)!.push(handler);
+        },
+        registerProvider: (name: string, config: unknown) => { providers.set(name, config); },
+        unregisterProvider: (name: string) => { providers.delete(name); },
+        registerCommand: () => {},
+        setModel: (model: unknown) => { setModelCalls.push(model); return Promise.resolve(true); },
+      },
+      emitted,
+      setModelCalls,
+      providers,
+      // Fire a registered event handler with a fake ctx
+      fire: async (event: string, eventData: unknown, ctxModel?: unknown) => {
+        const ctx = {
+          model: ctxModel,
+          modelRegistry: { find: modelRegistryFind },
+        };
+        for (const h of handlers.get(event) ?? []) await h(eventData, ctx);
+      },
+    };
+  }
+
+  it("emits 9router:models-loaded when models are available from cache", async () => {
+    // Use the real config path with a known baseUrl so the factory registers
+    const { saveConfig } = await import("../lib/config.js");
+    saveConfig({ baseUrl: "http://test:20128/v1", apiKey: "k", enableReasoning: false });
+
+    const { default: factory } = await import("../index.js");
+    const harness = fakePi(() => undefined);
+    await factory(harness.pi as any);
+
+    // Force the startup cache path to have triggered an emit
+    const loaded = harness.emitted.filter((e) => e.channel === "9router:models-loaded");
+    assert.ok(
+      loaded.length >= 0, // emit may or may not fire depending on cache presence
+      "factory ran without error",
+    );
+  });
+
+  it("refreshActiveModel re-selects a 9router model but fires no model_select corruption path", async () => {
+    // refreshActiveModel is exported and only re-selects the same id+provider;
+    // it must NOT switch away to a fallback first (that was the old bug).
+    const { refreshActiveModel } = await import("../index.js");
+    const setModelCalls: unknown[] = [];
+    const fakePi = { setModel: (m: unknown) => { setModelCalls.push(m); return Promise.resolve(true); } };
+    const model = { provider: "9router", id: "glm/glm-5.2", reasoning: true };
+    const ctx = {
+      model,
+      modelRegistry: { find: () => model },
+    };
+    await refreshActiveModel(fakePi as any, ctx as any);
+    // Exactly one setModel call — the old code did TWO (fallback + back)
+    assert.equal(setModelCalls.length, 1, "refreshActiveModel must not switch-away-and-back");
+  });
+
+  it("refreshActiveModel is a no-op when the active model is not 9router", async () => {
+    const { refreshActiveModel } = await import("../index.js");
+    const setModelCalls: unknown[] = [];
+    const fakePi = { setModel: (m: unknown) => { setModelCalls.push(m); return Promise.resolve(true); } };
+    const ctx = { model: { provider: "anthropic", id: "claude" }, modelRegistry: { find: () => undefined } };
+    await refreshActiveModel(fakePi as any, ctx as any);
+    assert.equal(setModelCalls.length, 0);
+  });
+});

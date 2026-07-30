@@ -19,15 +19,6 @@ const STARTUP_DISCOVERY_TIMEOUT_MS = 5_000;
 const CACHE_DIR = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "pi");
 const MODEL_CACHE_PATH = join(CACHE_DIR, "9router-models.json");
 
-/** Model IDs that allow the switch-away-and-back workaround for Pi's
- *  modelsAreEqual guard (see forceModelRefresh below). */
-const FALLBACK_SWITCH_MODELS: [string, string][] = [
-  ["opencode-go", "deepseek-v4-flash"],
-  ["zai-coding-cn", "glm-5.1"],
-  ["zai-coding-cn", "glm-5-turbo"],
-  ["openrouter", "nvidia/nemotron-3-super-120b-a12b:free"],
-];
-
 // ── Model cache ──────────────────────────────────────────────────────────────
 
 function readModelCache(): NineRouterModelRaw[] | null {
@@ -53,28 +44,19 @@ function writeModelCache(models: NineRouterModelRaw[]): void {
   }
 }
 
-// ── Fallback model helpers ───────────────────────────────────────────────────
-
-function findFallbackModel(ctx: ExtensionContext): ReturnType<ExtensionContext["modelRegistry"]["find"]> {
-  for (const [provider, id] of FALLBACK_SWITCH_MODELS) {
-    const model = ctx.modelRegistry.find(provider, id);
-    if (model) return model;
-  }
-  return undefined;
-}
-
-/** Force Pi to pick up updated model capabilities by switching away from the
- *  current 9router model and then back to the refreshed registry copy. */
-export async function forceModelRefresh(
-  pi: ExtensionAPI, ctx: ExtensionContext, modelId: string,
+/** Re-select the active 9router model so Pi picks up refreshed capability
+ *  flags (e.g. reasoning after a toggle). Safe: setModel updates the active
+ *  model object; because id+provider are unchanged, Pi's modelsAreEqual guard
+ *  suppresses the model_select event, so this never corrupts other extensions'
+ *  per-mode model preferences. */
+export async function refreshActiveModel(
+  pi: ExtensionAPI, ctx: ExtensionContext,
 ): Promise<void> {
-  const fallback = findFallbackModel(ctx);
-  if (fallback) {
-    try { await pi.setModel(fallback); } catch { /* auth missing or fallback gone */ }
-  }
-  const refreshed = ctx.modelRegistry.find("9router", modelId);
+  const active = ctx.model;
+  if (active?.provider !== "9router" || !active.id) return;
+  const refreshed = ctx.modelRegistry.find("9router", active.id);
   if (refreshed) {
-    try { await pi.setModel(refreshed); } catch { /* auth missing — skip */ }
+    try { await pi.setModel(refreshed); } catch { /* missing auth — ignore */ }
   }
 }
 
@@ -130,6 +112,9 @@ export default async function (pi: ExtensionAPI) {
 
       unregisterProvider(pi);
       registerProvider(pi, cfg, models);
+      // ponytail: announce so other extensions (e.g. pi-plan's per-mode apply)
+      // can retry deferred model switches now that 9router models are ready.
+      pi.events.emit("9router:models-loaded", { provider: "9router", count: models.length });
     } catch {
       if (gen !== discoveryGen) return;
       // Discovery failed — keep whatever models are currently registered
@@ -142,6 +127,9 @@ export default async function (pi: ExtensionAPI) {
   async function onConfigChange(newConfig: NineRouterConfig) {
     config = newConfig;
     await applyProvider(newConfig);
+    // Announce refreshed model list so other extensions (pi-plan per-mode apply)
+    // can retry any deferred model switches.
+    pi.events.emit("9router:models-loaded", { provider: "9router", count: modelIds.length });
   }
 
   // ── Registration ───────────────────────────────────────────────────────────
@@ -151,28 +139,12 @@ export default async function (pi: ExtensionAPI) {
   // ── Session lifecycle ───────────────────────────────────────────────────────
 
   // On session start, refresh the active model pointer if it's a 9router model.
-  // Pi restores the last selected model after the extension factory completes,
-  // but the restored model object may not reflect freshly registered capabilities
-  // (e.g. reasoning:true from enableReasoning).
+  // Re-selecting the same id+provider updates the model object's capability
+  // flags (e.g. reasoning:true from enableReasoning) without emitting a
+  // model_select event (Pi's modelsAreEqual guard), so it never corrupts
+  // other extensions' per-mode model preferences.
   pi.on("session_start", async (_event, ctx) => {
-    const active = ctx.model;
-    if (active?.provider === "9router" && active.id) {
-      const refreshed = ctx.modelRegistry.find("9router", active.id);
-      if (refreshed) {
-        try { await pi.setModel(refreshed); } catch { /* missing auth — ignore */ }
-      }
-    }
-  });
-
-  // When a 9router model is selected via /model (or restored), ensure its
-  // reasoning capabilities match the current config.  This catches stale
-  // model objects that predate a reasoning-toggle.
-  // ponytail: bail fast — only do the slow switch-away dance when actually needed.
-  pi.on("model_select", async (event, ctx) => {
-    if (event.model.provider !== "9router" || !event.model.id) return;
-    if (config.enableReasoning && !event.model.reasoning) {
-      await forceModelRefresh(pi, ctx, event.model.id);
-    }
+    await refreshActiveModel(pi, ctx);
   });
 
   // ── Startup ────────────────────────────────────────────────────────────────
@@ -186,6 +158,8 @@ export default async function (pi: ExtensionAPI) {
       const models = cached.map((m) => mapModel(m, config.enableReasoning));
       modelIds = models.map((m) => m.id);
       registerProvider(pi, config, models);
+      // Models are ready synchronously from cache — announce immediately.
+      pi.events.emit("9router:models-loaded", { provider: "9router", count: models.length });
       // Refresh in background to keep cache current.
       void startBackgroundDiscovery(config);
     } else {

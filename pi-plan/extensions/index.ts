@@ -302,6 +302,13 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   let lastPlanStatus: PlanStatus | undefined;
   let applyingStoredThinking = false;
   let applyingStoredModel = false;
+  /** Deferred-retry state: when the configured per-mode model isn't in the
+   *  registry yet (late-loading provider like 9router), schedule one retry.
+   *  Cleared by the 9router:models-loaded event or the timeout firing. */
+  let pendingModelApply = false;
+  let modelRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Most-recent ExtensionContext, used by the models-loaded event callback. */
+  let lastCtx: ExtensionContext | undefined;
   /** Set on successful write_plan, cleared after first agent_settled prompt. */
   let planReadyForReview = false;
   /** Suppress --plan flag during fresh-session handoff. */
@@ -448,26 +455,63 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     persistPreferences();
   }
 
-  async function applyModeModel(ctx: ExtensionContext): Promise<void> {
+  /** Resolve the configured per-mode model object from the registry, or
+   *  undefined if none configured / not yet loaded. */
+  function resolveModeModel(ctx: ExtensionContext):
+    { model: NonNullable<ExtensionContext["model"]>; target: string } | undefined {
     const target = planModeEnabled ? preferences?.planModel : preferences?.normalModel;
-    if (!target) return;
-    const current = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-    if (target === current) return; // ponytail: avoid settings.json churn; core no-ops on equal anyway
+    if (!target) return undefined;
     const parsed = parseModel(target);
-    const model = parsed ? ctx.modelRegistry.find(parsed.provider, parsed.id) : undefined;
-    if (!model) {
-      ctx.ui.notify(`Configured ${planModeEnabled ? "plan" : "code"} model unavailable: ${target}`, "warning");
+    if (!parsed) return undefined;
+    const model = ctx.modelRegistry.find(parsed.provider, parsed.id);
+    return model ? { model, target } : undefined;
+  }
+
+  /** Schedule a single deferred retry of applyModeModel (clears any prior). */
+  function scheduleModelRetry(ctx: ExtensionContext): void {
+    if (modelRetryTimer) clearTimeout(modelRetryTimer);
+    pendingModelApply = true;
+    // ponytail: heuristic 1.5s fallback; 9router:models-loaded fires sooner
+    modelRetryTimer = setTimeout(() => {
+      modelRetryTimer = undefined;
+      pendingModelApply = false;
+      void applyModeModel(ctx);
+    }, 1500);
+    modelRetryTimer.unref?.();
+  }
+
+  async function applyModeModel(ctx: ExtensionContext): Promise<void> {
+    const resolved = resolveModeModel(ctx);
+    if (!resolved) {
+      const target = planModeEnabled ? preferences?.planModel : preferences?.normalModel;
+      if (target) {
+        // Model configured but not in the registry yet (late-loading provider).
+        // Don't give up — retry once when providers finish loading.
+        ctx.ui.notify(
+          `Configured ${planModeEnabled ? "plan" : "code"} model not loaded yet: ${target}. Will retry when providers are ready.`,
+          "info",
+        );
+        scheduleModelRetry(ctx);
+      }
       return;
     }
+    const { model, target } = resolved;
+    const current = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+    if (target === current) return; // ponytail: avoid settings.json churn; core no-ops on equal anyway
     applyingStoredModel = true;
     try {
-      await pi.setModel(model); // rejects on missing auth
+      const ok = await pi.setModel(model); // returns false (not throw) when no API key
+      if (!ok) {
+        ctx.ui.notify(`No API key for ${target}; ${planModeEnabled ? "plan" : "code"} model switch skipped.`, "warning");
+        return;
+      }
       // recompute per-model thinking for the newly-selected model
       if (preferences) {
         const effective = getEffectiveThinking(preferences, model);
         planThinking = effective.plan;
         normalThinking = effective.normal;
       }
+      ctx.ui.notify(`Switched to ${planModeEnabled ? "plan" : "code"} model: ${target}`, "info");
     } catch (error) {
       ctx.ui.notify(`${planModeEnabled ? "Plan" : "Code"} model switch failed: ${String(error)}`, "warning");
     } finally {
@@ -1279,21 +1323,6 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     },
   });
 
-  async function handlePlanModelCommand(args: string, ctx: ExtensionContext): Promise<void> {
-    if (args.trim().toLowerCase() === "clear") {
-      if (!preferences) { ctx.ui.notify("No pi-plan preferences loaded.", "warning"); return; }
-      preferences.planModel = undefined;
-      preferences.normalModel = undefined;
-      await persistPreferences();
-      ctx.ui.notify("Per-mode model override cleared. Fresh sessions use the global default.", "info");
-      return;
-    }
-    ctx.ui.notify(
-      `pi-plan model — plan: ${preferences?.planModel ?? "(global default)"} · normal: ${preferences?.normalModel ?? "(global default)"}`,
-      "info",
-    );
-  }
-
   pi.registerCommand("plan", {
     description: "Toggle pi-plan mode",
     handler: async (args, ctx) =>
@@ -1303,11 +1332,6 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   pi.registerCommand("plan-approve", {
     description: "Approve the current plan for current, fresh, or reviewed execution",
     handler: async (args, ctx) => handlePlanApproval(args, ctx),
-  });
-
-  pi.registerCommand("plan-model", {
-    description: "View or clear the per-mode model override (use clear to reset)",
-    handler: async (args, ctx) => handlePlanModelCommand(args, ctx),
   });
 
   advisor = registerAdvisor(pi, {
@@ -1420,6 +1444,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   // ── Events ──────────────────────────────────────────────────
 
   pi.on("session_start", async (event, ctx) => {
+    lastCtx = ctx;
     preferences = await loadPreferences();
     if (!preferences) {
       preferences = {
@@ -1467,8 +1492,13 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("model_select", async (event, ctx) => {
+    lastCtx = ctx;
     if (!preferences) return;
     if (applyingStoredModel || event.source === "restore") return;
+    // ponytail: only genuine user-initiated selections (built-in /model or
+    // Ctrl+P cycling) should be recorded as the per-mode pick. Other sources
+    // (e.g. an extension re-selecting a model) are ignored to avoid corruption.
+    if (event.source !== "set" && event.source !== "cycle") return;
     recordActiveModel(`${event.model.provider}/${event.model.id}`);
     const effective = getEffectiveThinking(preferences, event.model);
     // ponytail: always update both stored levels, then apply active one
@@ -1477,6 +1507,17 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     applyThinking(planModeEnabled ? planThinking : normalThinking);
     updateFooter(ctx);
     persistState();
+  });
+
+  // Cross-extension signal: a late-loading provider (e.g. pi-9router) has
+  // finished registering its models. If we deferred a per-mode model apply
+  // because the model wasn't in the registry yet, retry immediately.
+  pi.events.on("9router:models-loaded", () => {
+    if (pendingModelApply && lastCtx) {
+      pendingModelApply = false;
+      if (modelRetryTimer) { clearTimeout(modelRetryTimer); modelRetryTimer = undefined; }
+      void applyModeModel(lastCtx);
+    }
   });
 
   pi.on("session_tree", async (_event, ctx) => {

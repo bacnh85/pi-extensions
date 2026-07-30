@@ -1,18 +1,8 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { NineRouterConfig } from "../lib/config.js";
 import { saveConfig, configSummary, normalizeUrl } from "../lib/config.js";
 import { fetchModels } from "../lib/client.js";
-import { forceModelRefresh } from "../index.js";
-
-/** Re-set the active model if it's a 9router model so Pi picks up updated
- *  capability flags (e.g. reasoning → true after toggle).  Uses the
- *  switch-away-and-back workaround to bypass Pi's modelsAreEqual guard. */
-async function refreshActiveModel(ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
-  const active = ctx.model;
-  if (active?.provider === "9router" && active.id) {
-    await forceModelRefresh(pi, ctx, active.id);
-  }
-}
+import { refreshActiveModel } from "../index.js";
 
 export function registerLoginCommand(
   pi: ExtensionAPI,
@@ -66,7 +56,7 @@ export function registerLoginCommand(
         saveConfig(newConfig);
         await onConfigChange(newConfig);
         // Refresh active model to pick up any updated capability flags
-        await refreshActiveModel(ctx, pi);
+        await refreshActiveModel(pi, ctx);
         ctx.ui.notify(
           `9router connected — ${models.length} models discovered.\n${configSummary(newConfig)}`,
           "info",
@@ -87,13 +77,10 @@ export function registerLoginCommand(
       const current = getConfig();
       const next = !current.enableReasoning;
       const newConfig: NineRouterConfig = { ...current, enableReasoning: next };
-      const wasActiveModel = ctx.model;
       saveConfig(newConfig);
       await onConfigChange(newConfig);
-      // Force-refresh active model to bypass Pi's modelsAreEqual guard
-      if (wasActiveModel?.provider === "9router" && wasActiveModel.id) {
-        await forceModelRefresh(pi, ctx, wasActiveModel.id);
-      }
+      // Refresh active model to pick up toggled reasoning capabilities
+      await refreshActiveModel(pi, ctx);
       ctx.ui.notify(
         `9router reasoning ${next ? "ENABLED" : "DISABLED"} — ` +
           `use Shift+Tab or model :high/:max suffixes for reasoning.`,

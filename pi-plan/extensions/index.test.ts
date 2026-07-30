@@ -164,6 +164,7 @@ interface FakePi {
   thinkingLevel: string | null;
   modelSets: any[];
   setModelReject?: boolean;
+  setModelFalse?: boolean; // setModel returns false (no auth) instead of rejecting
   entries: any[];
   sentMessages: any[];
   customMessages: any[];
@@ -171,6 +172,7 @@ interface FakePi {
   flagValues: Record<string, any>;
   eventEmits?: any[];
   onEmit?: (event: string, data: any) => void;
+  eventHandlers?: Record<string, Array<(data: any) => void>>;
 }
 
 function createFakePi(
@@ -223,7 +225,10 @@ function createFakePi(
     },
     setModel(model: any) {
       state.modelSets.push(model);
-      return state.setModelReject ? Promise.reject(new Error("No API key for model")) : Promise.resolve();
+      // Real Pi setModel returns Promise<boolean> — false on missing auth,
+      // true on success. Rejects only on unexpected failures.
+      if (state.setModelReject) return Promise.reject(new Error("No API key for model"));
+      return Promise.resolve(!state.setModelFalse);
     },
     appendEntry(customType: string, data?: any) {
       state.entries.push({ customType, data });
@@ -243,6 +248,11 @@ function createFakePi(
         state.eventEmits ??= [];
         state.eventEmits.push({ event, data });
         state.onEmit?.(event, data);
+      },
+      on(channel: string, handler: (data: any) => void) {
+        state.eventHandlers ??= {};
+        (state.eventHandlers[channel] ??= []).push(handler);
+        return () => {}; // ponytail: no-op unsubscribe
       },
     },
     exec: async (_cmd: string, _args: string[], _options?: any) => ({
@@ -1762,14 +1772,16 @@ describe("thinking level preferences", () => {
 
 describe("per-mode model preferences", () => {
   function modelCtx(model: any): any {
+    const models = [
+      { provider: "zai-coding-cn", id: "glm-5.2" },
+      { provider: "opencode-go", id: "deepseek-v4-flash" },
+    ];
     return fakeCtx({
       model,
       modelRegistry: {
-        getAvailable: () => [],
-        find: (p: string, i: string) =>
-          p === "zai-coding-cn" && i === "glm-5.2" ? { provider: p, id: i }
-          : p === "opencode-go" && i === "deepseek-v4-flash" ? { provider: p, id: i }
-          : undefined,
+        getAvailable: () => models,
+        refresh: async () => {},
+        find: (p: string, i: string) => models.find((m) => m.provider === p && m.id === i),
       },
     });
   }
@@ -1860,20 +1872,20 @@ describe("per-mode model preferences", () => {
     assert.equal(ext.modelSets.length, 0, "no switch when the configured model is already active");
   });
 
-  it("clears planModel and normalModel via /plan-model clear", async () => {
+  it("notifies when applyModeModel switches on mode toggle", async () => {
     cleanPrefs();
     mkdirSync(path.dirname(prefsPath()), { recursive: true });
     writeFileSync(prefsPath(), JSON.stringify({
       version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {},
-      planModel: "zai-coding-cn/glm-5.2", normalModel: "9router/ocg/deepseek-v4-flash",
+      planModel: "zai-coding-cn/glm-5.2",
     }));
+    const notices: string[] = [];
     const ext = createFakePi(["read"], {});
     const ctx = modelCtx({ provider: "test", id: "model-1" });
-    await ext.handlers.session_start?.[0]({ reason: "resume" }, ctx);
-    await ext.commands["plan-model"].handler("clear", ctx);
-    const after = JSON.parse(readFileSync(prefsPath(), "utf8"));
-    assert.equal(after.planModel, undefined);
-    assert.equal(after.normalModel, undefined);
+    ctx.ui.notify = (m: string) => notices.push(m);
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.commands["plan"].handler("", ctx); // enter plan mode -> applyModeModel switches
+    assert.ok(notices.some((n) => /Switched to plan model/i.test(n)), "notifies on model switch");
   });
 
   it("tolerates a legacy prefs file, then restores a persisted planModel on startup", async () => {
@@ -1913,6 +1925,92 @@ describe("per-mode model preferences", () => {
     // enter plan mode — should switch to glm-5.2 and apply ITS planThinking
     await ext.commands["plan"].handler("", ctx);
     assert.equal(ext.thinkingLevel, "high", "plan mode applies plan model's planThinking, not the normal model's stale planThinking");
+  });
+
+  it("defers applyModeModel when the configured model is not yet in the registry", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {},
+      planModel: "9router/glm/glm-5.2",
+    }));
+    const notices: string[] = [];
+    const ext = createFakePi(["read"], { plan: true });
+    // Registry starts EMPTY (9router models not loaded yet)
+    const ctx = fakeCtx({
+      model: { provider: "test", id: "model-1" },
+      modelRegistry: { getAvailable: () => [], refresh: async () => {}, find: () => undefined },
+    });
+    ctx.ui.notify = (m: string) => notices.push(m); // preserve theme.fg from fakeCtx
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    // No switch happened (model not found), but a retry is scheduled
+    assert.equal(ext.modelSets.length, 0, "no switch when model not in registry");
+    assert.ok(notices.some((n) => /not loaded yet/i.test(n)), "notifies that a retry is scheduled");
+  });
+
+  it("applies the deferred model when 9router:models-loaded fires", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {},
+      planModel: "9router/glm/glm-5.2",
+    }));
+    const ext = createFakePi(["read"], { plan: true });
+    const glmModel = { provider: "9router", id: "glm/glm-5.2" };
+    // Registry starts empty; find() will return the model only AFTER we flip a flag
+    let loaded = false;
+    const ctx = fakeCtx({
+      model: { provider: "test", id: "model-1" },
+      modelRegistry: {
+        getAvailable: () => (loaded ? [glmModel] : []),
+        refresh: async () => {},
+        find: (p: string, i: string) => loaded && p === "9router" && i === "glm/glm-5.2" ? glmModel : undefined,
+      },
+    });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    assert.equal(ext.modelSets.length, 0, "no switch yet — model not loaded");
+
+    // Simulate 9router finishing its model load
+    loaded = true;
+    for (const h of ext.eventHandlers?.["9router:models-loaded"] ?? []) h({ provider: "9router", count: 1 });
+    // The event handler runs synchronously inside applyModeModel; await a microtask
+    await new Promise((r) => setTimeout(r, 0));
+    assert.ok(ext.modelSets.some((m: any) => m.provider === "9router" && m.id === "glm/glm-5.2"),
+      "deferred model applies after the models-loaded signal");
+  });
+
+  it("reports a warning (not 'switched') when setModel returns false (no auth)", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {},
+      planModel: "zai-coding-cn/glm-5.2",
+    }));
+    const notices: string[] = [];
+    const ext = createFakePi(["read"], { plan: true });
+    ext.setModelFalse = true; // setModel returns false — no API key
+    const ctx = modelCtx({ provider: "test", id: "model-1" });
+    ctx.ui.notify = (m: string) => notices.push(m);
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    assert.ok(notices.some((n) => /No API key/i.test(n)), "warns about missing auth");
+    assert.ok(!notices.some((n) => /Switched to/i.test(n)), "does NOT report a successful switch");
+  });
+
+  it("does not record a model_select with an unknown source", async () => {
+    cleanPrefs();
+    const ext = createFakePi(["read"], {});
+    const ctx = modelCtx({ provider: "test", id: "model-1" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.commands["plan"].handler("", ctx); // enter plan mode
+
+    // An extension emits model_select with a non-user source (e.g. "refresh")
+    await ext.handlers.model_select?.[0](
+      { model: { provider: "opencode-go", id: "deepseek-v4-flash" }, previousModel: { provider: "test", id: "model-1" }, source: "refresh" },
+      ctx,
+    );
+
+    // Re-enter plan mode: planModel should NOT be deepseek (the unknown-source pick)
+    ext.modelSets.length = 0;
+    await ext.commands["plan"].handler("", ctx); // leave
+    await ext.commands["plan"].handler("", ctx); // re-enter
+    assert.equal(ext.modelSets.length, 0, "unknown-source model_select was not recorded as planModel");
   });
 });
 
