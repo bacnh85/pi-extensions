@@ -43,6 +43,7 @@ import {
   normalizeTimeout,
   resolveSafeCwd,
   validateAgentTools,
+  needsExtensions,
   truncateParallelOutput,
   validateExecutionRequest,
   READ_ONLY_TOOLS,
@@ -170,7 +171,9 @@ export default function (pi: ExtensionAPI) {
           : " (parent fallback)";
         const thinkingInfo = agent.thinking ? `, thinking: ${agent.thinking}` : "";
         const sandboxInfo = agent.sandbox ? `, sandbox: ${agent.sandbox}` : "";
-        return `- **${agent.name}**: ${agent.description}${modelInfo}${thinkingInfo}${sandboxInfo}`;
+        // ponytail: one-line inheritance hint; the model picks agents by description, this just sets expectations.
+        const toolsInfo = agent.tools ? `, tools: ${agent.tools.join(", ")}` : ", tools: inherits all parent tools";
+        return `- **${agent.name}**: ${agent.description}${modelInfo}${thinkingInfo}${sandboxInfo}${toolsInfo}`;
       })
       .join("\n");
     return {
@@ -179,6 +182,8 @@ export default function (pi: ExtensionAPI) {
         `\n\n## Available Subagents\n${catalog}\n\n` +
         "The subagent tool can delegate tasks to these specialized agents with isolated context. " +
         "Use for read-heavy exploration, parallel analysis, or work that would flood the main context.\n" +
+        "Agents marked `inherits all parent tools` can use web, Serena, Munin, and other extensions the main agent has; " +
+        "agents with an explicit tool list are leaner and restricted to those tools.\n" +
         "Prefer **scout** and **tester** for cheap routine work. " +
         "Prefer **worker** or **general-purpose** for normal coding. " +
         "Prefer **planner** and **reviewer** for consequential reasoning. " +
@@ -206,6 +211,7 @@ export default function (pi: ExtensionAPI) {
       timeout: request.timeout,
       instructions: request.instructions,
       signal: request.signal,
+      readOnly: request.readOnly,
       onMessage: (result) => threadStore.updateThread(thread.id, { result }),
       onProgress: (progress) => { threadStore.updateProgress(thread.id, progress); request.onProgress?.(progress); },
     }).then((result) => {
@@ -465,6 +471,12 @@ export default function (pi: ExtensionAPI) {
       const modelRuntime = (modelRegistry as any).runtime;
       const authStorage = (modelRegistry as any).authStorage;
 
+      // Parent session's registered tool names. Agents that omit `tools` inherit
+      // the full set (minus the denylist); agents with an explicit `tools` line
+      // are validated against built-ins ∪ this set.
+      const parentToolNames = pi.getAllTools().map((t) => t.name);
+      const projectTrusted = ctx.isProjectTrusted();
+
       // Helper: resolve a safe child working directory.
       function resolveChildCwd(childCwd: string | undefined): string {
         const safe = resolveSafeCwd({ workspaceRoot, childCwd, allowExternalCwd });
@@ -474,21 +486,22 @@ export default function (pi: ExtensionAPI) {
         return safe.path;
       }
 
-      // Helper: validate and normalise tools for an agent.
-      function resolveChildTools(agentTools: string[] | undefined, sandbox?: string, readOnly?: boolean): string[] {
-        const defaultTools = ["read", "bash", "edit", "write", "grep", "find", "ls"];
-        let rawTools = agentTools ?? defaultTools;
+      // Helper: validate and normalise tools for an agent. Returns the effective
+      // tool list and whether extensions must be loaded (any non-built-in tool).
+      function resolveChildTools(agentTools: string[] | undefined, sandbox?: string, readOnly?: boolean): { tools: string[]; loadExtensions: boolean } {
+        // Omitted tools => inherit all parent tools (Claude Code model).
+        let rawTools = agentTools ?? parentToolNames;
         // sandbox overrides tools: silently strip mutation tools, not an error
         if (sandbox === "read-only") {
           rawTools = rawTools.filter(t => READ_ONLY_TOOLS.includes(t));
           if (rawTools.length === 0) rawTools = [...READ_ONLY_TOOLS];
         }
         const effectiveReadOnly = readOnly || sandbox === "read-only";
-        const result = validateAgentTools({ tools: rawTools, readOnly: effectiveReadOnly });
+        const result = validateAgentTools({ tools: rawTools, readOnly: effectiveReadOnly, availableTools: parentToolNames });
         if (result.errors.length > 0) {
           throw new Error(`Tool validation errors: ${result.errors.join("; ")}`);
         }
-        return result.tools;
+        return { tools: result.tools, loadExtensions: needsExtensions(result.tools) };
       }
 
       // Helper: normalise timeout.
@@ -550,10 +563,13 @@ export default function (pi: ExtensionAPI) {
 
         // Security: validate tools, timeout, and cwd (wrapped in try/catch).
         let tools: string[];
+        let loadExtensions: boolean;
         let effectiveTimeoutMs: number | undefined;
         let safeCwd: string;
         try {
-          tools = resolveChildTools(agent.tools, agent.sandbox, isReadOnly);
+          const resolved = resolveChildTools(agent.tools, agent.sandbox, isReadOnly);
+          tools = resolved.tools;
+          loadExtensions = resolved.loadExtensions;
           effectiveTimeoutMs = resolveChildTimeout(timeoutMs, params.timeout);
           safeCwd = resolveChildCwd(cwd);
         } catch (err: unknown) {
@@ -646,6 +662,8 @@ export default function (pi: ExtensionAPI) {
               thinkingLevel: agent.thinking,
               onMessage: onProgress,
               onProgress: onActivity,
+              loadExtensions,
+              projectTrusted,
             });
 
             if (result.errorMessage && isRateLimitError(result.errorMessage)) {

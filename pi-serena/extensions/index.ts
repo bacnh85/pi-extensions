@@ -177,8 +177,13 @@ function resultText(response: SerenaWorkerResponse): string {
   return typeof response.result === "string" ? response.result : JSON.stringify(response.result, null, 2);
 }
 
+// Module-level singleton: the Python worker is shared across the parent session and all
+// in-process pi-subagent children. Previously this lived in the factory closure, so every
+// child session that loaded pi-serena spawned a separate Python process that leaked on
+// child dispose (no shutdown hook). One worker serves all callers.
+let worker: SerenaWorkerClient | undefined;
+
 export default function serenaToolsExtension(pi: ExtensionAPI) {
-  let worker: SerenaWorkerClient | undefined;
   let semanticMissCount = 0;
   let lastReminderTs = 0;
 
@@ -628,6 +633,18 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     }
   });
 
+  // session_shutdown fires only on parent lifecycle events (reload/quit/new/fork/
+  // resume) — child sessions (pi-subagent) use dispose() which does NOT emit it.
+  // So stopping here is safe: it never runs for children, and the module-level
+  // singleton means children reuse this worker without spawning their own.
+  //
+  // ponytail: known race — if a child is mid-serena-request when the parent
+  // reloads, worker.stop() rejects that request with "Serena worker stopped"
+  // instead of the child seeing a clean abort. The parent session teardown aborts
+  // the child's subagent tool call in the same tick anyway, so the child fails
+  // either way; no data is lost and the worker is cleaned up. Reference-counting
+  // the worker across parent+children was considered and rejected as
+  // over-engineering for a cosmetic error-text difference during teardown.
   pi.on("session_shutdown", async (_event, ctx) => {
     try {
       await worker?.stop();

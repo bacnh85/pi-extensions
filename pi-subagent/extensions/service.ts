@@ -5,6 +5,7 @@ import { resolveModel } from "./model.ts";
 import {
   isRateLimitError,
   validateAgentTools,
+  needsExtensions,
   normalizeTimeout,
   resolveSafeCwd,
   MAX_INSTRUCTIONS_LENGTH,
@@ -39,6 +40,8 @@ export async function runNamedAgent(options: {
   timeout?: number;
   instructions?: string;
   signal?: AbortSignal;
+  /** When true, only read-only tools are permitted regardless of agent.sandbox. */
+  readOnly?: boolean;
   onMessage?: (result: SubAgentResult) => void;
   onProgress?: (progress: SubAgentProgress) => void;
 }): Promise<SubAgentResult> {
@@ -52,17 +55,25 @@ export async function runNamedAgent(options: {
   // Security: validate and normalise timeout.
   const effectiveTimeoutMs = normalizeTimeout({ requested: options.timeout }).timeoutMs;
 
-  // Security: validate tools against allowlist.
-  let rawTools = options.agent.tools ?? ["read", "bash", "edit", "write", "grep", "find", "ls"];
+  // Parent tool names — agents without an explicit `tools` line inherit them.
+  const parentToolNames = (options.ctx as any).getAllTools?.()?.map((t: { name: string }) => t.name) as string[] | undefined;
+
+  // Security: validate tools against allowlist (built-ins ∪ inherited parent tools).
+  // readOnly from the caller (e.g. pi-review) is enforced even when agent.sandbox
+  // is unset — never trust a caller-supplied tool list without the read-only filter.
+  const effectiveReadOnly = options.readOnly === true || options.agent.sandbox === "read-only";
+  let rawTools = options.agent.tools ?? parentToolNames ?? ["read", "bash", "edit", "write", "grep", "find", "ls"];
   // Enforce read-only sandbox: strip mutating and execution tools
-  if (options.agent.sandbox === "read-only") {
+  if (effectiveReadOnly) {
     rawTools = rawTools.filter(t => READ_ONLY_TOOLS.includes(t));
     if (rawTools.length === 0) rawTools = [...READ_ONLY_TOOLS];
   }
-  const toolValidation = validateAgentTools({ tools: rawTools, readOnly: options.agent.sandbox === "read-only" });
+  const toolValidation = validateAgentTools({ tools: rawTools, readOnly: effectiveReadOnly, availableTools: parentToolNames });
   if (toolValidation.errors.length > 0) {
     throw new Error(`Tool validation errors for agent "${options.agent.name}": ${toolValidation.errors.join("; ")}`);
   }
+  const loadExtensions = needsExtensions(toolValidation.tools);
+  const projectTrusted = options.ctx.isProjectTrusted();
 
   // Security: validate cwd (service caller must provide valid cwd).
   // The service path uses the same policy as the tool path.
@@ -119,6 +130,8 @@ export async function runNamedAgent(options: {
       thinkingLevel: options.agent.thinking,
       onMessage: options.onMessage,
       onProgress: options.onProgress,
+      loadExtensions,
+      projectTrusted,
     });
 
     if (result.errorMessage && isRateLimitError(result.errorMessage)) {

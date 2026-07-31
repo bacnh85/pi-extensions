@@ -12,8 +12,12 @@ import * as path from "node:path";
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Tools that child agents may use. The subagent tool is never included. */
-export const ALLOWED_CHILD_TOOLS = [
+/**
+ * Pi's built-in tools. Agents whose effective tool set is a subset of these
+ * run in the cheap lean loader (no extensions loaded). Any other tool name
+ * (web_search, serena_*, munin_*, …) requires loading the parent's extensions.
+ */
+export const BUILTIN_TOOLS = [
   "read",
   "grep",
   "find",
@@ -22,6 +26,16 @@ export const ALLOWED_CHILD_TOOLS = [
   "edit",
   "write",
 ] as const;
+
+/** Backwards-compatible alias. */
+export const ALLOWED_CHILD_TOOLS = BUILTIN_TOOLS;
+
+/**
+ * Tools never available to child agents, regardless of inheritance.
+ * `subagent` is the only delegation primitive today; if another extension ever
+ * adds a delegation/spawn tool, it must be added here too (recursion guard).
+ */
+export const DENIED_CHILD_TOOLS = new Set(["subagent"]);
 
 export const READ_ONLY_TOOLS: readonly string[] = ["read", "grep", "find", "ls"];
 export const MUTATION_TOOLS: readonly string[] = ["edit", "write"];
@@ -208,6 +222,14 @@ export interface ValidateToolsOptions {
   tools: string[];
   /** When true, only read-only tools are permitted. Mutation/execution tools are rejected. */
   readOnly?: boolean;
+  /**
+   * Parent session's registered tool names. When provided, a tool is accepted if
+   * it is a built-in OR in this set (and not in DENIED_CHILD_TOOLS) — this is
+   * how children inherit extension tools (web, serena, munin, …). When omitted,
+   * only BUILTIN_TOOLS are accepted (lean/legacy mode).
+   * Callers must pass a stable snapshot and not mutate it afterwards.
+   */
+  availableTools?: readonly string[];
 }
 
 export interface ValidateToolsResult {
@@ -224,8 +246,20 @@ export interface ValidateToolsResult {
  * Deduplicates tool names.
  * When `readOnly` is true, only READ_ONLY_TOOLS are permitted.
  */
+/**
+ * Whether a tool set contains any extension tool (non-built-in). When true the
+ * runner loads the parent's extensions into the child; when false it uses the
+ * lean empty-loader stub, saving system-prompt tokens. Recon agents with an
+ * explicit built-in-only `tools` line stay cheap automatically.
+ */
+export function needsExtensions(tools: readonly string[]): boolean {
+  const builtins = new Set<string>(BUILTIN_TOOLS);
+  return tools.some((t) => !builtins.has(t));
+}
+
 export function validateAgentTools(options: ValidateToolsOptions): ValidateToolsResult {
-  const { readOnly = false } = options;
+  const { readOnly = false, availableTools } = options;
+  const extensionTools = availableTools ? new Set(availableTools) : undefined;
   const seen = new Set<string>();
   const tools: string[] = [];
   const errors: string[] = [];
@@ -234,16 +268,23 @@ export function validateAgentTools(options: ValidateToolsOptions): ValidateTools
     const tool = raw.trim();
     if (!tool) continue;
 
-    // Reject subagent regardless of casing (Pi tool names are case-sensitive
-    // but "subagent" should never pass through).
-    if (tool.toLowerCase() === "subagent") {
-      errors.push(`Tool "subagent" is not allowed in child agents (recursive delegation is prevented).`);
+    // Silently strip denied tools (e.g. "subagent") regardless of casing. They
+    // are never available to children — whether explicitly listed in an agent's
+    // `tools:` line or inherited via parentToolNames. This matches Claude Code,
+    // which removes denied tools from subagents "even when listed in the tools
+    // field". No error: inheritance must not crash on a tool the child can't have.
+    if (DENIED_CHILD_TOOLS.has(tool.toLowerCase())) {
       continue;
     }
 
-    // Check against allowlist
-    if (!ALLOWED_CHILD_TOOLS.includes(tool as any)) {
-      errors.push(`Unknown tool "${tool}". Allowed tools: ${ALLOWED_CHILD_TOOLS.join(", ")}.`);
+    // Check against allowlist: built-ins, plus inherited extension tools when availableTools given.
+    const isBuiltin = BUILTIN_TOOLS.includes(tool as any);
+    const isExtension = extensionTools?.has(tool) ?? false;
+    if (!isBuiltin && !isExtension) {
+      const allowed = extensionTools
+        ? "parent tools"
+        : BUILTIN_TOOLS.join(", ");
+      errors.push(`Unknown tool "${tool}". Allowed tools: ${allowed}.`);
       continue;
     }
 

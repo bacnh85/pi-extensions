@@ -19,6 +19,8 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
   createAgentSession,
   createExtensionRuntime,
+  DefaultResourceLoader,
+  getAgentDir,
   type ResourceLoader,
   SessionManager,
   SettingsManager,
@@ -45,6 +47,54 @@ export interface UsageStats {
 
 export const DEFAULT_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
 export const HARD_TIMEOUT_MS = 20 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Extension resource loader
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a FRESH lean DefaultResourceLoader for this child — no skills, prompt
+ * templates, context files (AGENTS.md), or themes. Extensions are loaded per
+ * child so their factories run against a runtime that THIS child's session will
+ * bind.
+ *
+ * Do NOT cache/share this loader. Extensions capture the ExtensionAPI (`pi`)
+ * at factory load time, and its actions delegate to the runtime passed to the
+ * factory (see createExtensionAPI: pi.getAllTools() → runtime.getAllTools()).
+ * If extensions were loaded once against a shared/cached runtime, that runtime
+ * is never the one any single child binds: a session binds the runtime its own
+ * getExtensions() returned (AgentSession constructor), while the factory-captured
+ * pi still points at the shared runtime. A child then hits the runtime's throwing
+ * "Extension runtime not initialized" stubs on the first provider request
+ * (pi-model-tools' before_provider_request calls pi.getAllTools()), or stale-ctx
+ * errors when the shared runtime is invalidated by the first child's dispose.
+ * A per-child loader keeps every captured `pi` pointing at a runtime this child
+ * both binds and owns.
+ *
+ * Project-extension trust is resolved from the parent (`projectTrusted`) so a
+ * child never prompts for trust (it has no UI). reload() per child re-reads
+ * extension files + re-runs factories; acceptable for short-lived children.
+ */
+async function getExtensionLoader(cwd: string, projectTrusted: boolean): Promise<ResourceLoader> {
+  const loader = new DefaultResourceLoader({
+    cwd,
+    agentDir: getAgentDir(),
+    noSkills: true,
+    noPromptTemplates: true,
+    noContextFiles: true,
+    noThemes: true,
+  });
+  await loader.reload({ resolveProjectTrust: async () => projectTrusted });
+  // Log (don't throw on) extension load errors — a misbehaving extension must
+  // not crash the child; the agent simply won't have that tool.
+  const loadErrors = loader.getExtensions().errors;
+  if (loadErrors.length > 0) {
+    process.stderr.write(
+      `[pi-subagent] extension load warnings in child loader: ${loadErrors.map((e) => `${e.path}: ${e.error}`).join("; ")}\n`,
+    );
+  }
+  return loader;
+}
 
 export interface SubAgentProgress {
   label: string;
@@ -97,25 +147,40 @@ export async function runSubAgent(options: {
   onProgress?: (progress: SubAgentProgress) => void;
   timeoutMs?: number;
   hardTimeoutMs?: number;
+  /**
+   * When true, build a DefaultResourceLoader so the child inherits the parent's
+   * extensions (and thus extension tools: web, serena, munin, …). When false or
+   * unset, the lean empty-loader stub is used (no extensions).
+   */
+  loadExtensions?: boolean;
+  /**
+   * Whether the parent session trusts the project. Forwarded to the loader's
+   * resolveProjectTrust so children inherit the parent's trust decision and
+   * never prompt for project-extension trust (children have no UI). Defaults true.
+   */
+  projectTrusted?: boolean;
 }): Promise<SubAgentResult> {
   const {
     cwd, systemPrompt, task, tools, model, modelRuntime, authStorage, modelRegistry, signal,
     agentName = "subagent", thinkingLevel = "off", onMessage, onProgress,
     timeoutMs = DEFAULT_INACTIVITY_TIMEOUT_MS, hardTimeoutMs = HARD_TIMEOUT_MS,
+    loadExtensions = false, projectTrusted = true,
   } = options;
   const result: SubAgentResult = {
     agent: agentName, task, exitCode: 0, messages: [], stderr: "",
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
     model: `${model.provider}/${model.id}`, status: undefined,
   };
-  const resourceLoader: ResourceLoader = {
-    getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
-    getSkills: () => ({ skills: [], diagnostics: [] }), getPrompts: () => ({ prompts: [], diagnostics: [] }),
-    getThemes: () => ({ themes: [], diagnostics: [] }), getAgentsFiles: () => ({ agentsFiles: [] }),
-    getSystemPrompt: () => systemPrompt, getSystemPromptSource: () => undefined,
-    getAppendSystemPrompt: () => [], getAppendSystemPromptSources: () => [],
-    extendResources: () => {}, reload: async () => {},
-  };
+  const resourceLoader: ResourceLoader = loadExtensions
+    ? await getExtensionLoader(cwd, projectTrusted)
+    : {
+        getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
+        getSkills: () => ({ skills: [], diagnostics: [] }), getPrompts: () => ({ prompts: [], diagnostics: [] }),
+        getThemes: () => ({ themes: [], diagnostics: [] }), getAgentsFiles: () => ({ agentsFiles: [] }),
+        getSystemPrompt: () => systemPrompt, getSystemPromptSource: () => undefined,
+        getAppendSystemPrompt: () => [], getAppendSystemPromptSources: () => [],
+        extendResources: () => {}, reload: async () => {},
+      };
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: true, maxRetries: 1 } });
   const startedAt = Date.now();
   let inactivityDeadline = startedAt + timeoutMs;

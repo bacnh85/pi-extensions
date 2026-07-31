@@ -1,7 +1,6 @@
 ---
 name: general-purpose
 description: General-purpose sub-agent for any delegated task. Use when no specialized agent fits. Good for complex research, multi-step operations, and code modifications.
-tools: read, bash, edit, write, grep, find, ls
 models:
   - zai-coding-cn/glm-5.1
   - nvidia/mistralai/mistral-small-4-119b-2603

@@ -13,12 +13,15 @@ import {
   isRateLimitError,
   resolveSafeCwd,
   validateAgentTools,
+  needsExtensions,
   normalizeTimeout,
   createCombinedAbortSignal,
   classifyStopReason,
   validateExecutionRequest,
   truncateParallelOutput,
   ALLOWED_CHILD_TOOLS,
+  BUILTIN_TOOLS,
+  DENIED_CHILD_TOOLS,
   READ_ONLY_TOOLS,
   MUTATION_TOOLS,
   EXECUTION_TOOLS,
@@ -485,16 +488,15 @@ describe("validateAgentTools", () => {
     assert.deepEqual(result.tools, ["read"]);
   });
 
-  it("rejects subagent", () => {
-    const result = validateAgentTools({ tools: ["read", "subagent"] });
-    assert.ok(result.errors.length > 0);
-    assert.ok(result.errors[0].includes("subagent") && result.errors[0].includes("not allowed"));
-    assert.deepEqual(result.tools, ["read"]);
+  it("silently strips subagent (never available to children)", () => {
+    const result = validateAgentTools({ tools: ["read", "subagent", "bash"] });
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.tools, ["read", "bash"]);
   });
 
-  it("rejects subagent with mixed case", () => {
+  it("silently strips subagent with mixed case", () => {
     const result = validateAgentTools({ tools: ["read", "SubAgent"] });
-    assert.ok(result.errors.length > 0);
+    assert.deepEqual(result.errors, []);
     assert.deepEqual(result.tools, ["read"]);
   });
 
@@ -527,6 +529,97 @@ describe("validateAgentTools", () => {
     const result = validateAgentTools({ tools: [...READ_ONLY_TOOLS], readOnly: true });
     assert.deepEqual(result.errors, []);
     assert.deepEqual(result.tools, [...READ_ONLY_TOOLS]);
+  });
+
+  // --- Inheritance (availableTools) ---
+
+  it("accepts extension tools when availableTools lists them", () => {
+    const result = validateAgentTools({
+      tools: ["read", "web_search", "serena_find_symbol", "munin_search"],
+      availableTools: ["web_search", "serena_find_symbol", "munin_search"],
+    });
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.tools, ["read", "web_search", "serena_find_symbol", "munin_search"]);
+  });
+
+  it("rejects extension tool not in availableTools even in inherit mode", () => {
+    const result = validateAgentTools({
+      tools: ["read", "web_search"],
+      availableTools: ["serena_find_symbol"],
+    });
+    assert.ok(result.errors.length > 0);
+    assert.ok(result.errors[0].includes("Unknown tool"));
+    assert.deepEqual(result.tools, ["read"]);
+  });
+
+  it("silently strips subagent even if present in availableTools", () => {
+    const result = validateAgentTools({
+      tools: ["read", "subagent"],
+      availableTools: ["subagent", "web_search"],
+    });
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.tools, ["read"]);
+  });
+
+  it("built-ins always accepted without availableTools (lean fallback)", () => {
+    const result = validateAgentTools({ tools: ["read", "bash"] });
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.tools, ["read", "bash"]);
+  });
+
+  it("inherited tool set silently strips subagent without error", () => {
+    // Reproduces the inheritance bug: parentToolNames includes "subagent", and
+    // an agent that omits `tools:` inherits the full set. Validation must not
+    // crash — it strips the denied tool and keeps the rest.
+    const result = validateAgentTools({
+      tools: ["read", "bash", "web_search", "subagent", "serena_find_symbol"],
+      availableTools: ["web_search", "subagent", "serena_find_symbol"],
+    });
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.tools, ["read", "bash", "web_search", "serena_find_symbol"]);
+  });
+
+  it("read-only still filters inherited extension tools", () => {
+    const result = validateAgentTools({
+      tools: ["read", "web_search"],
+      readOnly: true,
+      availableTools: ["web_search"],
+    });
+    assert.ok(result.errors.length > 0);
+    assert.ok(result.errors[0].includes("read-only"));
+    assert.deepEqual(result.tools, ["read"]);
+  });
+
+  it("read-only inherited set keeps only built-in read-only tools (service path invariant)", () => {
+    // service.ts runNamedAgent: readOnly requests (pi-review) enforce the read-only
+    // filter even when agent.sandbox is unset. Replicates the effectiveReadOnly
+    // logic: filter rawTools to READ_ONLY_TOOLS, then validate.
+    const parentTools = ["read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "serena_find_symbol", "munin_search"];
+    const rawTools = parentTools.filter((t) => READ_ONLY_TOOLS.includes(t));
+    const result = validateAgentTools({ tools: rawTools, readOnly: true, availableTools: parentTools });
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.tools, [...READ_ONLY_TOOLS]);
+    // Mutation/execution tools must never leak even when the parent has them.
+    for (const t of result.tools) {
+      assert.ok(READ_ONLY_TOOLS.includes(t), `non-read-only tool leaked: ${t}`);
+    }
+  });
+});
+
+// ===========================================================================
+// Security: needsExtensions
+// ===========================================================================
+
+describe("needsExtensions", () => {
+  it("returns false for built-in-only tools", () => {
+    assert.equal(needsExtensions(["read", "bash", "edit"]), false);
+    assert.equal(needsExtensions([]), false);
+  });
+
+  it("returns true when any non-built-in tool is present", () => {
+    assert.equal(needsExtensions(["read", "web_search"]), true);
+    assert.equal(needsExtensions(["serena_find_symbol"]), true);
+    assert.equal(needsExtensions(["read", "bash", "munin_store"]), true);
   });
 });
 

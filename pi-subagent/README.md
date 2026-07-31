@@ -16,12 +16,14 @@ Requires Node.js >= 20.18.
 | --- | --- | --- | --- |
 | `scout` | `zai-coding-cn/glm-5-turbo` → `nvidia/openai/gpt-oss-20b` → `opencode-go/deepseek-v4-flash` | off | read, grep, find, ls |
 | `tester` | `zai-coding-cn/glm-5-turbo` → `nvidia/openai/gpt-oss-20b` → `opencode-go/deepseek-v4-flash` | off | read, bash, grep, find, ls |
-| `worker` | `zai-coding-cn/glm-5.1` → `nvidia/mistralai/mistral-small-4-119b-2603` → `openrouter/nvidia/nemotron-3-super-120b-a12b:free` → `opencode-go/deepseek-v4-flash` | medium | read, bash, edit, write, grep, find, ls |
-| `general-purpose` | `zai-coding-cn/glm-5.1` → `nvidia/mistralai/mistral-small-4-119b-2603` → `openrouter/nvidia/nemotron-3-super-120b-a12b:free` → `opencode-go/deepseek-v4-flash` | medium | read, bash, edit, write, grep, find, ls |
+| `worker` | `zai-coding-cn/glm-5.1` → `nvidia/mistralai/mistral-small-4-119b-2603` → `openrouter/nvidia/nemotron-3-super-120b-a12b:free` → `opencode-go/deepseek-v4-flash` | medium | **inherits all parent tools** |
+| `general-purpose` | `zai-coding-cn/glm-5.1` → `nvidia/mistralai/mistral-small-4-119b-2603` → `openrouter/nvidia/nemotron-3-super-120b-a12b:free` → `opencode-go/deepseek-v4-flash` | medium | **inherits all parent tools** |
 | `planner` | `zai-coding-cn/glm-5.2` → `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` → `opencode-go/deepseek-v4-pro` | high | read, grep, find, ls |
 | `reviewer` | `zai-coding-cn/glm-5.2` → `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` → `opencode-go/deepseek-v4-pro` | high | read, grep, find, ls |
 
 Each role uses the first authenticated preference available through Pi's model registry, then falls back to the authenticated parent model. Chains are **free-first** to conserve the metered opencode-go budget: **zai-coding-cn** (free GLM, primary) → free **nvidia** NIM and **openrouter** `:free` models → **opencode-go** (paid DeepSeek, last resort — one per role: `deepseek-v4-flash` for fast/strong-coding, `deepseek-v4-pro` for deep reasoning). opencode-go's GLM models cost ~$1.40/$4.40 per M versus zai-coding-cn's free GLM, so GLM stays on zai-coding-cn. Fallback models were live-verified on 2026-07-24; `nvidia/moonshotai/kimi-k2.6` and `nvidia/z-ai/glm-5.2` return 404/timeout on the user's account and were removed — non-rate-limit failures kill the subagent instead of advancing the chain. User/project agent files remain stronger overrides and may set legacy `model`, ordered `models`, and `thinking`.
+
+**Tool inheritance.** Agents without an explicit `tools:` line (worker, general-purpose) inherit every tool the parent session has — including extension tools like `web_search`, `serena_*`, `munin_*`, `obsidian`, and `notebooklm`. Agents with an explicit `tools:` list (scout, tester, planner, reviewer) are restricted to those tools and, when the list contains only built-ins, run in a lean loader with no extension overhead. To force an agent lean even while inheriting, set `tools: read, bash, edit, write, grep, find, ls`. The `subagent` tool itself is always denied to children (no recursive delegation).
 
 ## Agent files
 
@@ -45,7 +47,7 @@ Agent definitions are cached with file-signature invalidation; `/subagent reload
 
 ## Context and limits
 
-Children use in-memory SDK sessions with no extensions, skills, prompt templates, or automatic `AGENTS.md` loading. The optional `instructions` argument passes a bounded 16 KB task/repository contract. Only Pi built-in tools are available; Serena, FFF, web, and Munin are not available in lean children.
+Children use in-memory SDK sessions. Agents that inherit parent tools load the parent's extensions (web, Serena, Munin, …) into the child; agents restricted to built-in tools run in a lean loader with no extensions, skills, prompt templates, or automatic `AGENTS.md` loading. The optional `instructions` argument passes a bounded 16 KB task/repository contract.
 
 Threads are session-memory only and are cleared when Pi replaces or reloads the session. Timeout and parent cancellation propagate to child sessions. Subagents cannot recursively invoke `subagent`.
 

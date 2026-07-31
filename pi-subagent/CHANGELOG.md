@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.13.0 (2026-07-31)
+
+### Subagents inherit parent extensions & tools by default
+
+Subagents can now use the same tools the main agent has — including extension
+ tools like `web_search`, `serena_*`, `munin_*`, `obsidian`, and `notebooklm`.
+ Previously children were restricted to the 7 Pi built-in tools (`read, grep,
+ find, ls, bash, edit, write`) and could not load extensions, which made
+ delegation far less capable than the main agent.
+
+This follows the **Claude Code model**: subagents inherit the parent's tool set,
+ with a small denylist (`subagent` — recursive delegation is always prevented)
+ and per-agent restriction via an explicit `tools:` line.
+
+**Tool resolution:**
+- Agent **omits** `tools:` → inherits **all parent tools** (minus denylist).
+  `worker` and `general-purpose` now do this.
+- Agent **specifies** `tools:` → restricted to that list, validated against
+  built-ins ∪ parent tools.
+- `sandbox: read-only` / `readOnly` → filters the effective set to read-only.
+- Denied tools (`subagent`) are **silently stripped**, never errored — whether
+  explicitly listed or inherited. Inheritance must not crash on a tool the
+  child cannot have (the inherited set always includes `subagent`).
+
+**Smart lean optimization:** extensions are only loaded when the effective tool
+ set contains at least one non-built-in tool. Recon agents with a built-in-only
+ `tools:` line (scout, tester, planner, reviewer) stay cheap — zero extension
+ overhead, same fast cold-start.
+
+**Per-child extension loader.** Children that need extensions get a FRESH
+ `DefaultResourceLoader` each run (extensions only: no skills, prompt templates,
+ AGENTS.md, or themes). The loader must NOT be cached/shared: extensions capture
+ the ExtensionAPI at factory-load time, and its actions delegate to the runtime
+ the factory was given (pi.getAllTools() → runtime.getAllTools()). A shared
+ loader's runtime is never the one any single child binds — children then hit
+ the runtime's throwing "Extension runtime not initialized" stubs on the first
+ provider request (pi-model-tools' before_provider_request calls pi.getAllTools())
+ or stale-ctx errors after the first child's dispose invalidates the shared
+ runtime. A per-child loader keeps every captured `pi` pointing at a runtime the
+ child both binds and owns. reload() per child re-reads extension files +
+ re-runs factories; acceptable for short-lived children.
+
+Extension load errors in children are logged, not fatal. Project-extension trust
+ is inherited from the parent (children never prompt).
+
+### Bundled agent changes
+
+- `worker` and `general-purpose`: removed the explicit `tools:` line so they
+  inherit all parent tools.
+- `scout`, `tester`, `planner`, `reviewer`: unchanged (still lean + restricted).
+
 ## 0.12.4 (2026-07-30)
 
 ### Improvements
