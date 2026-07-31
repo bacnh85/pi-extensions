@@ -16,19 +16,26 @@ const CONFIG_PATH = join(homedir(), ".pi", "agent", "9router-config.json");
 const ENV_BASE_URL = process.env.NINE_ROUTER_BASE_URL;
 const ENV_API_KEY = process.env.NINE_ROUTER_API_KEY;
 const ENV_ENABLE_REASONING = process.env.NINE_ROUTER_ENABLE_REASONING;
-const DEFAULT_BASE_URL = "http://localhost:20128/v1";
+
+/** Persisted schema version. Bump when a config migration is needed.
+ *  Configs without this field (or below current) are treated as legacy. */
+const CONFIG_VERSION = 1;
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
 export function loadConfig(): NineRouterConfig | null {
   try {
     if (!existsSync(CONFIG_PATH)) return null;
-    const data = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Partial<NineRouterConfig>;
+    const data = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Partial<NineRouterConfig> & { configVersion?: number };
     if (!data.baseUrl || typeof data.baseUrl !== "string") return null;
+    // Migration: legacy configs (saved before CONFIG_VERSION existed) may hold
+    // a stale enableReasoning:false from the old pre-default-true behavior.
+    // Reset to the modern default so reasoning controls work out of the box.
+    const isLegacy = typeof data.configVersion !== "number" || data.configVersion < CONFIG_VERSION;
     return {
       baseUrl: normalizeUrl(data.baseUrl),
       apiKey: typeof data.apiKey === "string" && data.apiKey.trim() ? data.apiKey.trim() : undefined,
-      enableReasoning: data.enableReasoning === true,
+      enableReasoning: isLegacy ? true : data.enableReasoning === true,
     };
   } catch {
     return null;
@@ -38,7 +45,7 @@ export function loadConfig(): NineRouterConfig | null {
 export function saveConfig(config: NineRouterConfig): void {
   try {
     mkdirSync(dirname(CONFIG_PATH), { recursive: true });
-    writeFileSync(CONFIG_PATH, JSON.stringify({ baseUrl: config.baseUrl, apiKey: config.apiKey, enableReasoning: config.enableReasoning }, null, 2) + "\n", {
+    writeFileSync(CONFIG_PATH, JSON.stringify({ baseUrl: config.baseUrl, apiKey: config.apiKey, enableReasoning: config.enableReasoning, configVersion: CONFIG_VERSION }, null, 2) + "\n", {
       mode: 0o600,
     });
   } catch (err) {
@@ -50,7 +57,7 @@ export function saveConfig(config: NineRouterConfig): void {
 export function getEffectiveConfig(): NineRouterConfig {
   const saved = loadConfig();
   return {
-    baseUrl: normalizeUrl(ENV_BASE_URL || saved?.baseUrl || DEFAULT_BASE_URL),
+    baseUrl: normalizeUrl(ENV_BASE_URL || saved?.baseUrl || ""),
     apiKey: ENV_API_KEY || saved?.apiKey || undefined,
     enableReasoning: parseBooleanFlag(ENV_ENABLE_REASONING) ?? saved?.enableReasoning ?? true,
   };
@@ -69,7 +76,9 @@ export function maskApiKey(key: string | undefined): string {
 
 export function configSummary(config: NineRouterConfig): string {
   const key = maskApiKey(config.apiKey);
-  const reasoning = config.enableReasoning ? "ON" : "OFF";
+  const reasoning = config.enableReasoning
+    ? "ON"
+    : "OFF (run /9router-reasoning to enable thinking levels)";
   return `Endpoint: ${config.baseUrl}\nAPI key: ${key}\nReasoning: ${reasoning}`;
 }
 

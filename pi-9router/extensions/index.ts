@@ -87,8 +87,12 @@ export default async function (pi: ExtensionAPI) {
       modelIds = models.map((m) => m.id);
       registerProvider(pi, cfg, models);
     } catch {
-      modelIds = [];
-      registerProvider(pi, cfg, []);
+      // Fetch failed — fall back to cached models re-mapped with the current
+      // reasoning flag so toggles still take effect when the endpoint is down.
+      const cached = readModelCache();
+      const models = cached ? cached.map((m) => mapModel(m, cfg.enableReasoning)) : [];
+      modelIds = models.map((m) => m.id);
+      registerProvider(pi, cfg, models);
     }
   }
 
@@ -144,6 +148,10 @@ export default async function (pi: ExtensionAPI) {
   // model_select event (Pi's modelsAreEqual guard), so it never corrupts
   // other extensions' per-mode model preferences.
   pi.on("session_start", async (_event, ctx) => {
+    if (!config.baseUrl) {
+      ctx.ui.notify("9router not configured — run /login-9router to connect.", "warning");
+      return;
+    }
     await refreshActiveModel(pi, ctx);
   });
 

@@ -2,6 +2,15 @@
 
 All notable changes to `pi-9router` will be documented in this file.
 
+## 0.1.6 (2026-07-31)
+
+### Fixes
+
+- **No longer reverts to a localhost test URL when unconfigured.** Previously, a missing/corrupt config silently fell back to `http://localhost:20128/v1` (a dev port) with no API key, registering a provider against an unreachable endpoint. `getEffectiveConfig()` now returns an empty `baseUrl`, the provider is skipped, and `session_start` notifies "run /login-9router".
+- **Migrated stale `enableReasoning: false` to `true`.** Legacy configs (saved before `configVersion` existed) held a `false` value from the old default, and `?? true` in `getEffectiveConfig()` did not rescue an explicit `false` (`false ?? true === false`) — so reasoning controls (Shift+Tab, `:high`) stayed permanently hidden. `loadConfig()` now resets reasoning to ON for legacy configs and stamps a `configVersion` on save. Current-version configs with an explicit `false` are still respected.
+- **Toggle works even when the endpoint is unreachable.** `/9router-reasoning` re-fetches models; on fetch failure it previously re-registered with an empty model list, so `refreshActiveModel` found nothing and the toggle silently no-op'd. `applyProvider` now falls back to the cached model list re-mapped with the new reasoning flag.
+- `/9router-status` now hints `/9router-reasoning` when reasoning is OFF.
+
 ## 0.1.5 (2026-07-30)
 
 ### Fixes

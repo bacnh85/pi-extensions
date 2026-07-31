@@ -4,26 +4,30 @@ import { mkdirSync, writeFileSync, unlinkSync, existsSync, readFileSync } from "
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+// ── Global config backup/restore ───────────────────────────────────────────
+// Multiple describe blocks (config, factory lifecycle) write to the real
+// 9router-config.json. Back up once before ALL tests and restore after, so the
+// test suite never clobbers the user's live config.
+const CONFIG_PATH = join(homedir(), ".pi", "agent", "9router-config.json");
+const BACKUP_PATH = CONFIG_PATH + ".bak";
+
+before(() => {
+  if (existsSync(CONFIG_PATH)) {
+    writeFileSync(BACKUP_PATH, readFileSync(CONFIG_PATH));
+  }
+});
+
+after(() => {
+  try { unlinkSync(CONFIG_PATH); } catch { /* ignore */ }
+  if (existsSync(BACKUP_PATH)) {
+    writeFileSync(CONFIG_PATH, readFileSync(BACKUP_PATH));
+    try { unlinkSync(BACKUP_PATH); } catch { /* ignore */ }
+  }
+});
+
 // ── Config module tests ──────────────────────────────────────────────────────
 
 describe("config", () => {
-  const CONFIG_PATH = join(homedir(), ".pi", "agent", "9router-config.json");
-  const BACKUP_PATH = CONFIG_PATH + ".bak";
-
-  // Save existing config before tests, restore after
-  before(() => {
-    if (existsSync(CONFIG_PATH)) {
-      writeFileSync(BACKUP_PATH, readFileSync(CONFIG_PATH));
-    }
-  });
-
-  after(() => {
-    try { unlinkSync(CONFIG_PATH); } catch { /* ignore */ }
-    if (existsSync(BACKUP_PATH)) {
-      writeFileSync(CONFIG_PATH, readFileSync(BACKUP_PATH));
-      try { unlinkSync(BACKUP_PATH); } catch { /* ignore */ }
-    }
-  });
 
   it("loadConfig returns null when no file exists", async () => {
     try { unlinkSync(CONFIG_PATH); } catch { /* ignore */ }
@@ -81,6 +85,38 @@ describe("config", () => {
     const cfg = getEffectiveConfig();
     assert.ok(cfg.baseUrl.includes("saved:8080"));
     assert.equal(cfg.apiKey, "saved-key");
+  });
+
+  it("getEffectiveConfig returns empty baseUrl (not localhost) when unconfigured", async () => {
+    // No file, no env → must NOT silently default to localhost test URL
+    try { unlinkSync(CONFIG_PATH); } catch { /* ignore */ }
+    const { getEffectiveConfig } = await import("../lib/config.js");
+    const cfg = getEffectiveConfig();
+    assert.equal(cfg.baseUrl, "", "unconfigured baseUrl must be empty, not a localhost test URL");
+    assert.equal(cfg.enableReasoning, true);
+  });
+
+  it("loadConfig migrates legacy enableReasoning:false → true (stale pre-default fix)", async () => {
+    // Simulate a legacy config file: no configVersion, enableReasoning false
+    try { unlinkSync(CONFIG_PATH); } catch { /* ignore */ }
+    const legacy = { baseUrl: "http://legacy:20128/v1", apiKey: "k", enableReasoning: false };
+    writeFileSync(CONFIG_PATH, JSON.stringify(legacy));
+
+    const { loadConfig } = await import("../lib/config.js");
+    const loaded = loadConfig();
+    assert.notEqual(loaded, null);
+    assert.equal(loaded!.enableReasoning, true, "legacy config must be migrated to reasoning ON");
+  });
+
+  it("loadConfig preserves explicit enableReasoning:false on current-version config", async () => {
+    // A config saved with configVersion + explicit false is respected (not migrated)
+    try { unlinkSync(CONFIG_PATH); } catch { /* ignore */ }
+    const current = { baseUrl: "http://cur:20128/v1", apiKey: "k", enableReasoning: false, configVersion: 1 };
+    writeFileSync(CONFIG_PATH, JSON.stringify(current));
+
+    const { loadConfig } = await import("../lib/config.js");
+    const loaded = loadConfig();
+    assert.equal(loaded!.enableReasoning, false, "current-version explicit false is preserved");
   });
 });
 
