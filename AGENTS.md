@@ -23,6 +23,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-sub** | 0.1.23 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | **pi-subagent** | 0.12.4 | Isolated in-process subagents with parallel/chain modes and inspectable threads. |
 | **pi-web** | 0.5.5 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
+| **pi-ux** | 0.3.0 | Anti-slop UI/UX design discipline — enforces industrial-design principles, runs deterministic slop-audit gates, and ships reference design-system presets with model routing. |
 | **pi-windows-tools** | 0.4.2 | Windows-specific tools for Pi. |
 
 ## Repository Structure
@@ -33,7 +34,7 @@ pi-extensions/
   pi-notebooklm/        # TS extension + skill for NotebookLM CLI bridge
   pi-ponytail/          # JS extension + hooks + 6 sub-skills
   pi-serena/            # TS extension + worker + Python bridge
-  pi-web/               # TS extension + 9 lib modules + skill
+  pi-ux/                # JS extension + hook + skill for anti-slop UI/UX design discipline
   pi-munin/             # TS extension + lib/helpers + skill + references
   pi-plan/              # TS extension for plan mode + workflow integration
   pi-subagent/          # TS extension for isolated SDK subagents
@@ -105,6 +106,7 @@ cd pi-<name> && npm test
 # pi-agy:        cd extensions && mocha                (mocha + tsx)
 # pi-notebooklm: cd extensions && mocha                (mocha + tsx)
 # pi-ponytail:   node --test extensions/test/*.test.js (no framework, plain JS)
+# pi-ux:        node --test extensions/test/*.test.js (no framework, plain JS)
 # pi-serena:     cd extensions && mocha                (mocha + tsx)
 # pi-web:        cd extensions && mocha                (mocha + tsx, ESM)
 # pi-munin:      npx mocha                             (mocha + tsx)

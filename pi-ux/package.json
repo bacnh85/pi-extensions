@@ -1,0 +1,43 @@
+{
+  "name": "@bacnh85/pi-ux",
+  "version": "0.3.0",
+  "description": "Anti-slop UI/UX design discipline for your Pi agent — enforces industrial-design principles, runs deterministic slop-audit gates, and ships reference design-system presets.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "ux",
+    "ui",
+    "design",
+    "anti-slop",
+    "skills"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git"
+  },
+  "files": [
+    "AGENTS.md",
+    "README.md",
+    "CHANGELOG.md",
+    "hooks/",
+    "skills/",
+    "extensions/index.js",
+    "extensions/package.json",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test extensions/test/*.test.js"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.js"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

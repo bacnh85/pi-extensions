@@ -41,6 +41,7 @@ jobs:
             pi-windows-tools: pi-windows-tools/**
             pi-kicad: pi-kicad/**
             pi-9router: pi-9router/**
+            pi-ux: pi-ux/**
 
       - name: Build matrix
         id: set-matrix
@@ -65,6 +66,7 @@ jobs:
               { pkg: 'pi-windows-tools', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-9router', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-kicad', cmd: 'npm ci && npm test && npm run typecheck' },
+              { pkg: 'pi-ux', cmd: 'node --test extensions/test/*.test.js' },
             ];
 
             const selected = '${{ github.event_name }}' === 'workflow_dispatch'
