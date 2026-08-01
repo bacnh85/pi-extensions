@@ -2,6 +2,23 @@
 
 All notable changes to `pi-model-tools` will be documented in this file.
 
+## 0.4.1 (2026-08-01)
+
+### Fixes
+
+- **`apply_patch`: bare blank lines in an added block no longer cause "Hunk context not found".**
+  A bare (un-prefixed) blank line inside an Update `+`-block (common when models
+  emit blank separators between paragraphs without the `+` marker) was parsed as a
+  context line, which split the added block into two hunks and left the second
+  with an empty/`[""]` match block → non-deterministic `Hunk context not found`.
+  Blank lines inside an active payload are now treated as added empty lines.
+  (ISSUE-apply_patch.md)
+- **`apply_patch`: a pure-addition Update with no `@@` anchor now appends at EOF**
+  instead of throwing an opaque "Hunk context not found".
+- **`apply_patch` errors are now actionable.** `Hunk context not found` includes
+  the anchor text plus the nearest matching file region (via `nearestBlock`);
+  `ambiguous` lists the first matching line numbers.
+
 ## 0.4.0 (2026-07-30)
 
 ### Fixes

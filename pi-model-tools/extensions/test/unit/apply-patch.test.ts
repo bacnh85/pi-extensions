@@ -279,3 +279,121 @@ describe("applyPatchToFiles — add / delete / multi-file", () => {
     });
   });
 });
+
+// Regression tests for the bare-blank-line parser hazard and EOF-append path.
+describe("applyPatchToFiles — markdown / blank-line / EOF regression", () => {
+  it("bare blank line inside a +block is an added empty line, not context", async () => {
+    // Reproduces the failure shape from ISSUE-apply_patch.md: a +block where
+    // the model emits the blank SEPARATORS between paragraphs WITHOUT the
+    // '+' prefix (bare blank lines). Before the fix each bare blank became a
+    // context line, splitting the added block into two hunks; the second
+    // sub-hunk landed on matchBlock [""] → wrong spot / "context not found".
+    await withTempDir(async (dir) => {
+      const file = join(dir, "plan.md");
+      const orig = "Some intro.\n\naccount. Re-import by dropping new Excel files.\n";
+      await writeFile(file, orig, "utf-8");
+      const patch = [
+        "*** Begin Patch",
+        "*** Update File: plan.md",
+        "@@ account. Re-import by dropping new Excel files.",
+        "+## STATUS: EXECUTED",
+        "",                 // ← bare blank separator (no '+' prefix)
+        "+All steps complete.",
+        "+Self-check: 19/19.",
+        "",                 // ← another bare blank separator
+        "+Build: clean.",
+        "*** End Patch",
+      ].join("\n");
+      await applyPatchToFiles(parsePatch(patch), dir);
+      const out = (await readFile(file, "utf-8")).toString();
+      assert.strictEqual(
+        out,
+        "Some intro.\n\naccount. Re-import by dropping new Excel files.\n" +
+        "## STATUS: EXECUTED\n\nAll steps complete.\nSelf-check: 19/19.\n\nBuild: clean.\n",
+      );
+    });
+  });
+
+  it("Update with only +lines (no @@ anchor) appends at EOF", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "a.txt");
+      await writeFile(file, "one\ntwo\nthree\n", "utf-8");
+      const parsed = parsePatch("*** Update File: a.txt\n+four\n+five\n*** End Patch");
+      await applyPatchToFiles(parsed, dir);
+      const out = (await readFile(file, "utf-8")).toString();
+      assert.strictEqual(out, "one\ntwo\nthree\nfour\nfive\n");
+    });
+  });
+
+  it("unresolvable anchor throws a message containing the anchor + nearest region", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "a.md");
+      await writeFile(file, "alpha\nbeta\ngamma\n", "utf-8");
+      const parsed = parsePatch("*** Update File: a.md\n@@ nope-no-such-line\n-zeta\n+ZETA\n*** End Patch");
+      await assert.rejects(
+        () => applyPatchToFiles(parsed, dir),
+        (err: Error) => {
+          assert.match(err.message, /Hunk context not found/);
+          assert.match(err.message, /nope-no-such-line/);
+          assert.match(err.message, /Nearest matching region/i);
+          return true;
+        },
+      );
+    });
+  });
+
+  it("ambiguous anchor error names the first matching line numbers", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "a.txt");
+      await writeFile(file, "dup\nA\ndup\nB\ndup\n", "utf-8");
+      // Pure addition after a non-unique anchor → matchBlock = ["dup"] → 3 matches.
+      const parsed = parsePatch("*** Update File: a.txt\n@@ dup\n+y\n*** End Patch");
+      await assert.rejects(
+        () => applyPatchToFiles(parsed, dir),
+        /ambiguous \(3 matches\)[\s\S]*Found at lines: 1, 3, 5/,
+      );
+    });
+  });
+
+  it("applies the exact failing payload twice in succession (no stale state)", async () => {
+    // Pins the fix AND the no-stale-buffer guarantee: the second apply must
+    // operate on the file state left by the first, not a stale snapshot.
+    await withTempDir(async (dir) => {
+      const file = join(dir, "plan.md");
+      const orig = "Some intro.\n\naccount. Re-import by dropping new Excel files.\n";
+      await writeFile(file, orig, "utf-8");
+      const patch = [
+        "*** Begin Patch",
+        "*** Update File: plan.md",
+        "@@ account. Re-import by dropping new Excel files.",
+        "+## STATUS: EXECUTED",
+        "+",
+        "+Self-check: 19/19.",
+        "*** End Patch",
+      ].join("\n");
+      // First apply: adds the status block.
+      await applyPatchToFiles(parsePatch(patch), dir);
+      let out = (await readFile(file, "utf-8")).toString();
+      assert.ok(out.includes("## STATUS: EXECUTED"), "first apply should add the block");
+      // Second apply with a NEW anchor on the just-added line proves the tool
+      // re-reads current bytes (no stale buffer) rather than matching the
+      // original anchor a second time (which would now be ambiguous/missing).
+      const patch2 = [
+        "*** Begin Patch",
+        "*** Update File: plan.md",
+        "@@ Self-check: 19/19.",
+        "+",
+        "+E2E: 11/11.",
+        "*** End Patch",
+      ].join("\n");
+      await applyPatchToFiles(parsePatch(patch2), dir);
+      out = (await readFile(file, "utf-8")).toString();
+      assert.ok(out.includes("E2E: 11/11."), "second apply must extend the first");
+      assert.strictEqual(
+        out,
+        "Some intro.\n\naccount. Re-import by dropping new Excel files.\n" +
+        "## STATUS: EXECUTED\n\nSelf-check: 19/19.\n\nE2E: 11/11.\n",
+      );
+    });
+  });
+});

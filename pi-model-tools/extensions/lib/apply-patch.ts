@@ -30,6 +30,7 @@
 import { readFile, writeFile, unlink } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { generateUnifiedPatch, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { nearestBlock } from "./edit-repair.ts";
 
 export type FileOpKind = "add" | "delete" | "update";
 
@@ -71,6 +72,7 @@ export function parsePatch(patch: string): ParsedPatch {
   if (i < lines.length && lines[i].trim() === "*** Begin Patch") i++;
 
   let current: FileOp | null = null;
+  let inPayload = false;
   const finalize = () => { if (current) { ops.push(current); current = null; } };
 
   for (; i < lines.length; i++) {
@@ -83,6 +85,7 @@ export function parsePatch(patch: string): ParsedPatch {
     if (trimmed.startsWith("*** ")) {
       finalize();
       current = parseFileHeader(trimmed);
+      inPayload = false;
       continue;
     }
 
@@ -95,6 +98,7 @@ export function parsePatch(patch: string): ParsedPatch {
     // context line. A bare `@@` just flushes/separates hunks.
     if (line.startsWith("@@")) {
       if (current.kind === "add") throw new PatchParseError("'@@' is invalid in an *** Add File section");
+      inPayload = false;
       current.hunks.push({ context: [], removed: [], added: [] });
       const anchor = line.slice(2);
       if (anchor.startsWith(" ")) {
@@ -114,18 +118,27 @@ export function parsePatch(patch: string): ParsedPatch {
     if (line.startsWith("+")) {
       // Add-File payload ('+' lines) and Update added-lines share this path;
       // content is the text after the '+' marker.
+      inPayload = true;
       current.hunks.push({ context: [], removed: [], added: [stripLeadingSpace(line)] });
       continue;
     }
     if (line.startsWith("-")) {
       if (current.kind === "add") throw new PatchParseError(`'-' lines are invalid in an *** Add File section`);
+      inPayload = true;
       current.hunks.push({ context: [], removed: [], added: [] });
       current.hunks[current.hunks.length - 1].removed.push(stripLeadingSpace(line));
       continue;
     }
-    // In an Add section, a blank line is a literal empty content line.
-    if (current.kind === "add" && line === "") {
-      current.hunks.push({ context: [], removed: [], added: [""] });
+    // A bare blank line (no marker) in an Add section is a literal empty
+    // content line; in an Update payload it's an added empty line (models
+    // frequently omit the '+' prefix on blank lines inside a +block, esp.
+    // fenced code blocks). Treating it as context would split the added block
+    // into two hunks and leave a matchBlock of [""] → "context not found".
+    if (line === "") {
+      if (current.kind === "add" || inPayload) {
+        current.hunks.push({ context: [], removed: [], added: [""] });
+      }
+      // else: stray blank between anchor and payload → ignore (lenient).
       continue;
     }
     // Any other line in an Update section is context. Models frequently omit
@@ -228,12 +241,13 @@ function linesLooselyEqual(a: string, b: string): boolean {
  * lenient equality. Returns count and first start index under the strictest
  * pass that yields any match.
  */
-export function seekSequence(lines: string[], pattern: string[]): { count: number; firstIndex: number; exact: boolean } {
-  if (pattern.length === 0) return { count: 0, firstIndex: -1, exact: true };
-  if (pattern.length > lines.length) return { count: 0, firstIndex: -1, exact: true };
+export function seekSequence(lines: string[], pattern: string[]): { count: number; firstIndex: number; exact: boolean; indices: number[] } {
+  if (pattern.length === 0) return { count: 0, firstIndex: -1, exact: true, indices: [] };
+  if (pattern.length > lines.length) return { count: 0, firstIndex: -1, exact: true, indices: [] };
   for (const eq of [eqExact, eqRstrip, eqTrim, eqUnicode]) {
     let count = 0;
     let firstIndex = -1;
+    const indices: number[] = [];
     for (let i = 0; i <= lines.length - pattern.length; i++) {
       let ok = true;
       for (let j = 0; j < pattern.length; j++) {
@@ -241,12 +255,13 @@ export function seekSequence(lines: string[], pattern: string[]): { count: numbe
       }
       if (ok) {
         count++;
+        indices.push(i);
         if (firstIndex === -1) firstIndex = i;
       }
     }
-    if (count > 0) return { count, firstIndex, exact: eq === eqExact };
+    if (count > 0) return { count, firstIndex, exact: eq === eqExact, indices };
   }
-  return { count: 0, firstIndex: -1, exact: true };
+  return { count: 0, firstIndex: -1, exact: true, indices: [] };
 }
 
 // ── Applier ──
@@ -352,10 +367,28 @@ export async function applyPatchToFiles(parsed: ParsedPatch, cwd: string): Promi
           if (matchBlock.length >= 2 && linesLooselyEqual(matchBlock[0], matchBlock[1])) {
             matchBlock = matchBlock.slice(1);
           }
-          const { count, firstIndex, exact: hExact } = seekSequence(work, matchBlock);
-          if (!hExact) exact = false;
-          if (count === 0) throw new Error(`Hunk context not found in ${op.path}. Ensure context lines match the file.`);
-          if (count > 1) throw new Error(`Hunk context is ambiguous (${count} matches) in ${op.path}. Add more surrounding context lines to make it unique.`);
+          // Pure additions with no anchor (e.g. *** Update File with only
+          // +lines, no @@): land at EOF instead of an opaque "context not found".
+          let firstIndex: number;
+          let hExact = true;
+          if (matchBlock.length === 0) {
+            // If the file ends with "\n", split() leaves a trailing "" element;
+            // insert before it so we don't add a spurious blank line.
+            firstIndex = work.length > 0 && work[work.length - 1] === "" ? work.length - 1 : work.length;
+          } else {
+            const sought = seekSequence(work, matchBlock);
+            hExact = sought.exact;
+            if (!hExact) exact = false;
+            const anchor = matchBlock.join("\n");
+            if (sought.count === 0) {
+              throw new Error(`Hunk context not found in ${op.path}. Anchor:\n${anchor}\n${nearestBlock(beforeContent, anchor)}`);
+            }
+            if (sought.count > 1) {
+              const locs = sought.indices.slice(0, 3).map((idx) => idx + 1).join(", ");
+              throw new Error(`Hunk context is ambiguous (${sought.count} matches) in ${op.path}. Anchor:\n${anchor}\nFound at lines: ${locs}. Add more surrounding context lines to make it unique.`);
+            }
+            firstIndex = sought.firstIndex;
+          }
           const removedStart = firstIndex + (matchBlock.length - h.removed.length);
           newHunks.push({ start: removedStart, removedLen: h.removed.length, added: h.added });
         }
