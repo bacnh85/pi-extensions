@@ -41,6 +41,21 @@ This skill ensures every vault file operation goes through Obsidian's API.
 The `eval` command runs JavaScript inside the Obsidian app with full access to
 `app.vault` API. This is the right tool for batch operations.
 
+### Quoting rules for eval
+
+`code=` follows shell quoting rules — get these wrong and the JS fails with a
+confusing `Unexpected token` / `Unexpected identifier` error.
+
+- **Outer wrapper: single quotes** `code='...'` — literal, no escape decoding.
+  Multi-line is fine; single quotes don't stop at whitespace or newlines.
+- **Inner JS strings: always double quotes** `"..."`. A single quote inside
+  single-quoted code closes the value early (e.g. `code='x = 'hi''` breaks).
+- **Avoid `code="..."`** (double) for JS — `\n` / `\t` decode to real control
+  chars before the JS engine sees them. Use single-quote mode instead.
+- **Escape hatch:** if code needs both quote types, use `eval file=NoteName` —
+  it reads the note body as code, so quoting is a non-issue:
+  `eval file="Scripts/bulk-move"`.
+
 **Move files matching a pattern:**
 ```
 eval code='

@@ -2,6 +2,23 @@
 
 All notable changes to `pi-obsidian` will be documented in this file.
 
+## 0.8.12 (2026-08-01)
+
+### Fixes
+
+- `parseCliString` / `readQuotedContent` now support single quotes. Previously
+  `eval code='...'` (single-quoted) always failed with `Unexpected identifier
+  'Error'` because single quotes were treated as literal characters and split the
+  value at whitespace. Single-quote mode is shell-faithful (literal, no escape
+  decoding), which also avoids the `\n`-decode footgun in JS code passed to eval.
+
+### Documentation
+
+- Added "Quoting rules for eval" section to SKILL.md: single-quote the outer
+  `code=`, double-quote all JS strings inside, use `eval file=NoteName` as the
+  escape hatch for code needing both quote types.
+- Updated api-examples.md header with the one-line quoting rule.
+
 ## 0.8.11 (2026-07-30)
 
 ### Improvements

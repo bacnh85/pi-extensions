@@ -2,6 +2,9 @@
 
 Reference for common bulk operations via `eval` in the Obsidian CLI.
 All examples run inside `eval code='...'` through the `obsidian` tool.
+**Rule:** single-quote the `code=` wrapper, double-quote all JS strings inside.
+For code needing both quote types, use `eval file=NoteName`. See SKILL.md
+"Quoting rules for eval".
 
 ## File operations
 

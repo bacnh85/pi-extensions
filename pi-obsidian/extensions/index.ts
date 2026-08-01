@@ -163,9 +163,16 @@ export function isVaultFilesystemBashCommand(command: unknown, cwd: string, vaul
 // CLI string parser
 // ---------------------------------------------------------------------------
 
-export function readQuotedContent(s: string, pos: number): { value: string; endPos: number } {
+// quote='"' decodes \n/\t/\r/\" escapes; quote="'" is literal (shell-faithful,
+// no escape decoding) — avoids \n-decode footgun in JS code passed to eval.
+export function readQuotedContent(s: string, pos: number, quote = '"'): { value: string; endPos: number } {
   let val = "";
-  while (pos < s.length && s[pos] !== '"') {
+  // ponytail: single-quote fast path — read literally until the closing quote.
+  if (quote === "'") {
+    while (pos < s.length && s[pos] !== quote) val += s[pos++];
+    return { value: val, endPos: pos };
+  }
+  while (pos < s.length && s[pos] !== quote) {
     if (s[pos] === "\\" && pos + 1 < s.length) {
       const next = s[pos + 1];
       if (next === '"' || next === "\\") {
@@ -183,15 +190,16 @@ export function readQuotedContent(s: string, pos: number): { value: string; endP
 
 export function parseCliString(s: string): string[] {
   const args: string[] = [];
+  const isQuote = (c: string) => c === '"' || c === "'";
   let i = 0;
   while (i < s.length) {
     while (i < s.length && /\s/.test(s[i])) i++;
     if (i >= s.length) break;
     let val = "";
-    if (s[i] === '"') { i++; const r = readQuotedContent(s, i); val = r.value; i = r.endPos + 1; }
+    if (isQuote(s[i])) { const q = s[i++]; const r = readQuotedContent(s, i, q); val = r.value; i = r.endPos + 1; }
     else {
       while (i < s.length && !/\s/.test(s[i])) {
-        if (s[i] === '"') { i++; const r = readQuotedContent(s, i); val += r.value; i = r.endPos + 1; }
+        if (isQuote(s[i])) { const q = s[i++]; const r = readQuotedContent(s, i, q); val += r.value; i = r.endPos + 1; }
         else { val += s[i++]; }
       }
     }

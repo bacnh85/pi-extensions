@@ -84,6 +84,18 @@ describe("readQuotedContent", () => {
     expect(r.value).to.equal("abc");
     expect(r.endPos).to.equal(3); // position of closing "
   });
+
+  // --- single-quote support (regression for eval code='...' bug) ---
+  it("single quote: reads literally until closing single quote", () => {
+    const r = readQuotedContent("return 1+1'", 0, "'");
+    expect(r.value).to.equal("return 1+1");
+    expect(r.endPos).to.equal(10); // position of closing '
+  });
+
+  it("single quote: backslashes are literal (no escape decoding)", () => {
+    const r = readQuotedContent("a\\nb'", 0, "'");
+    expect(r.value).to.equal("a\\nb");
+  });
 });
 
 describe("parseCliString", () => {
@@ -124,6 +136,24 @@ describe("parseCliString", () => {
 
   it("handles multiple spaces between args", () => {
     expect(parseCliString("read   path=test.md   verbose=true")).to.deep.equal(["read", "path=test.md", "verbose=true"]);
+  });
+
+  // --- single-quote support (regression for eval code='...' bug) ---
+  it("parses single-quoted values with spaces", () => {
+    expect(parseCliString("file='My Note.md'")).to.deep.equal(["file=My Note.md"]);
+  });
+
+  it("parses single-quoted eval code", () => {
+    expect(parseCliString("eval code='return 1+1'")).to.deep.equal(["eval", "code=return 1+1"]);
+  });
+
+  it("handles inline single quotes inside unquoted tokens", () => {
+    expect(parseCliString("cmd key=pre'mid'post")).to.deep.equal(["cmd", "key=premidpost"]);
+  });
+
+  it("single quotes are literal (no backslash escape decoding)", () => {
+    // shell-faithful: 'a\nb' stays a backslash-n, not a newline
+    expect(parseCliString("code='a\\nb'")).to.deep.equal(["code=a\\nb"]);
   });
 });
 
