@@ -37,6 +37,10 @@ Variables:
 
 Secrets are never printed; `web_status` reports only presence/source.
 
+### Always-on routing guidance
+
+When any `web_*` tool is active, pi-web injects a condensed backend-selection protocol (SearXNG → Brave → Firecrawl ordering, Firecrawl precision/scrape caveats, source-citation rule) into the system prompt via a `before_agent_start` hook. This travels with the package — no edits to `~/.pi/agent/AGENTS.md` are required — and carries zero overhead when pi-web is not loaded.
+
 ## Tools
 
 ### `web_search` — Unified search

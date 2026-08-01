@@ -12,7 +12,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-fff** | 0.7.8 | FFF-powered fuzzy file and content search for Pi. |
 | **pi-kicad** | 0.1.2 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon (no MCP SDK). |
 | **pi-model-tools** | 0.3.3 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, and a Codex-style apply_patch diff tool. |
-| **pi-munin** | 0.4.9 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and confirmed cross-project sharing. |
+| **pi-munin** | 0.5.0 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and confirmed cross-project sharing. |
 | **pi-notebooklm** | 0.1.7 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | **pi-obsidian** | 0.8.11 | Obsidian vault integration for Pi. |
 | **pi-plan** | 0.8.6 | Plan mode with read-only gating and plan → implement → verify → review workflow. |
@@ -22,7 +22,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-serena** | 0.9.4 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
 | **pi-sub** | 0.1.23 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | **pi-subagent** | 0.12.4 | Isolated in-process subagents with parallel/chain modes and inspectable threads. |
-| **pi-web** | 0.5.5 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
+| **pi-web** | 0.5.6 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
 | **pi-ux** | 0.4.2 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, ships medium-tuned presets (Web/Mobile) so the agent stays unblocked when DESIGN.md is missing, runs deterministic slop-audit gates (APCA contrast + tokens + states + slop tells), works with text-only models. |
 | **pi-windows-tools** | 0.4.2 | Windows-specific tools for Pi. |
 

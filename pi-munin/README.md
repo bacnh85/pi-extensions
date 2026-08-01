@@ -18,6 +18,10 @@ Configuration precedence is explicit tool parameters, process environment, trust
 
 The Pi global config directory honors `$PI_CODING_AGENT_DIR` when set; otherwise the extension checks `~/.pi/agent` and legacy `~/.pi/agents`. Base URLs must be HTTP(S), cannot contain credentials, and a tool-level `base_url` override requires a tool-level `api_key` so ambient credentials are never sent to a model-selected endpoint.
 
+### Always-on Memory Protocol
+
+When Munin is configured, pi-munin injects the condensed always-on Memory Protocol (Before acting / What to store / Memory shape / Lifecycle and safety) into the system prompt via a `before_agent_start` hook. This travels with the package — no edits to `~/.pi/agent/AGENTS.md` are required — and carries zero overhead when pi-munin is not loaded. The full deep reference is in `skills/munin/SKILL.md`.
+
 ## Tools
 
 - `munin_search` — search memories.

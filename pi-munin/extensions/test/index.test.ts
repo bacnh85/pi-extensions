@@ -76,6 +76,13 @@ describe("pi-munin extension", () => {
     h.ctx.cwd = projectDir();
     const result = await h.handlers.before_agent_start[0]({ systemPrompt: "BASE" }, h.ctx);
     expect(result.systemPrompt).to.include("Munin Memory Protocol");
+    // Condensed protocol sections (not just a 2-line header anymore).
+    expect(result.systemPrompt).to.include("### Before acting");
+    expect(result.systemPrompt).to.include("### What to store");
+    expect(result.systemPrompt).to.include("### Memory shape");
+    expect(result.systemPrompt).to.include("### Lifecycle and safety");
+    // BASE prompt preserved after the header.
+    expect(result.systemPrompt).to.include("BASE");
     await h.commands["munin-status"].handler("", h.ctx);
     expect(h.notifications[0]).to.include("Project: project-id");
   });

@@ -2,6 +2,12 @@
 
 All notable changes to `pi-web` will be documented in this file.
 
+## 0.5.6 (2026-08-01)
+
+### Features
+
+- **Portable instructions:** pi-web now self-injects its backend-selection routing guidance via a gated `before_agent_start` hook (fires only when a `web_*` tool is active). This guidance previously lived in the global `~/.pi/agent/AGENTS.md`; moving it here makes it travel with the package and carry zero overhead when pi-web is absent. Per-tool `promptGuidelines` are unchanged.
+
 ## 0.5.5 (2026-07-30)
 
 ### Improvements

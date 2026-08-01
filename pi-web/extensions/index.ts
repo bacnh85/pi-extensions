@@ -48,6 +48,35 @@ const crawl4aiControlSchema = {
   crawl4ai_api_token: Type.Optional(Type.String({ description: "Override $CRAWL4AI_API_TOKEN." })),
 };
 
+// ---------------------------------------------------------------------------
+// Always-on routing guidance (injected only when a web_* tool is active)
+// ---------------------------------------------------------------------------
+
+// Portable home for the pi-web backend-selection protocol. Previously forced
+// always-on via ~/.pi/agent/AGENTS.md; now self-injected by this extension so
+// the guidance travels with the package and disappears when pi-web is absent.
+const WEB_ROUTING_GUIDANCE = `## Web Tool Routing (pi-web)
+
+The pi-web extension provides 7 unified tools that auto-select the best backend:
+
+- **\`web_search\`** — Search the web (auto: SearXNG → Brave → Firecrawl). Use
+  \`backend\` for explicit control, \`engines\` for SearXNG tuning.
+- **\`web_extract\`** — Extract readable content from a URL (auto: static JSDOM
+  → dynamic Firecrawl → full Crawl4AI). Use \`mode\` for explicit control.
+- **\`web_map\`** — Discover URLs from a site (Firecrawl Map).
+- **\`web_crawl\`** — Crawl multiple pages. \`mode: "light"\` (Firecrawl) or
+  \`mode: "full"\` (Crawl4AI).
+- **\`web_screenshot\`** / **\`web_pdf\`** — Visual/page capture (Crawl4AI).
+- **\`web_status\`** — Check provider configuration and server health.
+
+Backend selection rules:
+
+- Firecrawl Search has poor semantic accuracy on domain-specific queries; prefer
+  SearXNG or Brave for precision (force via \`backend\`).
+- Firecrawl Scrape fails on bot-protected sites (e.g. Ansible docs); Crawl4AI
+  handles those (force via \`mode: "full"\`).
+- Always cite source URLs when web results materially support an answer.`;
+
 
 // ---------------------------------------------------------------------------
 // Extension entry point
@@ -412,6 +441,15 @@ export default function piWebExtension(pi: ExtensionAPI) {
 
       return { content: [{ type: "text" as const, text: JSON.stringify(status, null, 2) }], details: status };
     },
+  });
+
+  // ── Always-on routing guidance ──────────────────────────────────────────
+  // Inject the backend-selection protocol only when a web_* tool is actually
+  // active, so recon agents / sessions without pi-web carry zero overhead.
+  pi.on("before_agent_start", async (event) => {
+    const active = event.systemPromptOptions?.selectedTools ?? [];
+    if (!active.some((t) => t.startsWith("web_"))) return;
+    return { systemPrompt: `${event.systemPrompt}\n\n${WEB_ROUTING_GUIDANCE}` };
   });
 
 }

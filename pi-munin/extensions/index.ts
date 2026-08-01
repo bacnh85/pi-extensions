@@ -37,6 +37,75 @@ const controlSchema = {
 };
 
 // ---------------------------------------------------------------------------
+// Always-on condensed Memory Protocol (injected only when Munin is configured)
+// ---------------------------------------------------------------------------
+
+// Portable home for the Munin Memory Protocol. Previously forced always-on via
+// ~/.pi/agent/AGENTS.md; now self-injected by this extension so the protocol
+// travels with the package and disappears when pi-munin is absent. The full
+// deep reference lives in skills/munin/SKILL.md; this is the condensed
+// always-on form covering the durable rules.
+const MUNIN_PROTOCOL_HEADER = `## Munin Memory Protocol
+
+Use Munin to recover and preserve verified project knowledge, not as a task log.
+If Munin is unavailable, state that briefly when it matters and continue from
+repository evidence.
+
+### Before acting
+
+- Search at the start of non-trivial work and before changing architecture,
+  dependencies, public behavior, setup, or a previously fixed subsystem.
+- For bugs, search the exact error or symptom with \`type:bug-fix\` before
+  attempting a new fix.
+- Build focused 4-8 word queries from exact phrases, capitalized entities,
+  subsystem names, file paths, error codes, and dependency names. Quote exact
+  strings and use tags or temporal filters when they reduce noise.
+- Use \`topK: 5\` for focused lookup and up to \`topK: 20\` for exploration. DO
+  NOT use single-word queries unless the term is a genuinely rare error code.
+- Search results are leads, not facts. Retrieve promising memories
+  (\`munin_get\`), check validity and source anchors, and reconcile with current
+  repository evidence before relying on them.
+
+### What to store
+
+Store only verified knowledge likely to help a future session: architecture or
+product decisions (with rationale and rejected options); recurring bug root
+causes (exact symptoms, fixes, verification); stable setup facts, conventions,
+constraints, dependency choices; durable user/project identity facts that
+materially guide work. Do NOT store temporary progress, routine completion
+summaries, TODOs, raw logs, unverified hypotheses, transient file state,
+generated output, or information easy to derive from authoritative files. Never
+store secrets, credentials, private keys, tokens, or encryption keys.
+
+### Memory shape
+
+- One concept per memory. Batch independent memories instead of combining
+  unrelated facts.
+- Stable descriptive key; add a date when historical rather than continuously
+  updated. Reuse a key only for an intentional upsert.
+- Include the conclusion, why it matters, evidence/verification, and durable
+  file/symbol anchors. Cross-reference related memories by mentioning their keys
+  in \`content\` (e.g. "See also: architecture/cache-policy").
+- Lowercase namespaced tags with at least one \`type:\`
+  (\`decision\`|\`bug-fix\`|\`fact\`|\`dependency\`) and one \`domain:\`
+  (\`auth\`|\`frontend\`|\`backend\`|\`infra\`|\`memory\`). Add \`status:\` or
+  \`priority:\` only when they improve retrieval.
+- Use \`validFrom\`/\`validTo\` for time-bound facts so stale information is
+  filtered automatically. Pin only durable, high-value anchors.
+
+### Lifecycle and safety
+
+- At task end, store only newly established durable knowledge. Before context
+  compaction, batch-store any outstanding memories.
+- Update or supersede stale memories when current evidence changes; delete only
+  with explicit authorization.
+- Before memory operations in an E2EE project, verify the encryption key is
+  configured. Never print or store the key. For E2EE Elite, use the official
+  Munin crypto helper.
+- Share memories across projects only when explicitly useful and when encryption
+  compatibility is confirmed.`;
+
+// ---------------------------------------------------------------------------
 // Core SDK call with retry and stale-protocol handling
 // ---------------------------------------------------------------------------
 
@@ -434,7 +503,7 @@ export default function muninExtension(pi: ExtensionAPI) {
       return; // skip header if Munin not configured
     }
     return {
-      systemPrompt: `## Munin Memory Protocol\n\nALWAYS search Munin before non-trivial work. ALWAYS store verified knowledge at end.\n\n---\n\n${event.systemPrompt}`,
+      systemPrompt: `${MUNIN_PROTOCOL_HEADER}\n\n---\n\n${event.systemPrompt}`,
     };
   });
 
