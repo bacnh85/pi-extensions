@@ -12,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import piPlanExtension, { snapshotUntrackedFiles } from "./index";
 import { BLOCKED_TOOLS, PLAN_ONLY_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
-import { captureRewindCheckpoint, restoreRewindCheckpoint, rewindToFlowBaseline } from "./lib/lifecycle";
+import { captureRewindCheckpoint, restoreRewindCheckpoint, rewindToFlowBaseline, validateRewindCheckpoint, type RewindCheckpoint } from "./lib/lifecycle";
 import { registerAdvisor } from "./commands/advisor";
 import { advanceGoal, registerGoal, DEFAULT_GOAL_MAX_TURNS, type GoalAccessors, type GoalState } from "./commands/goal";
 import { buildFinalPrompt } from "./commands/handoff";
@@ -82,7 +82,7 @@ describe("state lifecycle", () => {
     const cwd = createGitRepo("pi-plan-checkpoint-");
     writeFileSync(path.join(cwd, "README.md"), "checkpoint\n");
     writeFileSync(path.join(cwd, "keep.ts"), "export const keep = true;\n");
-    const checkpoint = await captureRewindCheckpoint(cwd, "prompt-1", "Try this implementation", "2026-01-01T00:00:00.000Z");
+    const checkpoint = await captureRewindCheckpoint(cwd, "prompt-1", "Try this implementation", "test-session", "2026-01-01T00:00:00.000Z");
     writeFileSync(path.join(cwd, "README.md"), "broken\n");
     writeFileSync(path.join(cwd, "bad.ts"), "broken\n");
 
@@ -103,7 +103,7 @@ describe("state lifecycle", () => {
     const baseline = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
     await rewindToFlowBaseline(cwd, { baseline, phase: "implement", reviewPass: 0, initialUntrackedSnapshot: "[]" });
     assert.equal(existsSync(path.join(cwd, "legacy")), true);
-    const checkpoint = await captureRewindCheckpoint(cwd, "prompt-1", "Prompt");
+    const checkpoint = await captureRewindCheckpoint(cwd, "prompt-1", "Prompt", "test-session");
     mkdirSync(path.join(cwd, "new-empty"));
     await restoreRewindCheckpoint(cwd, checkpoint);
     assert.equal(existsSync(path.join(cwd, "new-empty")), true);
@@ -115,7 +115,7 @@ describe("state lifecycle", () => {
     mkdirSync(subdir);
     writeFileSync(path.join(cwd, "sibling.ts"), "checkpoint\n");
     writeFileSync(path.join(subdir, "child.ts"), "checkpoint\n");
-    const checkpoint = await captureRewindCheckpoint(subdir, "prompt-1", "Prompt");
+    const checkpoint = await captureRewindCheckpoint(subdir, "prompt-1", "Prompt", "test-session");
     writeFileSync(path.join(cwd, "sibling.ts"), "broken\n");
     writeFileSync(path.join(subdir, "child.ts"), "broken\n");
     await restoreRewindCheckpoint(subdir, checkpoint);
@@ -147,6 +147,54 @@ describe("state lifecycle", () => {
     assert.equal(statSync(plan).mode & 0o777, 0o755);
     assert.equal(existsSync(path.join(cwd, "bad.ts")), false);
     assert.equal(existsSync(path.join(cwd, "scratch")), true);
+  });
+
+  it("captures large patches that exceed the old 50 KB inline limit", async () => {
+    const cwd = createGitRepo("pi-plan-large-patch-");
+    writeFileSync(path.join(cwd, "big.ts"), "x".repeat(80 * 1024) + "\n");
+    // Previously threw "workspace patch exceeds 50 KB" — now writes to an external file instead.
+    const checkpoint = await captureRewindCheckpoint(cwd, "prompt-big", "Big change", "test-session");
+    assert.ok(checkpoint.patchFile, "checkpoint should reference an external payload file");
+    assert.ok(existsSync(checkpoint.patchFile!), "external payload file should exist on disk");
+    // The session entry must NOT contain inline patches.
+    assert.equal(checkpoint.cachedPatch, undefined);
+    assert.equal(checkpoint.unstagedPatch, undefined);
+    // Restore round-trips correctly.
+    writeFileSync(path.join(cwd, "big.ts"), "broken\n");
+    const result = await restoreRewindCheckpoint(cwd, checkpoint);
+    assert.notEqual(result.stash, "none");
+    assert.equal(readFileSync(path.join(cwd, "big.ts"), "utf8"), "x".repeat(80 * 1024) + "\n");
+  });
+
+  it("restores a legacy inline-format checkpoint without a patchFile", async () => {
+    const cwd = createGitRepo("pi-plan-legacy-");
+    writeFileSync(path.join(cwd, "README.md"), "legacy-checkpoint\n");
+    // Simulate a checkpoint saved before external storage (inline payloads, no patchFile).
+    const baseline = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+    const legacy: RewindCheckpoint = {
+      promptEntryId: "prompt-legacy",
+      prompt: "Legacy",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      baseline,
+      cachedPatch: "",
+      unstagedPatch: execFileSync("git", ["diff", "--binary"], { cwd, encoding: "utf8" }),
+      untrackedSnapshot: "[]",
+      untrackedSnapshotVersion: 1,
+    };
+    writeFileSync(path.join(cwd, "README.md"), "broken\n");
+    await restoreRewindCheckpoint(cwd, legacy);
+    assert.equal(readFileSync(path.join(cwd, "README.md"), "utf8"), "legacy-checkpoint\n");
+  });
+
+  it("validateRewindCheckpoint rejects a missing external payload before conversation rewind", async () => {
+    const cwd = createGitRepo("pi-plan-missing-payload-");
+    const checkpoint = await captureRewindCheckpoint(cwd, "prompt-missing", "Missing payload", "test-session");
+    // Simulate the payload file being deleted (manual cleanup, disk failure, etc.).
+    const { rmSync } = await import("node:fs");
+    rmSync(checkpoint.patchFile!, { force: true });
+    // validateRewindCheckpoint must reject so the combined-restore path fails BEFORE
+    // navigating the conversation, not after.
+    await assert.rejects(validateRewindCheckpoint(cwd, checkpoint), /payload not found/);
   });
 });
 
@@ -288,6 +336,7 @@ function fakeCtx(overrides: Record<string, any> = {}): any {
     sessionManager: {
       getBranch: () => [],
       getSessionFile: () => "/test/session.jsonl",
+      getSessionId: () => "test-session",
     },
     waitForIdle: async () => {},
     sendUserMessage: async (_content: string, _options?: any) => {},
@@ -1661,7 +1710,7 @@ describe("rewind checkpoints", () => {
   it("captures a normal user turn and restores its conversation prompt", async () => {
     const { commands, entries, handlers } = createFakePi(["read"]);
     const cwd = createGitRepo("pi-plan-command-rewind-");
-    const checkpoint = await captureRewindCheckpoint(cwd, "prompt-1", "Restore me", "2026-01-01T00:00:00.000Z");
+    const checkpoint = await captureRewindCheckpoint(cwd, "prompt-1", "Restore me", "test-session", "2026-01-01T00:00:00.000Z");
     let editorText = "";
     let navigatedTo = "";
     let cancelled = false;
@@ -1697,21 +1746,21 @@ describe("rewind checkpoints", () => {
     // assistant), so it must not capture. No turn_start handler is registered now.
     await handlers.turn_start?.[0]({}, fakeCtx({
       cwd,
-      sessionManager: { getBranch: () => [], getLeafEntry: () => branch[1] },
+      sessionManager: { getBranch: () => [], getLeafEntry: () => branch[1], getSessionId: () => "test-session" },
     }));
     assert.equal(entries.some((entry) => entry.customType === "pi-plan-rewind"), false);
     // message_start(assistant) fires after the user leaf is in the tree, before any
     // edits: capture happens here.
     await handlers.message_start?.[0](assistantStart, fakeCtx({
       cwd,
-      sessionManager: { getBranch: () => [], getLeafEntry: () => branch[1] },
+      sessionManager: { getBranch: () => [], getLeafEntry: () => branch[1], getSessionId: () => "test-session" },
     }));
     assert.ok(entries.some((entry) => entry.customType === "pi-plan-rewind"));
     // A non-user leaf (e.g. toolResult on a continuation turn) must not capture.
     const before = entries.length;
     await handlers.message_start?.[0](assistantStart, fakeCtx({
       cwd,
-      sessionManager: { getBranch: () => [], getLeafEntry: () => branch[0] },
+      sessionManager: { getBranch: () => [], getLeafEntry: () => branch[0], getSessionId: () => "test-session" },
     }));
     assert.equal(entries.length, before);
   });
@@ -1719,7 +1768,7 @@ describe("rewind checkpoints", () => {
   it("preflights combined rewind before changing the conversation", async () => {
     const { commands } = createFakePi(["read"]);
     const cwd = createGitRepo("pi-plan-combined-rewind-");
-    const checkpoint = await captureRewindCheckpoint(cwd, "prompt-1", "Restore me");
+    const checkpoint = await captureRewindCheckpoint(cwd, "prompt-1", "Restore me", "test-session");
     writeFileSync(path.join(cwd, "README.md"), "diverged\n");
     execFileSync("git", ["add", "README.md"], { cwd });
     execFileSync("git", ["commit", "-m", "diverged"], { cwd });

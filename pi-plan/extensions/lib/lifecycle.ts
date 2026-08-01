@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, open, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 
-const MAX_SNAPSHOT_BYTES = 50 * 1024;
 const MAX_UNTRACKED_SNAPSHOT_BYTES = 1024 * 1024; // 1 MB
 
 type SnapshotEntry =
@@ -32,6 +32,16 @@ export interface RewindCheckpoint {
   prompt: string;
   timestamp: string;
   baseline: string;
+  /** External payload file path (new format). When set, patch payloads are read from this file — no size limit. */
+  patchFile?: string;
+  /** Inline payloads (legacy format, for checkpoints saved before external file storage). */
+  cachedPatch?: string;
+  unstagedPatch?: string;
+  untrackedSnapshot?: string;
+  untrackedSnapshotVersion?: 1;
+}
+
+interface CheckpointPayload {
   cachedPatch: string;
   unstagedPatch: string;
   untrackedSnapshot: string;
@@ -130,7 +140,47 @@ export async function snapshotUntrackedFiles(cwd: string): Promise<string> {
   return JSON.stringify([...entries, ...directories.values()]);
 }
 
-export async function captureRewindCheckpoint(cwd: string, promptEntryId: string, prompt: string, timestamp = new Date().toISOString()): Promise<RewindCheckpoint> {
+// ponytail: checkpoint payloads live in external files (~/.pi/agent/pi-plan/checkpoints/<session>/<entry>.json)
+// so there is no size limit. Session JSONL entries store only a slim reference. Orphaned files from deleted
+// sessions are harmless small patches; add a cleanup command if disk usage ever matters.
+function checkpointPayloadDir(sessionId: string): string {
+  return path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "pi-plan", "checkpoints", sessionId);
+}
+
+async function writeCheckpointPayload(sessionId: string, promptEntryId: string, payload: CheckpointPayload): Promise<string> {
+  const dir = checkpointPayloadDir(sessionId);
+  await mkdir(dir, { recursive: true });
+  const file = path.join(dir, `${promptEntryId}.json`);
+  const tmp = `${file}.${process.pid}.tmp`;
+  await writeFile(tmp, JSON.stringify(payload), "utf8");
+  await rename(tmp, file);
+  return file;
+}
+
+async function resolveCheckpointPayloads(checkpoint: RewindCheckpoint): Promise<{ baseline: string; cachedPatch: string; unstagedPatch: string; untrackedSnapshot: string }> {
+  if (checkpoint.patchFile) {
+    let raw: string;
+    try { raw = await readFile(checkpoint.patchFile, "utf8"); }
+    catch { throw new Error(`Rewind checkpoint payload not found: ${checkpoint.patchFile}`); }
+    let parsed: Partial<CheckpointPayload>;
+    try { parsed = JSON.parse(raw) as Partial<CheckpointPayload>; }
+    catch { throw new Error(`Rewind checkpoint payload is corrupted: ${checkpoint.patchFile}`); }
+    return {
+      baseline: checkpoint.baseline,
+      cachedPatch: parsed.cachedPatch ?? "",
+      unstagedPatch: parsed.unstagedPatch ?? "",
+      untrackedSnapshot: parsed.untrackedSnapshot ?? "[]",
+    };
+  }
+  return {
+    baseline: checkpoint.baseline,
+    cachedPatch: checkpoint.cachedPatch ?? "",
+    unstagedPatch: checkpoint.unstagedPatch ?? "",
+    untrackedSnapshot: checkpoint.untrackedSnapshot ?? "[]",
+  };
+}
+
+export async function captureRewindCheckpoint(cwd: string, promptEntryId: string, prompt: string, sessionId: string, timestamp = new Date().toISOString()): Promise<RewindCheckpoint> {
   const root = await repositoryRoot(cwd);
   const [head, cachedPatch, unstagedPatch, untrackedSnapshot] = await Promise.all([
     git(root, ["rev-parse", "HEAD"]),
@@ -140,27 +190,24 @@ export async function captureRewindCheckpoint(cwd: string, promptEntryId: string
   ]);
   if (head.code !== 0 || !/^[0-9a-f]{7,64}$/i.test(head.stdout.trim())) throw new Error("Rewind requires a Git working tree with an initial commit.");
   if (cachedPatch.code !== 0 || unstagedPatch.code !== 0) throw new Error("Could not capture the current Git patch for rewind.");
-  if (Buffer.byteLength(cachedPatch.stdout, "utf8") + Buffer.byteLength(unstagedPatch.stdout, "utf8") > MAX_SNAPSHOT_BYTES) {
-    throw new Error(`workspace patch exceeds ${MAX_SNAPSHOT_BYTES / 1024} KB; commit, stash, or reduce changes before retrying`);
-  }
-  return {
-    promptEntryId,
-    prompt,
-    timestamp,
-    baseline: head.stdout.trim(),
+  const patchFile = await writeCheckpointPayload(sessionId, promptEntryId, {
     cachedPatch: cachedPatch.stdout,
     unstagedPatch: unstagedPatch.stdout,
     untrackedSnapshot,
     untrackedSnapshotVersion: 1,
-  };
+  });
+  return { promptEntryId, prompt, timestamp, baseline: head.stdout.trim(), patchFile };
 }
 
 export async function restoreRewindCheckpoint(cwd: string, checkpoint: RewindCheckpoint): Promise<{ stash: string }> {
-  return restoreWorkspaceState(cwd, checkpoint);
+  return restoreWorkspaceState(cwd, await resolveCheckpointPayloads(checkpoint));
 }
 
 export async function validateRewindCheckpoint(cwd: string, checkpoint: RewindCheckpoint): Promise<void> {
   await validateWorkspaceState(cwd, checkpoint);
+  // Pre-flight payload resolution so combined restore fails BEFORE conversation navigation,
+  // not after — leaving the user in an inconsistent state (conversation rewound, code not).
+  await resolveCheckpointPayloads(checkpoint);
 }
 
 export async function rewindToFlowBaseline(cwd: string, flow: LifecycleFlow): Promise<{ stash: string }> {

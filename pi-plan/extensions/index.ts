@@ -288,8 +288,12 @@ function checkpointFromEntry(entry: any): RewindCheckpoint | undefined {
   const checkpoint = entry?.type === "custom" && entry.customType === REWIND_CHECKPOINT_TYPE ? entry.data : undefined;
   if (!checkpoint || typeof checkpoint !== "object") return undefined;
   if (typeof checkpoint.promptEntryId !== "string" || typeof checkpoint.prompt !== "string" || typeof checkpoint.timestamp !== "string") return undefined;
-  if (!/^[0-9a-f]{7,64}$/i.test(checkpoint.baseline) || typeof checkpoint.cachedPatch !== "string" || typeof checkpoint.unstagedPatch !== "string" || typeof checkpoint.untrackedSnapshot !== "string") return undefined;
-  return { ...checkpoint, untrackedSnapshotVersion: 1 } as RewindCheckpoint;
+  if (!/^[0-9a-f]{7,64}$/i.test(checkpoint.baseline)) return undefined;
+  // New format: external payload file (no inline patches needed)
+  if (typeof checkpoint.patchFile === "string") return { ...checkpoint, untrackedSnapshotVersion: 1 } as RewindCheckpoint;
+  // Legacy format: inline patch payloads
+  if (typeof checkpoint.cachedPatch === "string" && typeof checkpoint.unstagedPatch === "string" && typeof checkpoint.untrackedSnapshot === "string") return { ...checkpoint, untrackedSnapshotVersion: 1 } as RewindCheckpoint;
+  return undefined;
 }
 
 export default function piPlanExtension(pi: ExtensionAPI): void {
@@ -1550,7 +1554,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       ? entry.message.content
       : entry.message.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n");
     try {
-      const checkpoint = await captureRewindCheckpoint(ctx.cwd, entry.id, prompt);
+      const checkpoint = await captureRewindCheckpoint(ctx.cwd, entry.id, prompt, ctx.sessionManager.getSessionId());
       pi.appendEntry(REWIND_CHECKPOINT_TYPE, checkpoint);
     } catch (error) {
       ctx.ui.notify(`Rewind checkpoint skipped: ${String(error)}`, "warning");

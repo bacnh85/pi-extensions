@@ -2,6 +2,12 @@
 
 All notable changes to `pi-plan` will be documented in this file.
 
+## 0.8.9 (2026-08-01)
+
+### Fixes
+
+- **`/rewind` no longer skips checkpoints on large changes.** Previously, any workspace patch exceeding 50 KB caused `captureRewindCheckpoint` to throw `workspace patch exceeds 50 KB`, silently breaking `/rewind` during real feature work. Checkpoint payloads (tracked patches + untracked snapshot) are now stored in external files under `~/.pi/agent/pi-plan/checkpoints/<sessionId>/` instead of inline in the session JSONL, eliminating the size limit entirely. The session entry stores only a slim reference (`patchFile` path). Legacy inline-format checkpoints from older sessions still restore via backward compatibility.
+
 ## 0.8.8 (2026-07-30)
 
 ### Fixes
