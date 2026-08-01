@@ -71,15 +71,17 @@ function auditParametersSchema() {
       },
       pairs: {
         type: "array",
-        description: "Foreground/background colour pairs to check for WCAG contrast (fg + bg as #hex, a label, and a min ratio defaulting to 4.5).",
+        description: "Foreground/background colour pairs to check for contrast (APCA primary + WCAG sidecar). fg + bg as #hex or oklch(); optional weight/size set the APCA threshold; min is the WCAG compliance floor.",
         items: {
           type: "object",
           additionalProperties: false,
           properties: {
-            fg: { type: "string", description: "Foreground colour, e.g. '#111111'." },
+            fg: { type: "string", description: "Foreground colour, e.g. '#111111' or 'oklch(60% 0.18 250)'." },
             bg: { type: "string", description: "Background colour, e.g. '#ffffff'." },
             label: { type: "string", description: "Human label for this text style (e.g. 'body')." },
-            min: { type: "number", description: "Minimum contrast ratio. 4.5 for body, 3.0 for large/UI. Defaults to 4.5." },
+            min: { type: "number", description: "WCAG compliance floor (4.5 body, 3.0 large/UI). Shown as a sidecar; the primary gate is APCA. Defaults to 4.5." },
+            weight: { type: "number", description: "Font weight (400/500/700). With size, sets the APCA threshold. Defaults to 400." },
+            size: { type: "number", description: "Font size in px. With weight, sets the APCA threshold. Defaults to 16." },
           },
           required: ["fg", "bg"],
         },
@@ -94,10 +96,11 @@ function formatAuditResult(result) {
   lines.push("");
 
   const c = result.gates.contrast;
-  lines.push(c.pass ? "✓ Contrast" : "✗ Contrast");
+  lines.push(c.pass ? "✓ Contrast (APCA)" : "✗ Contrast (APCA)");
   for (const r of c.results) {
+    const lc = r.apca === null ? "n/a" : `Lc ${r.apca}`;
     const ratio = r.ratio === null ? "n/a" : `${r.ratio.toFixed(2)}:1`;
-    lines.push(`  ${r.pass ? "✓" : "✗"} ${r.label || `${r.fg}/${r.bg}`}: ${ratio} (min ${r.min ?? 4.5})`);
+    lines.push(`  ${r.pass ? "✓" : "✗"} ${r.label || `${r.fg}/${r.bg}`}: ${lc} (min Lc ${r.apcaMin}) · WCAG ${ratio} (min ${r.min ?? 4.5})`);
   }
 
   const t = result.gates.tokens;
@@ -109,6 +112,10 @@ function formatAuditResult(result) {
   lines.push(s.pass ? "✓ States" : "✗ States");
   for (const m of s.missingFocusVisible) lines.push(`  ✗ ${m}`);
   for (const m of s.missingDisabled) lines.push(`  ✗ ${m}`);
+
+  const st = result.gates.slopTells;
+  lines.push(st.pass ? "✓ Slop tells" : "✗ Slop tells");
+  for (const tell of st.tells) lines.push(`  ✗ ${tell}`);
 
   return lines.join("\n");
 }
@@ -149,12 +156,12 @@ export default function uxExtension(pi) {
     name: "ux_audit",
     label: "UX Slop Audit",
     description:
-      "Run deterministic slop-audit gates on CSS: WCAG contrast, off-system token values (hardcoded hex / ad-hoc shadows), and missing interaction states (:focus-visible / :disabled). No model needed — all gates are computable. In strict mode, block handoff until this passes.",
-    promptSnippet: "Run deterministic UX slop-audit (contrast + tokens + states)",
+      "Run deterministic slop-audit gates on CSS: APCA contrast (perceptual; WCAG sidecar), off-system token values (hardcoded hex / ad-hoc shadows), missing interaction states (:focus-visible / :disabled), and named AI slop tells (glassmorphism, gradient orbs, neon glow, default-card). No model needed — all gates are computable. In strict mode, block handoff until this passes.",
+    promptSnippet: "Run deterministic UX slop-audit (APCA contrast + tokens + states + slop tells)",
     promptGuidelines: [
-      "Contrast and token-coverage are computable, not judgement — use this tool instead of eyeballing.",
-      "Pass fg/bg colour pairs to check WCAG AA contrast (4.5:1 body, 3:1 large/UI).",
-      "Pass the CSS string to scan for hardcoded hex and ad-hoc box-shadow not built from var() tokens.",
+      "Contrast, token-coverage, and slop-tells are computable, not judgement — use this tool instead of eyeballing or calling a vision model.",
+      "Pass fg/bg colour pairs (hex or oklch()) + optional weight/size to set the APCA threshold; the WCAG ratio is shown as a compliance sidecar.",
+      "Pass the CSS string to scan for hardcoded hex, ad-hoc box-shadow, and named AI tells (glassmorphism, gradient orbs, neon glow, the shadcn default-card reflex, 1px gray borders).",
       "State coverage flags interactive elements (button/a/input/...) missing :focus-visible or :disabled rules.",
     ],
     parameters: auditParametersSchema(),
