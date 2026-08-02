@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.3
+
+- **Named styles via the design.md library.** `ux-presets` now documents a
+  reuse path for named aesthetics (Claymorphism, Brutalism, Bento, Art Deco, …):
+  fetch the canonical `DESIGN.md` from the [design.md style library](https://designmd.app/library),
+  `npx @google/design.md lint` it, then `ux_audit` — block handoff on fail. No
+  style is pre-approved: the stock Claymorphism template ships a button that
+  fails `ux_audit` at **Lc −15.67** (lilac `#E6E6FA` on peach `#FDBCB4`),
+  corrected to ink-on-peach (Lc 75.72 ✓). Glassmorphism and neumorphism remain
+  banned slop tells regardless of library entry.
+- Step 2 of "How to use with ux-design" names the library path alongside
+  shadcn/Material/Radix as reuse-before-invent options.
+
 ## 0.4.2
 
 - **Review fixes** (7 findings, all pinned with regression tests):

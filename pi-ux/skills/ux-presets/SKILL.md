@@ -33,6 +33,26 @@ These already define tokens, 3–5 elevation levels, and full state contracts �
 which is exactly what the anti-slop guardrail demands. **Reusing beats
 redefining.** YAGNI applies to design systems too.
 
+### Named styles (Claymorphism, Brutalism, Bento, Art Deco, …)
+
+When the brief calls for a *named aesthetic* (a kids app wants Claymorphism;
+an agency site wants Brutalism), **do not invent one and do not hand-copy a
+template blindly.** Pull the canonical, lintable `DESIGN.md` from the
+**[design.md style library](https://designmd.app/library)** (30+ styles,
+same `DESIGN.md` standard this skill uses) and run it through the gate:
+
+1. Fetch the style's `DESIGN.md` from `designmd.app/library/<style>`.
+2. `npx @google/design.md lint DESIGN.md` (token-ref + structure validation).
+3. `ux_audit` on the CSS + the style's common text pairs — **block handoff on fail.**
+
+> **No style is pre-approved.** Named-style templates are aesthetic
+> starting points, not vetted systems. The stock **Claymorphism** template
+> ships a button in lilac (`#E6E6FA`) text on peach (`#FDBCB4`) — that pair
+> fails `ux_audit` at **Lc −15.67** (WCAG 1.31:1). Correct it to ink-on-peach
+> (Lc 75.72 ✓) before trusting it. The gate, not the template, makes a style
+> non-slop. Note: glassmorphism and neumorphism are **banned** slop tells
+> here regardless of any library entry.
+
 ## Option B — medium-tuned DESIGN.md starters (lintable, drop-in)
 
 When there's nothing to reuse AND no repo-root DESIGN.md, pick the starter
@@ -309,7 +329,7 @@ into the project's `:root`. It satisfies the token + elevation + state gates of
 ## How to use with ux-design
 
 1. Run **Step 0** of ux-design. If the project already has a DESIGN.md / tokens / elevation / states → use them.
-2. If not, pick **Option A** (reuse shadcn/Material/Radix) first — the lazy, correct path when the stack matches.
+2. If not, pick **Option A** — reuse an installed system (shadcn/Material/Radix) when the stack matches, OR pull a named style (Claymorphism, Brutalism, …) from the design.md library. Both reuse-before-invent; both still must pass `ux_audit`.
 3. Otherwise pick **Option B** — infer the medium (Web B1 vs Mobile B2) from the task, use the starter in-context as the implicit system, and keep generating. Only ASK if web-vs-mobile is unclear.
 4. Only for CSS-only projects that won't adopt DESIGN.md, use **Option C** (`:root` block).
 5. Generate screens with any text-only model (DeepSeek-v4 / GLM-5.2 / Kimi K3) INSIDE these constraints.
