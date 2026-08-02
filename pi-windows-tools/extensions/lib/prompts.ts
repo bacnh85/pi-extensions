@@ -17,6 +17,7 @@ Use PowerShell syntax:
 - Filesystem: Get-ChildItem, Get-Content, Set-Content, Copy-Item, Move-Item, Remove-Item, New-Item
 - Text search: Select-String -Path <file> -Pattern <regex>
 - Command separator: ;
+- \`&&\`/\`||\` work in pwsh 7+ but NOT Windows PowerShell 5.1; prefer \`;\` for portability across both
 - Native exit codes: $LASTEXITCODE
 - Quote paths with spaces
 - Prefer Node.js internal file tools for editing files
@@ -111,5 +112,30 @@ export function buildShellGuidance(kind: WindowsShellKind): string {
     lines.push(`  • ${cmd}`);
   }
 
+  lines.push("", commonWarnings(kind));
+
   return lines.join("\n");
+}
+
+/** Shell-specific gotchas that apply regardless of the command (path quoting,
+ * null-device redirection, pipe-after-cd). Kept short — mirrors the proactive
+ * guidance Claude Code's windows-shell plugin teaches. */
+function commonWarnings(kind: WindowsShellKind): string {
+  switch (kind) {
+    case "pwsh":
+    case "powershell":
+      return "Common pitfalls:\n" +
+        "  • Redirect to `nul` not `/dev/null` (e.g. `cmd >nul 2>&1`)\n" +
+        "  • Quote any `C:\\...` path containing spaces\n" +
+        "  • Avoid `| Select-String`/`findstr` immediately after `cd` (context loss)";
+    case "cmd":
+      return "Common pitfalls:\n" +
+        "  • Redirect to `nul` not `/dev/null`\n" +
+        "  • Quote paths with spaces using double quotes";
+    case "git-bash":
+    case "wsl":
+      return "Common pitfalls:\n" +
+        "  • `/dev/null` is correct here, but Windows-native tools invoked from bash need `nul`\n" +
+        "  • Convert `C:\\...` paths to `/c/...` (git-bash) or `/mnt/c/...` (wsl) before cd";
+  }
 }

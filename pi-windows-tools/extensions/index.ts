@@ -3,6 +3,7 @@ import { Type } from "@sinclair/typebox";
 import { detectShell, detectAllShells, getDefaultShell } from "./lib/shell-detect";
 import type { WindowsShellKind } from "./lib/shell-detect";
 import { executeCommand as execCmd } from "./lib/shell-exec";
+import type { ExecOptions } from "./lib/shell-exec";
 import * as pathUtils from "./lib/path-utils";
 import { classifyCommand } from "./lib/safety";
 import { runDoctor, formatDoctorReport, parseWslDistros } from "./lib/doctor";
@@ -42,22 +43,38 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
   pi.registerTool({ name: "windows_shell_exec", label: "Windows: Execute Command", description: "Execute a command through a Windows shell.", promptSnippet: "Execute a command through a Windows shell",
     promptGuidelines: ["Use instead of generic bash on Windows.", 'Use shell:"wsl" for WSL.', "Dangerous commands require confirmation."],
     parameters: Type.Object({ command: Type.String(), shell: Type.Optional(sk), cwd: Type.Optional(Type.String()), timeout_ms: tp }),
-    async execute(_id, p, signal, _u, ctx) {
-      const opts = { shell: rs(p.shell as WindowsShellKind | undefined), cwd: p.cwd || ctx?.cwd || process.cwd(), timeoutMs: p.timeout_ms, signal };
+    async execute(_id, p, signal, onUpdate, ctx) {
+      const opts: ExecOptions = { shell: rs(p.shell as WindowsShellKind | undefined), cwd: p.cwd || ctx?.cwd || process.cwd(), timeoutMs: p.timeout_ms, signal };
       const safe = classifyCommand(p.command);
       if (safe.risk === "confirm") {
         if (!ctx?.hasUI) return tr(`Command requires confirmation but UI is unavailable: ${safe.reasons.join("; ")}`);
         if (!await ctx.ui.confirm("Run dangerous Windows command?", `Command: ${p.command}\n\nRisk: ${safe.reasons.join("; ")}`)) return tr("Command cancelled by user.");
       }
-      const r = await execCmd(p.command, opts);
-      _log.push({ shell: opts.shell as string, command: p.command, exitCode: r.exitCode, timedOut: r.timedOut });
-      let o = `Exit code: ${r.exitCode}\n`;
-      if (r.timedOut) o += "Status: TIMED OUT\n";
-      if (r.cancelled) o += "Status: CANCELLED\n";
-      if (r.stdout) o += `\n--- stdout ---\n${r.stdout}\n`;
-      if (r.stderr) o += `\n--- stderr ---\n${r.stderr}\n`;
-      if (safe.risk === "confirm") o += `\n\u26a0\ufe0f  ${safe.reasons.join("; ")}`;
-      return tr(o);
+      // ponytail: SDK OutputAccumulator is internal; throttled onChunk buffer suffices, add temp-file spill if builds regularly exceed 1MB
+      let flushTimer: ReturnType<typeof setTimeout> | undefined;
+      let flush: (() => void) | undefined;
+      if (onUpdate) {
+        let streamed = "";
+        let dirty = false;
+        flush = () => { flushTimer = undefined; if (!dirty) return; dirty = false; onUpdate({ content: [{ type: "text" as const, text: streamed }], details: {} }); };
+        // Preview interleaves stdout+stderr (terminal-like); the final result below separates them.
+        opts.onChunk = (chunk: string) => { streamed += chunk; dirty = true; if (!flushTimer) flushTimer = setTimeout(flush!, 120); };
+        onUpdate({ content: [], details: {} });
+      }
+      try {
+        const r = await execCmd(p.command, opts);
+        _log.push({ shell: opts.shell as string, command: p.command, exitCode: r.exitCode, timedOut: r.timedOut });
+        let o = `Exit code: ${r.exitCode}\n`;
+        if (r.timedOut) o += "Status: TIMED OUT\n";
+        if (r.cancelled) o += "Status: CANCELLED\n";
+        if (r.stdout) o += `\n--- stdout ---\n${r.stdout}\n`;
+        if (r.stderr) o += `\n--- stderr ---\n${r.stderr}\n`;
+        if (safe.risk === "confirm") o += `\n\u26a0\ufe0f  ${safe.reasons.join("; ")}`;
+        return tr(o);
+      } finally {
+        if (flushTimer) clearTimeout(flushTimer);
+        flush?.();
+      }
     } });
 
   // ── Audit tools ──

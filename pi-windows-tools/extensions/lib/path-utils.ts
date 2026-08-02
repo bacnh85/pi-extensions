@@ -44,11 +44,27 @@ export function toWindowsPath(posixPath: string): string {
 }
 
 /**
+ * Parse a WSL UNC path (\\wsl.localhost\<Distro>\<path> or \\wsl$\<Distro>\<path>)
+ * into the distro name and the WSL-native POSIX path (distro stripped, since
+ * `wsl -d <Distro>` already targets the distro). Returns null for non-WSL-UNC
+ * input. Closes the Codex #27553 class of bug (UNC workspace not mapping to a
+ * Linux path the shell can use).
+ */
+export function parseWslUncPath(p: string): { distro: string; posixPath: string } | null {
+  const m = p.replace(/\\/g, "/").match(/^\/{2}(?:wsl\.localhost|wsl\$)\/([^/]+)(?:\/(.*))?$/i);
+  if (!m) return null;
+  return { distro: m[1], posixPath: "/" + (m[2] || "") };
+}
+
+/**
  * Convert a Windows path to WSL format (/mnt/c/Users/...).
- * Ignores input already in WSL or POSIX format.
+ * WSL UNC paths (\\wsl.localhost\<Distro>\<path>) map to the distro-stripped
+ * WSL-native path. Ignores input already in WSL or POSIX format.
  */
 export function toWslPath(windowsPath: string): string {
   if (/^\/mnt\/[a-zA-Z](?:\/|$)/.test(windowsPath)) return windowsPath;
+  const wslUnc = parseWslUncPath(windowsPath);
+  if (wslUnc) return wslUnc.posixPath;
   const posix = toPosixPath(windowsPath);
   return /^\/[a-z](?:\/|$)/i.test(posix) ? `/mnt${posix}` : posix;
 }

@@ -24,7 +24,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-subagent** | 0.12.4 | Isolated in-process subagents with parallel/chain modes and inspectable threads. |
 | **pi-web** | 0.5.6 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
 | **pi-ux** | 0.4.2 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, ships medium-tuned presets (Web/Mobile) so the agent stays unblocked when DESIGN.md is missing, runs deterministic slop-audit gates (APCA contrast + tokens + states + slop tells), works with text-only models. |
-| **pi-windows-tools** | 0.4.2 | Windows-specific tools for Pi. |
+| **pi-windows-tools** | 0.5.0 | Windows-specific tools for Pi. |
 
 ## Repository Structure
 

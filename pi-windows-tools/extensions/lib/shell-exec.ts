@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { WindowsShellKind } from "./shell-detect";
 import { getDefaultShell, detectShell } from "./shell-detect";
-import { toWindowsPath } from "./path-utils";
+import { toWindowsPath, parseWslUncPath } from "./path-utils";
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 
@@ -13,6 +13,11 @@ export interface ExecOptions {
   env?: Record<string, string>;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Streaming callback: invoked with decoded output chunks as they arrive.
+   * Fires for BOTH stdout and stderr (interleaved, terminal-like ordering) so
+   * the preview mirrors what a user sees in a real terminal. The final
+   * ExecResult separates the two streams with stdout/stderr fields. */
+  onChunk?: (chunk: string, stream: "stdout" | "stderr") => void;
 }
 
 export interface ExecResult {
@@ -42,12 +47,39 @@ export function buildShellArgs(kind: WindowsShellKind, command: string, distro?:
     case "pwsh":
     case "powershell": {
       const info = detectShell(kind);
-      return { exe: info.executable, args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command] };
+      const common = ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"];
+      // ponytail: -EncodedCommand only for fragile inputs (multiline/long); keeps simple cmds debuggable on -Command
+      return shouldEncode(command)
+        ? { exe: info.executable, args: [...common, "-EncodedCommand", encodeForPwsh(command)] }
+        : { exe: info.executable, args: [...common, "-Command", command] };
     }
     case "cmd": return { exe: process.env.ComSpec || "cmd.exe", args: ["/c", command] };
     case "git-bash": return { exe: detectShell(kind).executable, args: ["-lc", command] };
     case "wsl": return { exe: detectShell("wsl").executable, args: [...(distro ? ["-d", distro] : []), "--", "bash", "-lc", command] };
   }
+}
+
+/** Resolve the WSL distro to target: prefer a distro embedded in a WSL UNC cwd
+ * (\wsl.localhost\<distro>\...), fall back to PI_WSL_DISTRO env, then default. */
+export function resolveWslDistro(shellKind: WindowsShellKind, cwd?: string): string | undefined {
+  if (shellKind === "wsl" && cwd) {
+    const unc = parseWslUncPath(cwd);
+    if (unc?.distro) return unc.distro;
+  }
+  return process.env.PI_WSL_DISTRO || undefined;
+}
+
+/** Whether a PowerShell command is too fragile for `-Command` and needs `-EncodedCommand`.
+ * Triggers on multi-line or long commands. Note: single-line commands with complex
+ * nested quoting are NOT encoded — those rely on Node's argv escaping and remain
+ * debuggable on the readable -Command path. */
+export function shouldEncode(command: string): boolean {
+  return command.length > 2000 || /[\r\n]/.test(command);
+}
+
+/** Base64-encode a command as UTF-16LE for PowerShell `-EncodedCommand`. */
+export function encodeForPwsh(command: string): string {
+  return Buffer.from(command, "utf16le").toString("base64");
 }
 
 function stop(child: ReturnType<typeof spawn>) {
@@ -62,7 +94,7 @@ export function executeCommand(command: string, options: ExecOptions = {}): Prom
   const shellKind = options.shell || getDefaultShell().kind;
   const cwd = options.cwd && (shellKind === "git-bash" || shellKind === "wsl") ? toWindowsPath(options.cwd) : options.cwd || process.cwd();
   if (options.signal?.aborted) return Promise.resolve({ command, shell: shellKind, cwd, exitCode: null, stdout: "", stderr: "", timedOut: false, cancelled: true });
-  const { exe, args } = buildShellArgs(shellKind, command, process.env.PI_WSL_DISTRO || undefined);
+  const { exe, args } = buildShellArgs(shellKind, command, resolveWslDistro(shellKind, options.cwd));
 
   return new Promise((resolve) => {
     const child = spawn(exe, args, { cwd, env: mergeEnv(options.env || {}) });
@@ -75,28 +107,33 @@ export function executeCommand(command: string, options: ExecOptions = {}): Prom
     let settled = false;
     const stdoutDecoder = new StringDecoder("utf8");
     const stderrDecoder = new StringDecoder("utf8");
-    const append = (current: string, chunk: Buffer, decoder: StringDecoder) => {
+    const append = (current: string, chunk: Buffer, decoder: StringDecoder, stream: "stdout" | "stderr") => {
       const remaining = MAX_OUTPUT_BYTES - outputBytes;
       if (remaining <= 0) { truncated = true; return current; }
       const slice = chunk.subarray(0, remaining);
       const text = decoder.write(slice);
       outputBytes += slice.length;
       if (slice.length < chunk.length) truncated = true;
+      if (text && options.onChunk) options.onChunk(text, stream);
       return current + text;
     };
     const terminate = () => stop(child);
     const onAbort = () => { aborted = true; terminate(); };
     options.signal?.addEventListener("abort", onAbort, { once: true });
     const timer = options.timeoutMs ? setTimeout(() => { timedOut = true; terminate(); }, options.timeoutMs) : undefined;
-    child.stdout?.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk, stdoutDecoder); if (truncated) terminate(); });
-    child.stderr?.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk, stderrDecoder); if (truncated) terminate(); });
+    child.stdout?.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk, stdoutDecoder, "stdout"); if (truncated) terminate(); });
+    child.stderr?.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk, stderrDecoder, "stderr"); if (truncated) terminate(); });
     const finish = (exitCode: number | null, spawnError?: string) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
       options.signal?.removeEventListener("abort", onAbort);
-      stdout += stdoutDecoder.end();
-      stderr += stderrDecoder.end();
+      const stdoutTail = stdoutDecoder.end();
+      const stderrTail = stderrDecoder.end();
+      if (stdoutTail && options.onChunk) options.onChunk(stdoutTail, "stdout");
+      if (stderrTail && options.onChunk) options.onChunk(stderrTail, "stderr");
+      stdout += stdoutTail;
+      stderr += stderrTail;
       if (truncated) stderr += `${stderr ? "\n" : ""}[output truncated at ${MAX_OUTPUT_BYTES} bytes]`;
       resolve({ command, shell: shellKind, cwd, exitCode: timedOut || aborted ? null : exitCode, stdout: stdout.replace(/\r\n/g, "\n"), stderr: (stderr || spawnError || "").replace(/\r\n/g, "\n"), timedOut, cancelled: aborted });
     };

@@ -7,6 +7,7 @@ import {
   normalizeWindowsPath,
   isWindowsAbsolutePath,
   quoteForShell,
+  parseWslUncPath,
 } from "../lib/path-utils";
 import type { WindowsShellKind } from "../lib/shell-detect";
 
@@ -72,6 +73,51 @@ describe("path-utils", () => {
     it("preserves unrelated POSIX and relative paths", () => {
       expect(toWslPath("/home/me")).to.equal("/home/me");
       expect(toWslPath("relative/path")).to.equal("relative/path");
+    });
+  });
+
+  describe("parseWslUncPath", () => {
+    it("parses \\wsl.localhost\\<distro>\\<path>", () => {
+      expect(parseWslUncPath("\\\\wsl.localhost\\Ubuntu\\home\\foo")).to.deep.equal({ distro: "Ubuntu", posixPath: "/home/foo" });
+    });
+    it("parses \\wsl$\\<distro>\\<path>", () => {
+      expect(parseWslUncPath("\\\\wsl$\\Debian\\tmp")).to.deep.equal({ distro: "Debian", posixPath: "/tmp" });
+    });
+    it("handles distro-only UNC (root path)", () => {
+      expect(parseWslUncPath("\\\\wsl.localhost\\Ubuntu")).to.deep.equal({ distro: "Ubuntu", posixPath: "/" });
+    });
+    it("parses distro with version suffix", () => {
+      expect(parseWslUncPath("\\\\wsl.localhost\\Ubuntu-22.04\\home\\kim\\proj")).to.deep.equal({ distro: "Ubuntu-22.04", posixPath: "/home/kim/proj" });
+    });
+    it("returns null for regular Windows drive path", () => {
+      expect(parseWslUncPath("C:\\foo\\bar")).to.equal(null);
+    });
+    it("returns null for regular UNC share", () => {
+      expect(parseWslUncPath("\\\\server\\share\\foo")).to.equal(null);
+    });
+    it("preserves trailing slash", () => {
+      expect(parseWslUncPath("\\\\wsl.localhost\\Ubuntu\\home\\foo\\")).to.deep.equal({ distro: "Ubuntu", posixPath: "/home/foo/" });
+    });
+    it("accepts forward-slash UNC input", () => {
+      expect(parseWslUncPath("//wsl.localhost/Ubuntu/home/foo")).to.deep.equal({ distro: "Ubuntu", posixPath: "/home/foo" });
+    });
+    it("handles paths with spaces", () => {
+      expect(parseWslUncPath("\\\\wsl.localhost\\Ubuntu\\home\\My Project")).to.deep.equal({ distro: "Ubuntu", posixPath: "/home/My Project" });
+    });
+    it("handles mixed-case host", () => {
+      expect(parseWslUncPath("\\\\Wsl.LocalHost\\Ubuntu\\home\\foo")).to.deep.equal({ distro: "Ubuntu", posixPath: "/home/foo" });
+    });
+    it("returns null for empty input", () => {
+      expect(parseWslUncPath("")).to.equal(null);
+    });
+  });
+
+  describe("toWslPath UNC", () => {
+    it("strips distro from \\wsl.localhost UNC", () => {
+      expect(toWslPath("\\\\wsl.localhost\\Ubuntu\\home\\foo")).to.equal("/home/foo");
+    });
+    it("strips distro from \\wsl$ UNC", () => {
+      expect(toWslPath("\\\\wsl$\\Debian\\tmp")).to.equal("/tmp");
     });
   });
 

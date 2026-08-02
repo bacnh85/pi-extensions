@@ -47,6 +47,7 @@ export function runDoctor(): DoctorReport {
     checkTool("winget", "winget"), checkTool("choco", "choco"), checkTool("scoop", "scoop"),
     checkTool("ssh", "ssh"), checkTool("msbuild", "msbuild"), checkTool("cl", "cl"),
     checkTool("devenv", "devenv"), checkTool("reg", "reg"), checkTool("sc", "sc"), checkTool("netsh", "netsh"),
+    checkTool("wt (Windows Terminal)", "wt"),
   ];
   const wslTool = tools.find(t => t.name === "wsl");
   return { ...osInfo, defaultShell: getDefaultShell().kind, tools, wslDistros: wslTool?.found ? wslDistros() : [], longPathsEnabled: regDword("HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem", "LongPathsEnabled"), developerMode: regDword("HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock", "AllowDevelopmentWithoutDevLicense") };
