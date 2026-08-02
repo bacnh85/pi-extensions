@@ -1,6 +1,11 @@
 import { createRequire } from "node:module";
+import { readFile } from "node:fs/promises";
+import * as path from "node:path";
 
 const _require = createRequire(import.meta.url);
+
+// Official install is a Go binary (not pipx). macOS/Linux; Windows uses the .ps1 script.
+const INSTALL_HINT = "Install agy: curl -fsSL https://antigravity.google/cli/install.sh | bash";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -33,14 +38,14 @@ const PREFLIGHT_TIMEOUT_MS = 10_000;
 const MAX_CAPTURE_BYTES = 64 * 1024;
 
 const MODEL_MAP: Record<AgyModel, string> = {
-  "flash-low": "Gemini 3.5 Flash (Low)",
-  "flash-medium": "Gemini 3.5 Flash (Medium)",
-  "flash-high": "Gemini 3.5 Flash (High)",
-  "pro-low": "Gemini 3.1 Pro (Low)",
-  "pro-high": "Gemini 3.1 Pro (High)",
-  sonnet: "Claude Sonnet 4.6 (Thinking)",
-  opus: "Claude Opus 4.6 (Thinking)",
-  "gpt-oss": "GPT-OSS 120B (Medium)",
+  "flash-low": "gemini-3.6-flash-low",
+  "flash-medium": "gemini-3.6-flash-medium",
+  "flash-high": "gemini-3.6-flash-high",
+  "pro-low": "gemini-3.1-pro-low",
+  "pro-high": "gemini-3.1-pro-high",
+  sonnet: "claude-sonnet-4-6",
+  opus: "claude-opus-4-6-thinking",
+  "gpt-oss": "gpt-oss-120b-medium",
 };
 
 const TIER_MAP: Record<NonNullable<AgyOptions["tier"]>, string> = {
@@ -60,6 +65,11 @@ export function buildAgyArgs(options: AgyOptions): string[] {
       ? TIER_MAP[options.tier]
       : MODEL_MAP["flash-medium"];
   const timeoutSec = Math.ceil(options.timeout_ms / 1000);
+  const mode = options.mode ?? "accept-edits";
+  // Headless -p auto-denies write/tool permissions; accept-edits and sandbox both
+  // perform writes, so they need explicit auto-approval. plan is read-only.
+  const writes = mode !== "plan";
+  const json = mode !== "accept-edits"; // structured output for read/preview modes
 
   return [
     "--model",
@@ -68,10 +78,53 @@ export function buildAgyArgs(options: AgyOptions): string[] {
     `${timeoutSec}s`,
     "--add-dir",
     options.dir,
-    ...(options.mode === "sandbox" ? ["--sandbox"] : ["--mode", options.mode ?? "accept-edits"]),
+    ...(mode === "sandbox" ? ["--sandbox"] : ["--mode", mode]),
+    ...(writes ? ["--dangerously-skip-permissions"] : []),
+    ...(json ? ["--output-format", "json"] : []),
     "-p",
     options.prompt,
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Prompt builder — phase framing + verify-loop injection (Google Best Practices:
+// explore→plan→execute, and instruct the agent to verify its own edits)
+// ---------------------------------------------------------------------------
+
+export function buildAgyPrompt(
+  prompt: string,
+  mode: "plan" | "accept-edits" | "sandbox",
+  useDigest: boolean,
+  verifyCmd: string | null,
+): string {
+  const lines: string[] = [];
+  if (mode === "plan") lines.push("Explore and produce an implementation plan only; do not edit.");
+  else if (mode === "sandbox") lines.push("Work inside the sandbox; changes are isolated for preview.");
+  else if (verifyCmd) lines.push(`After editing, run \`${verifyCmd}\` and fix failures until it passes.`);
+  if (useDigest) lines.push("Use compact digests, not full file contents.");
+  lines.push(prompt);
+  return lines.join("\n");
+}
+
+// ponytail: npm test covers this JS/TS monorepo; other ecosystems rely on agy auto-reading AGENTS.md
+export async function detectVerifyCommand(cwd: string): Promise<string | null> {
+  try {
+    const pkg = JSON.parse(await readFile(path.join(cwd, "package.json"), "utf8"));
+    if (pkg?.scripts?.test) return "npm test";
+  } catch {
+    // no package.json or not JSON — nothing to inject
+  }
+  return null;
+}
+
+// agy --output-format json emits {status,response,usage,...}; fall back to raw on schema drift
+export function parseJsonResponse(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed.response ?? raw;
+  } catch {
+    return raw;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -123,7 +176,7 @@ export async function checkAgyHealth(cwd: string, signal?: AbortSignal): Promise
         } else if ((err as NodeJS.ErrnoException).code === "ENOENT") {
           reject(
             new Error(
-              "Antigravity CLI is not installed. Install with: pipx install antigravity or agy --help",
+              `Antigravity CLI is not installed. ${INSTALL_HINT}`,
             ),
           );
         } else {
@@ -208,7 +261,7 @@ export async function checkAgyConnectivity(cwd: string, signal?: AbortSignal): P
         } else if ((err as NodeJS.ErrnoException).code === "ENOENT") {
           reject(
             new Error(
-              "Antigravity CLI is not installed. Install with: pipx install antigravity or agy --help",
+              `Antigravity CLI is not installed. ${INSTALL_HINT}`,
             ),
           );
         } else {
@@ -263,7 +316,7 @@ export function spawnAgy(options: AgyOptions, signal: AbortSignal): Promise<stri
         if (signal.aborted) {
           reject(new Error("agy was cancelled"));
         } else if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-          reject(new Error("Antigravity CLI not found in PATH. Install with: pipx install antigravity"));
+          reject(new Error(`Antigravity CLI not found in PATH. ${INSTALL_HINT}`));
         } else {
           reject(new Error(`agy spawn failed: ${err.message}`));
         }

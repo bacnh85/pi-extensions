@@ -12,10 +12,16 @@ pi install npm:@bacnh85/pi-agy
 
 ## Prerequisites
 
-Install the Antigravity CLI:
+Install the Antigravity CLI (a Go binary, not pipx):
 
 ```bash
-pipx install antigravity
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://antigravity.google/cli/install.ps1 | iex
 ```
 
 Authenticate (one-time in your terminal):
@@ -47,16 +53,18 @@ agy models
 
 ### Models
 
-| Alias | Antigravity display name | Typical use |
-|-------|--------------------------|-------------|
-| `flash-low` | Gemini 3.5 Flash (Low) | Trivial, few-step, high-volume work |
-| `flash-medium` | Gemini 3.5 Flash (Medium) | Default coding, exploration, and tests |
-| `flash-high` | Gemini 3.5 Flash (High) | Difficult agentic work |
-| `pro-low` | Gemini 3.1 Pro (Low) | Advanced reasoning |
-| `pro-high` | Gemini 3.1 Pro (High) | Hardest Gemini reasoning |
-| `sonnet` | Claude Sonnet 4.6 (Thinking) | Normal Claude coding and review |
-| `opus` | Claude Opus 4.6 (Thinking) | Hardest architecture and root-cause review |
-| `gpt-oss` | GPT-OSS 120B (Medium) | Alternative open model |
+Aliases map to agy's canonical machine names (run `agy models` to list them):
+
+| Alias | agy machine name | Typical use |
+|-------|------------------|-------------|
+| `flash-low` | `gemini-3.6-flash-low` | Trivial, few-step, high-volume work |
+| `flash-medium` | `gemini-3.6-flash-medium` | Default coding, exploration, and tests |
+| `flash-high` | `gemini-3.6-flash-high` | Difficult agentic work |
+| `pro-low` | `gemini-3.1-pro-low` | Advanced reasoning |
+| `pro-high` | `gemini-3.1-pro-high` | Hardest Gemini reasoning |
+| `sonnet` | `claude-sonnet-4-6` | Normal Claude coding and review |
+| `opus` | `claude-opus-4-6-thinking` | Hardest architecture and root-cause review |
+| `gpt-oss` | `gpt-oss-120b-medium` | Alternative open model |
 
 Resolution order is explicit `model`, then explicit legacy `tier`, then `flash-medium`. Legacy mappings remain `flash` → `flash-high`, `flash-lo` → `flash-low`, and `pro` → `pro-high`. Run `agy models` if Antigravity changes its display names or plan availability.
 
@@ -80,10 +88,31 @@ agy_execute prompt="Fix the parser root cause" model=sonnet mode=accept-edits
 agy_execute prompt="Review the resulting diff" model=pro-low mode=plan digest=true
 ```
 
+## How pi-agy shapes the handoff
+
+Pi delegates to agy as a producer, not an autonomous agent. Each call is
+framed so the result is verifiable and parseable — this is where pi-agy adds
+value over running `agy` bare:
+
+- **Mode-aware flags.** `plan` is read-only. `accept-edits` and `sandbox` both
+  write, so pi-agy passes `--dangerously-skip-permissions` for them (headless
+  `-p` mode auto-denies writes without it). `plan`/`sandbox` additionally get
+  `--output-format json`.
+- **Phase-aware prompt framing.** `plan` prompts are prefixed to explore only;
+  `sandbox` notes isolation; `accept-edits` gets a verify-loop line.
+- **Verify-loop injection.** In `accept-edits`, if the project's `package.json`
+  has a `test` script, pi-agy appends `After editing, run \`npm test\` and fix
+  failures until it passes.` — implementing Google's own [Best Practices](https://antigravity.google/docs/cli/best-practices)
+  ("provide a local verification mechanism… run the local test command").
+- **Structured output.** `plan`/`sandbox` return JSON; pi-agy extracts the
+  `.response` field so Pi receives the answer, not the raw envelope (with a
+  safe fallback to raw text on schema drift).
+
 ## Safety
 
 - Pre-flight checks verify `agy` is installed and the CLI can reach its backend (`agy --version` + `agy models`).
 - `agy` always runs with detached stdin (`stdio: ['ignore', 'pipe', 'pipe']`) to prevent hanging.
+- `--dangerously-skip-permissions` is used **only** for `accept-edits`/`sandbox` (the modes that write), scoped to the `--add-dir` workspace; `plan` never receives it.
 - Output is truncated to 8000 characters to protect Pi's context window.
 - Always review the `git diff` after `accept-edits` mode.
 

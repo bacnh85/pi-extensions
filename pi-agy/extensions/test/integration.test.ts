@@ -98,10 +98,35 @@ describe("agy_execute tool integration", function () {
       );
       expect((await run({ prompt: "write" })).content[0].text).to.equal("done");
       expect((await run({ prompt: "review", mode: "plan" })).content[0].text).to.equal("done");
+      // repo root has no package.json → no verify injection; plan gets explore+digest framing
       expect(prompts).to.deep.equal([
         "write",
-        "(Use compact digests, not full file contents.)\nreview",
+        "Explore and produce an implementation plan only; do not edit.\nUse compact digests, not full file contents.\nreview",
       ]);
+    });
+
+    it("injects the verify command for accept-edits when package.json has a test script", async () => {
+      const cp = _require("node:child_process");
+      const fsp = _require("node:fs/promises");
+      const tmp = await fsp.mkdtemp("/tmp/agy-int-");
+      await fsp.writeFile(`${tmp}/package.json`, JSON.stringify({ scripts: { test: "mocha" } }));
+      const prompts: string[] = [];
+      cp.spawn = function (_cmd: string, args: string[]) {
+        const { EventEmitter } = _require("events");
+        const child = new EventEmitter() as any;
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        process.nextTick(() => {
+          if (!args.includes("--version") && !args.includes("models")) {
+            prompts.push(args.at(-1)!);
+            child.stdout.emit("data", Buffer.from("done"));
+          }
+          child.emit("close", 0, null);
+        });
+        return child;
+      } as any;
+      await execute("id", { prompt: "impl X" }, undefined, undefined, { cwd: tmp });
+      expect(prompts[0]).to.equal("After editing, run `npm test` and fix failures until it passes.\nimpl X");
     });
 
     it("passes Claude and Gemini model aliases to agy", async () => {
@@ -126,8 +151,8 @@ describe("agy_execute tool integration", function () {
         await execute("test-id", { prompt: "work", model }, undefined, undefined, mockCtx);
       }
       expect(models).to.deep.equal([
-        "Claude Sonnet 4.6 (Thinking)",
-        "Gemini 3.1 Pro (Low)",
+        "claude-sonnet-4-6",
+        "gemini-3.1-pro-low",
       ]);
     });
 
@@ -182,4 +207,37 @@ describe("agy_execute tool integration", function () {
       expect(result.content[0].text).to.include("(Output truncated");
     });
   });
+});
+
+// ---------------------------------------------------------------------------
+// Live smoke test — gated by AGY_LIVE=1; skipped in CI without agy installed.
+// Asserts the model aliases pi-agy emits are actually accepted by the real CLI.
+// ---------------------------------------------------------------------------
+
+const LIVE = process.env.AGY_LIVE === "1";
+
+(LIVE ? describe : describe.skip)("agy live model-name smoke", function () {
+  this.timeout(180_000);
+  const { execFileSync } = _require("node:child_process");
+  const aliases: Record<string, string> = {
+    "flash-low": "gemini-3.6-flash-low",
+    "flash-medium": "gemini-3.6-flash-medium",
+    "flash-high": "gemini-3.6-flash-high",
+    "pro-low": "gemini-3.1-pro-low",
+    "pro-high": "gemini-3.1-pro-high",
+    sonnet: "claude-sonnet-4-6",
+    opus: "claude-opus-4-6-thinking",
+    "gpt-oss": "gpt-oss-120b-medium",
+  };
+
+  for (const [alias, machineName] of Object.entries(aliases)) {
+    it(`real agy accepts model alias ${alias} -> ${machineName}`, () => {
+      // Exit 0 + non-empty output means agy recognized the model name.
+      const out = execFileSync("agy", [
+        "--model", machineName, "--print-timeout", "120s", "--mode", "plan",
+        "-p", "Reply with exactly: OK",
+      ], { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 150_000 });
+      expect(out).to.be.a("string").that.is.not.empty;
+    });
+  }
 });

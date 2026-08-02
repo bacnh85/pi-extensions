@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 
 const _require = createRequire(import.meta.url);
 
-import { buildAgyArgs, spawnAgy, checkAgyHealth, checkAgyConnectivity } from "../lib/cli.js";
+import { buildAgyArgs, spawnAgy, checkAgyHealth, checkAgyConnectivity, buildAgyPrompt, detectVerifyCommand, parseJsonResponse } from "../lib/cli.js";
 
 // ---------------------------------------------------------------------------
 // buildAgyArgs — pure function, no mocking needed
@@ -37,14 +37,14 @@ describe("buildAgyArgs", () => {
   });
 
   const models = [
-    ["flash-low", "Gemini 3.5 Flash (Low)"],
-    ["flash-medium", "Gemini 3.5 Flash (Medium)"],
-    ["flash-high", "Gemini 3.5 Flash (High)"],
-    ["pro-low", "Gemini 3.1 Pro (Low)"],
-    ["pro-high", "Gemini 3.1 Pro (High)"],
-    ["sonnet", "Claude Sonnet 4.6 (Thinking)"],
-    ["opus", "Claude Opus 4.6 (Thinking)"],
-    ["gpt-oss", "GPT-OSS 120B (Medium)"],
+    ["flash-low", "gemini-3.6-flash-low"],
+    ["flash-medium", "gemini-3.6-flash-medium"],
+    ["flash-high", "gemini-3.6-flash-high"],
+    ["pro-low", "gemini-3.1-pro-low"],
+    ["pro-high", "gemini-3.1-pro-high"],
+    ["sonnet", "claude-sonnet-4-6"],
+    ["opus", "claude-opus-4-6-thinking"],
+    ["gpt-oss", "gpt-oss-120b-medium"],
   ] as const;
 
   for (const [model, displayName] of models) {
@@ -55,9 +55,9 @@ describe("buildAgyArgs", () => {
   }
 
   for (const [tier, displayName] of [
-    ["flash", "Gemini 3.5 Flash (High)"],
-    ["flash-lo", "Gemini 3.5 Flash (Low)"],
-    ["pro", "Gemini 3.1 Pro (High)"],
+    ["flash", "gemini-3.6-flash-high"],
+    ["flash-lo", "gemini-3.6-flash-low"],
+    ["pro", "gemini-3.1-pro-high"],
   ] as const) {
     it(`keeps legacy tier: ${tier}`, () => {
       const args = buildAgyArgs({ prompt: "test", tier, dir: "/tmp", timeout_ms: 60_000 });
@@ -67,12 +67,12 @@ describe("buildAgyArgs", () => {
 
   it("prefers model over legacy tier", () => {
     const args = buildAgyArgs({ prompt: "test", model: "sonnet", tier: "pro", dir: "/tmp", timeout_ms: 60_000 });
-    expect(args[args.indexOf("--model") + 1]).to.equal("Claude Sonnet 4.6 (Thinking)");
+    expect(args[args.indexOf("--model") + 1]).to.equal("claude-sonnet-4-6");
   });
 
   it("defaults to flash-medium when model and tier are omitted", () => {
     const args = buildAgyArgs({ prompt: "test", dir: "/tmp", timeout_ms: 60_000 });
-    expect(args[args.indexOf("--model") + 1]).to.equal("Gemini 3.5 Flash (Medium)");
+    expect(args[args.indexOf("--model") + 1]).to.equal("gemini-3.6-flash-medium");
   });
 
   it("calculates --print-timeout from timeout_ms (rounded up)", () => {
@@ -87,15 +87,101 @@ describe("buildAgyArgs", () => {
     expect(args[dirIndex + 1]).to.equal("/my/project");
   });
 
-  it("builds args in correct order: model, print-timeout, add-dir, mode, -p, prompt", () => {
+  it("builds args in correct order: model, print-timeout, add-dir, mode, skip-perm, -p, prompt", () => {
     const args = buildAgyArgs({ prompt: "go", dir: "/x", timeout_ms: 30_000 });
     expect(args).to.deep.equal([
-      "--model", "Gemini 3.5 Flash (Medium)",
+      "--model", "gemini-3.6-flash-medium",
       "--print-timeout", "30s",
       "--add-dir", "/x",
       "--mode", "accept-edits",
+      "--dangerously-skip-permissions",
       "-p", "go",
     ]);
+  });
+
+  it("plan mode is read-only: no skip-permissions, JSON output", () => {
+    const args = buildAgyArgs({ prompt: "p", mode: "plan", dir: "/x", timeout_ms: 30_000 });
+    expect(args).to.include("--mode");
+    expect(args).to.include("plan");
+    expect(args).to.include("--output-format");
+    expect(args).to.include("json");
+    expect(args).not.to.include("--dangerously-skip-permissions");
+    expect(args).not.to.include("--sandbox");
+  });
+
+  it("sandbox mode uses standalone flag + skip-permissions + JSON", () => {
+    const args = buildAgyArgs({ prompt: "p", mode: "sandbox", dir: "/x", timeout_ms: 30_000 });
+    expect(args).to.include("--sandbox");
+    expect(args).to.include("--dangerously-skip-permissions");
+    expect(args).to.include("--output-format");
+    expect(args).not.to.include("--mode");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildAgyPrompt / detectVerifyCommand / parseJsonResponse — pure helpers
+// ---------------------------------------------------------------------------
+
+describe("buildAgyPrompt", () => {
+  it("plan: explore prefix, no verify, respects digest", () => {
+    const p = buildAgyPrompt("review X", "plan", true, "npm test");
+    expect(p).to.include("Explore and produce an implementation plan only; do not edit.");
+    expect(p).to.include("Use compact digests, not full file contents.");
+    expect(p).to.not.include("npm test"); // verify not injected in plan mode
+    expect(p.endsWith("review X")).to.be.true;
+  });
+
+  it("accept-edits with verify: injects the command", () => {
+    const p = buildAgyPrompt("do X", "accept-edits", false, "npm test");
+    expect(p).to.include("After editing, run `npm test` and fix failures until it passes.");
+    expect(p).to.not.include("compact digests");
+    expect(p.endsWith("do X")).to.be.true;
+  });
+
+  it("accept-edits without verify: no command line", () => {
+    const p = buildAgyPrompt("do X", "accept-edits", false, null);
+    expect(p).to.equal("do X");
+  });
+
+  it("sandbox: sandbox prefix", () => {
+    const p = buildAgyPrompt("do X", "sandbox", true, "npm test");
+    expect(p).to.include("Work inside the sandbox");
+    expect(p).to.not.include("npm test");
+  });
+});
+
+describe("detectVerifyCommand", () => {
+  it("returns 'npm test' when package.json has a test script", async () => {
+    const tmp = await import("node:fs/promises").then((f) => f.mkdtemp("/tmp/agy-verify-"));
+    await import("node:fs/promises").then((f) => f.writeFile(`${tmp}/package.json`, JSON.stringify({ scripts: { test: "mocha" } })));
+    expect(await detectVerifyCommand(tmp)).to.equal("npm test");
+  });
+
+  it("returns null when package.json has no test script", async () => {
+    const tmp = await import("node:fs/promises").then((f) => f.mkdtemp("/tmp/agy-verify-"));
+    await import("node:fs/promises").then((f) => f.writeFile(`${tmp}/package.json`, JSON.stringify({ scripts: {} })));
+    expect(await detectVerifyCommand(tmp)).to.be.null;
+  });
+
+  it("returns null when there is no package.json", async () => {
+    const tmp = await import("node:fs/promises").then((f) => f.mkdtemp("/tmp/agy-verify-"));
+    expect(await detectVerifyCommand(tmp)).to.be.null;
+  });
+});
+
+describe("parseJsonResponse", () => {
+  it("extracts .response from agy JSON output", () => {
+    const raw = JSON.stringify({ status: "SUCCESS", response: "the answer\n", usage: { total_tokens: 10 } });
+    expect(parseJsonResponse(raw)).to.equal("the answer\n");
+  });
+
+  it("falls back to raw text when JSON is malformed", () => {
+    expect(parseJsonResponse("not json at all")).to.equal("not json at all");
+  });
+
+  it("falls back to raw when .response is missing", () => {
+    const raw = JSON.stringify({ status: "SUCCESS", usage: {} });
+    expect(parseJsonResponse(raw)).to.equal(raw);
   });
 });
 
@@ -223,7 +309,8 @@ describe("spawnAgy", () => {
       await spawnAgy({ prompt: "test", dir: "/tmp", timeout_ms: 60_000 }, ac.signal);
       expect.fail("should have thrown");
     } catch (e: any) {
-      expect(e.message).to.include("Install with");
+      expect(e.message).to.include("curl");
+      expect(e.message).to.include("antigravity.google");
     }
   });
 
@@ -307,7 +394,7 @@ describe("checkAgyHealth", () => {
       await checkAgyHealth("/tmp");
       expect.fail("should have thrown");
     } catch (e: any) {
-      expect(e.message).to.include("Install with");
+      expect(e.message).to.include("curl");
     }
   });
 
@@ -398,7 +485,7 @@ describe("checkAgyConnectivity", () => {
       await checkAgyConnectivity("/tmp");
       expect.fail("should have thrown");
     } catch (e: any) {
-      expect(e.message).to.include("Install with");
+      expect(e.message).to.include("curl");
     }
   });
 

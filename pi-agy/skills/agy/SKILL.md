@@ -14,11 +14,11 @@ or exhaustive test generation via the Antigravity CLI.
 
 ## Prerequisites
 
-1. Install the Antigravity CLI:
+1. Install the Antigravity CLI (a Go binary, not pipx):
 
    ```bash
-   pipx install antigravity
-   ```
+   curl -fsSL https://antigravity.google/cli/install.sh | bash
+   ````
 
 2. Authenticate in a terminal (one-time):
 
@@ -60,3 +60,17 @@ agy_execute prompt="Plan the migration to ESM" model=sonnet mode=plan digest=tru
 - For consequential work, have one family produce and the opposite family review with `mode=plan`; do not spend both groups on trivial tasks.
 - Batch related work, avoid parallel calls within one shared-quota group, and use `digest=true` (default) for non-write tasks.
 - Legacy `tier=flash|flash-lo|pro` remains supported, but `model` takes precedence.
+
+## How pi-agy controls the handoff
+
+Pi delegates to agy as a **producer**, not an autonomous agent. Each call is
+framed for verifiability and parseability:
+
+- **`plan`** is read-only; returns parsed JSON (the `.response` field).
+- **`accept-edits`** and **`sandbox`** both write, so pi-agy passes
+  `--dangerously-skip-permissions` (headless `-p` auto-denies writes without
+  it). In `accept-edits`, if the project has a `test` script, pi-agy appends a
+  verify-loop instruction (`run \`npm test\` and fix failures`).
+- **`sandbox`** also returns parsed JSON.
+- Model aliases map to agy's canonical machine names; run `agy models` if
+  Antigravity renames them.

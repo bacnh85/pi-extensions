@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-agy",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Google Antigravity CLI (agy) bridge for Pi — delegate bulk scaffolding, refactors, and test generation to a leaner model.",
   "type": "module",
   "license": "MIT",

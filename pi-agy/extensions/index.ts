@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { stat } from "node:fs/promises";
 import * as path from "node:path";
-import { checkAgyHealth, checkAgyConnectivity, spawnAgy } from "./lib/cli.js";
+import { checkAgyHealth, checkAgyConnectivity, spawnAgy, buildAgyPrompt, detectVerifyCommand, parseJsonResponse } from "./lib/cli.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -108,9 +108,9 @@ export default function piAgyExtension(pi: ExtensionAPI) {
         // Build the prompt — compact output is safe by default only in non-write modes
         const mode = params.mode ?? "accept-edits";
         const useDigest = params.digest ?? mode !== "accept-edits";
-        const finalPrompt = useDigest
-          ? `(Use compact digests, not full file contents.)\n${prompt}`
-          : prompt;
+        // Tier 2.2: inject the project's verify command for accept-edits (Google Best Practices)
+        const verifyCmd = mode === "accept-edits" ? await detectVerifyCommand(cwd) : null;
+        const finalPrompt = buildAgyPrompt(prompt, mode, useDigest, verifyCmd);
 
         const output = await spawnAgy(
           {
@@ -124,13 +124,16 @@ export default function piAgyExtension(pi: ExtensionAPI) {
           abortSignal,
         );
 
+        // Tier 2.1: plan/sandbox return JSON — surface the .response field to Pi cleanly
+        const text = mode === "accept-edits" ? output : parseJsonResponse(output);
+
         // Truncation guard for Pi's context window
-        if (output.length > MAX_OUTPUT_CHARS) {
+        if (text.length > MAX_OUTPUT_CHARS) {
           return {
             content: [
               {
                 type: "text" as const,
-                text: output.slice(0, MAX_OUTPUT_CHARS) + "\n\n(Output truncated to 8000 chars)",
+                text: text.slice(0, MAX_OUTPUT_CHARS) + "\n\n(Output truncated to 8000 chars)",
               },
             ],
             details: {},
@@ -138,7 +141,7 @@ export default function piAgyExtension(pi: ExtensionAPI) {
         }
 
         return {
-          content: [{ type: "text" as const, text: output || "(empty response)" }],
+          content: [{ type: "text" as const, text: text || "(empty response)" }],
           details: {},
         };
       } catch (err) {
