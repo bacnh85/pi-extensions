@@ -39,7 +39,3 @@ export const BLOCKED_TOOLS = new Set([
   "munin_acknowledge_setup", "munin_encrypt", "munin_decrypt", "munin_export",
 ]);
 
-/**
- * Tools available only in plan mode.
- */
-export const PLAN_ONLY_TOOLS = new Set(["ask_plan_question"]);

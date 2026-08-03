@@ -6,7 +6,7 @@ Pi extension that adds a lightweight plan mode inspired by Codex and Claude Code
 - Remembers separate thinking/reasoning levels for planning and normal execution across sessions.
 - Keeps planning safe: known read/research tools and strict read-only shell commands auto-run, unknown executables and custom tools require confirmation, direct source mutators are blocked.
 - Provides a `write_plan` tool so the agent writes reviewable Markdown plans into `.agents/plans/`.
-- Provides an `ask_plan_question` tool for selection-style clarifying questions during planning.
+- Provides an `ask_user_question` tool for selection-style clarifying questions with an optional recommended default (★-marked) and a free-form "Other" path; works in any mode (not just plan mode).
 - Prompts once after each plan is written so you can approve execution (current or fresh session) or keep planning.
 
 ## Install
@@ -46,7 +46,7 @@ pi --plan
 1. Enter plan mode with `/plan` or `--plan`.
 2. Ask pi to research the task and propose an implementation.
 3. The model explores with read-only tools. Dedicated `ls`/`grep`/`find` tools and strict single read-only shell commands run automatically; test/build/package scripts and other unknown executables prompt you.
-4. If decisions are ambiguous, the model can call `ask_plan_question` so you can choose or type your own answer.
+4. If decisions are ambiguous, the model can call `ask_user_question` so you can choose an option (the recommended one is ★-marked) or pick "Other" to type your own answer.
 5. The model calls `write_plan` — the plan is saved under `.agents/plans/<timestamp>-<title>.md`.
 6. After the plan is written, Pi prefills `/plan-approve` in the TUI. Press Enter, then choose:
    - **Implement in current session** — exits plan mode, restores tools, sends an execution prompt.
@@ -65,7 +65,7 @@ Fresh-session replacement is intentionally initiated by `/plan-approve`: extensi
 | Tool category | Behavior |
 |---|---|
 | Known read/research tools (built-in `read`/`ls`/`grep`/`find`, Serena, FFF, web, Munin) | Auto-allowed without prompt |
-| `write_plan`, `ask_plan_question` | Always available |
+| `write_plan`, `ask_user_question` | Always available |
 | `bash` (write commands: redirects, heredocs, `sed -i`, `tee`, `cp`/`mv`/`rm`, `touch`, `mkdir`) | Hard-blocked — no filesystem mutations via bash in plan mode |
 | `bash` (strict single read commands: `ls`, `grep`, `find`, `git status`, `cat`) | Auto-allowed without prompt |
 | `bash` (unknown executables, including test/build/package scripts) | Requires `confirm` dialog warning about possible side effects; denied without UI |

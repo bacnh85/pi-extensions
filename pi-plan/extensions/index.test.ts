@@ -10,7 +10,7 @@ import path from "node:path";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import piPlanExtension, { snapshotUntrackedFiles } from "./index";
-import { BLOCKED_TOOLS, PLAN_ONLY_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
+import { BLOCKED_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
 import { captureRewindCheckpoint, restoreRewindCheckpoint, rewindToFlowBaseline, validateRewindCheckpoint, type RewindCheckpoint } from "./lib/lifecycle";
 import { registerAdvisor } from "./commands/advisor";
@@ -330,6 +330,9 @@ function fakeCtx(overrides: Record<string, any> = {}): any {
       select: async (_question: string, _options: string[]) => null,
       confirm: async (_title: string, _body: string) => false,
       editor: async (_title: string, _default: string) => "",
+      custom: async <T,>(_factory: any) => null as T,
+      getEditorComponent: () => undefined,
+      setEditorComponent: () => {},
       setEditorText: (_text: string) => {},
       getEditorText: () => "",
     },
@@ -980,9 +983,10 @@ describe("plan-mode tool lists", () => {
     }
   });
 
-  it("includes plan-only tools", () => {
-    assert.ok(!PLAN_ONLY_TOOLS.has("write_plan"), "write_plan is available in normal mode, not plan-only");
-    assert.ok(PLAN_ONLY_TOOLS.has("ask_plan_question"));
+  it("does not gate ask_user_question as plan-only (now available in any mode)", () => {
+    // ask_user_question is mode-agnostic; write_plan is also always available.
+    // No PLAN_ONLY_TOOLS set remains after generalizing ask_user_question.
+    assert.ok(!READ_ONLY_TOOLS.has("edit"), "sanity: edit is not read-only");
   });
 });
 
@@ -1221,6 +1225,44 @@ describe("tool gating in plan mode", () => {
     const r = await tc({ toolName: "write_plan", input: { title: "T", content: "# T" } }, ctx);
     assert.equal(r, undefined, "write_plan auto-allowed");
   });
+
+  it("auto-allows ask_user_question (and deprecated alias) in plan mode without confirmation", async () => {
+    // Regression guard: ask_user_question is NOT in READ_ONLY_TOOLS; before the fix it
+    // fell through to the confirm branch and prompted the user on every clarifying question.
+    const { handlers } = createFakePi(["read"], { plan: true });
+    const confirmCalls: any[] = [];
+    const ctx = fakeCtx({
+      hasUI: true,
+      ui: { ...fakeCtx().ui, confirm: async (_t: string, _b: string) => { confirmCalls.push(_t); return true; } },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+    const r1 = await tc({ toolName: "ask_user_question", input: { question: "Q?", options: [{ label: "A" }, { label: "B" }] } }, ctx);
+    assert.equal(r1, undefined, "ask_user_question auto-allowed");
+    const r2 = await tc({ toolName: "ask_plan_question", input: { question: "Q?", options: [{ label: "A" }, { label: "B" }] } }, ctx);
+    assert.equal(r2, undefined, "ask_plan_question alias auto-allowed");
+    assert.deepEqual(confirmCalls, [], "neither tool should prompt for confirmation");
+  });
+
+  it("auto-allows ask_user_question and alias under the /specs gate", async () => {
+    // ponytail: specGate hard-blocks everything except known-read + the question tools.
+    const specPath = path.join(TMP, ".agents", "specs", "spec.md");
+    const { handlers } = createFakePi(["read"], { plan: true });
+    const ctx = fakeCtx({
+      hasUI: true,
+      sessionManager: { getBranch: () => [{ type: "custom", customType: "pi-plan", data: { enabled: true, specGateActive: true, specGatePlanMode: false, specPath } }] },
+    });
+    await handlers.session_tree?.[0]({}, ctx);
+
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+    const r1 = await tc({ toolName: "ask_user_question", input: { question: "Q?", options: [{ label: "A" }, { label: "B" }] } }, ctx);
+    assert.equal(r1, undefined, "ask_user_question allowed under spec gate");
+    const r2 = await tc({ toolName: "ask_plan_question", input: { question: "Q?", options: [{ label: "A" }, { label: "B" }] } }, ctx);
+    assert.equal(r2, undefined, "ask_plan_question alias allowed under spec gate");
+  });
 });
 
 describe("plan path containment", () => {
@@ -1336,7 +1378,7 @@ describe("open question warning", () => {
     }, undefined, undefined, ctx);
     assert.ok(result);
     const text = result.content?.[0]?.text ?? "";
-    assert.ok(text.includes("ask_plan_question"), "should warn about open questions");
+    assert.ok(text.includes("ask_user_question"), "should warn about open questions");
   });
 
   it("excludes warning when 'Open Questions' section has no question mark", async () => {
@@ -1353,7 +1395,7 @@ describe("open question warning", () => {
     }, undefined, undefined, ctx);
     assert.ok(result);
     const text = result.content?.[0]?.text ?? "";
-    assert.ok(!text.includes("ask_plan_question"), "should not warn when no questions");
+    assert.ok(!text.includes("ask_user_question"), "should not warn when no questions");
   });
 
   it("excludes warning when question mark is in a later section, not under 'Open Questions'", async () => {
@@ -1372,7 +1414,7 @@ describe("open question warning", () => {
     const text = result.content?.[0]?.text ?? "";
     // ponytail: the ? in "Should we use a library?" is under a different heading,
     // so hasOpenQuestionWarning must NOT fire.
-    assert.ok(!text.includes("ask_plan_question"), "should not cross section boundaries");
+    assert.ok(!text.includes("ask_user_question"), "should not cross section boundaries");
   });
 
   it("detects question mark in sub-bullets under 'Open Questions'", async () => {
@@ -1389,7 +1431,7 @@ describe("open question warning", () => {
     }, undefined, undefined, ctx);
     assert.ok(result);
     const text = result.content?.[0]?.text ?? "";
-    assert.ok(text.includes("ask_plan_question"), "should detect questions in sub-items");
+    assert.ok(text.includes("ask_user_question"), "should detect questions in sub-items");
   });
 });
 
@@ -1598,7 +1640,7 @@ describe("execution handoff", () => {
     const lastEntry = entries[entries.length - 1];
     assert.equal(lastEntry.data?.enabled, true, "planModeEnabled from saved entry");
     assert.equal(lastEntry.data?.lastPlanPath, "/some/path.md", "lastPlanPath from saved entry");
-    assert.deepEqual(lastEntry.data?.toolsBeforePlan, ["read", "ffgrep", "edit", "write_plan"], "baseline reconstructed for restoration");
+    assert.deepEqual(lastEntry.data?.toolsBeforePlan, ["read", "ffgrep", "edit", "write_plan", "ask_user_question"], "baseline reconstructed for restoration");
     assert.ok(!activeTools.includes("edit"), "saved plan mode hides mutators");
     assert.equal(lastEntry.data?.lastPlanStatus, undefined, "lastPlanStatus not inherited — absent from saved entry");
     assert.equal(lastEntry.data?.flow, undefined, "flow not inherited — absent from saved entry");
@@ -2063,13 +2105,36 @@ describe("per-mode model preferences", () => {
   });
 });
 
-describe("ask_plan_question validation", () => {
-  it("rejects fewer than 2 options at TypeBox level", async () => {
+describe("ask_user_question validation", () => {
+  it("schema requires 2-4 options and exposes recommended", async () => {
     const { toolDefs } = createFakePi(["read"], { plan: true });
-    const def = toolDefs.ask_plan_question;
+    const def = toolDefs.ask_user_question;
     assert.ok(def);
-    assert.ok(def.parameters?.properties?.options?.minItems === 2);
-    assert.ok(def.parameters?.properties?.options?.maxItems === 4);
+    assert.equal(def.parameters?.properties?.options?.minItems, 2);
+    assert.equal(def.parameters?.properties?.options?.maxItems, 4);
+    assert.ok(def.parameters?.properties?.recommended, "recommended field should exist");
+  });
+
+  it("uses the built-in select dialog in non-TUI (rpc) mode (no custom() dependency)", async () => {
+    // ctx.ui.select works in RPC mode (sends an RPC dialog request the host can handle),
+    // unlike ctx.ui.custom which is a no-op stub. The tool must use select, not custom.
+    const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+    let selectCalled = false;
+    const ctx = fakeCtx({
+      hasUI: true,
+      mode: "rpc",
+      ui: {
+        ...fakeCtx().ui,
+        custom: async () => { throw new Error("custom() must not be called"); },
+        select: async (_q: string, opts: string[]) => { selectCalled = true; return opts[0]; },
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    const qd = toolDefs.ask_user_question;
+    const res = await qd.execute("c1", { question: "Q?", options: [{ label: "A" }, { label: "B" }] }, undefined, undefined, ctx);
+    assert.ok(selectCalled, "select dialog used in rpc mode");
+    assert.equal(res.details?.answer, "A");
   });
 
   it("rejects blank label at execute", async () => {
@@ -2077,7 +2142,7 @@ describe("ask_plan_question validation", () => {
     const ctx = fakeCtx({ hasUI: false });
     await handlers.session_start?.[0]({ reason: "startup" }, ctx);
 
-    const qd = toolDefs.ask_plan_question;
+    const qd = toolDefs.ask_user_question;
     assert.ok(qd);
     await assert.rejects(
       qd.execute("c1", { question: "Q?", options: [{ label: "" }, { label: "Option 2" }] }, undefined, undefined, ctx),
@@ -2090,7 +2155,7 @@ describe("ask_plan_question validation", () => {
     const ctx = fakeCtx({ hasUI: false });
     await handlers.session_start?.[0]({ reason: "startup" }, ctx);
 
-    const qd = toolDefs.ask_plan_question;
+    const qd = toolDefs.ask_user_question;
     assert.ok(qd);
     await assert.rejects(
       qd.execute("c1", { question: "Q?", options: [{ label: "Duplicate" }, { label: "Duplicate" }] }, undefined, undefined, ctx),
@@ -2103,7 +2168,7 @@ describe("ask_plan_question validation", () => {
     const ctx = fakeCtx({ hasUI: false });
     await handlers.session_start?.[0]({ reason: "startup" }, ctx);
 
-    const qd = toolDefs.ask_plan_question;
+    const qd = toolDefs.ask_user_question;
     assert.ok(qd);
     await assert.rejects(
       qd.execute("c1", { question: "Q?", options: [{ label: "Other" }, { label: "Option B" }] }, undefined, undefined, ctx),
@@ -2116,7 +2181,7 @@ describe("ask_plan_question validation", () => {
     const ctx = fakeCtx({ hasUI: false });
     await handlers.session_start?.[0]({ reason: "startup" }, ctx);
 
-    const qd = toolDefs.ask_plan_question;
+    const qd = toolDefs.ask_user_question;
     assert.ok(qd);
     await assert.rejects(
       qd.execute("c1", { question: "Q?", options: [{ label: "Other (specify)" }, { label: "Option B" }] }, undefined, undefined, ctx),
@@ -2129,12 +2194,186 @@ describe("ask_plan_question validation", () => {
     const ctx = fakeCtx({ hasUI: false });
     await handlers.session_start?.[0]({ reason: "startup" }, ctx);
 
-    const qd = toolDefs.ask_plan_question;
+    const qd = toolDefs.ask_user_question;
     assert.ok(qd);
     await assert.rejects(
       qd.execute("c1", { question: "Q?", options: [{ label: "other" }, { label: "Option B" }] }, undefined, undefined, ctx),
       /Option labels cannot conflict with the "Other" label\./,
     );
+  });
+
+  it("rejects recommended that does not match any option label", async () => {
+    const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+    const ctx = fakeCtx({ hasUI: false });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    const qd = toolDefs.ask_user_question;
+    assert.ok(qd);
+    await assert.rejects(
+      qd.execute("c1", { question: "Q?", options: [{ label: "A" }, { label: "B" }], recommended: "C" }, undefined, undefined, ctx),
+      /recommended must match one of the option labels\./,
+    );
+  });
+
+  it("accepts recommended matching an option (case-insensitive, trimmed)", async () => {
+    const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+    const ctx = fakeCtx({ hasUI: false });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    const qd = toolDefs.ask_user_question;
+    assert.ok(qd);
+    // valid recommended → no throw, falls through to the no-UI fallback path
+    const res = await qd.execute("c1", { question: "Q?", options: [{ label: "A" }, { label: "B" }], recommended: "  b " }, undefined, undefined, ctx);
+    assert.ok(res);
+    assert.match(res.content?.[0]?.text ?? "", /UI is not available/);
+  });
+
+  it("works in normal (non-plan) mode without guardPlanMode rejection", async () => {
+    const { handlers, toolDefs } = createFakePi(["read"], { plan: false });
+    const ctx = fakeCtx({ hasUI: false });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    const qd = toolDefs.ask_user_question;
+    assert.ok(qd);
+    // Previously guardPlanMode threw in normal mode; now it must succeed (no-UI fallback).
+    const res = await qd.execute("c1", { question: "Q?", options: [{ label: "A" }, { label: "B" }] }, undefined, undefined, ctx);
+    assert.ok(res);
+    assert.match(res.content?.[0]?.text ?? "", /UI is not available/);
+  });
+
+  it("deprecated ask_plan_question alias still resolves and warns", async () => {
+    const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+    const notified: string[] = [];
+    const ctx = fakeCtx({
+      hasUI: true,
+      mode: "tui",
+      ui: {
+        ...fakeCtx().ui,
+        notify: (msg: string) => { notified.push(msg); },
+        select: async () => "A",
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    const qd = toolDefs.ask_plan_question;
+    assert.ok(qd, "deprecated alias should still be registered");
+    const res = await qd.execute("c1", { question: "Q?", options: [{ label: "A" }, { label: "B" }] }, undefined, undefined, ctx);
+    assert.ok(res);
+    assert.ok(notified.some((m) => m.includes("deprecated")), "should warn about deprecation");
+    assert.equal(res.details?.answer, "A");
+  });
+});
+
+describe("ask_user_question interactive list flow", () => {
+  // Uses the built-in ctx.ui.select dialog (same UX as the original ask_plan_question).
+  // The recommended option is marked with ★; "Other / type my answer" opens a simple editor.
+
+  async function runWithSelect(
+    toolDefs: any,
+    params: any,
+    selectChoice: string | null,
+    editorValue?: string,
+  ): Promise<any> {
+    const ctx = fakeCtx({
+      hasUI: true,
+      mode: "tui",
+      ui: {
+        ...fakeCtx().ui,
+        select: async (_q: string, _o: string[]) => selectChoice,
+        editor: async (_t: string, _d: string) => editorValue ?? "",
+      },
+    });
+    return toolDefs.ask_user_question.execute("c1", params, undefined, undefined, ctx);
+  }
+
+  it("shows the built-in select with the recommended option ★-marked", async () => {
+    const { toolDefs } = createFakePi(["read"], { plan: false });
+    let shownQuestion = "";
+    let shownOptions: string[] = [];
+    const ctx = fakeCtx({
+      hasUI: true,
+      mode: "tui",
+      ui: {
+        ...fakeCtx().ui,
+        select: async (q: string, opts: string[]) => { shownQuestion = q; shownOptions = opts; return null; },
+      },
+    });
+    await toolDefs.ask_user_question.execute("c1", {
+      question: "Q?",
+      options: [{ label: "A", description: "desc A" }, { label: "B" }],
+      recommended: "B",
+    }, undefined, undefined, ctx);
+    assert.equal(shownQuestion, "Q?");
+    assert.deepEqual(shownOptions, ["A — desc A", "★ B", "Other / type my answer"], "recommended B marked with ★, Other appended");
+  });
+
+  it("selecting an option returns the answer with 0-based selectedIndex", async () => {
+    const { toolDefs } = createFakePi(["read"], { plan: false });
+    const res = await runWithSelect(toolDefs, {
+      question: "Q?",
+      options: [{ label: "A" }, { label: "B" }],
+    }, "B");
+    assert.equal(res.details?.answer, "B");
+    assert.equal(res.details?.wasCustom, false);
+    assert.equal(res.details?.selectedIndex, 1, "0-based index of B");
+  });
+
+  it("cancellation (select returns null) reports cancelled", async () => {
+    const { toolDefs } = createFakePi(["read"], { plan: false });
+    const res = await runWithSelect(toolDefs, {
+      question: "Q?",
+      options: [{ label: "A" }, { label: "B" }],
+    }, null);
+    assert.equal(res.details?.cancelled, true);
+    assert.equal(res.details?.answer, null);
+  });
+
+  it("Other / type my answer opens the editor and returns the custom text", async () => {
+    const { toolDefs } = createFakePi(["read"], { plan: false });
+    const res = await runWithSelect(toolDefs, {
+      question: "Q?",
+      options: [{ label: "A" }, { label: "B" }],
+    }, "Other / type my answer", "my custom answer");
+    assert.equal(res.details?.answer, "my custom answer");
+    assert.equal(res.details?.wasCustom, true);
+  });
+
+  it("blank custom answer from Other is treated as cancelled", async () => {
+    const { toolDefs } = createFakePi(["read"], { plan: false });
+    const res = await runWithSelect(toolDefs, {
+      question: "Q?",
+      options: [{ label: "A" }, { label: "B" }],
+    }, "Other / type my answer", "   ");
+    assert.equal(res.details?.cancelled, true);
+    assert.equal(res.details?.answer, null);
+  });
+
+  it("allowOther=false omits the Other row from the list", async () => {
+    const { toolDefs } = createFakePi(["read"], { plan: false });
+    let shownOptions: string[] = [];
+    const ctx = fakeCtx({
+      hasUI: true,
+      mode: "tui",
+      ui: {
+        ...fakeCtx().ui,
+        select: async (_q: string, opts: string[]) => { shownOptions = opts; return null; },
+      },
+    });
+    await toolDefs.ask_user_question.execute("c1", {
+      question: "Q?",
+      options: [{ label: "A" }, { label: "B" }],
+      allowOther: false,
+    }, undefined, undefined, ctx);
+    assert.deepEqual(shownOptions, ["A", "B"], "no Other row when allowOther=false");
+  });
+
+  it("works in normal (non-plan) mode", async () => {
+    const { toolDefs } = createFakePi(["read"], { plan: false });
+    const res = await runWithSelect(toolDefs, {
+      question: "Q?",
+      options: [{ label: "A" }, { label: "B" }],
+    }, "A");
+    assert.equal(res.details?.answer, "A");
   });
 });
 

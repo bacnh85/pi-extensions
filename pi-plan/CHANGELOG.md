@@ -2,6 +2,23 @@
 
 All notable changes to `pi-plan` will be documented in this file.
 
+## 0.9.0 (2026-08-03)
+
+### Features & Improvements
+
+- **`ask_user_question` — clarifying questions in any mode with a recommended default.** Generalized the former plan-mode-only `ask_plan_question` into `ask_user_question`, now available in both normal and plan mode (parity with Claude Code's `AskUserQuestion`). Uses the built-in list dialog (`ctx.ui.select`) with the same UX as the original `ask_plan_question`:
+  - Marks the recommended option with ★ when the model passes `recommended` (strictly validated against the option labels).
+  - Keeps the simple "Other / type my answer" path via the built-in editor for free-form answers.
+  - Adds an explicit `recommended` field (must match one option label; strictly validated).
+- **`ask_plan_question` deprecated.** The old tool name still works as an alias and emits a deprecation warning; it will be removed in a future release.
+
+### Fixes
+
+- **No custom TUI overlay — uses the built-in select dialog.** The earlier custom `ctx.ui.custom` overlay picker (with Tab-on-Other inline editing) was reverted: it could intermittently fail to render the question in some TUI states. The built-in `ctx.ui.select` dialog is the same list style the original tool used and renders reliably in all modes (TUI and RPC).
+- **Non-TUI (RPC/JSON/print) mode works via the select dialog.** Unlike `ctx.ui.custom()` (a no-op stub in RPC mode), `ctx.ui.select` sends an RPC dialog the host can handle.
+- **Consistent result `details`.** All return paths now carry both `wasCustom` and `cancelled` fields.
+- **0-based `selectedIndex`.** Now matches the 0-based options array and `recommended` field.
+
 ## 0.8.9 (2026-08-01)
 
 ### Fixes

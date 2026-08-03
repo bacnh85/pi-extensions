@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
 import { captureRewindCheckpoint, restoreRewindCheckpoint, rewindToFlowBaseline, snapshotUntrackedFiles, validateRewindCheckpoint, type RewindCheckpoint } from "./lib/lifecycle";
-import { BLOCKED_TOOLS, PLAN_ONLY_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
+import { BLOCKED_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 import { loadUtilityConfig, parseModel } from "./lib/utility-config";
 import { registerAdvisor } from "./commands/advisor";
 import { advanceGoal, DEFAULT_GOAL_MAX_TURNS, registerGoal, type GoalAccessors, type GoalState } from "./commands/goal";
@@ -27,6 +27,8 @@ import { registerSpecs } from "./commands/specs";
 const STATUS_KEY = "pi-plan";
 const PLAN_DIR = ".agents/plans";
 const PLAN_TOOL = "write_plan";
+const ASK_USER_QUESTION_TOOL = "ask_user_question";
+// ponytail: deprecated alias — drop after one release
 const PLAN_QUESTION_TOOL = "ask_plan_question";
 const PLAN_EXECUTE_COMMAND = "plan-execute";
 // ponytail: keep in sync with pi-review/extensions/index.ts REVIEW_EVENT
@@ -126,6 +128,7 @@ interface PlanQuestionOption {
 interface PlanQuestionParams {
   question: string;
   options: PlanQuestionOption[];
+  recommended?: string;
   allowOther?: boolean;
 }
 
@@ -415,10 +418,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   function enablePlanTools(): void {
     const baseline = [...new Set([...(toolsBeforePlan ?? pi.getActiveTools()), PLAN_TOOL])];
     toolsBeforePlan = baseline;
-    // ponytail: preserve active read tools, remove mutators, add plan-only (no duplicates)
+    // ponytail: preserve active read tools, remove mutators. ask_user_question is read-only/no-mutate so survives naturally.
     pi.setActiveTools([
-      ...baseline.filter((t) => !BLOCKED_TOOLS.has(t) && !PLAN_ONLY_TOOLS.has(t)),
-      ...PLAN_ONLY_TOOLS,
+      ...baseline.filter((t) => !BLOCKED_TOOLS.has(t)),
     ]);
   }
 
@@ -1035,12 +1037,6 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
   // ── Registration ────────────────────────────────────────────
 
-  // ponytail: throw so Pi marks the tool result as an error
-  function guardPlanMode(tool: string): void {
-    if (!planModeEnabled) {
-      throw new Error(`Error: ${tool} is only available in plan mode. Enable plan mode with /plan first.`);
-    }
-  }
 
   pi.registerFlag("plan", {
     description:
@@ -1056,7 +1052,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     promptSnippet: `Write plan to ${PLAN_DIR}/ as Markdown for user review`,
     promptGuidelines: [
       `Use ${PLAN_TOOL} in plan mode after exploration. No edit/write until plan approved.`,
-      `Don't call ${PLAN_TOOL} while blocking questions remain; use ${PLAN_QUESTION_TOOL} first.`,
+      `Don't call ${PLAN_TOOL} while blocking questions remain; use ${ASK_USER_QUESTION_TOOL} first.`,
     ],
     parameters: Type.Object({
       title: Type.String({
@@ -1125,7 +1121,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       persistState();
 
       const warning = hasOpenQuestionWarning(content)
-        ? ` If the plan contains blocking user-answerable open questions, call ${PLAN_QUESTION_TOOL} before requesting approval.`
+        ? ` If the plan contains blocking user-answerable open questions, call ${ASK_USER_QUESTION_TOOL} before requesting approval.`
         : "";
       return {
         content: [
@@ -1146,22 +1142,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   },
   });
 
-  pi.registerTool({
-    name: PLAN_QUESTION_TOOL,
-    label: "Ask Plan Question",
-    description:
-      "Ask user a planning question with selectable options and optional free-form input.",
-    promptSnippet:
-      "Ask user a planning question with 2-4 concrete options when a decision affects the plan",
-    promptGuidelines: [
-      "Use only when repo research leaves a consequential ambiguity.",
-      "Prefer 2-4 concrete options. Use short labels.",
-      "Don't ask what's discoverable from repo.",
-      "Respect user's stated preference.",
-    ],
-    parameters: Type.Object({
+  function buildAskQuestionSchema() {
+    return Type.Object({
       question: Type.String({
-        description: "Planning question to ask",
+        description: "Question to ask the user",
       }),
       options: Type.Array(
         Type.Object({
@@ -1182,148 +1166,207 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
           maxItems: 4,
         },
       ),
+      recommended: Type.Optional(
+        Type.String({
+          description:
+            "Label of the recommended option (must match one option label). It is shown with a ★ marker.",
+        }),
+      ),
       allowOther: Type.Optional(
         Type.Boolean({
           description:
             "Allow free-form user answer; default true",
         }),
       ),
-    }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      guardPlanMode(PLAN_QUESTION_TOOL);
+    });
+  }
 
-      const typedParams = params as PlanQuestionParams;
-      const options = typedParams.options ?? [];
-
-      // ponytail: runtime validation since TypeBox minItems can't check blank/duplicate
-      const labels = options.map((o) => o.label.trim());
-      if (labels.some((l) => !l)) {
-        throw new Error(
-          "Each option must have a non-blank label.",
-        );
-      }
-      if (new Set(labels).size !== labels.length) {
-        throw new Error(
-          "Option labels must be unique.",
-        );
-      }
-      if (
-        labels.some(
-          (l) =>
-            l.toLowerCase() === "other" ||
-            l.toLowerCase().startsWith("other "),
-        )
-      ) {
-        throw new Error(
-          'Option labels cannot conflict with the "Other" label.',
-        );
-      }
-
-      if (!ctx.hasUI) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "UI is not available. Ask this planning question directly in chat and wait for the user's answer.",
-            },
-          ],
-          details: {
-            question: typedParams.question,
-            options,
-            answer: null,
-          },
-        };
-      }
-
-      const allowOther =
-        typedParams.allowOther !== false;
-      const displayLabels = options.map((option) =>
-        option.description
-          ? `${option.label} — ${option.description}`
-          : option.label,
+  /**
+   * Validate ask_user_question params. Throws on invalid input.
+   * Returns resolved options + recommendedIndex (0 if recommended absent).
+   */
+  function validateQuestionParams(typedParams: PlanQuestionParams): {
+    options: PlanQuestionOption[];
+    recommendedIndex: number | null;
+  } {
+    const options = typedParams.options ?? [];
+    // ponytail: runtime validation since TypeBox minItems can't check blank/duplicate
+    const labels = options.map((o) => o.label.trim());
+    if (labels.some((l) => !l)) {
+      throw new Error("Each option must have a non-blank label.");
+    }
+    if (new Set(labels).size !== labels.length) {
+      throw new Error("Option labels must be unique.");
+    }
+    if (
+      labels.some(
+        (l) =>
+          l.toLowerCase() === "other" ||
+          l.toLowerCase().startsWith("other "),
+      )
+    ) {
+      throw new Error(
+        'Option labels cannot conflict with the "Other" label.',
       );
-      const otherLabel = "Other / type my answer";
-      const choice = await ctx.ui.select(
-        typedParams.question,
-        allowOther
-          ? [...displayLabels, otherLabel]
-          : displayLabels,
+    }
+
+    let recommendedIndex: number | null = null;
+    if (typedParams.recommended) {
+      const recTrim = typedParams.recommended.trim();
+      const matchIdx = labels.findIndex(
+        (l) => l.toLowerCase() === recTrim.toLowerCase(),
       );
-      if (!choice) {
+      if (matchIdx === -1) {
+        throw new Error(
+          "recommended must match one of the option labels.",
+        );
+      }
+      recommendedIndex = matchIdx;
+    }
+    return { options, recommendedIndex };
+  }
+
+  /**
+   * Shared execute for ask_user_question and the deprecated ask_plan_question alias.
+   * Uses the built-in ctx.ui.select list dialog (same UX as the original ask_plan_question),
+   * with the recommended option marked ★. "Other / type my answer" opens a simple editor.
+   */
+  // ponytail: typed helper avoids `as const` on every content block
+  const textBlock = (text: string) => ({ type: "text" as const, text });
+
+  async function executeAskQuestion(
+    _toolCallId: string,
+    params: unknown,
+    _signal: unknown,
+    _onUpdate: unknown,
+    ctx: ExtensionContext,
+    isAlias: boolean,
+  ) {
+    const typedParams = params as PlanQuestionParams;
+    const { options, recommendedIndex } = validateQuestionParams(typedParams);
+
+    // ponytail: surface deprecation in every mode — notify (UI) + prefix result text (all modes)
+    const deprecateNote = isAlias ? "[Deprecated: use ask_user_question instead] " : "";
+    if (isAlias && ctx.hasUI) {
+      ctx.ui.notify(
+        "ask_plan_question is deprecated; use ask_user_question",
+        "warning",
+      );
+    }
+
+    if (!ctx.hasUI) {
+      return {
+        content: [textBlock(deprecateNote + "UI is not available. Ask this question directly in chat and wait for the user's answer.")],
+        details: {
+          question: typedParams.question,
+          options,
+          answer: null,
+          wasCustom: false,
+          cancelled: false,
+        },
+      };
+    }
+
+    const allowOther = typedParams.allowOther !== false;
+    // Build the display list; recommended option gets a ★ marker.
+    const displayLabels = options.map((option, i) => {
+      const star = recommendedIndex !== null && i === recommendedIndex && options.length > 1 ? "★ " : "";
+      return option.description ? `${star}${option.label} — ${option.description}` : `${star}${option.label}`;
+    });
+    const otherLabel = "Other / type my answer";
+    const choice = await ctx.ui.select(
+      typedParams.question,
+      allowOther ? [...displayLabels, otherLabel] : displayLabels,
+    );
+    if (!choice) {
+      return {
+        content: [textBlock(deprecateNote + "User cancelled the question.")],
+        details: {
+          question: typedParams.question,
+          options,
+          answer: null,
+          cancelled: true,
+          wasCustom: false,
+        },
+      };
+    }
+
+    if (choice === otherLabel) {
+      const answer = (await ctx.ui.editor("Your answer", ""))?.trim();
+      if (!answer) {
         return {
-          content: [
-            {
-              type: "text",
-              text: "User cancelled the planning question.",
-            },
-          ],
+          content: [textBlock(deprecateNote + "User cancelled the question.")],
           details: {
             question: typedParams.question,
             options,
             answer: null,
             cancelled: true,
+            wasCustom: false,
           },
         };
       }
-
-      if (choice === otherLabel) {
-        const answer = (
-          await ctx.ui.editor(
-            "Your answer",
-            "",
-          )
-        )?.trim();
-        if (!answer) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: "User cancelled the planning question.",
-              },
-            ],
-            details: {
-              question: typedParams.question,
-              options,
-              answer: null,
-              cancelled: true,
-            },
-          };
-        }
-        return {
-          content: [
-            {
-              type: "text",
-              text: `User wrote: ${answer}`,
-            },
-          ],
-          details: {
-            question: typedParams.question,
-            options,
-            answer,
-            wasCustom: true,
-          },
-        };
-      }
-
-      const selectedIndex =
-        displayLabels.indexOf(choice);
-      const selected = options[selectedIndex];
-      const answer = selected?.label ?? choice;
       return {
-        content: [
-          {
-            type: "text",
-            text: `User selected: ${answer}`,
-          },
-        ],
+        content: [textBlock(deprecateNote + `User wrote: ${answer}`)],
         details: {
           question: typedParams.question,
           options,
           answer,
-          selectedIndex: selectedIndex + 1,
-          wasCustom: false,
+          wasCustom: true,
+          cancelled: false,
         },
       };
+    }
+
+    const selectedIndex = displayLabels.indexOf(choice);
+    const selected = options[selectedIndex];
+    const answer = selected?.label ?? choice;
+    return {
+      content: [textBlock(deprecateNote + `User selected: ${answer}`)],
+      details: {
+        question: typedParams.question,
+        options,
+        answer,
+        selectedIndex, // 0-based, matches options array + recommendedIndex
+        wasCustom: false,
+        cancelled: false,
+      },
+    };
+  }
+
+  const askQuestionGuidelines = [
+    "Use only when repo research leaves a consequential ambiguity.",
+    "Prefer 2-4 concrete options. Use short labels.",
+    "Don't ask what's discoverable from repo.",
+    "Respect user's stated preference.",
+    "Provide a recommended option when one choice is clearly preferable.",
+  ];
+
+  pi.registerTool({
+    name: ASK_USER_QUESTION_TOOL,
+    label: "Ask User Question",
+    description:
+      "Ask user a clarifying question with selectable options, a recommended default, and optional free-form input. Works in any mode.",
+    promptSnippet:
+      "Ask user a clarifying question with 2-4 options and a recommended default; works in any mode",
+    promptGuidelines: askQuestionGuidelines,
+    parameters: buildAskQuestionSchema(),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      return executeAskQuestion(toolCallId, params, signal, onUpdate, ctx, false);
+    },
+  });
+
+  // ponytail: deprecated alias — delegates to the same handler, warns on use. Drop after one release.
+  pi.registerTool({
+    name: PLAN_QUESTION_TOOL,
+    label: "Ask Plan Question (deprecated)",
+    description:
+      "Deprecated alias for ask_user_question. Use ask_user_question instead.",
+    promptSnippet:
+      "Deprecated: use ask_user_question instead",
+    promptGuidelines: askQuestionGuidelines,
+    parameters: buildAskQuestionSchema(),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      return executeAskQuestion(toolCallId, params, signal, onUpdate, ctx, true);
     },
   });
 
@@ -1470,9 +1513,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     // Goal loop counters reset on resume (per Claude Code /goal semantics)
     if (goal?.active) { goal = { ...goal, turns: 0, startedAt: Date.now() }; persistState(); }
 
-    // ponytail: ensure write_plan is always visible — covers --plan and normal-mode starts
-    if (!pi.getActiveTools().includes(PLAN_TOOL))
-      pi.setActiveTools([...pi.getActiveTools(), PLAN_TOOL]);
+    // ponytail: ensure write_plan + ask_user_question are always visible — covers --plan and normal-mode starts
+    const active = pi.getActiveTools();
+    const additions = [PLAN_TOOL, ASK_USER_QUESTION_TOOL].filter((t) => !active.includes(t));
+    if (additions.length) pi.setActiveTools([...active, ...additions]);
 
     // ponytail: skip plan mode re-entry during execution handoff
     if (
@@ -1579,7 +1623,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
    */
   pi.on("tool_call", async (event, ctx) => {
     if (!planModeEnabled) return;
-    if (specGateActive && !READ_ONLY_TOOLS.has(event.toolName) && !PLAN_ONLY_TOOLS.has(event.toolName)) {
+    if (specGateActive && !READ_ONLY_TOOLS.has(event.toolName) && event.toolName !== ASK_USER_QUESTION_TOOL && event.toolName !== PLAN_QUESTION_TOOL && event.toolName !== PLAN_TOOL) {
       return { block: true, reason: "pi-plan: /specs gate is active. Run /specs-approve before workspace writes." };
     }
 
@@ -1591,8 +1635,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       };
     }
 
-    // Plan-only tools are always allowed
-    if (PLAN_ONLY_TOOLS.has(event.toolName)) return;
+    // ask_user_question (and its deprecated alias) are always allowed — read-only, no mutate.
+    if (event.toolName === ASK_USER_QUESTION_TOOL || event.toolName === PLAN_QUESTION_TOOL) return;
 
     if (isToolCallEventType("bash", event)) {
       const disposition = classifyCommand(event.input.command || "");
@@ -1634,7 +1678,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       return {
         systemPrompt:
           _event.systemPrompt +
-          `\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- Bash commands that write to files (redirect, heredoc, sed -i, tee, cp/mv/rm, etc.) or contain command chaining/pipelines (| && ; & \` \$) are hard-blocked. Strict single read-only bash commands (ls, grep, find, git status) run automatically; test/build/package scripts and other unknown executables require confirmation.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${PLAN_QUESTION_TOOL} for consequential open decisions with 2-4 clear options and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${PLAN_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${PLAN_DIR}/. Current/next plan path: ${relativePlan}\n${specGateActive && specPath ? `- An active draft specification is at ${relativeToCwd(ctx.cwd, specPath)}. Read it before refining or approving it; workspace writes remain locked until /specs-approve.\n` : ""}- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
+          `\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- Bash commands that write to files (redirect, heredoc, sed -i, tee, cp/mv/rm, etc.) or contain command chaining/pipelines (| && ; & \` \$) are hard-blocked. Strict single read-only bash commands (ls, grep, find, git status) run automatically; test/build/package scripts and other unknown executables require confirmation.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${ASK_USER_QUESTION_TOOL} for consequential open decisions with 2-4 clear options, a recommended default, and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${ASK_USER_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${PLAN_DIR}/. Current/next plan path: ${relativePlan}\n${specGateActive && specPath ? `- An active draft specification is at ${relativeToCwd(ctx.cwd, specPath)}. Read it before refining or approving it; workspace writes remain locked until /specs-approve.\n` : ""}- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
       };
     }
   });
