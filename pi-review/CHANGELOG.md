@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.7 (2026-08-04)
+
+### Fixes
+
+- **`sort -o` detection covers combined short flags.** `DESTRUCTIVE_BASH_PATTERNS` now matches `sort -no out.txt` / `sort -on out.txt` (not just standalone `-o`), closing a review-mode gate escape where `sort` with an embedded output flag was treated as read-only.
+- **`serena_check_onboarding_performed` added to `SAFE_REVIEW_TOOLS`** (mirrors `READ_ONLY_TOOLS`), so the read-only onboarding check is available during review.
+
 All notable changes to `pi-review` will be documented in this file.
 
 ## 0.2.6 (2026-07-30)

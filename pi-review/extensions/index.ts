@@ -18,8 +18,11 @@ const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "ma
 export const SAFE_REVIEW_TOOLS = new Set([
   "read", "bash", "grep", "find", "ls",
   "ffgrep", "fffind", "resolve_file", "fff_multi_grep", "related_files",
+  "windows_shell_detect", "windows_audit_log",
+  "windows_path_to_windows", "windows_path_to_wsl", "windows_path_to_gitbash", "windows_path_quote",
+  "windows_safety_classify", "windows_doctor", "windows_tool_discover", "windows_wsl_list_distros",
   "web_search", "web_extract", "web_map", "web_crawl", "web_screenshot", "web_pdf", "web_status",
-  "serena_status", "serena_list_tools", "serena_get_current_config", "serena_get_symbols_overview",
+  "serena_status", "serena_list_tools", "serena_get_current_config", "serena_check_onboarding_performed", "serena_get_symbols_overview",
   "serena_find_symbol", "serena_find_declaration", "serena_find_implementations",
   "serena_find_referencing_symbols", "serena_search_for_pattern", "serena_get_diagnostics_for_file",
   "munin_search", "munin_get", "munin_list", "munin_recent", "munin_capabilities",
@@ -69,7 +72,7 @@ const DESTRUCTIVE_BASH_PATTERNS = [
   /\bfind\b[^\n]*-(delete|exec|execdir|ok|okdir|fprint[f0]?|fls)\b/i,
   /\bsed\b[^\n]*\s-i(?:\s|$)/i,
   /\bsed\b[^\n]*(?:'w\s|\bw\s+\/[^\s]|'\s*w\s)/i,
-  /\bsort\b[^\n]*\s-o(?:\s|$)/i,
+  /\bsort\b[^\n]*\s-[a-zA-Z]*o[a-zA-Z]*(?:\s|=|$)/i,
   /\b(sudo|kill|killall|pkill|rekill|vim|vi|nano|emacs|code|subl)\b/i,
   /\bgit\s+(apply|am|format-patch|worktree)\b/i,
 ];

@@ -201,22 +201,66 @@ function modelKey(model: { provider?: string; id?: string } | undefined): string
 type CommandDisposition = "read" | "write" | "confirm";
 
 /** Classify one shell command for plan mode without attempting to interpret arbitrary executables. */
+/** Split a shell command on separators (; & |) that are OUTSIDE quotes. */
+function splitShellSegments(cmd: string): string[] {
+  const segments: string[] = [];
+  let cur = "";
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (quote) {
+      cur += ch;
+      if (ch === quote) quote = null;
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+      cur += ch;
+    } else if (/[;&|]/.test(ch)) {
+      if (cur.trim()) segments.push(cur.trim());
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim()) segments.push(cur.trim());
+  return segments;
+}
+
 function classifyCommand(cmd: string): CommandDisposition {
   const c = cmd.trim();
   if (!c) return "confirm";
-  if (/[\r\n;&|`$<>()]/.test(c) || /--output(?:=|\s)/i.test(c)) return "write";
-  const inspection = c.replace(/^\S*\/(?=[^/\s]+(?:\s|$))/, "");
+  // Redirects, command substitution, and heredocs can create/modify files or run
+  // arbitrary code regardless of the surrounding command — always a write.
+  // Note: the < > check is intentionally conservative — it also catches "a < b"
+  // inside quotes. Acceptable: rare in read-only greps, and safety wins.
+  if (/[\r\n<>]/.test(c) || /\$\(|`/.test(c) || /--output(?:=|\s)/i.test(c)) return "write";
+  // Split on command separators OUTSIDE quotes so read-only pipelines (grep ... | head)
+  // and chains (ls -la; echo done) classify per segment, while quoted alternation
+  // patterns like "sqi_manager_task\|SYS_Tasks" stay one segment. The whole command
+  // is read only if EVERY segment is read only; any known writer wins; else confirm.
+  const segments = splitShellSegments(c);
+  if (segments.length > 1) {
+    if (segments.some((seg) => classifySegment(seg) === "write")) return "write";
+    if (segments.every((seg) => classifySegment(seg) === "read")) return "read";
+    return "confirm";
+  }
+  return classifySegment(c);
+}
+
+function classifySegment(seg: string): CommandDisposition {
+  const inspection = seg.replace(/^\S*\/(?=[^/\s]+(?:\s|$))/, "");
   if (/^git\s+/i.test(inspection)) {
     const read = /^git\s+(status|rev-parse|diff|show|log|ls-files)\b/i.test(inspection)
       || /^git\s+branch\s+--(?:list|all|remote|merged|no-merged|contains|show-current)\b/i.test(inspection);
-    return read ? (inspection === c ? "read" : "confirm") : "write";
+    return read ? (inspection === seg ? "read" : "confirm") : "write";
   }
   if (/^(?:(?:rm|rmdir|mv|cp|mkdir|touch|chmod|chown|ln|install|truncate|dd|mktemp)|sudo|env|command|time|nohup)\b/i.test(inspection)) return "write";
   if (/^sed\b/i.test(inspection) && (/\s(?:-i\S*|--in-place(?:=\S*)?)(?:\s|$)/i.test(inspection) || /\b(?:\d+)?w\s+/i.test(inspection) || /\/w\s/i.test(inspection))) return "write";
   if (/^tee\b/i.test(inspection)) return "write";
   if (/^find\b/i.test(inspection) && /-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)\b/i.test(inspection)) return "write";
-  if (/^sort\b/i.test(inspection) && /\s-o(?:\s|$)/i.test(inspection)) return "write";
-  return /^(?:rg|grep|find|fd|ls|pwd|cat|head|tail|awk|wc|sort|uniq|cut)\b/i.test(c) ? "read" : "confirm";
+  // Catch sort -o in any short-option form: standalone -o, combined -no/-on, and --output=.
+  if (/^sort\b/i.test(inspection) && (/(?:^|\s)-[a-zA-Z]*o[a-zA-Z]*(?:\s|=|$)/i.test(inspection) || /--output(?:=|\s)/i.test(inspection))) return "write";
+  // awk is a Turing-complete interpreter (system(), | getline, print>redirect) — never auto-allow.
+  return /^(?:rg|grep|find|fd|ls|pwd|cat|head|tail|wc|sort|uniq|cut|echo|printf)\b/i.test(inspection) ? "read" : "confirm";
 }
 
 function getEffectiveThinking(prefs: PlanPreferences, model: { provider?: string; id?: string } | undefined): { plan: ThinkingLevel; normal: ThinkingLevel } {
@@ -1697,7 +1741,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       return {
         systemPrompt:
           _event.systemPrompt +
-          `\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- Bash commands that write to files (redirect, heredoc, sed -i, tee, cp/mv/rm, etc.) or contain command chaining/pipelines (| && ; & \` \$) are hard-blocked. Strict single read-only bash commands (ls, grep, find, git status) run automatically; test/build/package scripts and other unknown executables require confirmation.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${ASK_USER_QUESTION_TOOL} for consequential open decisions with 2-4 clear options, a recommended default, and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${ASK_USER_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${PLAN_DIR}/. Current/next plan path: ${relativePlan}\n${specGateActive && specPath ? `- An active draft specification is at ${relativeToCwd(ctx.cwd, specPath)}. Read it before refining or approving it; workspace writes remain locked until /specs-approve.\n` : ""}- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
+          `\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- Bash commands that write to files (redirect, heredoc, sed -i, tee, cp/mv/rm, etc.) or contain command substitution are hard-blocked. Read-only bash commands (ls, grep, find, git status) run automatically — including pipelines/chains whose every segment is read-only (e.g. \`grep foo src | head\`). Test/build/package scripts and other unknown executables require confirmation.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${ASK_USER_QUESTION_TOOL} for consequential open decisions with 2-4 clear options, a recommended default, and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${ASK_USER_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${PLAN_DIR}/. Current/next plan path: ${relativePlan}\n${specGateActive && specPath ? `- An active draft specification is at ${relativeToCwd(ctx.cwd, specPath)}. Read it before refining or approving it; workspace writes remain locked until /specs-approve.\n` : ""}- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
       };
     }
   });

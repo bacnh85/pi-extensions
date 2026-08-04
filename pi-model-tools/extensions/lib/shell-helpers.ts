@@ -14,7 +14,11 @@ function normalizedTarget(value: unknown): string {
 
 // Paths Serena cannot index. Steering should NOT fire for these — Serena returns
 // empty results for node_modules, dist, build, .d.ts, and generated artifacts.
-const SERENA_EXCLUDED_PATH_RE = /\/(node_modules|dist|build|\.git|\.next|\.cache|coverage)\/|\.d\.ts\b/i;
+// Vendored SDKs (vendors/, vendor/, third_party/) are also unindexable — e.g.
+// Microchip PIC32 AmazonFreeRTOS under vendors/ — so never steer there.
+// Boundary is (?:^|[\s/]) — NOT \b — so dot-prefixed dirs (.git, .next, .cache)
+// still match (\b never matches before a non-word char like '.').
+const SERENA_EXCLUDED_PATH_RE = /(?:^|[\s/])(?:node_modules|dist|build|\.git|\.next|\.cache|coverage|vendors?|third_party)\/|\.d\.ts\b/i;
 
 export function looksLikeCodePath(value: unknown): boolean {
   return /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|py|go|rs|java|kt|kts|scala|rb|php|cs|cpp|cc|cxx|c|h|hpp|swift|sh|bash|zsh|fish|lua|r|jl|ex|exs|erl|hrl|clj|cljs|fs|fsx|ml|mli|dart|vue|svelte)$/i.test(normalizedTarget(value));
@@ -26,6 +30,9 @@ export function commandLooksLikeSemanticCodeSearch(command: unknown): boolean {
   if (!/\b(rg|grep|ag|ack|sed|awk|find)\b/.test(lowered)) return false;
   if (/\b(ls|pwd|git\s+status|npm\s+(test|run|install)|pnpm\s+(test|run|install)|yarn\s+(test|run|install))\b/.test(lowered)) return false;
   if (/^sed\s+-n\b/.test(command.trim().toLowerCase())) return false;
+  // Compound shell jobs (pipelines, chained commands, redirection) are legit shell
+  // work, not a semantic-miss — only SIMPLE grep/rg/find symbol searches are steered.
+  if (/[|;&<>()$`]/.test(command)) return false;
   // Don't steer when the target is outside Serena's indexable scope (node_modules, dist, .d.ts, etc.)
   if (SERENA_EXCLUDED_PATH_RE.test(lowered)) return false;
   return /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|cpp|cc|cxx|c|h|hpp)\b/.test(lowered)
@@ -106,14 +113,30 @@ export function suggestBestSerenaCommand(input: unknown, activeTools: readonly s
   return defaultSerenaSuggest(activeTools);
 }
 
-function extractSymbolFromGrep(command: string): string | undefined {
+// Exported for direct unit testing of the token-scan/symbol-extraction rules.
+export function extractSymbolFromGrep(command: string): string | undefined {
   if (!/^\s*(grep|rg|ag|ack)\b/.test(command)) return undefined;
-  const tokens: string[] = [];
+  const tokens: Array<{ text: string; quoted: boolean }> = [];
   const tokenRe = /"([^"]*)"|'([^']*)'|(\S+)/g;
   let m;
-  while ((m = tokenRe.exec(command)) !== null) tokens.push(m[1] ?? m[2] ?? m[3]);
-  for (const tok of tokens) {
+  while ((m = tokenRe.exec(command)) !== null) {
+    // Stop at the first UNQUOTED shell metachar — only grep's own argument list
+    // counts, never post-pipe/post-chain tokens (echo, head, ===, etc.). Quoted
+    // tokens (m[1]/m[2]) are literal argument content — metachars inside them
+    // (e.g. "a|b") must NOT stop the scan.
+    if (m[3] !== undefined && /[|;&<>()$`]/.test(m[3])) break;
+    tokens.push({ text: m[1] ?? m[2] ?? m[3], quoted: m[1] !== undefined || m[2] !== undefined });
+  }
+  let sawPattern = false;
+  for (const { text: tok, quoted } of tokens) {
     if (/^(grep|rg|ag|ack)$/.test(tok) || /^-[a-z0-9A-Z]+$/.test(tok) || /^\*?\.[a-z]+$/.test(tok) || tok === "--" || tok === "-e" || tok === "-f") continue;
+    // The first non-flag token is the grep pattern. If it was QUOTED and is not
+    // a clean symbol (e.g. "class Foo", "a|b"), the search is textual — do NOT
+    // fall through to trailing path args (src, app, lib) as "symbols".
+    if (!sawPattern) {
+      sawPattern = true;
+      if (quoted && !/^[a-zA-Z_$][\w.$]*$/.test(tok)) return undefined;
+    }
     if (/^[a-zA-Z_$][\w.$]*$/.test(tok) && tok.length >= 3) return tok;
   }
   return undefined;
@@ -123,7 +146,11 @@ function extractGrepPattern(command: string): string | undefined {
   const tokens: string[] = [];
   const tokenRe = /"([^"]*)"|'([^']*)'|(\S+)/g;
   let m;
-  while ((m = tokenRe.exec(command)) !== null) tokens.push(m[1] ?? m[2] ?? m[3]);
+  while ((m = tokenRe.exec(command)) !== null) {
+    // Same metachar stop as extractSymbolFromGrep — never read past the pipeline.
+    if (m[3] !== undefined && /[|;&<>()$`]/.test(m[3])) break;
+    tokens.push(m[1] ?? m[2] ?? m[3]);
+  }
   for (const tok of tokens) {
     if (/^(grep|rg|ag|ack|find)$/.test(tok) || /^-[a-z0-9A-Z]+$/.test(tok) || tok === "--" || tok === "-e" || tok === "-exec") continue;
     return tok;

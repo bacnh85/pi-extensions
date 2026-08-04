@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1 (2026-08-04)
+
+### Improvements
+
+- **`windows_shell_exec` guidance softened.** The tool is no longer pitched as "use instead of generic bash" — its prompt guidelines now direct the model to use it for PowerShell/cmd/WSL-native commands, and to prefer plain `bash` for read-only inspection (which runs automatically in plan mode without a confirmation prompt). Reduces unnecessary confirm prompts in plan mode.
+
 All notable changes to `pi-windows-tools` will be documented in this file.
 
 ## 0.5.0 (2026-08-02)

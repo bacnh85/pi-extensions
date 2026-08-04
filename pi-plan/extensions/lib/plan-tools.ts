@@ -8,6 +8,10 @@ export const READ_ONLY_TOOLS = new Set([
   "read", "grep", "find", "ls",
   // FFF tools
   "ffgrep", "fffind", "resolve_file", "fff_multi_grep", "related_files",
+  // Windows tools (read-only: detect, audit, path-convert, classify, doctor)
+  "windows_shell_detect", "windows_audit_log",
+  "windows_path_to_windows", "windows_path_to_wsl", "windows_path_to_gitbash", "windows_path_quote",
+  "windows_safety_classify", "windows_doctor", "windows_tool_discover", "windows_wsl_list_distros",
   // Web tools
   "web_search", "web_extract", "web_map", "web_crawl", "web_screenshot", "web_pdf", "web_status",
   // Serena read-only

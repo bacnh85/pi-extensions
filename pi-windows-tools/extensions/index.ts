@@ -41,7 +41,7 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
     execute() { return tr(detectAllShells().map(s => `  ${s.available ? "\u2713" : "\u2717"} ${s.displayName}${s.version ? " " + s.version : ""}`).join("\n")); } });
 
   pi.registerTool({ name: "windows_shell_exec", label: "Windows: Execute Command", description: "Execute a command through a Windows shell.", promptSnippet: "Execute a command through a Windows shell",
-    promptGuidelines: ["Use instead of generic bash on Windows.", 'Use shell:"wsl" for WSL.', "Dangerous commands require confirmation."],
+    promptGuidelines: ["Use for PowerShell/cmd/WSL-native commands (pwsh, Get-*, Set-*, wsl, cmd).", "For plain read-only inspection (ls, grep, find), use bash — it runs automatically in plan mode without a confirmation prompt.", 'Use shell:"wsl" for WSL.', "Dangerous commands require confirmation."],
     parameters: Type.Object({ command: Type.String(), shell: Type.Optional(sk), cwd: Type.Optional(Type.String()), timeout_ms: tp }),
     async execute(_id, p, signal, onUpdate, ctx) {
       const opts: ExecOptions = { shell: rs(p.shell as WindowsShellKind | undefined), cwd: p.cwd || ctx?.cwd || process.cwd(), timeoutMs: p.timeout_ms, signal };

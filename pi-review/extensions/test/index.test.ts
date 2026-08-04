@@ -96,6 +96,10 @@ describe("review parsing and shell gate", () => {
     assert.equal(isReadOnlyBash("find . -fprint output.txt"), false, "find fprint");
     assert.equal(isReadOnlyBash("find . -fls output.txt"), false, "find fls");
     assert.equal(isReadOnlyBash("find . -fprintf output.txt '%p'"), false, "find fprintf");
+    assert.equal(isReadOnlyBash("sort -o output.txt input.txt"), false, "sort output");
+    assert.equal(isReadOnlyBash("sort -no output.txt input.txt"), false, "sort combined -no");
+    assert.equal(isReadOnlyBash("sort -on output.txt input.txt"), false, "sort combined -on");
+    assert.equal(isReadOnlyBash("sort -n input.txt"), true, "sort numeric ok");
     assert.equal(isReadOnlyBash("find . -name '*.ts'"), true, "find ok");
     // Package managers can execute repository-controlled lifecycle scripts.
     for (const command of ["npm test", "npm pack --dry-run", "npm audit", "yarn test", "pnpm test"]) {

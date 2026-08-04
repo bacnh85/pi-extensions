@@ -968,6 +968,9 @@ describe("plan-mode tool lists", () => {
     for (const tool of ["read", "grep", "find", "ls", "ffgrep", "fffind", "web_search", "web_extract", "advisor",
       "serena_check_onboarding_performed", "serena_find_symbol", "serena_get_symbols_overview",
       "munin_search", "munin_get", "munin_list",
+      "windows_shell_detect", "windows_audit_log", "windows_path_to_windows", "windows_path_to_wsl",
+      "windows_path_to_gitbash", "windows_path_quote", "windows_safety_classify", "windows_doctor",
+      "windows_tool_discover", "windows_wsl_list_distros",
     ]) {
       assert.ok(READ_ONLY_TOOLS.has(tool), `${tool} in known-read set`);
     }
@@ -1011,8 +1014,9 @@ describe("plan mode prompt composition", () => {
     assert.ok(result.systemPrompt.includes("## Plan Mode"), "plan mode header added");
     assert.ok(result.systemPrompt.includes("smallest complete"), "smallest complete change rule");
     assert.ok(result.systemPrompt.includes("read-only planning mode"), "read-only mode stated");
-    assert.ok(result.systemPrompt.includes("Strict single read-only bash commands"), "safe bash auto-run stated");
-    assert.ok(!result.systemPrompt.includes("Read-only bash commands (ls, grep, find, git status) require user confirmation"));
+    assert.ok(result.systemPrompt.includes("Read-only bash commands (ls, grep, find, git status) run automatically"), "safe bash auto-run stated");
+    assert.ok(result.systemPrompt.includes("every segment is read-only"), "segment-level pipelines stated");
+    assert.ok(!result.systemPrompt.includes("Strict single read-only bash commands"));
   });
 
   it("names the active spec while the write gate is locked", async () => {
@@ -1159,9 +1163,14 @@ describe("tool gating in plan mode", () => {
     ["known writer", "cp source target"],
     ["absolute writer", "/bin/rm output.txt"],
     ["wrapped writer", "sudo rm output.txt"],
-    ["read pipeline", "cat file.txt | grep foo"],
-    ["command chaining", "ls -la; pwd"],
+    ["writer in pipeline", "cat file.txt | tee out.txt"],
+    ["writer in chain", "ls -la; cp a b"],
+    ["mixed chain with redirect", "grep foo src | head > out.txt"],
     ["command substitution", "echo $(touch marker)"],
+    ["command substitution in pipeline", "grep foo src | echo $(touch marker)"],
+    ["awk print redirect", "awk '{print $1 > \"out.txt\"}' file"],
+    ["sort combined -no", "sort -no output.txt input.txt"],
+    ["sort combined -on", "sort -on output.txt input.txt"],
   ];
 
   for (const [label, cmd] of WRITE_CASES) {
@@ -1195,10 +1204,88 @@ describe("tool gating in plan mode", () => {
     const tc = handlers.tool_call?.[0];
     assert.ok(tc);
 
-    for (const cmd of ["ls -la", "grep -R foo src/", "find . -name '*.ts'", "git status --short", "cat index.ts"]) {
+    for (const cmd of ["ls -la", "grep -R foo src/", "find . -name '*.ts'", "git status --short", "cat index.ts", "/bin/ls -la", "/usr/bin/grep foo src/", "sort -n input.txt"]) {
       assert.equal(await tc({ toolName: "bash", input: { command: cmd } }, ctx), undefined, `${cmd} auto-allowed`);
     }
     assert.equal(confirmations, 0);
+  });
+
+  it("requires confirmation for awk (Turing-complete interpreter)", async () => {
+    let confirmations = 0;
+    const { handlers } = createFakePi(["read", "bash"], { plan: true });
+    const ctx = fakeCtx({
+      hasUI: true,
+      ui: {
+        confirm: async () => { confirmations++; return true; },
+        select: async () => null, editor: async () => "",
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+    // awk must NOT auto-run — it needs confirmation even for column extraction.
+    for (const cmd of ["awk '{print $1}' file.txt", "awk 'BEGIN{system(\"touch marker\")}'", "/usr/bin/awk '{print $1}' file.txt"]) {
+      assert.equal(await tc({ toolName: "bash", input: { command: cmd } }, ctx), undefined, `${cmd} confirmed then allowed`);
+    }
+    assert.equal(confirmations, 3, "every awk command required confirmation");
+  });
+
+  it("auto-allows read-only pipelines and chains (segment-level classification)", async () => {
+    let confirmations = 0;
+    const { handlers } = createFakePi(["read", "bash"], { plan: true });
+    const ctx = fakeCtx({
+      hasUI: true,
+      ui: {
+        confirm: async () => { confirmations++; return false; },
+        select: async () => null, editor: async () => "",
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+
+    for (const cmd of [
+      "cat file.txt | grep foo",
+      "grep -rn 'sqi_manager_task' system_tasks.c | head",
+      "ls -la; pwd",
+      "grep foo src | head -n 5; echo done",
+      "git status --short | grep modified",
+      "find . -name '*.ts' | wc -l",
+      // Quoted alternation (\| inside quotes) must NOT split into segments
+      "grep -rn \"sqi_manager_task\\|SYS_Tasks\\|TASK_SQI\" system_tasks.c | head; echo ===",
+      "grep -rn 'a\\|b' src/file.ts | head",
+      "echo \"x;y\" | grep foo",
+    ]) {
+      assert.equal(await tc({ toolName: "bash", input: { command: cmd } }, ctx), undefined, `${cmd} auto-allowed`);
+    }
+    assert.equal(confirmations, 0);
+  });
+
+  it("requires confirmation for mixed read/unknown chains", async () => {
+    const decisions = [true, true];
+    const confirmations: string[] = [];
+    const { handlers } = createFakePi(["read", "bash"], { plan: true });
+    const ctx = fakeCtx({
+      hasUI: true,
+      ui: {
+        confirm: async (_title: string, body: string) => { confirmations.push(body); return decisions.shift()!; },
+        select: async () => null, editor: async () => "",
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+
+    for (const cmd of ["grep foo src | npm test", "ls -la; node script.js"]) {
+      assert.equal(await tc({ toolName: "bash", input: { command: cmd } }, ctx), undefined, `${cmd} confirmed then allowed`);
+    }
+    assert.equal(confirmations.length, 2, "mixed chains require confirmation");
   });
 
   it("denies non-read baseline tools without UI", async () => {

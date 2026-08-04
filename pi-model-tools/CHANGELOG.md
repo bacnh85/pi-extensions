@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.3 (2026-08-04)
+
+### Fixes
+
+- **Serena steering no longer fires for vendored SDK paths.** `SERENA_EXCLUDED_PATH_RE` now covers `vendors/`, `vendor/`, `third_party/` (and uses a `(?:^|[\s/])` boundary so dot-prefixed dirs `.git/`, `.next/`, `.cache/` stay excluded) — greps into vendored trees (e.g. Microchip PIC32 AmazonFreeRTOS) are no longer blocked with a useless Serena suggestion.
+- **Compound shell jobs are not semantic misses.** `commandLooksLikeSemanticCodeSearch` returns false when the command contains shell metacharacters (`|;&<>`), so pipelines/chains (`grep foo src | head`) pass through; only simple `grep`/`rg` symbol searches are steered.
+- **`grep`/`ffgrep` tool calls are never hard-blocked.** The semantic-miss branch now emits a non-blocking steer (existing `deliverAs: "steer"` path) instead of blocking; only simple bash symbol searches still block.
+- **Symbol extraction no longer suggests directory names.** `extractSymbolFromGrep` treats the first non-flag token as the pattern: a quoted textual pattern (e.g. `"class Foo"`, `"a|b"`) means no symbol suggestion — trailing path args (`src`, `app`) are never returned as symbols, and post-pipeline tokens (`echo`, `head`) are never picked.
+- **`extractSymbolFromGrep` exported** for direct unit testing of the token-scan rules.
+
 All notable changes to `pi-model-tools` will be documented in this file.
 
 ## 0.5.2 (2026-08-04)

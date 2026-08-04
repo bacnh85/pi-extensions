@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.2 (2026-08-04)
+
+### Fixes
+
+- **Plan-mode bash gate now allows read-only pipelines and chains.** `classifyCommand` previously hard-blocked any command containing `;`, `&`, or `|` as a potential write. It now splits on separators **outside quotes** (`splitShellSegments`) and classifies each segment: all-read-only chains (e.g. `grep foo src | head`, `ls -la; echo done`, and quoted alternation patterns like `grep -rn "a\\|b" file | head`) auto-run in plan mode; any known writer segment (redirect, `tee`, `cp`, `sort -o`, etc.) still hard-blocks; mixed/unknown segments require confirmation.
+- **`awk` no longer auto-allows in plan mode.** `awk` is a Turing-complete interpreter (`system()`, `| getline`, `print >` redirect) — it is now classified as `confirm` (same as python/node), closing a sandbox escape where `awk 'BEGIN{system("touch marker")}'` ran without confirmation.
+- **`sort -o` detection covers combined short flags** (`sort -no out.txt`, `sort -on out.txt`) and path-prefixed read commands (`/bin/ls`, `/usr/bin/grep`) are auto-allowed.
+- **Windows read-only tools auto-allowed in plan mode.** The 10 pure-read `windows_*` tools (`windows_shell_detect`, `windows_audit_log`, `windows_path_to_*`, `windows_path_quote`, `windows_safety_classify`, `windows_doctor`, `windows_tool_discover`, `windows_wsl_list_distros`) are in `READ_ONLY_TOOLS`, so they no longer trigger the "Allow … in plan mode?" prompt. `windows_shell_exec` remains confirmation-gated (it executes arbitrary commands).
+
 All notable changes to `pi-plan` will be documented in this file.
 
 ## 0.9.1 (2026-08-04)

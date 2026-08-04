@@ -5,6 +5,7 @@ import {
   missedDedicatedTool,
   dedicatedToolForShellCommand,
   suggestBestSerenaCommand,
+  extractSymbolFromGrep,
   categorizeToolError,
   detectReasoningRejection,
   checkDangerousCommand,
@@ -38,6 +39,28 @@ describe("semantic miss detection", () => {
     assert.equal(isSemanticMissToolCall("bash", { command: "git status --short" }), false);
     assert.equal(isSemanticMissToolCall("bash", { command: "npm test" }), false);
     assert.equal(isSemanticMissToolCall("bash", { command: "grep -R PI_MODEL_TOOLS README.md" }), false);
+  });
+
+  it("does not flag compound shell jobs (pipelines/chains) — legit shell work", () => {
+    assert.equal(isSemanticMissToolCall("bash", { command: "grep -rn 'sqi_manager_task' system_tasks.c | head" }), false);
+    assert.equal(isSemanticMissToolCall("bash", { command: "cat file.txt | grep foo" }), false);
+    assert.equal(isSemanticMissToolCall("bash", { command: "grep foo src | head -n 5; echo done" }), false);
+    assert.equal(isSemanticMissToolCall("bash", { command: "ls -la; pwd" }), false);
+    assert.equal(isSemanticMissToolCall("bash", { command: "find . -name '*.ts' | wc -l" }), false);
+    assert.equal(isSemanticMissToolCall("bash", { command: "git status --short | grep modified" }), false);
+  });
+
+  it("does not flag searches in vendored SDK paths (Serena cannot index them)", () => {
+    assert.equal(isSemanticMissToolCall("bash", { command: "grep -rn 'sqi_manager_task' vendors/microchip/boards/curiosity_pic32mzef/system_tasks.c" }), false);
+    assert.equal(isSemanticMissToolCall("bash", { command: "grep -rn 'init' vendor/foo.c" }), false);
+    assert.equal(isSemanticMissToolCall("bash", { command: "rg 'task' third_party/rtos/kernel.c" }), false);
+  });
+
+  it("still excludes dot-prefixed dirs (.git/.next/.cache) from steering", () => {
+    assert.equal(isSemanticMissToolCall("bash", { command: "grep -rn 'foo' .git/hooks/pre-commit" }), false);
+    assert.equal(isSemanticMissToolCall("bash", { command: "grep -rn 'foo' repo/.git/config" }), false);
+    assert.equal(isSemanticMissToolCall("bash", { command: "grep -rn 'foo' .next/server.ts" }), false);
+    assert.equal(isSemanticMissToolCall("bash", { command: "grep -rn 'foo' .cache/build.ts" }), false);
   });
 
   it("does not flag searches in node_modules or .d.ts (Serena cannot index these)", () => {
@@ -108,6 +131,45 @@ describe("suggestBestSerenaCommand", () => {
     const result = suggestBestSerenaCommand({ command: "grep -rn 'class UserService' src/" }, tools);
     // 'class UserService' (with space) is not a clean symbol — falls back to overview
     assert.ok(result.includes("serena_"));
+  });
+
+  it("does not pick post-pipeline tokens as the symbol (regression: echo/head)", () => {
+    const result = suggestBestSerenaCommand({ command: "grep -rn 'sqi_manager_task' system_tasks.c | head; echo ===" }, tools);
+    // The metachar stop keeps the scan on grep's own args → picks sqi_manager_task, never echo/===
+    assert.ok(result.includes("sqi_manager_task"), `expected symbol in: ${result}`);
+    assert.ok(!result.includes("echo"), `must not suggest echo: ${result}`);
+  });
+
+  it("continues past quoted tokens containing metachars (a|b is literal content)", () => {
+    // Quoted | is literal pattern content, not a shell separator. But per the
+    // "first non-flag token is the pattern" rule, a QUOTED textual pattern
+    // ("a|b") means the search is textual — no symbol is suggested after it.
+    // Direct unit test of the scan behavior:
+    assert.equal(extractSymbolFromGrep("rg \"a|b\" MyClass src/"), undefined, "textual quoted pattern → no symbol");
+    // A clean single-quoted pattern is still extracted, even with a quoted
+    // metachar token AFTER it (proves the m[3] stop doesn't fire on quoted |):
+    assert.equal(extractSymbolFromGrep("grep -rn 'MyClass' \"a|b\" src/"), "MyClass", "clean pattern extracted past quoted |");
+    // Unquoted | still stops the scan (post-pipeline tokens never count):
+    assert.equal(extractSymbolFromGrep("grep -rn 'MyClass' file.ts | head"), "MyClass", "unquoted | stops after grep args");
+    assert.equal(extractSymbolFromGrep("grep -rn 'MyClass' file.ts | head; echo ==="), "MyClass", "chain after pipe still extracts");
+  });
+
+  it("does not suggest directory names as symbols after a textual quoted pattern", () => {
+    // "class Foo" is a textual pattern (rejected by the symbol filter); the scan
+    // must NOT fall through to trailing path args like src/app/lib.
+    const result = suggestBestSerenaCommand({ command: "grep -rn \"class Foo\" src" }, tools);
+    assert.ok(!result.includes("name_path_pattern: \"src\""), `must not suggest src as symbol: ${result}`);
+    assert.ok(!result.includes("name_path_pattern: \"app\""), `must not suggest app as symbol: ${result}`);
+    assert.ok(result.includes("serena_"), "falls back to a generic serena suggestion");
+    // Direct: the same command yields no symbol at all.
+    assert.equal(extractSymbolFromGrep("grep -rn \"class Foo\" src"), undefined);
+    // Unquoted clean pattern still extracts (no quoted-textual-pattern stop):
+    assert.equal(extractSymbolFromGrep("grep -rn MyClass src"), "MyClass");
+  });
+
+  it("extracts pattern after a quoted token with metachars (find -exec grep)", () => {
+    const result = suggestBestSerenaCommand({ command: "find . -name '*.ts' -exec grep 'a|b' {} \\;" }, tools);
+    assert.ok(result.includes("serena_"), `expected serena suggestion: ${result}`);
   });
 
   it("falls back to overview/search for unrecognized patterns", () => {

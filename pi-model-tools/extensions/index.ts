@@ -556,6 +556,15 @@ export default function (pi: ExtensionAPI) {
     if (semanticMiss) {
       const isGrep = event.toolName === "grep" || event.toolName === "ffgrep";
       const suggest = suggestBestSerenaCommand(event.input, activeTools);
+      // grep/ffgrep are first-class search tools — NEVER hard-block them. Emit a
+      // non-blocking steer so the model can still switch to Serena when useful.
+      // Only SIMPLE bash symbol searches (semanticMiss on bash) hard-block.
+      if (isGrep) {
+        if (remindedThisTurn) return;
+        remindedThisTurn = true;
+        pi.sendMessage({ customType: "model-tools-reminder", content: `${reason} ${suggest}`, display: true }, { deliverAs: "steer" });
+        return;
+      }
       return { block: true, reason: `${reason} ${suggest}` };
     }
 
