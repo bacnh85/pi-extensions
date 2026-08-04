@@ -9,7 +9,7 @@
 import { Compile } from "typebox/compile";
 import { isRecord } from "./model-detection.ts";
 
-export type RepairKind = "path-markdown-autolink" | "optional-null" | "json-string" | "empty-object-array" | "bare-string-array" | "json-object-wrapped-array" | "top-level-json-string" | "read-notice-stripped" | "trim-match-retry";
+export type RepairKind = "path-markdown-autolink" | "optional-null" | "json-string" | "empty-object-array" | "bare-string-array" | "json-object-wrapped-array" | "top-level-json-string" | "truncated-json-closed" | "read-notice-stripped" | "trim-match-retry";
 
 export type RepairResult = {
   args: unknown;
@@ -110,18 +110,78 @@ function isOptionalProperty(rootSchema: unknown, path: readonly string[]): boole
 
 function expects(schema: unknown, type: "array" | "object"): boolean { return schemaTypes(schema).includes(type); }
 
+/**
+ * Lenient JSON parse for model-emitted tool args. Strict `JSON.parse` first;
+ * when that fails, treat the text as possibly truncated mid-structure
+ * (DeepSeek truncates tool-call JSON at generation limits) — close an
+ * unterminated string literal and any unclosed `{`/`[` brackets, then retry.
+ * `truncated: true` reports that a recovery close was applied.
+ */
+export function tryParseLenientJson(text: string): { value: unknown; truncated: boolean } | undefined {
+  try {
+    return { value: JSON.parse(text), truncated: false };
+  } catch { /* not strict JSON — try truncation recovery */ }
+
+  const closed = closeTruncatedJson(text);
+  if (closed === text) return undefined;
+  try {
+    return { value: JSON.parse(closed), truncated: true };
+  } catch {
+    return undefined;
+  }
+}
+
+// Append missing closers for an unterminated string + unclosed brackets,
+// scanning literal-aware: a `}`/`]` inside a quoted string is data, not a closer.
+function closeTruncatedJson(text: string): string {
+  const stack: Array<"{" | "["> = [];
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === "{") { stack.push("{"); continue; }
+    if (ch === "[") { stack.push("["); continue; }
+    if (ch === "}") { if (stack[stack.length - 1] === "{") stack.pop(); continue; }
+    if (ch === "]") { if (stack[stack.length - 1] === "[") stack.pop(); continue; }
+  }
+  // Pre-suffix recovery, before appending closers:
+  // - A dangling escape backslash would turn the closing `"` we append into an
+  //   escaped quote (`\"`) and leave the string unterminated. Complete it as a
+  //   literal backslash instead (e.g. {"path":"C:\ truncated mid-escape).
+  // - A trailing comma before an unclosed bracket makes the closed JSON
+  //   invalid (DeepSeek often truncates right after a comma). Strip trailing
+  //   whitespace/commas so the appended closers yield valid JSON.
+  if (inString && escaped) text += "\\";
+  else if (!inString && stack.length > 0) text = text.replace(/[\s,]+$/, "");
+  let suffix = "";
+  if (inString) suffix += '"'; // unterminated string literal (e.g. {"path":"abc)
+  while (stack.length > 0) suffix += stack.pop() === "{" ? "}" : "]";
+  return suffix ? text + suffix : text;
+}
+
 function tryRepairPath(rootSchema: unknown, args: unknown, path: readonly string[]): RepairKind | undefined {
   const current = getAtPath(args, path);
   const targetSchema = schemaAtPath(rootSchema, path);
   if (current === null && isOptionalProperty(rootSchema, path) && deleteAtPath(args, path)) return "optional-null";
   if (typeof current === "string" && (expects(targetSchema, "array") || expects(targetSchema, "object"))) {
-    try {
-      const parsed = JSON.parse(current);
+    const parsedResult = tryParseLenientJson(current);
+    if (parsedResult !== undefined) {
+      const parsed = parsedResult.value;
+      const plainKind: RepairKind = parsedResult.truncated ? "truncated-json-closed" : "json-string";
       if ((expects(targetSchema, "array") && Array.isArray(parsed)) || (expects(targetSchema, "object") && isRecord(parsed))) {
-        if (setAtPath(args, path, parsed)) return "json-string";
+        if (setAtPath(args, path, parsed)) return plainKind;
       }
-      if (expects(targetSchema, "array") && isRecord(parsed)) { if (setAtPath(args, path, [parsed])) return "json-object-wrapped-array"; }
-    } catch { /* not JSON */ }
+      if (expects(targetSchema, "array") && isRecord(parsed)) {
+        if (setAtPath(args, path, [parsed])) return parsedResult.truncated ? "truncated-json-closed" : "json-object-wrapped-array";
+      }
+    }
   }
   if (expects(targetSchema, "array") && isRecord(current) && Object.keys(current).length === 0) { if (setAtPath(args, path, [])) return "empty-object-array"; }
   if (expects(targetSchema, "array") && typeof current === "string") { if (setAtPath(args, path, [current])) return "bare-string-array"; }
@@ -183,12 +243,11 @@ export function repairToolArguments(_toolName: string, schema: unknown, args: un
 
   // Top-level JSON string → object (safe for any model; originally GLM-4.7 bug)
   if (typeof candidate === "string" && expects(schema, "object")) {
-    try {
-      const parsed = JSON.parse(candidate);
-      if (isRecord(parsed) && compileCheck(schema, parsed)) {
-        return { args: parsed, repaired: true, repairs: [...repairs, "top-level-json-string"] };
-      }
-    } catch { /* not valid JSON */ }
+    const parsedResult = tryParseLenientJson(candidate);
+    if (parsedResult !== undefined && isRecord(parsedResult.value) && compileCheck(schema, parsedResult.value)) {
+      const kind: RepairKind = parsedResult.truncated ? "truncated-json-closed" : "top-level-json-string";
+      return { args: parsedResult.value, repaired: true, repairs: [...repairs, kind] };
+    }
   }
 
   return { args: repairs.length > 0 ? candidate : args, repaired: repairs.length > 0, repairs };

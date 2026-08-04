@@ -6,6 +6,7 @@ import {
   dedicatedToolForShellCommand,
   suggestBestSerenaCommand,
   categorizeToolError,
+  detectReasoningRejection,
   checkDangerousCommand,
 } from "../../lib/shell-helpers.ts";
 
@@ -154,6 +155,41 @@ describe("categorizeToolError", () => {
   it("classifies unknown errors", () => {
     const info = categorizeToolError("read", "something weird happened");
     assert.equal(info.category, "unknown");
+  });
+});
+
+describe("detectReasoningRejection", () => {
+  it("detects explicit reasoning-field rejection", () => {
+    assert.equal(detectReasoningRejection("400: reasoning_content is not supported by this model"), true);
+    assert.equal(detectReasoningRejection("Unknown parameter: reasoning_content"), true);
+    assert.equal(detectReasoningRejection("reasoning fields are not allowed in assistant messages"), true);
+  });
+  it("detects content-length/token-limit overflow mentioning tokens or reasoning", () => {
+    assert.equal(detectReasoningRejection("The prompt is too long: 128000 tokens exceeds the limit"), true);
+    assert.equal(detectReasoningRejection("content exceeds maximum length of 64K characters"), true);
+    assert.equal(detectReasoningRejection("message too long, 120000 tokens"), true);
+  });
+  it("detects common OpenAI-style context-length and request-token-limit 400s", () => {
+    assert.equal(detectReasoningRejection("The request exceeds the maximum token limit of 64000"), true);
+    assert.equal(detectReasoningRejection("maximum context length is 128000 tokens"), true);
+    assert.equal(detectReasoningRejection("This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens"), true);
+    assert.equal(detectReasoningRejection("maximum input tokens per request exceeded"), true);
+  });
+  it("detects reasoning-block count overflows", () => {
+    assert.equal(detectReasoningRejection("The total number of reasoning_content blocks exceeds the maximum allowed"), true);
+  });
+  it("does NOT flag unrelated errors", () => {
+    assert.equal(detectReasoningRejection("rate limit exceeded (429)"), false);
+    assert.equal(detectReasoningRejection("invalid api key"), false);
+    assert.equal(detectReasoningRejection("Could not find edits matching oldText"), false);
+    assert.equal(detectReasoningRejection(""), false);
+  });
+  it("does NOT flag length errors without token/reasoning mention", () => {
+    assert.equal(detectReasoningRejection("file too long"), false);
+    assert.equal(detectReasoningRejection("output too long, truncated"), false);
+    // Regex-3 boundary: first sub-pattern matches, second (token/char/reasoning) does not.
+    assert.equal(detectReasoningRejection("input exceeds maximum size"), false);
+    assert.equal(detectReasoningRejection("message limit reached for this request"), false);
   });
 });
 

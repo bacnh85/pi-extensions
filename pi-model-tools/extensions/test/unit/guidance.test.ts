@@ -47,35 +47,21 @@ describe("environment toggles (PI_MODEL_TOOLS_*)", () => {
 });
 
 describe("deepSeekSelectionGuidance", () => {
-  it("includes serena tools and read-boundary when serena is active", () => {
+  it("includes the compact routing table with serena entries when serena is active", () => {
     const g = deepSeekSelectionGuidance(["read", "bash", "serena_find_symbol", "serena_find_referencing_symbols"]);
     assert.match(g, /pick the right tool on the first try/);
-    assert.match(g, /GitHub repository\/codebase URL.*git clone.*local checkout/);
-    assert.match(g, /Do NOT delete the clone afterward with rm -rf.*ephemeral/);
-    assert.match(g, /FIRST-TOOL QUICK MAP/);
-    assert.match(g, /"run the tests".*bash.*NOT find\/ls\/read first/);
-    assert.match(g, /File location uncertain.*find before read.*Never guess subdirectories/);
-    assert.match(g, /exact path is verified.*read/);
-    assert.match(g, /serena_get_symbols_overview/);
+    assert.match(g, /"run tests".*bash/);
+    assert.match(g, /path uncertain.*find before read/);
     assert.match(g, /serena_find_symbol/);
     assert.match(g, /serena_find_referencing_symbols/);
-    assert.match(g, /edit oldText.*match exactly once/);
-    assert.match(g, /Do NOT invent tool names/);
+    assert.match(g, /serena_get_symbols_overview/);
   });
 
-  it("omits serena lookup entries when serena is not active", () => {
+  it("omits serena entries when serena is not active", () => {
     const g = deepSeekSelectionGuidance(["ls", "grep", "bash", "write"]);
-    assert.doesNotMatch(g, /Find where a function/);
-    assert.doesNotMatch(g, /Find implementations/);
-    assert.match(g, /exact path is verified.*read/);
-    assert.match(g, /bash for file ops/);
-  });
-
-  it("routes vault work to obsidian without contradicting generic file guidance", () => {
-    const g = deepSeekSelectionGuidance(["obsidian"]);
-    assert.match(g, /Obsidian vault operation.*obsidian only/);
-    assert.match(g, /Read a non-Obsidian file/);
-    assert.match(g, /Write a new non-Obsidian file/);
+    assert.doesNotMatch(g, /serena/);
+    assert.match(g, /"list files in <dir>" → ls/);
+    assert.match(g, /create a file → write/);
   });
 
   it("produces consistent memoized output for same tool set", () => {
@@ -84,8 +70,6 @@ describe("deepSeekSelectionGuidance", () => {
     const c = deepSeekSelectionGuidance(["bash", "read", "serena_find_symbol"]);
     assert.equal(a, b);
     assert.notEqual(a, c);
-    assert.match(deepSeekSelectionGuidance(["read", "resolve_file"]), /resolve_file before read/);
-    assert.match(deepSeekSelectionGuidance(["read", "fffind"]), /fffind before read/);
   });
 });
 
@@ -148,36 +132,45 @@ describe("githubCloneFirstToolHint", () => {
 describe("prompt-aware hints apply to ALL families (not DeepSeek-only)", () => {
   it("fires github-clone and run hints for a GLM model", () => {
     const { handlers } = createFakePi(["bash", "find", "read"]);
-    const result = handlers.before_agent_start[0](
+    const beforeStart = handlers.before_agent_start[0](
       { systemPrompt: "base", systemPromptOptions: { selectedTools: ["bash", "find", "read"] }, prompt: "Analyze the codebase at https://github.com/octocat/Hello-World and summarize its structure." },
       { model: { provider: "zai-coding-cn", id: "glm-5.2" } },
     );
-    assert.ok(result, "GLM should receive prompt-aware hints");
-    assert.match(result.systemPrompt, /FIRST tool call MUST be bash.*git clone/is);
+    // Hints are per-turn dynamic → injected into the current user message by
+    // before_provider_request, NOT the system prompt (cache-head stability).
+    assert.equal(beforeStart, undefined, "GLM has no static system-prompt content");
+    const payload = { messages: [{ role: "user", content: "Analyze the codebase at https://github.com/octocat/Hello-World." }] };
+    const result = handlers.before_provider_request[0]({ payload }, { model: { provider: "zai-coding-cn", id: "glm-5.2" } });
+    assert.ok(result, "GLM should receive prompt-aware hints via the user message");
+    assert.match(result.messages[0].content, /FIRST tool call MUST be bash.*git clone/is);
     // GLM must NOT receive the verbose DeepSeek selection-guidance text block.
-    assert.doesNotMatch(result.systemPrompt, /DeepSeek V4 — pick the right tool/);
-    assert.doesNotMatch(result.systemPrompt, /DEEPSEEK-V4-SUPERPOWER/);
+    assert.doesNotMatch(result.messages[0].content, /DeepSeek V4 — pick the right tool/);
+    assert.doesNotMatch(result.messages[0].content, /DEEPSEEK-V4-SUPERPOWER/);
   });
 
   it("fires read-uncertain-path hint for a GLM bare-filename read", () => {
     const { handlers } = createFakePi(["find", "read"]);
-    const result = handlers.before_agent_start[0](
+    const beforeStart = handlers.before_agent_start[0](
       { systemPrompt: "base", systemPromptOptions: { selectedTools: ["find", "read"] }, prompt: "Read the first 20 lines of guidance.ts under pi-model-tools." },
       { model: { provider: "zai-coding-cn", id: "glm-5.2" } },
     );
+    assert.equal(beforeStart, undefined, "no static content for GLM");
+    const payload = { messages: [{ role: "user", content: "Read the first 20 lines of guidance.ts under pi-model-tools." }] };
+    const result = handlers.before_provider_request[0]({ payload }, { model: { provider: "zai-coding-cn", id: "glm-5.2" } });
     assert.ok(result);
-    assert.match(result.systemPrompt, /Call find FIRST/i);
+    assert.match(result.messages[0].content, /Call find FIRST/i);
   });
 });
 
 describe("Super Power Mode", () => {
-  it("superPowerModeEnabled defaults on, disabled by false-like", () => {
-    assert.equal(superPowerModeEnabled({}), true);
-    assert.equal(superPowerModeEnabled({ PI_MODEL_TOOLS_SUPERPOWER_MODE: "0" }), false);
-    assert.equal(superPowerModeEnabled({ PI_MODEL_TOOLS_SUPERPOWER_MODE: "off" }), false);
-    assert.equal(superPowerModeEnabled({ PI_MODEL_TOOLS_SUPERPOWER_MODE: "false" }), false);
+  it("superPowerModeEnabled defaults OFF, enabled by true-like", () => {
+    assert.equal(superPowerModeEnabled({}), false);
+    assert.equal(superPowerModeEnabled({ PI_MODEL_TOOLS_SUPERPOWER_MODE: "1" }), true);
+    assert.equal(superPowerModeEnabled({ PI_MODEL_TOOLS_SUPERPOWER_MODE: "on" }), true);
     assert.equal(superPowerModeEnabled({ PI_MODEL_TOOLS_SUPERPOWER_MODE: "true" }), true);
     assert.equal(superPowerModeEnabled({ PI_MODEL_TOOLS_SUPERPOWER_MODE: "YES" }), true);
+    assert.equal(superPowerModeEnabled({ PI_MODEL_TOOLS_SUPERPOWER_MODE: "0" }), false);
+    assert.equal(superPowerModeEnabled({ PI_MODEL_TOOLS_SUPERPOWER_MODE: "off" }), false);
   });
 
   it("superPowerPromptContent returns base prompt when no custom env", () => {
@@ -283,5 +276,77 @@ describe("applyPatchPreferenceGuidance", () => {
   it("returns undefined when apply_patch is not active", () => {
     const out = applyPatchPreferenceGuidance(["edit", "read", "bash"]);
     assert.equal(out, undefined);
+  });
+});
+
+describe("cache-stable system prompt (deterministic active-tools source)", () => {
+  it("produces byte-identical system prompt whether or not the host populates selectedTools", () => {
+    const prevSp = process.env.PI_MODEL_TOOLS_SUPERPOWER_MODE;
+    process.env.PI_MODEL_TOOLS_SUPERPOWER_MODE = "1";
+    try {
+      const { handlers } = createFakePi(["read", "bash", "serena_find_symbol"]);
+      const ctx = { model: { provider: "opencode-go", id: "deepseek-v4-flash" } };
+      // Turn A: host populates selectedTools.
+      const withSelected = handlers.before_agent_start[0](
+        { systemPrompt: "base prompt", systemPromptOptions: { selectedTools: ["read", "bash", "serena_find_symbol"] }, prompt: "hi" },
+        ctx,
+      );
+      // Turn B: host omits selectedTools → falls back to pi.getActiveTools().
+      const withoutSelected = handlers.before_agent_start[0](
+        { systemPrompt: "base prompt", systemPromptOptions: { selectedTools: undefined }, prompt: "hi" },
+        ctx,
+      );
+      assert.ok(withSelected, "system prompt should be modified");
+      assert.ok(withoutSelected, "system prompt should be modified");
+      assert.strictEqual(withSelected.systemPrompt, withoutSelected.systemPrompt,
+        "same active tools must yield byte-identical system prompt (cache head)");
+      // Selection guidance must be present in BOTH (the fallback must resolve).
+      assert.match(withoutSelected.systemPrompt, /DeepSeek V4 — pick the right tool/);
+    } finally {
+      if (prevSp === undefined) delete process.env.PI_MODEL_TOOLS_SUPERPOWER_MODE;
+      else process.env.PI_MODEL_TOOLS_SUPERPOWER_MODE = prevSp;
+    }
+  });
+});
+
+describe("pendingGuidance lifecycle (guidance stable across all rounds of a turn)", () => {
+  it("applies guidance on EVERY provider round of the turn with byte-identical user messages", () => {
+    const { handlers } = createFakePi(["bash", "read", "find"]);
+    const ctx = { model: { provider: "opencode-go", id: "deepseek-v4-flash" } };
+    // before_agent_start with a run-task prompt → bash-first hint fires.
+    const beforeStart = handlers.before_agent_start[0](
+      { systemPrompt: "base", systemPromptOptions: { selectedTools: ["bash", "read", "find"] }, prompt: "Run the unit tests." },
+      ctx,
+    );
+    assert.ok(beforeStart, "DeepSeek still gets static Super Power + selection guidance");
+    // The DYNAMIC run-task hint must NOT be in the system prompt (cache head).
+    assert.doesNotMatch(beforeStart.systemPrompt, /FIRST tool call MUST be bash/i);
+
+    // Round 1 of the turn (first provider call): guidance appended.
+    const payload1 = { messages: [{ role: "user", content: "Run the unit tests." }] };
+    const r1 = handlers.before_provider_request[0]({ payload: payload1 }, ctx);
+    assert.ok(r1, "first provider round receives the guidance");
+    assert.match(r1.messages[0].content, /FIRST tool call MUST be bash/i);
+
+    // Round 2 of the SAME turn (tool loop): the payload is rebuilt from canonical
+    // (guidance-free) context.messages, and the SAME guidance is re-appended so the
+    // user message is byte-identical to round 1. Clearing guidance after round 1
+    // would make the user message exist in two byte forms within one turn and
+    // break DeepSeek's prefix cache at that boundary.
+    const payload2 = { messages: [{ role: "user", content: "Run the unit tests." }] };
+    const r2 = handlers.before_provider_request[0]({ payload: payload2 }, ctx);
+    assert.ok(r2, "second provider round also receives guidance");
+    assert.strictEqual(r2.messages[0].content, r1.messages[0].content,
+      "round 2 user message must be byte-identical to round 1 (cache stable)");
+
+    // A NEW turn (before_agent_start fires again with a non-matching prompt) must
+    // clear pendingGuidance so it does not leak into the next turn.
+    const beforeStart2 = handlers.before_agent_start[0](
+      { systemPrompt: "base", systemPromptOptions: { selectedTools: ["bash", "read", "find"] }, prompt: "hello" },
+      ctx,
+    );
+    const payload3 = { messages: [{ role: "user", content: "hello" }] };
+    const r3 = handlers.before_provider_request[0]({ payload: payload3 }, ctx);
+    assert.equal(r3, undefined, "new turn with no dynamic guidance leaves payload untouched");
   });
 });

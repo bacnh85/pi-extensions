@@ -137,8 +137,34 @@ function defaultSerenaSuggest(activeTools: readonly string[]): string {
 
 // ── Error categorization ──
 
-export type ErrorCategory = "validation" | "tool_not_found" | "path_not_found" | "rate_limit" | "timeout" | "api_error" | "edit_mismatch" | "unknown";
+export type ErrorCategory = "validation" | "tool_not_found" | "path_not_found" | "rate_limit" | "timeout" | "api_error" | "edit_mismatch" | "reasoning_rejected" | "unknown";
 export interface ErrorInfo { category: ErrorCategory; hint: string; toolName: string; }
+
+/**
+ * Detect a provider 400 caused by accumulated `reasoning_content` fields in
+ * prior assistant messages. Providers that don't accept reasoning as input
+ * reject the request once the session grows long enough. Matches:
+ *  - explicit reasoning-field rejection ("reasoning_content not supported")
+ *  - content-length / token-limit overflow that mentions reasoning or tokens
+ *    (the classic long-session reasoning-accumulation symptom)
+ */
+export function detectReasoningRejection(errorText: string): boolean {
+  const t = errorText.toLowerCase();
+  // Explicit reasoning-field rejection, either word order:
+  //   "reasoning_content is not supported" | "Unknown parameter: reasoning_content"
+  // Also matches reasoning overflows ("reasoning_content blocks exceeds the maximum").
+  if (/\breasoning(?:_content)?\b[^\n]{0,60}\b(?:not (?:allowed|supported|accepted|permitted)|unsupported|invalid|unknown|exceeds?|too many|limit)\b/.test(t)) return true;
+  if (/\b(?:not (?:allowed|supported|accepted|permitted)|unsupported|invalid|unknown)[^\n]{0,60}\breasoning(?:_content)?\b/.test(t)) return true;
+  // Content-length/token-limit/context-length overflow mentioning tokens/chars/reasoning:
+  //   "The prompt is too long: 128000 tokens exceeds the limit"
+  //   "The request exceeds the maximum token limit of 64000"
+  // Reverse order also matched ("This model's maximum context length is 128000 tokens")
+  // so a limit-word preceding the subject is still caught.
+  const lengthOverflow = /\b(?:content|prompt|message|input|request|context)\b[^\n]{0,60}\b(?:too long|too many|exceed(?:s|ed)?|maximum|limit)\b/.test(t)
+    || /\b(?:maximum|limit)[^\n]{0,40}\b(?:context|content)\b/.test(t);
+  if (lengthOverflow && /\btokens?\b|\bcharacters?\b|\breasoning\b/.test(t)) return true;
+  return false;
+}
 
 export function categorizeToolError(toolName: string, errorResult: unknown): ErrorInfo {
   const text = (isRecord(errorResult) && Array.isArray(errorResult.content)

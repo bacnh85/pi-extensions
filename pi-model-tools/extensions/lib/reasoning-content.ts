@@ -10,8 +10,8 @@ import { isRecord } from "./model-detection.ts";
 
 const REASONING_FIELDS = new Set(["reasoning_content", "reasoning", "thinking_content", "chain_of_thought", "cot"]);
 
-function maxReasoningTokens(env = process.env): number {
-  const raw = env.PI_MODEL_TOOLS_REASONING_MAX_TOKENS;
+function maxReasoningChars(env = process.env): number {
+  const raw = env.PI_MODEL_TOOLS_REASONING_MAX_CHARS;
   if (raw === undefined || raw === "") return Infinity;
   const val = parseInt(raw, 10);
   return Number.isFinite(val) && val > 0 ? val : Infinity;
@@ -21,15 +21,13 @@ export function stripReasoningContent(payload: unknown): unknown {
   if (!isRecord(payload)) return payload;
   const messages = findMessagesArray(payload);
   if (!messages || messages.length === 0) return payload;
-  const lastAssistantIdx = findLastAssistantIndex(messages);
-  if (lastAssistantIdx < 0) return payload;
 
   let cloned: Record<string, unknown> | undefined;
   let clonedMessages: Array<Record<string, unknown>> | undefined;
-  const threshold = maxReasoningTokens();
+  const threshold = maxReasoningChars();
 
   for (let i = 0; i < messages.length; i++) {
-    if (i === lastAssistantIdx || messages[i].role !== "assistant") continue;
+    if (messages[i].role !== "assistant") continue;
     for (const field of REASONING_FIELDS) {
       if (!(field in messages[i])) continue;
       if (!cloned) {
@@ -80,6 +78,44 @@ export function cleanLeakedContentFromMessages(payload: unknown, activeTools: re
   return cloned ?? payload;
 }
 
+/**
+ * Append per-turn guidance text to the LAST user message (the current prompt).
+ * Used instead of system-prompt injection: the system prompt is the
+ * byte-stable head of DeepSeek's prefix cache, so any per-turn change there
+ * invalidates the cache for the whole request. The current user message is the
+ * tail of the request — appending to it costs zero cacheable tokens.
+ */
+export function appendGuidanceToLastUserMessage(payload: unknown, guidance: string): unknown {
+  if (!isRecord(payload)) return payload;
+  const messages = findMessagesArray(payload);
+  if (!messages || messages.length === 0) return payload;
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") { lastUserIdx = i; break; }
+  }
+  if (lastUserIdx < 0) return payload;
+
+  const cloned = structuredClone(payload);
+  const clonedMessages = findMessagesArray(cloned);
+  if (!clonedMessages) return payload;
+  const msg = clonedMessages[lastUserIdx] as { content?: unknown };
+  if (typeof msg.content === "string") {
+    msg.content = `${msg.content}\n\n${guidance}`;
+    return cloned;
+  }
+  if (Array.isArray(msg.content)) {
+    const parts = msg.content as Array<Record<string, unknown>>;
+    const lastText = [...parts].reverse().find((p) => isRecord(p) && typeof p.text === "string");
+    if (lastText) lastText.text = `${lastText.text}\n\n${guidance}`;
+    else parts.push({ type: "text", text: guidance });
+    return cloned;
+  }
+  // Unrecognized content shape (undefined/object/null): return the original so the
+  // caller's `withGuidance === payload` check no-ops and pendingGuidance is cleared
+  // — guidance is intentionally dropped rather than crashing on unexpected shapes.
+  return payload;
+}
+
 function cleanMessageContent(content: unknown, activeTools: ReadonlySet<string>): unknown {
   if (typeof content === "string") return cleanLeakedContent(content, activeTools);
   if (!Array.isArray(content)) return content;
@@ -98,9 +134,4 @@ function findMessagesArray(payload: Record<string, unknown>): Array<Record<strin
   if (Array.isArray(payload.messages)) return payload.messages as Array<Record<string, unknown>>;
   if (isRecord(payload.body) && Array.isArray(payload.body.messages)) return payload.body.messages as Array<Record<string, unknown>>;
   return undefined;
-}
-
-function findLastAssistantIndex(messages: Array<Record<string, unknown>>): number {
-  for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "assistant") return i;
-  return -1;
 }

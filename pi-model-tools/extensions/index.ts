@@ -34,13 +34,14 @@ import {
   normalizeToLF,
 } from "./lib/edit-repair.ts";
 import { parsePatch, applyPatchToFiles, PatchParseError } from "./lib/apply-patch.ts";
-import { stripReasoningContent, cleanLeakedContentFromMessages } from "./lib/reasoning-content.ts";
+import { stripReasoningContent, cleanLeakedContentFromMessages, appendGuidanceToLastUserMessage } from "./lib/reasoning-content.ts";
 import {
   looksLikeCodePath,
   isSemanticMissToolCall,
   missedDedicatedTool,
   suggestBestSerenaCommand,
   categorizeToolError,
+  detectReasoningRejection,
   checkDangerousCommand,
   type ErrorInfo,
   type ErrorCategory,
@@ -187,6 +188,11 @@ export default function (pi: ExtensionAPI) {
   let sessionModel: { provider?: string; id?: string } | undefined;
   let activeFamily: ModelFamily | null = null;
   let turnCounter = 0;
+  const cacheStats = { input: 0, cacheRead: 0, cacheWrite: 0, hitTurns: 0, missTurns: 0 };
+  // Per-turn dynamic guidance (error notes, first-tool hints, periodic
+  // reinforcement) stashed here and appended to the CURRENT user message by
+  // before_provider_request — never the system prompt (the cache head).
+  let pendingGuidance: string | undefined;
 
   const repairCounts = new Map<string, number>();
   const reminderCounts = new Map<string, number>();
@@ -289,6 +295,22 @@ export default function (pi: ExtensionAPI) {
       for (const [t, c] of [...repairCounts.entries()].sort((a, b) => b[1] - a[1])) status.push(`  ${t}: ${c}`);
       const totalErrors = [...errorHistory.values()].reduce((s, e) => s + e.count, 0);
       status.push(`**Errors:** ${totalErrors} total${lastErrorInfo ? `, last: ${lastErrorInfo.category} on ${lastErrorInfo.toolName}` : ""}`);
+      if (cacheStats.input > 0) {
+        const total = cacheStats.input + cacheStats.cacheRead + cacheStats.cacheWrite;
+        const hitPct = total > 0 ? Math.round((cacheStats.cacheRead / total) * 100) : 0;
+        // hitPct = cacheRead / (input + cacheRead + cacheWrite). On DeepSeek,
+        // cacheWrite is always 0 (the OpenAI-compatible API does not emit
+        // cache_write_tokens), so this is cacheRead / (input + cacheRead). The
+        // `input` portion is the inherently uncached growing tail (new user
+        // messages + tool results); hitPct reaches ~98-99% on a warm, stable
+        // session where the byte-stable prefix is fully cached.
+        status.push(
+          "",
+          "**Prompt cache (this session):**",
+          `  Input: ${cacheStats.input.toLocaleString()} · cached: ${cacheStats.cacheRead.toLocaleString()} · written: ${cacheStats.cacheWrite.toLocaleString()}`,
+          `  Hit rate: ${hitPct}%  (${cacheStats.hitTurns} hit turns · ${cacheStats.missTurns} miss turns)`,
+        );
+      }
       cmdCtx.ui.notify(status.join("\n"), "info");
     },
   });
@@ -306,10 +328,26 @@ export default function (pi: ExtensionAPI) {
     repairCounts.clear();
     reminderCounts.clear();
     errorHistory.clear();
+    cacheStats.input = 0;
+    cacheStats.cacheRead = 0;
+    cacheStats.cacheWrite = 0;
+    cacheStats.hitTurns = 0;
+    cacheStats.missTurns = 0;
+    pendingGuidance = undefined;
     debugLog("session_start:", ctx.model?.provider, ctx.model?.id);
   });
 
   // ── before_agent_start: repair flag + error hints + DeepSeek guidance ──
+  //
+  // Cache-stability split: the system prompt is the byte-stable HEAD of
+  // DeepSeek's prefix cache. Anything that varies per turn must NOT go there —
+  // a changed head invalidates the cache for the whole request (measured:
+  // 99% → 16% hit when a prompt-aware hint fired). Per-turn guidance (error
+  // notes, first-tool hints, periodic reinforcement) is stashed in
+  // `pendingGuidance` and appended to the current user message (the request
+  // tail) by before_provider_request. Static content (Super Power base,
+  // selection guidance, apply_patch preference) stays in the system prompt —
+  // byte-identical per session, therefore cache-safe.
   pi.on("before_agent_start", (event, ctx) => {
     activeFamily = family(ctx.model);
     repairThisTurn = activeFamily !== null && repairEnabled();
@@ -318,39 +356,46 @@ export default function (pi: ExtensionAPI) {
     if (!activeFamily) { debugLog("guidance: skipped (no family detected)"); return; }
     debugLog("family:", activeFamily, ctx.model?.provider, ctx.model?.id);
 
-    // Shared error hint from previous turn (all families)
-    let systemPrompt = event.systemPrompt;
+    const dynamicParts: string[] = [];
+
+    // Shared error hint from previous turn (all families) — per-turn dynamic.
     if (hasErrorThisTurn && lastErrorInfo) {
       const repeatCount = errorHistory.get(lastErrorInfo.toolName)?.count ?? 0;
       let hint = lastErrorInfo.hint;
-      if (repeatCount >= 2) hint += ` You have had ${repeatCount} failures on ${lastErrorInfo.toolName}. Try simpler inputs.`;
-      systemPrompt = `${systemPrompt}\n\nNote: ${hint}`;
+      // Provider-level rejections (e.g. reasoning-accumulation 400s) are not
+      // fixed by "simpler inputs" — the escalation advice only applies to
+      // tool-level errors.
+      if (repeatCount >= 2 && lastErrorInfo.toolName !== "provider") hint += ` You have had ${repeatCount} failures on ${lastErrorInfo.toolName}. Try simpler inputs.`;
+      dynamicParts.push(`Note: ${hint}`);
     }
     hasErrorThisTurn = false;
     lastErrorInfo = null;
 
     // Prompt-aware first-tool hints — ALL families (correctness, not steering).
-    // Targeted reinforcement appended at the most-salient end position; only
-    // fires when the prompt matches a specific intent, so it never misdirects.
+    // Per-turn dynamic (depend on the current prompt) → user-message tail.
     const activeForHint = Array.isArray(event.systemPromptOptions?.selectedTools) && event.systemPromptOptions.selectedTools.length > 0
       ? event.systemPromptOptions.selectedTools : pi.getActiveTools();
     if (activeForHint.includes("bash")) {
       const runHint = runTaskFirstToolHint(event.prompt || "");
-      if (runHint) systemPrompt = `${systemPrompt}\n\n${runHint}`;
+      if (runHint) dynamicParts.push(runHint);
       const ghHint = githubCloneFirstToolHint(event.prompt || "");
-      if (ghHint) systemPrompt = `${systemPrompt}\n\n${ghHint}`;
+      if (ghHint) dynamicParts.push(ghHint);
     }
     if (activeForHint.includes("find")) {
       const readHint = readUncertainPathHint(event.prompt || "");
-      if (readHint) systemPrompt = `${systemPrompt}\n\n${readHint}`;
+      if (readHint) dynamicParts.push(readHint);
     }
 
-    // apply_patch preference — all DeepSeek V4 (flash+pro); GLM excluded per eval.
-    // Eval (2026-07-29, 15 trials, 3 targets) showed all models use edit with zero
-    // edit_mismatch errors. DeepSeek keeps guidance as a safety net for real-world
-    // multi-file/frontmatter edits beyond the eval's scope; GLM excluded because it
-    // doesn't receive the suite of DeepSeek-specific steering (Super Power, selection
-    // guidance, semantic-miss blocking) and thus doesn't need the companion hint.
+    let systemPrompt = event.systemPrompt;
+
+    // apply_patch preference — all DeepSeek V4 (flash+pro); GLM excluded per
+    // eval. Eval (2026-07-29, 15 trials, 3 targets) showed all models use edit
+    // with zero edit_mismatch errors. DeepSeek keeps guidance as a safety net
+    // for real-world multi-file/frontmatter edits beyond the eval's scope; GLM
+    // excluded because it doesn't receive the suite of DeepSeek-specific
+    // steering (Super Power, selection guidance, semantic-miss blocking) and
+    // thus doesn't need the companion hint. Static per session (depends only
+    // on the active-tool set).
     if (activeFamily === "deepseek-v4") {
       const patchHint = applyPatchPreferenceGuidance(activeForHint);
       if (patchHint) systemPrompt = `${systemPrompt}\n\n${patchHint}`;
@@ -364,28 +409,49 @@ export default function (pi: ExtensionAPI) {
       if (superPowerModeEnabled()) {
         turnCounter++;
         prefixParts.push(superPowerPromptContent());
-        if (turnCounter % 10 === 0) prefixParts.push("Super Power Mode active — maximum capability, no limits.");
+        // Periodic reinforcement is per-turn dynamic → user-message tail, not
+        // the cache head (a head change every 10 turns forces a full miss).
+        if (turnCounter % 10 === 0) dynamicParts.push("Super Power Mode active — maximum capability, no limits.");
       }
 
       if (selectionGuidanceEnabled()) {
-        const activeTools = Array.isArray(event.systemPromptOptions?.selectedTools) ? event.systemPromptOptions.selectedTools : [];
+        // Same fallback-resolved set as activeForHint (line above) so the
+        // system prompt is deterministic regardless of whether the host
+        // populates selectedTools — a per-turn source switch would change the
+        // system-prompt bytes and break the prefix cache.
+        const activeTools = activeForHint;
         if (["serena_get_symbols_overview", "serena_find_symbol", "serena_find_referencing_symbols", "serena_find_declaration", "serena_find_implementations", "obsidian", "ls", "grep", "find", "read", "edit", "bash"].some((n) => activeTools.includes(n))) {
           prefixParts.push(deepSeekSelectionGuidance(activeTools));
         }
       }
 
       if (prefixParts.length > 0) {
-        return { systemPrompt: `${prefixParts.join("\n\n---\n\n")}\n\n---\n\n${systemPrompt}` };
+        systemPrompt = `${prefixParts.join("\n\n---\n\n")}\n\n---\n\n${systemPrompt}`;
       }
     }
 
+    pendingGuidance = dynamicParts.length > 0 ? dynamicParts.join("\n\n---\n\n") : undefined;
     return systemPrompt === event.systemPrompt ? undefined : { systemPrompt };
   });
 
-  // ── before_provider_request: leaked-content clean + reasoning strip ──
+  // ── before_provider_request: dynamic-guidance injection + leak clean + strip ──
   pi.on("before_provider_request", (event, ctx) => {
     if (!family(ctx.model)) return;
-    let payload = cleanLeakedContentFromMessages(event.payload, pi.getAllTools().map((t) => t.name));
+    let payload = event.payload;
+    // Append per-turn dynamic guidance to the current user message (request
+    // tail) so the system-prompt cache head stays byte-identical across turns.
+    // NOT cleared here: each provider round rebuilds the payload from canonical
+    // (guidance-free) context.messages, so re-appending the same guidance string
+    // produces byte-identical user messages every round. Clearing after round 1
+    // would make the user message exist in two byte forms within one turn
+    // (guided round 1, bare round 2+) and break the prefix cache at that
+    // boundary — the gap vs reasonix's >99% hit. pendingGuidance is reset at the
+    // next before_agent_start.
+    if (pendingGuidance) {
+      const withGuidance = appendGuidanceToLastUserMessage(payload, pendingGuidance);
+      if (withGuidance !== payload) { debugLog("guidance: injected into user message"); payload = withGuidance; }
+    }
+    payload = cleanLeakedContentFromMessages(payload, pi.getAllTools().map((t) => t.name));
     if (reasoningStripEnabled()) {
       const cleaned = stripReasoningContent(payload);
       if (cleaned !== payload) { debugLog("reasoning: stripped"); payload = cleaned; }
@@ -403,8 +469,50 @@ export default function (pi: ExtensionAPI) {
     logWarn(event.toolName, info.category);
   });
 
+  // ── message_end: detect reasoning-accumulation 400s (provider rejects the
+  //    request once prior reasoning_content grows too large). Feeds the shared
+  //    error-hint path so the NEXT turn's user message carries the actionable
+  //    fix (set PI_MODEL_TOOLS_STRIP_REASONING=1). Only fires on the
+  //    stopReason === "error" assistant message, so it never double-counts
+  //    normal tool errors (those arrive via tool_execution_end).
+  pi.on("message_end", (event, ctx) => {
+    if (!family(ctx.model)) return;
+    const msg = event.message as { role?: string; stopReason?: string; errorMessage?: string };
+    if (msg.role !== "assistant" || msg.stopReason !== "error") return;
+    const errorText = String(msg.errorMessage ?? "");
+    if (!detectReasoningRejection(errorText)) return;
+    hasErrorThisTurn = true;
+    lastErrorInfo = {
+      category: "reasoning_rejected",
+      toolName: "provider",
+      hint: "The provider rejected this request, likely due to accumulated reasoning_content in prior turns (or a content-length overflow). Set PI_MODEL_TOOLS_STRIP_REASONING=1 (optionally PI_MODEL_TOOLS_REASONING_MAX_CHARS=4096) and retry.",
+    };
+    recordError("provider", "reasoning_rejected");
+    logWarn("provider", "reasoning_rejected");
+  });
+
   // ── agent_end ──
   pi.on("agent_end", () => { repairThisTurn = false; debugLog("agent_end: flags reset"); });
+
+  // ── turn_end: accumulate prompt-cache usage for /model-tools-status ──
+  pi.on("turn_end", (event) => {
+    // turn_end fires once per assistant LLM call (agent-loop emits per round),
+    // so each message.usage is a single API call — no double-counting.
+    if (event.message.role !== "assistant") return;
+    const usage = event.message.usage;
+    if (!usage) return;
+    const input = usage.input;
+    const cacheRead = usage.cacheRead;
+    const cacheWrite = usage.cacheWrite;
+    if (input === 0 && cacheRead === 0 && cacheWrite === 0) return;
+    cacheStats.input += input;
+    cacheStats.cacheRead += cacheRead;
+    cacheStats.cacheWrite += cacheWrite;
+    // A turn with only cacheWrite (first turn of a session) is a miss: the
+    // prefix was computed and written, not read back from cache.
+    if (cacheRead > 0) cacheStats.hitTurns++;
+    else cacheStats.missTurns++;
+  });
 
   // ── tool_call: dangerous guard (all families) + steering (DeepSeek only) ──
   pi.on("tool_call", (event, ctx) => {

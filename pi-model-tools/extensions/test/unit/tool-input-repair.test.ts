@@ -64,6 +64,77 @@ describe("repairToolArguments — optional null deletion", () => {
   });
 });
 
+describe("repairToolArguments — truncated JSON auto-close (DeepSeek)", () => {
+  it("repairs a JSON-string param truncated mid-object", () => {
+    const schema = Type.Object({ data: Type.Object({ command: Type.String(), page_id: Type.String() }) });
+    const result = repairToolArguments("test", schema, { data: '{"command":"update","page_id":"abc"' });
+    assert.strictEqual(result.repaired, true);
+    assert.ok(result.repairs.includes("truncated-json-closed"));
+    assert.deepStrictEqual(result.args, { data: { command: "update", page_id: "abc" } });
+  });
+  it("repairs a JSON-string param truncated mid-array", () => {
+    const schema = Type.Object({ data: Type.Object({ items: Type.Array(Type.String()) }) });
+    const result = repairToolArguments("test", schema, { data: '{"items":["a","b"' });
+    assert.strictEqual(result.repaired, true);
+    assert.ok(result.repairs.includes("truncated-json-closed"));
+    assert.deepStrictEqual(result.args, { data: { items: ["a", "b"] } });
+  });
+  it("repairs truncation after a trailing comma in an array", () => {
+    const schema = Type.Object({ data: Type.Object({ items: Type.Array(Type.String()) }) });
+    const result = repairToolArguments("test", schema, { data: '{"items":["a","b",' });
+    assert.strictEqual(result.repaired, true);
+    assert.ok(result.repairs.includes("truncated-json-closed"));
+    assert.deepStrictEqual(result.args, { data: { items: ["a", "b"] } });
+  });
+  it("repairs truncation after a trailing comma in an object", () => {
+    const schema = Type.Object({ data: Type.Object({ a: Type.Number(), b: Type.Number() }) });
+    const result = repairToolArguments("test", schema, { data: '{"a":1,"b":2,' });
+    assert.strictEqual(result.repaired, true);
+    assert.ok(result.repairs.includes("truncated-json-closed"));
+    assert.deepStrictEqual(result.args, { data: { a: 1, b: 2 } });
+  });
+  it("repairs truncation inside an unterminated string value", () => {
+    const schema = Type.Object({ data: Type.Object({ key: Type.String() }) });
+    const result = repairToolArguments("test", schema, { data: '{"key":"partial_val' });
+    assert.strictEqual(result.repaired, true);
+    assert.ok(result.repairs.includes("truncated-json-closed"));
+    assert.deepStrictEqual(result.args, { data: { key: "partial_val" } });
+  });
+  it("repairs a dangling escape backslash at end of a string value", () => {
+    const schema = Type.Object({ data: Type.Object({ path: Type.String() }) });
+    const result = repairToolArguments("test", schema, { data: '{"path":"C:\\' });
+    assert.strictEqual(result.repaired, true);
+    assert.ok(result.repairs.includes("truncated-json-closed"));
+    assert.deepStrictEqual(result.args, { data: { path: "C:\\" } });
+  });
+  it("repairs a field-level truncated array (not wrapped in an object)", () => {
+    const schema = Type.Object({ items: Type.Array(Type.String()) });
+    const result = repairToolArguments("test", schema, { items: '["a","b"' });
+    assert.strictEqual(result.repaired, true);
+    assert.ok(result.repairs.includes("truncated-json-closed"));
+    assert.deepStrictEqual(result.args, { items: ["a", "b"] });
+  });
+  it("repairs a truncated top-level JSON string", () => {
+    const schema = Type.Object({ command: Type.String(), page_id: Type.String() });
+    const result = repairToolArguments("test", schema, '{"command":"update","page_id":"abc"');
+    assert.strictEqual(result.repaired, true);
+    assert.ok(result.repairs.includes("truncated-json-closed"));
+    assert.deepStrictEqual(result.args, { command: "update", page_id: "abc" });
+  });
+  it("ignores closing brackets inside string literals", () => {
+    const schema = Type.Object({ data: Type.Object({ path: Type.String(), flag: Type.Boolean() }) });
+    const result = repairToolArguments("test", schema, { data: '{"path":"a}b","flag":true' });
+    assert.strictEqual(result.repaired, true);
+    assert.ok(result.repairs.includes("truncated-json-closed"));
+    assert.deepStrictEqual(result.args, { data: { path: "a}b", flag: true } });
+  });
+  it("does not repair non-JSON garbage", () => {
+    const schema = Type.Object({ data: Type.Object({ x: Type.String() }) });
+    const result = repairToolArguments("test", schema, { data: "not json at all" });
+    assert.strictEqual(result.repaired, false);
+  });
+});
+
 describe("unwrapDegenerateMarkdownAutolink", () => {
   it("unwraps when text and normalized url match", () => {
     assert.strictEqual(unwrapDegenerateMarkdownAutolink("[readme.md](https://readme.md)"), "readme.md");
