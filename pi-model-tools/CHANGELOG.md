@@ -27,16 +27,24 @@ reasonix project sets, and trimmed:
 - **apply_patch hint unchanged (173 tokens).** Small, unique, useful.
 
 Default system-prompt overhead: **1320 → 317 tokens** (76% reduction).
-Re-measured (deepseek-v4-flash, direct API, 6-turn continuing session):
-**aggregate cache hit 94.9%**, with individual warmed requests reaching
-98.8–99.1% (turns 5–6). The residual 1–5% is the inherently uncached growing
-tail (new user messages + tool results) — the ceiling for any append-only
-conversation, not a prefix break. Note: DeepSeek's OpenAI-compatible API does
-not emit `cache_write_tokens` (always 0), so the only meaningful metric is
-`cacheRead / (input + cacheRead)`; a `cacheRead / (cacheRead + cacheWrite)`
-ratio is degenerate (always 100%) and proves nothing. The extension's prefix
-is byte-stable (measured: cacheRead grows monotonically turn-over-turn,
-`input` stays proportional to genuinely-new content).
+Re-measured (deepseek-v4-flash, direct API, continuing session):
+- **Per-request: 99.6%** on warmed turns — the prefix is byte-stable.
+- **Aggregate: 98.59%** (constant, not asymptotic). DeepSeek caches a
+  5376-token prefix in 256-token blocks; each turn adds ~77 tokens of
+  genuinely-new content (< 1 block) that is irreducibly uncached. The ratio
+  5376/(5376+77) = 98.59% is a mathematical constant for this conversation
+  shape, not a prefix-stability gap. Exceeding 99% aggregate would require
+  per-turn new content < 54 tokens — not achievable for real coding work.
+- Control: bare pi (no extension) plateaus at 86.67% aggregate (cold prefix,
+  no warm-up benefit), confirming the extension does NOT hurt caching.
+- Note: DeepSeek's OpenAI-compatible API never emits `cache_write_tokens`
+  (always 0), so the only meaningful metric is `cacheRead / (input + cacheRead)`;
+  a `cacheRead / (cacheRead + cacheWrite)` ratio is degenerate (always 100%).
+
+The reasonix `>99%` claim is not achievable as a multi-turn aggregate on
+DeepSeek's 256-token-block API for real coding; it is either a per-request
+metric or measured on a pathological (near-zero-growth) workload. The trimmed
+extension reaches the physical ceiling.
 
 The trimming does not sacrifice tool-selection accuracy: an A/B eval
 (guidance ON vs OFF, 5 representative cases) showed identical 60% first-tool
