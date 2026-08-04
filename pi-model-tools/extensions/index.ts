@@ -339,9 +339,11 @@ export default function (pi: ExtensionAPI) {
 
   // ── before_agent_start: repair flag + error hints + DeepSeek guidance ──
   //
-  // Cache-stability split: the system prompt is the byte-stable HEAD of
-  // DeepSeek's prefix cache. Anything that varies per turn must NOT go there —
-  // a changed head invalidates the cache for the whole request (measured:
+  // Cache-stability split: the system prompt is the byte-stable HEAD of the
+  // prefix cache — DeepSeek (exact prefix) and GLM (Z.ai automatic
+  // content-similarity cache, https://docs.z.ai/guides/capabilities/cache)
+  // both key on it. Anything that varies per turn must NOT go there — a
+  // changed head invalidates the cache for the whole request (measured:
   // 99% → 16% hit when a prompt-aware hint fired). Per-turn guidance (error
   // notes, first-tool hints, periodic reinforcement) is stashed in
   // `pendingGuidance` and appended to the current user message (the request
@@ -439,7 +441,8 @@ export default function (pi: ExtensionAPI) {
     if (!family(ctx.model)) return;
     let payload = event.payload;
     // Append per-turn dynamic guidance to the current user message (request
-    // tail) so the system-prompt cache head stays byte-identical across turns.
+    // tail) so the system-prompt cache head stays byte-identical across turns
+    // (both DeepSeek exact-prefix and GLM Z.ai content-similarity caches).
     // NOT cleared here: each provider round rebuilds the payload from canonical
     // (guidance-free) context.messages, so re-appending the same guidance string
     // produces byte-identical user messages every round. Clearing after round 1

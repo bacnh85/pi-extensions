@@ -44,8 +44,11 @@ export function stripReasoningContent(payload: unknown): unknown {
         // assistant tool_calls messages (else 400: "reasoning_content … must be
         // passed back") but accepts an empty string. Keeping the key (empty)
         // satisfies the constraint while removing the non-deterministic
-        // reasoning bytes that break the prefix cache turn-over-turn. This
-        // mirrors reasonix's verified DeepSeek handling (empty-included).
+        // reasoning bytes that break the prefix cache turn-over-turn — for BOTH
+        // DeepSeek (exact prefix cache) and GLM (Z.ai automatic content-similarity
+        // cache, https://docs.z.ai/guides/capabilities/cache, which is equally
+        // sensitive to a changing conversation-history prefix). This mirrors
+        // reasonix's verified DeepSeek handling (empty-included).
         clonedMessages![i][field] = "";
       }
     }
@@ -88,9 +91,10 @@ export function cleanLeakedContentFromMessages(payload: unknown, activeTools: re
 /**
  * Append per-turn guidance text to the LAST user message (the current prompt).
  * Used instead of system-prompt injection: the system prompt is the
- * byte-stable head of DeepSeek's prefix cache, so any per-turn change there
- * invalidates the cache for the whole request. The current user message is the
- * tail of the request — appending to it costs zero cacheable tokens.
+ * byte-stable head of the prefix cache (DeepSeek exact-prefix OR GLM Z.ai
+ * automatic content-similarity cache), so any per-turn change there invalidates
+ * the cache for the whole request. The current user message is the tail of the
+ * request — appending to it costs zero cacheable tokens.
  */
 export function appendGuidanceToLastUserMessage(payload: unknown, guidance: string): unknown {
   if (!isRecord(payload)) return payload;

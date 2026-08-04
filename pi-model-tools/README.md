@@ -52,10 +52,41 @@ a family is detected; everything degrades gracefully to a no-op otherwise.
 | **Reasoning strip** | Removes accumulated `reasoning_content` from prior turns to prevent provider 400s on long sessions (opt-in) |
 | **Dangerous command guard** | Blocks forced recursive delete of absolute paths (`rm -rf /`) and destructive `dd` writes |
 | **Read-on-guessed-path blocking** | Blocks `read` on a non-existent code-file path, suggests `find` first |
-| **Prompt-aware first-tool hints** | Forces the correct first tool: `bash`-first for RUN/BUILD/EXECUTE tasks, `bash` git-clone-first for analyze-a-repo-URL tasks, and `find`-first for bare-filename reads. Targeted (only fires on matching intent) and applied to all detected families. Injected into the current user message, not the system prompt, to keep DeepSeek's prefix-cache head byte-stable (measured: 99% hit retained vs 16% when hints lived in the system prompt). |
+| **Prompt-aware first-tool hints** | Forces the correct first tool: `bash`-first for RUN/BUILD/EXECUTE tasks, `bash` git-clone-first for analyze-a-repo-URL tasks, and `find`-first for bare-filename reads. Targeted (only fires on matching intent) and applied to all detected families. Injected into the current user message, not the system prompt, to keep the prefix-cache head byte-stable for both DeepSeek (exact-prefix cache) and GLM (Z.ai automatic content-similarity cache) (measured on DeepSeek: 99% hit retained vs 16% when hints lived in the system prompt). |
 | **Error categorization** | Classifies tool errors and injects recovery hints on the next turn. Also detects provider 400s caused by accumulated `reasoning_content` (long-session reasoning-accumulation) and injects an actionable hint — `PI_MODEL_TOOLS_STRIP_REASONING=1` — so the rare trigger is self-documenting. |
 | **Edit mismatch repair** | Strips `read`-tool truncation notices (`[Showing lines … Use offset=N to continue.]`, etc.) that models copy into `edit` oldText — the documented root cause of "Could not find the exact text" failures. On a match failure, retries once with whitespace-tolerant matching (copying the file's real indentation); on unresolvable matches, enriches the error with the nearest numbered region. Always on. |
 | **`apply_patch` tool** | A Codex-style V4D diff/patch tool: emit only `@@` context + `-`/`+` change lines instead of large verbatim oldText blocks. Robust for multi-line/multi-file edits across all models. DeepSeek/GLM get steering to prefer it for non-trivial edits. |
+
+### Prompt caching
+
+Both supported families use **automatic prefix caching** — no explicit
+`cache_control` field is sent (Zhipu actively rejects it with a 400, and Pi
+core's zai compat leaves it off). The cache is keyed on the byte-stable
+**system prompt + conversation history**:
+
+- **DeepSeek V4** — exact prefix cache.
+- **GLM** (GLM-4.5–5.2) — Z.ai automatic content-similarity cache
+  ([docs](https://docs.z.ai/guides/capabilities/cache)); reported via
+  `usage.prompt_tokens_details.cached_tokens`, which Pi core maps to
+  `usage.cacheRead`.
+
+The extension keeps that prefix byte-identical across turns so the cache stays
+warm for both families:
+
+- **Reasoning strip** (on by default) — replaces accumulated `reasoning_content`
+  with `""` on prior assistant turns, removing non-deterministic bytes that grow
+  the prefix differently each turn (the biggest single cache-stability factor;
+  GLM's docs note history length affects the hit rate).
+- **Dynamic guidance → user-message tail** — first-tool hints, error notes, and
+  periodic reinforcement are appended to the *current* user message (the request
+  tail), never the system prompt (the cache head).
+- **Leaked-content cleaning** (always on) — strips `Reasoning:` headers and
+  `` `tool_name(args)` `` prose, keeping formatting stable (GLM's docs note
+  formatting differences affect the hit rate).
+
+`/model-tools-status` reports the session hit rate
+(`input`/`cached`/`written` tokens + `hitTurns`/`missTurns`) for whichever
+family is active.
 
 ### DeepSeek V4 only (verbose steering the Flash model needs)
 

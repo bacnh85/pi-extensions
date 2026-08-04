@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.4 (2026-08-04)
+
+### Docs
+
+- **Prompt-cache documentation now covers GLM.** Every cache-stability feature
+  (reasoning strip, dynamic-guidance-in-user-message-tail, leaked-content
+  cleaning) was described as serving "DeepSeek's prefix cache" even though GLM
+  uses the same automatic prefix-caching mechanism and benefits from the same
+  byte-stability work. Comments in `reasoning-content.ts` and `index.ts`, plus a
+  new "Prompt caching" README subsection, now state explicitly that both DeepSeek
+  (exact-prefix cache) and GLM (Z.ai automatic content-similarity cache) key on
+  the byte-stable system-prompt + history prefix. No behavior change — the code
+  was already correct for GLM (Pi core's zai compat sends no `cache_control` and
+  maps `prompt_tokens_details.cached_tokens` to `usage.cacheRead`); this only
+  makes the generalization explicit so the byte-stability work isn't
+  accidentally regressed for GLM.
+
 ## 0.5.3 (2026-08-04)
 
 ### Fixes
