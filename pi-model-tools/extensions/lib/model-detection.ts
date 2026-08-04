@@ -33,7 +33,11 @@ export function repairEnabled(env: Record<string, string | undefined> = process.
 }
 
 export function reasoningStripEnabled(env: Record<string, string | undefined> = process.env): boolean {
-  return /^(1|true|yes|on)$/i.test(env.PI_MODEL_TOOLS_STRIP_REASONING ?? "");
+  // Default ON: reasoning_content in assistant history is non-deterministic and
+  // breaks DeepSeek's prefix cache turn-over-turn. DeepSeek accepts an empty
+  // string for the key (stripReasoningContent replaces, not deletes). Set
+  // PI_MODEL_TOOLS_STRIP_REASONING=0/off/false/no to disable.
+  return !/^(0|false|no|off)$/i.test(env.PI_MODEL_TOOLS_STRIP_REASONING ?? "");
 }
 
 export function maxErrorHistory(env: Record<string, string | undefined> = process.env): number {

@@ -36,7 +36,7 @@ describe("isRecord", () => {
 
 describe("config helpers", () => {
   it("repairEnabled defaults to true", () => { assert.strictEqual(repairEnabled({}), true); assert.strictEqual(repairEnabled({ PI_MODEL_TOOLS_REPAIR_ENABLED: "0" }), false); });
-  it("reasoningStripEnabled defaults to false", () => { assert.strictEqual(reasoningStripEnabled({}), false); assert.strictEqual(reasoningStripEnabled({ PI_MODEL_TOOLS_STRIP_REASONING: "1" }), true); });
+  it("reasoningStripEnabled defaults to true (cache-stable for DeepSeek)", () => { assert.strictEqual(reasoningStripEnabled({}), true); assert.strictEqual(reasoningStripEnabled({ PI_MODEL_TOOLS_STRIP_REASONING: "0" }), false); assert.strictEqual(reasoningStripEnabled({ PI_MODEL_TOOLS_STRIP_REASONING: "off" }), false); });
   it("blockDangerousEnabled defaults to true", () => { assert.strictEqual(blockDangerousEnabled({}), true); assert.strictEqual(blockDangerousEnabled({ PI_MODEL_TOOLS_BLOCK_DANGEROUS_COMMANDS: "0" }), false); });
   it("maxErrorHistory defaults to 100", () => {
     assert.strictEqual(maxErrorHistory({}), 100);

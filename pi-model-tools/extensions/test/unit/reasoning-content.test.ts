@@ -39,8 +39,8 @@ describe("stripReasoningContent", () => {
       { role: "assistant", content: "new", reasoning_content: "current" },
     ]};
     const result = stripReasoningContent(payload) as any;
-    assert.strictEqual(result.messages[0].reasoning_content, undefined);
-    assert.strictEqual(result.messages[2].reasoning_content, undefined);
+    assert.strictEqual(result.messages[0].reasoning_content, "");
+    assert.strictEqual(result.messages[2].reasoning_content, "");
   });
   it("a given message's reasoning is stripped identically as the array grows (byte-stable across turns)", () => {
     // Turn N: A1 is the last assistant → stripped.
@@ -55,8 +55,8 @@ describe("stripReasoningContent", () => {
       { role: "user", content: "q2" },
       { role: "assistant", content: "a2", reasoning_content: "think2" },
     ]}) as any;
-    assert.strictEqual(turnN.messages[1].reasoning_content, undefined);
-    assert.strictEqual(turnN1.messages[1].reasoning_content, undefined);
+    assert.strictEqual(turnN.messages[1].reasoning_content, "");
+    assert.strictEqual(turnN1.messages[1].reasoning_content, "");
     // Byte-identical serialization of message A1 in both calls.
     assert.strictEqual(JSON.stringify(turnN.messages[1]), JSON.stringify(turnN1.messages[1]));
   });

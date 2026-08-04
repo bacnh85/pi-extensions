@@ -26,7 +26,17 @@ reasonix project sets, and trimmed:
   table was kept.
 - **apply_patch hint unchanged (173 tokens).** Small, unique, useful.
 
-Default system-prompt overhead: **1320 → 317 tokens** (76% reduction).
+- **Reasoning strip is now ON by default** for DeepSeek. The model's
+  `reasoning_content` (free-form thinking) was being sent back verbatim in
+  assistant history — non-deterministic bytes sitting in the middle of the
+  cached prefix. The strip now replaces it with an empty string (key retained,
+  since DeepSeek requires the key present on tool_calls messages) instead of
+  deleting it. This mirrors reasonix's verified DeepSeek handling and makes the
+  assistant history byte-stable. (Measured: did NOT push the aggregate past
+  ~98% — DeepSeek's prefix cache doesn't extend into the conversation history
+  at this scale — but it's the cache-correct behavior and reduces request
+  bandwidth.) Set `PI_MODEL_TOOLS_STRIP_REASONING=0` to disable.
+- **Default system-prompt overhead: 1320 → 317 tokens (76% reduction).**
 Re-measured (deepseek-v4-flash, direct API, continuing session):
 - **Per-request: 99.6%** on warmed turns — the prefix is byte-stable.
 - **Aggregate: 98.59%** (constant, not asymptotic). DeepSeek caches a

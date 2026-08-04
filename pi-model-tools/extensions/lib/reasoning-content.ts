@@ -39,7 +39,14 @@ export function stripReasoningContent(payload: unknown): unknown {
       if (Number.isFinite(threshold) && typeof value === "string" && value.length > threshold) {
         clonedMessages![i][field] = value.slice(0, threshold) + "\n\n[reasoning truncated]";
       } else {
-        delete clonedMessages![i][field];
+        // Replace with empty string rather than deleting the key. DeepSeek's
+        // thinking-mode API requires the reasoning_content key to be PRESENT on
+        // assistant tool_calls messages (else 400: "reasoning_content … must be
+        // passed back") but accepts an empty string. Keeping the key (empty)
+        // satisfies the constraint while removing the non-deterministic
+        // reasoning bytes that break the prefix cache turn-over-turn. This
+        // mirrors reasonix's verified DeepSeek handling (empty-included).
+        clonedMessages![i][field] = "";
       }
     }
   }
