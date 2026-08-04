@@ -2,6 +2,12 @@
 
 All notable changes to `pi-plan` will be documented in this file.
 
+## 0.9.1 (2026-08-04)
+
+### Fixes
+
+- **Per-mode model now applies after `/login` adds the API key.** Previously, when the configured code/plan model had no API key at startup (e.g. `deepseek/deepseek-v4-flash` before `/login deepseek`), pi-plan warned "No API key … model switch skipped" and never retried — the model stayed un-applied until a restart or manual `/model`. The skipped apply is now retried **once** on the next prompt (`before_agent_start`), so adding the key via `/login` activates the configured model in normal and plan modes without restarting. The retry is one-shot (armed at most once per session, awaited): it cannot loop on a provider whose auth never resolves, and it cannot override an in-session `/model` pick because it targets the current per-mode model (which `/model` updates as you select).
+
 ## 0.9.0 (2026-08-03)
 
 ### Features & Improvements

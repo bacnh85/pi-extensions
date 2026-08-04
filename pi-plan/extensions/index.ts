@@ -316,6 +316,13 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   let modelRetryTimer: ReturnType<typeof setTimeout> | undefined;
   /** Most-recent ExtensionContext, used by the models-loaded event callback. */
   let lastCtx: ExtensionContext | undefined;
+  /** One-shot retry for a per-mode model skipped at startup because auth wasn't
+   *  configured yet (e.g. before /login). Armed once on the first auth failure,
+   *  consumed once on the next prompt — never re-armed, so it can't loop or
+   *  override an in-session /model pick. Core emits no login event, so the next
+   *  prompt (after /login refreshes the snapshot) is the trigger. */
+  let pendingAuthApply = false;
+  let authApplyDone = false;
   /** Set on successful write_plan, cleared after first agent_settled prompt. */
   let planReadyForReview = false;
   /** Suppress --plan flag during fresh-session handoff. */
@@ -508,7 +515,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     try {
       const ok = await pi.setModel(model); // returns false (not throw) when no API key
       if (!ok) {
-        ctx.ui.notify(`No API key for ${target}; ${planModeEnabled ? "plan" : "code"} model switch skipped.`, "warning");
+        ctx.ui.notify(`No API key for ${target}; ${planModeEnabled ? "plan" : "code"} model switch skipped — will retry after /login.`, "warning");
+        // Arm a ONE-SHOT retry (only the first time) so /login can activate the
+        // model on the next prompt without looping or overriding a manual pick.
+        if (!authApplyDone) pendingAuthApply = true;
         return;
       }
       // recompute per-model thinking for the newly-selected model
@@ -1671,6 +1681,15 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
    * extensions regardless of load order.
    */
   pi.on("before_agent_start", async (_event, ctx) => {
+    // One-shot retry: re-apply a per-mode model that was skipped at startup
+    // because auth wasn't configured yet (e.g. before /login). Consumed once —
+    // authApplyDone prevents any re-arm, so this can't loop or override an
+    // in-session /model pick (applyModeModel targets the current normalModel).
+    if (pendingAuthApply && !authApplyDone) {
+      pendingAuthApply = false;
+      authApplyDone = true;
+      await applyModeModel(ctx);
+    }
     if (planModeEnabled) {
       const relativePlan = lastPlanPath
         ? relativeToCwd(ctx.cwd, lastPlanPath)

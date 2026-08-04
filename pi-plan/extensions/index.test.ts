@@ -2084,6 +2084,72 @@ describe("per-mode model preferences", () => {
     assert.ok(!notices.some((n) => /Switched to/i.test(n)), "does NOT report a successful switch");
   });
 
+  it("retries the skipped per-mode model apply on the next prompt after /login", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {},
+      normalModel: "zai-coding-cn/glm-5.2",
+    }));
+    const notices: string[] = [];
+    const ext = createFakePi(["read"], {});
+    ext.setModelFalse = true; // no API key yet — apply is skipped at startup
+    const ctx = modelCtx({ provider: "test", id: "model-1" });
+    ctx.ui.notify = (m: string) => notices.push(m);
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    assert.ok(notices.some((n) => /No API key/i.test(n)), "warns about missing auth at startup");
+    assert.ok(!notices.some((n) => /Switched to/i.test(n)), "does NOT switch while auth is missing");
+    assert.equal(ext.modelSets.length, 1, "exactly one (failed) apply attempt at startup");
+
+    // User runs /login; on the next prompt, the deferred apply succeeds.
+    ext.setModelFalse = false;
+    await ext.handlers["before_agent_start"]?.[0]({ prompt: "hi", systemPrompt: "" }, ctx);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.ok(ext.modelSets.some((m: any) => m.provider === "zai-coding-cn" && m.id === "glm-5.2"),
+      "deferred model applies on the next prompt after auth is configured");
+    assert.ok(notices.some((n) => /Switched to/i.test(n)), "reports the successful switch");
+
+    // A second prompt must not re-apply (authApplyDone set after the one-shot retry).
+    const appliedAfterRetry = ext.modelSets.length;
+    await ext.handlers["before_agent_start"]?.[0]({ prompt: "again", systemPrompt: "" }, ctx);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(ext.modelSets.length, appliedAfterRetry, "no re-apply once the one-shot retry has fired");
+  });
+
+  it("one-shot retry does not loop or override an in-session /model pick", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {},
+      normalModel: "zai-coding-cn/glm-5.2",
+    }));
+    const notices: string[] = [];
+    const ext = createFakePi(["read"], {});
+    ext.setModelFalse = true; // glm-5.2 has no auth yet → apply skipped + retry armed
+    const ctx = modelCtx({ provider: "test", id: "model-1" });
+    ctx.ui.notify = (m: string) => notices.push(m);
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    assert.ok(notices.some((n) => /No API key/i.test(n)), "startup warns about missing auth");
+
+    // User picks a DIFFERENT model (deepseek-v4-flash) via /model mid-session.
+    // recordActiveModel updates normalModel — the pending retry must respect it.
+    await ext.handlers.model_select?.[0]({ model: { provider: "opencode-go", id: "deepseek-v4-flash" }, previousModel: { provider: "test", id: "model-1" }, source: "set" }, ctx);
+    // Simulate that model now having auth; the one-shot retry fires on next prompt.
+    ext.setModelFalse = false;
+    await ext.handlers["before_agent_start"]?.[0]({ prompt: "hi", systemPrompt: "" }, ctx);
+    await new Promise((r) => setTimeout(r, 0));
+
+    // The retry applied the user's pick (deepseek-v4-flash), NOT the original glm-5.2.
+    const lastSet = ext.modelSets[ext.modelSets.length - 1];
+    assert.ok(lastSet && lastSet.provider === "opencode-go" && lastSet.id === "deepseek-v4-flash",
+      "retry respects an in-session /model pick, does not revert to the stale normalModel");
+
+    // Even if auth is still missing on subsequent prompts, no further retries fire.
+    ext.setModelFalse = true;
+    const appliedAfterRetry = ext.modelSets.length;
+    await ext.handlers["before_agent_start"]?.[0]({ prompt: "again", systemPrompt: "" }, ctx);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(ext.modelSets.length, appliedAfterRetry, "one-shot: no re-arm or loop after consumption");
+  });
+
   it("does not record a model_select with an unknown source", async () => {
     cleanPrefs();
     const ext = createFakePi(["read"], {});

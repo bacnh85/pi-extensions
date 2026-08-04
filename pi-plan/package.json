@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-plan",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Plan mode with read-only gating and plan → implement → verify → review workflow for Pi.",
   "license": "MIT",
   "publishConfig": {
