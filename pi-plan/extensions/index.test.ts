@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import piPlanExtension, { snapshotUntrackedFiles } from "./index";
+import piPlanExtension, { isInsidePlansDir, snapshotUntrackedFiles } from "./index";
 import { BLOCKED_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
 import { captureRewindCheckpoint, restoreRewindCheckpoint, rewindToFlowBaseline, validateRewindCheckpoint, type RewindCheckpoint } from "./lib/lifecycle";
@@ -18,7 +18,7 @@ import { advanceGoal, registerGoal, DEFAULT_GOAL_MAX_TURNS, type GoalAccessors, 
 import { buildFinalPrompt } from "./commands/handoff";
 import { formatSpecsProgress, invalidExistingTargets, specExecutionPrompt, specSlug } from "./commands/specs";
 import { workspaceContext } from "./lib/workspace-context";
-import { parseModel } from "./lib/utility-config";
+import { parseModel, loadUtilityConfig } from "./lib/utility-config";
 
 /** Real temp directory for tests that write files. */
 const TMP = path.join(os.tmpdir(), "pi-plan-test-" + process.pid);
@@ -322,6 +322,7 @@ function fakeCtx(overrides: Record<string, any> = {}): any {
     modelRegistry: { getAvailable: () => [], find: () => undefined },
     getContextUsage: () => ({ percent: 50 }),
     isIdle: () => true,
+    isProjectTrusted: () => false,
     ui: {
       theme: { fg: (_style: string, text: string) => text },
       setStatus: () => {},
@@ -426,6 +427,50 @@ describe("workspace utility commands", () => {
     assert.ok(context.prompt.includes("src/index.ts"));
     assert.ok(context.files.has("src/index.ts"));
     assert.ok(context.directories.has("src"));
+  });
+
+  it("finds the latest plan inside a monthly subfolder", async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), "pi-plan-context-"));
+    mkdirSync(path.join(cwd, ".agents", "plans", "202607"), { recursive: true });
+    mkdirSync(path.join(cwd, ".agents", "plans", "202608"), { recursive: true });
+    writeFileSync(path.join(cwd, ".agents", "plans", "202607", "a-old.md"), "# Old plan\nolder");
+    writeFileSync(path.join(cwd, ".agents", "plans", "202608", "b-new.md"), "# New plan\nnewest");
+    // Make mtime ordering deterministic: newer file gets a later mtime.
+    const old = new Date("2026-07-01T00:00:00Z");
+    const newer = new Date("2026-08-01T00:00:00Z");
+    const { utimesSync } = await import("node:fs");
+    utimesSync(path.join(cwd, ".agents", "plans", "202607", "a-old.md"), old, old);
+    utimesSync(path.join(cwd, ".agents", "plans", "202608", "b-new.md"), newer, newer);
+    const context = await workspaceContext(cwd);
+    assert.ok(context.prompt.includes("# New plan"), `latest monthly plan found: ${context.prompt.slice(context.prompt.indexOf("PLAN"))}`);
+    assert.ok(!context.prompt.includes("# Old plan"), "older monthly plan not selected");
+  });
+
+  it("skips an unreadable monthly subdir instead of aborting the scan", async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), "pi-plan-context-"));
+    mkdirSync(path.join(cwd, ".agents", "plans", "good"), { recursive: true });
+    mkdirSync(path.join(cwd, ".agents", "plans", "bad"), { recursive: true });
+    writeFileSync(path.join(cwd, ".agents", "plans", "good", "a.md"), "# Good plan\nreadable");
+    if (process.platform !== "win32") chmodSync(path.join(cwd, ".agents", "plans", "bad"), 0o000);
+    try {
+      const context = await workspaceContext(cwd);
+      assert.ok(context.prompt.includes("# Good plan"), "readable plan surfaced despite unreadable subdir");
+    } finally {
+      if (process.platform !== "win32") chmodSync(path.join(cwd, ".agents", "plans", "bad"), 0o755);
+    }
+  });
+
+  it("breaks equal-mtime ties deterministically by name", async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), "pi-plan-context-"));
+    mkdirSync(path.join(cwd, ".agents", "plans", "202608"), { recursive: true });
+    writeFileSync(path.join(cwd, ".agents", "plans", "202608", "a.md"), "# A plan\naaa");
+    writeFileSync(path.join(cwd, ".agents", "plans", "202608", "b.md"), "# B plan\nbbb");
+    const same = new Date("2026-08-01T00:00:00Z");
+    const { utimesSync } = await import("node:fs");
+    utimesSync(path.join(cwd, ".agents", "plans", "202608", "a.md"), same, same);
+    utimesSync(path.join(cwd, ".agents", "plans", "202608", "b.md"), same, same);
+    const context = await workspaceContext(cwd);
+    assert.ok(context.prompt.includes("# B plan"), "equal-mtime tie breaks to lexically largest name");
   });
 
   it("hard-blocks all non-read tools while a restored specs gate is active", async () => {
@@ -1382,6 +1427,125 @@ describe("plan path containment", () => {
     assert.ok(!result.details?.path?.includes(".."), "path must not contain directory traversal sequences");
   });
 
+  it("containment accepts any {yyyymm} position and both separator styles", () => {
+    const cwd = "/repo";
+    // Suffix placeholder
+    assert.ok(isInsidePlansDir("/repo/.agents/plans/202607/a.md", ".agents/plans/{yyyymm}", cwd));
+    // Non-suffix placeholder
+    assert.ok(isInsidePlansDir("/repo/.agents/202607/plans/a.md", ".agents/{yyyymm}/plans", cwd));
+    // Backslash separators in the config
+    assert.ok(isInsidePlansDir("/repo/.agents/plans/202607/a.md", ".agents\\plans\\{yyyymm}", cwd));
+    // Inside without placeholder
+    assert.ok(isInsidePlansDir("/repo/.agents/plans/a.md", ".agents/plans", cwd));
+    // Escapes rejected
+    assert.ok(!isInsidePlansDir("/repo/.agents/plans/../escape.md", ".agents/plans/{yyyymm}", cwd));
+    assert.ok(!isInsidePlansDir("/repo/escape.md", ".agents/plans/{yyyymm}", cwd));
+    // Sibling dir rejected
+    assert.ok(!isInsidePlansDir("/repo/.agents/other/a.md", ".agents/plans", cwd));
+    // Exactly the dir itself (not a file inside) rejected
+    assert.ok(!isInsidePlansDir("/repo/.agents/plans", ".agents/plans", cwd));
+  });
+
+
+});
+
+describe("plansDir configuration", () => {
+  const settingsPath = () => path.join(TMP, ".pi", "agent", "settings.json");
+  const writeSettings = (settings: Record<string, unknown>) => {
+    mkdirSync(path.dirname(settingsPath()), { recursive: true });
+    writeFileSync(settingsPath(), JSON.stringify(settings));
+  };
+  const clearSettings = () => {
+    try { writeFileSync(settingsPath(), "{}"); } catch { /* absent */ }
+  };
+
+  afterEach(clearSettings);
+
+  it("loads plansDir from global settings", async () => {
+    writeSettings({ "pi-plan": { plansDir: "docs/plans" } });
+    const ctx = fakeCtx({ isProjectTrusted: () => false });
+    const cfg = await loadUtilityConfig(ctx);
+    assert.equal(cfg.plansDir, "docs/plans");
+  });
+
+  it("project settings override global settings", async () => {
+    writeSettings({ "pi-plan": { plansDir: "global/plans" } });
+    const cwd = mkdtempSync(path.join(os.tmpdir(), "pi-plan-proj-"));
+    const projSettings = path.join(cwd, ".pi", "settings.json");
+    mkdirSync(path.dirname(projSettings), { recursive: true });
+    writeFileSync(projSettings, JSON.stringify({ "pi-plan": { plansDir: "proj/plans" } }));
+    const ctx = fakeCtx({ cwd, isProjectTrusted: () => true });
+    const cfg = await loadUtilityConfig(ctx);
+    assert.equal(cfg.plansDir, "proj/plans");
+  });
+
+  it("returns undefined when plansDir is missing or empty", async () => {
+    writeSettings({ "pi-plan": { btw: { model: "x/y" } } });
+    const ctx = fakeCtx({ isProjectTrusted: () => false });
+    const cfg = await loadUtilityConfig(ctx);
+    assert.equal(cfg.plansDir, undefined);
+    writeSettings({ "pi-plan": { plansDir: "   " } });
+    assert.equal((await loadUtilityConfig(fakeCtx({ isProjectTrusted: () => false }))).plansDir, undefined);
+  });
+
+  it("write_plan uses the configured flat dir", async () => {
+    writeSettings({ "pi-plan": { plansDir: "docs/plans" } });
+    const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+    const ctx = fakeCtx({ hasUI: true, cwd: TMP, isProjectTrusted: () => false });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const wd = toolDefs.write_plan;
+    assert.ok(wd);
+    const result = await wd.execute("c1", { title: "Custom Dir", content: "# Plan" }, undefined, undefined, ctx);
+    assert.ok(result);
+    assert.ok(result.details?.path?.includes(path.join("docs", "plans")), `path under docs/plans/: ${result.details?.path}`);
+  });
+
+  it("write_plan expands {yyyymm} into a monthly subfolder", async () => {
+    writeSettings({ "pi-plan": { plansDir: ".agents/plans/{yyyymm}" } });
+    const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+    const ctx = fakeCtx({ hasUI: true, cwd: TMP, isProjectTrusted: () => false });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const wd = toolDefs.write_plan;
+    assert.ok(wd);
+    const result = await wd.execute("c1", { title: "Monthly", content: "# Plan" }, undefined, undefined, ctx);
+    assert.ok(result);
+    const yyyymm = new Date().toISOString().slice(0, 7).replace("-", "");
+    assert.ok(result.details?.path?.includes(path.join(".agents", "plans", yyyymm)), `path under monthly subdir: ${result.details?.path}`);
+  });
+
+  it("draft refinement accepts a lastPlanPath inside a monthly subdir and rejects one outside the base", async () => {
+    writeSettings({ "pi-plan": { plansDir: ".agents/plans/{yyyymm}" } });
+    const yyyymm = new Date().toISOString().slice(0, 7).replace("-", "");
+
+    // Write a first plan so lastPlanPath/status are set, then refine — must reuse the monthly path.
+    const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+    const ctx = fakeCtx({ hasUI: true, cwd: TMP, isProjectTrusted: () => false });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const wd = toolDefs.write_plan;
+    assert.ok(wd);
+    const first = await wd.execute("c1", { title: "Refine Me", content: "# Plan\nv1" }, undefined, undefined, ctx);
+    assert.ok(first);
+    const refined = await wd.execute("c2", { title: "Refine Me", content: "# Plan\nv2" }, undefined, undefined, ctx);
+    assert.ok(refined);
+    assert.equal(refined.details?.path, first.details?.path, "draft refinement reuses the same monthly path");
+    assert.ok(first.details?.path?.includes(path.join(".agents", "plans", yyyymm)), first.details?.path);
+
+    // A tampered lastPlanPath outside the base must be rejected by the guard.
+    const { handlers: h2, toolDefs: t2 } = createFakePi(["read"], { plan: true });
+    const ctx2 = fakeCtx({
+      hasUI: true, cwd: TMP, isProjectTrusted: () => false,
+      sessionManager: {
+        getBranch: () => [{ type: "custom", customType: "pi-plan", data: { enabled: true, planThinking: "high", normalThinking: "medium", lastPlanPath: path.join(TMP, "escape.md"), lastPlanTitle: "Refine Me", lastPlanStatus: "draft" } }],
+      },
+    });
+    await h2.session_start?.[0]({ reason: "startup" }, ctx2);
+    const wd2 = t2.write_plan;
+    assert.ok(wd2);
+    await assert.rejects(
+      wd2.execute("c3", { title: "Refine Me", content: "# Plan\nv3" }, undefined, undefined, ctx2),
+      /outside the configured plans directory/,
+    );
+  });
 });
 
 describe("write_plan lifecycle", () => {

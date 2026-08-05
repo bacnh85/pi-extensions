@@ -6,6 +6,7 @@ import { CONFIG_DIR_NAME, type ExtensionContext } from "@earendil-works/pi-codin
 export interface UtilityConfig {
   btw: { model?: string };
   goal: { model?: string; maxTurns?: number };
+  plansDir?: string;
 }
 
 type Raw = Record<string, unknown>;
@@ -33,7 +34,7 @@ export async function loadUtilityConfig(ctx: ExtensionContext): Promise<UtilityC
   const config = { ...(global["pi-plan"] as Raw), ...(project["pi-plan"] as Raw) };
   const btw = { ...((global["pi-plan"] as Raw)?.btw as Raw), ...(config.btw as Raw) };
   const goal = { ...((global["pi-plan"] as Raw)?.goal as Raw), ...(config.goal as Raw) };
-  return { btw: { model: value(btw, "model") }, goal: { model: value(goal, "model"), maxTurns: numberValue(goal, "maxTurns") } };
+  return { btw: { model: value(btw, "model") }, goal: { model: value(goal, "model"), maxTurns: numberValue(goal, "maxTurns") }, plansDir: value(config, "plansDir") };
 }
 
 export function parseModel(value: string): { provider: string; id: string } | undefined {

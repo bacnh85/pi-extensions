@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.3 (2026-08-05)
+
+### Features
+
+- **Configurable plans directory with optional monthly archiving.** The plan output directory is now configurable via the `pi-plan.plansDir` setting (global `~/.pi/agent/settings.json` or trusted project `.pi/settings.json`, loaded alongside `btw`/`goal`). Default stays `.agents/plans` — fully backward compatible. A `{yyyymm}` placeholder in the value (e.g. `.agents/plans/{yyyymm}`) expands to the current month at write time, so plans auto-archive into monthly subfolders with no user scripts. The path resolves against the workspace `cwd`, and the existing write-path containment guard is preserved (the `{yyyymm}` segment matches any month at any position, so draft refinements across months stay safe). The workspace-context latest-plan lookup now scans one level of subdirectories, so monthly archives are still discovered (an unreadable subfolder is skipped, and equal-mtime plans tie-break deterministically). `{yyyymm}` and the plan filename timestamp use the UTC month.
+
 ## 0.9.2 (2026-08-04)
 
 ### Fixes

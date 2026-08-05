@@ -25,7 +25,7 @@ import { registerHandoff } from "./commands/handoff";
 import { registerSpecs } from "./commands/specs";
 
 const STATUS_KEY = "pi-plan";
-const PLAN_DIR = ".agents/plans";
+const DEFAULT_PLAN_DIR = ".agents/plans";
 const PLAN_TOOL = "write_plan";
 const ASK_USER_QUESTION_TOOL = "ask_user_question";
 // ponytail: deprecated alias — drop after one release
@@ -156,9 +156,30 @@ function normalizePlanContent(params: WritePlanParams): string {
   return `# ${title}\n\n${body}\n`;
 }
 
-function planPath(cwd: string, title: string): string {
+function planPath(cwd: string, title: string, dir: string = DEFAULT_PLAN_DIR): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return path.join(cwd, PLAN_DIR, `${stamp}-${slugify(title)}.md`);
+  return path.join(cwd, expandPlansDir(dir), `${stamp}-${slugify(title)}.md`);
+}
+
+/** Expand the {yyyymm} placeholder at write time (e.g. ".agents/plans/{yyyymm}"). */
+function expandPlansDir(dir: string, d: Date = new Date()): string {
+  return dir.replace("{yyyymm}", d.toISOString().slice(0, 7).replace("-", ""));
+}
+
+/** True when `resolved` is a file inside the plans dir; `{yyyymm}` matches any
+ *  single path segment (any position, `/` or `\` separators), so draft
+ *  refinements across months stay safe regardless of where the placeholder
+ *  sits. Segments are compared after resolving against `cwd`, so `..` and
+ *  sibling escapes are rejected. */
+export function isInsidePlansDir(resolved: string, plansDir: string, cwd: string): boolean {
+  const pattern = path.resolve(cwd, plansDir).split(/[\\/]/).filter(Boolean);
+  const actual = path.resolve(cwd, resolved).split(/[\\/]/).filter(Boolean);
+  const wildcard = pattern.indexOf("{yyyymm}");
+  const root = wildcard === -1 ? pattern : pattern.filter((seg) => seg !== "{yyyymm}");
+  // An inside path is strictly deeper than the root.
+  if (actual.length <= root.length) return false;
+  if (wildcard !== -1) actual.splice(wildcard, 1);
+  return root.every((seg, i) => actual[i] === seg);
 }
 
 function relativeToCwd(cwd: string, absolutePath: string): string {
@@ -374,6 +395,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   let flow: FlowState | undefined;
   let flowController: AbortController | undefined;
   let preferences: PlanPreferences | undefined;
+  let plansDir = DEFAULT_PLAN_DIR;
   let reviewTimer: ReturnType<typeof setTimeout> | undefined;
   let writePlanInProgress = false;
   let specGateActive = false;
@@ -607,7 +629,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     clearPlanWidget(ctx);
     persistState();
     ctx.ui.notify(
-      `Plan mode enabled. Plans will be written to ${PLAN_DIR}/`,
+      `Plan mode enabled. Plans will be written to ${expandPlansDir(plansDir)}/`,
       "info",
     );
   }
@@ -1102,8 +1124,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: PLAN_TOOL,
     label: "Write Plan",
-    description: `Write/replace plan as Markdown under ${PLAN_DIR}/. Use when plan is ready for review.`,
-    promptSnippet: `Write plan to ${PLAN_DIR}/ as Markdown for user review`,
+    description: `Write/replace plan as Markdown under ${DEFAULT_PLAN_DIR}/. Use when plan is ready for review.`,
+    promptSnippet: `Write plan to ${DEFAULT_PLAN_DIR}/ as Markdown for user review`,
     promptGuidelines: [
       `Use ${PLAN_TOOL} in plan mode after exploration. No edit/write until plan approved.`,
       `Don't call ${PLAN_TOOL} while blocking questions remain; use ${ASK_USER_QUESTION_TOOL} first.`,
@@ -1138,16 +1160,15 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       ) {
         // ponytail: compare relative to resolved plan dir (portable, rejects siblings)
         const resolved = path.resolve(ctx.cwd, lastPlanPath);
-        const planDir = path.resolve(ctx.cwd, PLAN_DIR);
-        const rel = path.relative(planDir, resolved);
-        if (rel.startsWith("..") || path.isAbsolute(rel)) {
-          throw new Error(`Plan path is outside ${PLAN_DIR}/`);
+        if (!isInsidePlansDir(resolved, plansDir, ctx.cwd)) {
+          throw new Error(`Plan path is outside the configured plans directory`);
         }
         destination = resolved;
       } else {
         destination = planPath(
           ctx.cwd,
           typedParams.title,
+          plansDir,
         );
       }
 
@@ -1547,6 +1568,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   pi.on("session_start", async (event, ctx) => {
     lastCtx = ctx;
     preferences = await loadPreferences();
+    const cfg = await loadUtilityConfig(ctx);
+    plansDir = cfg.plansDir ?? DEFAULT_PLAN_DIR;
     if (!preferences) {
       preferences = {
         version: 2,
@@ -1737,11 +1760,11 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     if (planModeEnabled) {
       const relativePlan = lastPlanPath
         ? relativeToCwd(ctx.cwd, lastPlanPath)
-        : `${PLAN_DIR}/<timestamp>-<title>.md`;
+        : `${expandPlansDir(plansDir)}/<timestamp>-<title>.md`;
       return {
         systemPrompt:
           _event.systemPrompt +
-          `\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- Bash commands that write to files (redirect, heredoc, sed -i, tee, cp/mv/rm, etc.) or contain command substitution are hard-blocked. Read-only bash commands (ls, grep, find, git status) run automatically — including pipelines/chains whose every segment is read-only (e.g. \`grep foo src | head\`). Test/build/package scripts and other unknown executables require confirmation.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${ASK_USER_QUESTION_TOOL} for consequential open decisions with 2-4 clear options, a recommended default, and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${ASK_USER_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${PLAN_DIR}/. Current/next plan path: ${relativePlan}\n${specGateActive && specPath ? `- An active draft specification is at ${relativeToCwd(ctx.cwd, specPath)}. Read it before refining or approving it; workspace writes remain locked until /specs-approve.\n` : ""}- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
+          `\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- Bash commands that write to files (redirect, heredoc, sed -i, tee, cp/mv/rm, etc.) or contain command substitution are hard-blocked. Read-only bash commands (ls, grep, find, git status) run automatically — including pipelines/chains whose every segment is read-only (e.g. \`grep foo src | head\`). Test/build/package scripts and other unknown executables require confirmation.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${ASK_USER_QUESTION_TOOL} for consequential open decisions with 2-4 clear options, a recommended default, and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${ASK_USER_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${expandPlansDir(plansDir)}/. Current/next plan path: ${relativePlan}\n${specGateActive && specPath ? `- An active draft specification is at ${relativeToCwd(ctx.cwd, specPath)}. Read it before refining or approving it; workspace writes remain locked until /specs-approve.\n` : ""}- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
       };
     }
   });

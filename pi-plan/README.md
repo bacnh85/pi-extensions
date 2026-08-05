@@ -94,6 +94,18 @@ Optional Pi settings (global `~/.pi/agent/settings.json` or trusted project `.pi
 
 `/btw` without a query recalls the latest answer from the current session branch, including after reload or resume.
 
+Optional Pi settings also select where plans are written (`pi-plan.plansDir`). The default is `.agents/plans` (relative to the workspace `cwd`); the `{yyyymm}` placeholder expands to the current month so plans auto-archive into monthly subfolders without any user scripts:
+
+```json
+{
+  "pi-plan": {
+    "plansDir": ".agents/plans/{yyyymm}"
+  }
+}
+```
+
+With no setting, behavior is unchanged (plans land flat in `.agents/plans/`). The resolved path is validated against the configured plans directory, so plans never escape it. `{yyyymm}` and the plan filename timestamp use the UTC month (the filename stamp is already UTC), so the monthly bucket matches the written file.
+
 `/specs <intent>` uses an isolated model call to write one spec-first Markdown artifact under `.agents/specs/`. It includes scope, exclusions, workspace-grounded target files, EARS requirements, assumptions/open questions, and independently checkable acceptance criteria. It keeps the plan-mode write gate active until `/specs-approve` is explicitly run. Approval does not start an agent run: in the TUI it preloads an instruction to implement the approved spec and verify each criterion; non-TUI modes receive the same copyable instruction.
 
 ## Goal loop

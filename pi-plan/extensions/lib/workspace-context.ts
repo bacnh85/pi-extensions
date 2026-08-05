@@ -41,8 +41,25 @@ export async function workspaceContext(cwd: string, activePlan?: string): Promis
   if (plan === "none") {
     const dir = path.join(cwd, ".agents", "plans");
     try {
-      const candidates = await Promise.all((await readdir(dir)).filter((name) => name.endsWith(".md")).map(async (name) => ({ name, time: (await stat(path.join(dir, name))).mtimeMs })));
-      const latest = candidates.sort((a, b) => b.time - a.time)[0];
+      // ponytail: one level of subdirectories so monthly archives ({yyyymm}) are found too
+      const candidates: Array<{ name: string; time: number }> = [];
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isFile() && entry.name.endsWith(".md")) {
+          try { candidates.push({ name: entry.name, time: (await stat(full)).mtimeMs }); } catch { /* skip unreadable */ }
+        } else if (entry.isDirectory()) {
+          // ponytail: one unreadable/broken subdir must not abort the whole scan
+          let subs;
+          try { subs = await readdir(full, { withFileTypes: true }); } catch { continue; }
+          for (const sub of subs) {
+            if (sub.isFile() && sub.name.endsWith(".md")) {
+              try { candidates.push({ name: path.join(entry.name, sub.name), time: (await stat(path.join(full, sub.name))).mtimeMs }); } catch { /* skip unreadable */ }
+            }
+          }
+        }
+      }
+      // ponytail: deterministic tie-break — newest, then lexically largest name
+      const latest = candidates.sort((a, b) => b.time - a.time || b.name.localeCompare(a.name))[0];
       if (latest) plan = await safeRead(path.join(dir, latest.name)) || "none";
     } catch { /* optional */ }
   }
