@@ -7,25 +7,25 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| **pi-9router** | 0.1.4 | Connect to a 9router AI routing proxy instance via its OpenAI-compatible API with interactive login. |
-| **pi-budget** | 0.1.0 | Spend cap enforcement — `--budget <usd>` aborts the agent at the cap; companion to pi-sub (render vs enforce). |
-| **pi-agy** | 0.2.2 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
-| **pi-fff** | 0.7.8 | FFF-powered fuzzy file and content search for Pi. |
-| **pi-kicad** | 0.1.2 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon (no MCP SDK). |
-| **pi-model-tools** | 0.3.3 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, and a Codex-style apply_patch diff tool. |
-| **pi-munin** | 0.5.0 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and confirmed cross-project sharing. |
-| **pi-notebooklm** | 0.1.7 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
-| **pi-obsidian** | 0.8.11 | Obsidian vault integration for Pi. |
-| **pi-plan** | 0.10.0 | Plan mode with read-only gating and plan → implement → verify → review workflow; fallback model chain on overload. |
-| **pi-ponytail** | 0.1.9 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
-| **pi-review** | 0.2.6 | Isolated read-only code review with corrected same-session fallback. |
-| **pi-rtk** | 0.1.11 | Bash command token rewriting through RTK. |
-| **pi-serena** | 0.9.4 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
-| **pi-sub** | 0.1.23 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
+| **pi-9router** | 0.1.7 | Connect to a 9router AI routing proxy instance via its OpenAI-compatible API with interactive login. |
+| **pi-budget** | 0.1.1 | Spend cap enforcement — `--budget <usd>` aborts the agent at the cap; companion to pi-sub (render vs enforce). |
+| **pi-agy** | 0.3.1 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
+| **pi-fff** | 0.7.9 | FFF-powered fuzzy file and content search for Pi. |
+| **pi-kicad** | 0.1.3 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon (no MCP SDK). |
+| **pi-model-tools** | 0.5.5 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, and a Codex-style apply_patch diff tool. |
+| **pi-munin** | 0.5.1 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and confirmed cross-project sharing. |
+| **pi-notebooklm** | 0.1.8 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
+| **pi-obsidian** | 0.8.13 | Obsidian vault integration for Pi. |
+| **pi-plan** | 0.10.1 | Plan mode with read-only gating and plan → implement → verify → review workflow; fallback model chain on overload. |
+| **pi-ponytail** | 0.1.10 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
+| **pi-review** | 0.2.8 | Isolated read-only code review with corrected same-session fallback. |
+| **pi-rtk** | 0.1.12 | Bash command token rewriting through RTK. |
+| **pi-serena** | 0.9.6 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
+| **pi-sub** | 0.1.24 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | **pi-subagent** | 0.14.0 | Isolated in-process subagents with parallel/chain modes, inspectable threads, and git worktree isolation (`sandbox: worktree`). |
-| **pi-web** | 0.5.6 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
-| **pi-ux** | 0.4.2 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, ships medium-tuned presets (Web/Mobile) so the agent stays unblocked when DESIGN.md is missing, runs deterministic slop-audit gates (APCA contrast + tokens + states + slop tells), works with text-only models. |
-| **pi-windows-tools** | 0.5.0 | Windows-specific tools for Pi. |
+| **pi-web** | 0.5.7 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
+| **pi-ux** | 0.4.4 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, ships medium-tuned presets (Web/Mobile) so the agent stays unblocked when DESIGN.md is missing, runs deterministic slop-audit gates (APCA contrast + tokens + states + slop tells), works with text-only models. |
+| **pi-windows-tools** | 0.5.2 | Windows-specific tools for Pi. |
 
 ## Repository Structure
 

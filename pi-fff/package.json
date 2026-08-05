@@ -1,13 +1,13 @@
 {
   "name": "@bacnh85/pi-fff",
-  "version": "0.7.8",
+  "version": "0.7.9",
   "description": "Pi extension: FFF-powered fuzzy file and content search.",
   "type": "module",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
   },
-  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-fff",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bacnh85/pi-extensions.git",

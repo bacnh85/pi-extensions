@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-ponytail",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Pi-ponytail — lazy senior dev mode for your Pi agent. Forked from DietrichGebert/ponytail.",
   "keywords": [
     "pi-package",
@@ -9,6 +9,7 @@
     "skills"
   ],
   "license": "MIT",
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-ponytail",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bacnh85/pi-extensions.git"

@@ -10,7 +10,7 @@ Zero dependencies. Plain JS.
 ## Install
 
 ```bash
-pi packages install @bacnh85/pi-budget
+pi install npm:@bacnh85/pi-budget
 ```
 
 ## Usage

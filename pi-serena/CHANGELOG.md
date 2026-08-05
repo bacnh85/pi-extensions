@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.6 (2026-08-05)
+
+### Improvements
+
+- Patch version bump for release sync and package documentation update.
+
 All notable changes to `pi-serena` will be documented in this file.
 
 ## 0.9.5 (2026-07-31)

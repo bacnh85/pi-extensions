@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-ux",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Anti-slop UI/UX design discipline for your Pi agent — anchors a lintable DESIGN.md, runs deterministic slop-audit gates (APCA contrast + tokens + states + slop tells), works with text-only models, ships reference design-system presets.",
   "keywords": [
     "pi-package",
@@ -12,6 +12,7 @@
     "skills"
   ],
   "license": "MIT",
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-ux",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bacnh85/pi-extensions.git"

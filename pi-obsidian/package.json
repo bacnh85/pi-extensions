@@ -1,13 +1,13 @@
 {
   "name": "@bacnh85/pi-obsidian",
-  "version": "0.8.12",
+  "version": "0.8.13",
   "description": "Pi extension for Obsidian vault tools — read, search, create, and manage notes via the Obsidian CLI.",
   "type": "module",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
   },
-  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-obsidian",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bacnh85/pi-extensions.git",

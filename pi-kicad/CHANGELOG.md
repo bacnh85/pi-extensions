@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3 (2026-08-05)
+
+### Improvements
+
+- Patch version bump for release sync and package documentation update.
+
 All notable changes to `pi-kicad` will be documented in this file.
 
 ## 0.1.2 (2026-07-30)

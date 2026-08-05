@@ -1,12 +1,12 @@
 {
   "name": "@bacnh85/pi-serena",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "Pi extension that provides Serena semantic code tools through a persistent worker.",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
   },
-  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-serena",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bacnh85/pi-extensions.git",

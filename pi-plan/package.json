@@ -1,12 +1,12 @@
 {
   "name": "@bacnh85/pi-plan",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Plan mode with read-only gating and plan → implement → verify → review workflow for Pi.",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
   },
-  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-plan",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bacnh85/pi-extensions.git",

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.10 (2026-08-05)
+
+### Improvements
+
+- Patch version bump for release sync and package documentation update.
+
 All notable changes to `pi-ponytail` will be documented in this file.
 
 ## 0.1.9 (2026-07-30)

@@ -1,13 +1,13 @@
 {
   "name": "@bacnh85/pi-sub",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "description": "Pi extension showing subscription usage for supported model providers.",
   "type": "module",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
   },
-  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-sub",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bacnh85/pi-extensions.git",

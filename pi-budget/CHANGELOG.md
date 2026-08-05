@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 - 2026-08-05
+
+Patch version bump for release sync and package documentation update.
+
 ## 0.1.0 - 2026-08-05
 
 Initial release.

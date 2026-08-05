@@ -1,13 +1,13 @@
 {
   "name": "@bacnh85/pi-notebooklm",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Pi extension for Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via notebooklm-py CLI bridge.",
   "type": "module",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
   },
-  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-notebooklm",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bacnh85/pi-extensions.git",

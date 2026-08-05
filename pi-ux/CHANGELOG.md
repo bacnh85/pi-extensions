@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.4
+
+- Patch version bump for release sync and package documentation update.
+
 ## 0.4.3
 
 - **Named styles via the design.md library.** `ux-presets` now documents a

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.5 (2026-08-05)
+
+### Improvements
+
+- Patch version bump for release sync and package documentation update.
+
 ## 0.5.4 (2026-08-04)
 
 ### Docs

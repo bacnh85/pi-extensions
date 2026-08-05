@@ -1,13 +1,13 @@
 {
   "name": "@bacnh85/pi-review",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Pi extension for isolated or local read-only code review.",
   "type": "module",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
   },
-  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-review",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bacnh85/pi-extensions.git",

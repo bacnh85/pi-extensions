@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.12 (2026-08-05)
+
+### Improvements
+
+- Patch version bump for release sync and package documentation update.
+
 All notable changes to `pi-rtk` will be documented in this file.
 
 ## 0.1.11 (2026-07-30)

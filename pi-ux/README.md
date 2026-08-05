@@ -11,7 +11,7 @@ AI-generated UI converges on the same defaults — purple/indigo glow, shadow-he
 ## Install
 
 ```bash
-npm install @bacnh85/pi-ux
+pi install npm:@bacnh85/pi-ux
 ```
 
 Pi auto-discovers the extension and skill.

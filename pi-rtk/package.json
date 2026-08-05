@@ -1,12 +1,12 @@
 {
   "name": "@bacnh85/pi-rtk",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Pi extension that routes shell commands through RTK for token savings.",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
   },
-  "homepage": "https://github.com/bacnh85/pi-extensions#readme",
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-rtk",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bacnh85/pi-extensions.git",

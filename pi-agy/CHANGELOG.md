@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 (2026-08-05)
+
+### Improvements
+
+- Patch version bump for release sync and package documentation update.
+
 All notable changes to `pi-agy` will be documented in this file.
 
 ## 0.3.0 (2026-08-02)
