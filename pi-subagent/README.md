@@ -84,6 +84,25 @@ Child agent tools are validated against a fixed allowlist:
 
 Unknown or misspelled tool names produce clear diagnostics. Duplicate tool names are deduplicated.
 
+### Git worktree isolation (`sandbox: worktree`)
+
+Set `sandbox: worktree` in an agent's frontmatter to run it in an isolated git
+worktree (`.pi-worktrees/<id>` under the repo root) instead of the parent's
+working tree. This is the safe way to run **parallel implementation** agents:
+two `worker` agents editing the same files can no longer clobber each other —
+each writes into its own checkout.
+
+- All file mutations land in the worktree; the main checkout stays untouched.
+- On completion, a unified diff of the child's changes is returned in the
+  result and shown in the thread viewer as a `🌿 worktree` badge.
+- **Merging is explicit**: the parent receives the diff and applies it via
+  `apply_patch` / cherry-pick / discard. Nothing is auto-merged.
+- The worktree is removed on completion (success, error, or abort).
+- Requires git; when the cwd is not a git repo, the agent falls back to
+  in-process execution with a warning (`ponytail`: isolation optimization,
+  not a hard requirement).
+
+
 ### Timeouts
 
 Every child execution receives a timeout:

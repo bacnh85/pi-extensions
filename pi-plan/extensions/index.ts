@@ -14,6 +14,7 @@ import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
+import { isOverloadError } from "./lib/fallback";
 import { captureRewindCheckpoint, restoreRewindCheckpoint, rewindToFlowBaseline, snapshotUntrackedFiles, validateRewindCheckpoint, type RewindCheckpoint } from "./lib/lifecycle";
 import { BLOCKED_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 import { loadUtilityConfig, parseModel } from "./lib/utility-config";
@@ -112,6 +113,8 @@ interface PlanPreferences {
   goalModel?: string;
   planModel?: string;
   normalModel?: string;
+  /** Ordered fallback model refs (provider/id) tried on overload/rate-limit. */
+  fallbackModels?: string[];
 }
 
 interface WritePlanParams {
@@ -315,6 +318,9 @@ async function loadPreferences(): Promise<PlanPreferences | undefined> {
       advisorModel: typeof parsed.advisorModel === "string" && parsed.advisorModel.trim() ? parsed.advisorModel.trim() : undefined,
       planModel: typeof parsed.planModel === "string" && parsed.planModel.trim() ? parsed.planModel.trim() : undefined,
       normalModel: typeof parsed.normalModel === "string" && parsed.normalModel.trim() ? parsed.normalModel.trim() : undefined,
+      fallbackModels: Array.isArray(parsed.fallbackModels)
+        ? parsed.fallbackModels.filter((m: unknown): m is string => typeof m === "string" && m.trim().length > 0)
+        : undefined,
     };
   } catch {
     return undefined;
@@ -388,6 +394,11 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
    *  prompt (after /login refreshes the snapshot) is the trigger. */
   let pendingAuthApply = false;
   let authApplyDone = false;
+  // Fallback-model chain state (overload/rate-limit resilience).
+  let fallbackIndex = 0;
+  let consecutiveOverloads = 0;
+  /** Model ref active before the first fallback switch — restored on success. */
+  let primaryModelRef: string | undefined;
   /** Set on successful write_plan, cleared after first agent_settled prompt. */
   let planReadyForReview = false;
   /** Suppress --plan flag during fresh-session handoff. */
@@ -1505,7 +1516,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   registerBtw(pi);
   registerSpecs(pi, activateSpecGate, approveSpecGate);
   registerDoctor(pi, () => preferences
-    ? `plan=${preferences.planModel ?? "-"} · normal=${preferences.normalModel ?? "-"}`
+    ? `plan=${preferences.planModel ?? "-"} · normal=${preferences.normalModel ?? "-"} · fallback=${preferences.fallbackModels?.length ? preferences.fallbackModels.join("→") : "-"}`
     : "unset");
 
   registerHandoff(pi, {
@@ -1550,6 +1561,51 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       }
       if (command !== "status") return ctx.ui.notify("Usage: /flow status|stop", "warning");
       ctx.ui.notify(flow ? `flow: ${flow.phase} · review ${flow.reviewPass}/${MAX_REVIEW_PASSES}` : "No workflow state.", "info");
+    },
+  });
+
+  pi.registerCommand("plan-fallback", {
+    description: "View, set, or clear the fallback model chain (tried on overload/rate-limit)",
+    handler: async (args, ctx) => {
+      if (!preferences) return;
+      const trimmed = args.trim();
+      if (!trimmed) {
+        ctx.ui.notify(
+          preferences.fallbackModels?.length
+            ? `fallback: ${preferences.fallbackModels.join(" → ")} (idx ${fallbackIndex})`
+            : "No fallback models configured. Usage: /plan-fallback set <provider/model> [<provider/model> ...]",
+          "info",
+        );
+        return;
+      }
+      if (trimmed === "clear") {
+        preferences.fallbackModels = undefined;
+        fallbackIndex = 0;
+        consecutiveOverloads = 0;
+        await savePreferences(preferences);
+        ctx.ui.notify("Fallback model chain cleared.", "info");
+        return;
+      }
+      const setMatch = /^set\s+(.+)$/i.exec(trimmed);
+      if (!setMatch) {
+        ctx.ui.notify("Usage: /plan-fallback [set <provider/model> ...] | clear", "warning");
+        return;
+      }
+      const refs = setMatch[1].trim().split(/\s+/).filter(Boolean);
+      if (refs.length === 0) {
+        ctx.ui.notify("Usage: /plan-fallback set <provider/model> [<provider/model> ...]", "warning");
+        return;
+      }
+      const invalid = refs.filter((ref) => !parseModel(ref));
+      if (invalid.length) {
+        ctx.ui.notify(`Invalid model ref(s): ${invalid.join(", ")} (expected provider/id)`, "warning");
+        return;
+      }
+      preferences.fallbackModels = refs;
+      fallbackIndex = 0;
+      consecutiveOverloads = 0;
+      await savePreferences(preferences);
+      ctx.ui.notify(`Fallback chain set: ${refs.join(" → ")}`, "info");
     },
   });
 
@@ -1632,6 +1688,88 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     applyThinking(planModeEnabled ? planThinking : normalThinking);
     updateFooter(ctx);
     persistState();
+  });
+
+  /**
+   * Fallback-model chain: when the active model hits a provider overload /
+   * rate-limit error, switch to the next configured fallback. Pi's own retry
+   * loop (on by default) then continues the SAME turn against the new model,
+   * so no explicit re-submission is needed — the retry continuation rides the
+   * switch. On a later success, the primary model is restored.
+   *
+   * ponytail: switch threshold default 1 (switch on first overload). Config
+   * knob if transient blips become a problem — see /plan-fallback.
+   */
+  pi.on("message_end", async (event, ctx) => {
+    if (!preferences?.fallbackModels?.length) return;
+    if (event.message?.role !== "assistant") return;
+
+    if (isOverloadError(event.message)) {
+      consecutiveOverloads++;
+      if (consecutiveOverloads >= 1 && fallbackIndex < preferences.fallbackModels.length) {
+        // Remember the pre-fallback model once so success can restore it.
+        if (!primaryModelRef && ctx.model) primaryModelRef = `${ctx.model.provider}/${ctx.model.id}`;
+        // Try fallbacks from the current index, skipping models absent from
+        // the registry, until one resolves or the chain is exhausted.
+        while (fallbackIndex < preferences.fallbackModels.length) {
+          const target = preferences.fallbackModels[fallbackIndex];
+          const parsed = parseModel(target);
+          const fallback = parsed ? ctx.modelRegistry.find(parsed.provider, parsed.id) : undefined;
+          fallbackIndex++;
+          if (!fallback) {
+            ctx.ui.notify(`Fallback model not found in registry: ${target} — skipping.`, "warning");
+            continue;
+          }
+          consecutiveOverloads = 0;
+          // Guard so model_select (if pi emits it for setModel) doesn't record
+          // the fallback as the user's per-mode pick (same guard as applyModeModel).
+          applyingStoredModel = true;
+          let ok: boolean;
+          try {
+            ok = await pi.setModel(fallback);
+          } finally {
+            applyingStoredModel = false;
+          }
+          ctx.ui.notify(
+            ok
+              ? `Overloaded — switching to fallback: ${target}`
+              : `Overloaded, but no API key for fallback ${target}`,
+            ok ? "info" : "warning",
+          );
+          break; // resolved (or attempted) this fallback; stop scanning
+        }
+      }
+    } else if (event.message.stopReason !== "error") {
+      // Success (or non-overload terminal state): back to the primary model.
+      const wasOnFallback = fallbackIndex > 0 || primaryModelRef !== undefined;
+      consecutiveOverloads = 0;
+      fallbackIndex = 0;
+      if (wasOnFallback && primaryModelRef) {
+        const primary = parseModel(primaryModelRef);
+        const primaryModel = primary ? ctx.modelRegistry.find(primary.provider, primary.id) : undefined;
+        if (primaryModel) {
+          applyingStoredModel = true;
+          let ok: boolean;
+          try {
+            ok = await pi.setModel(primaryModel);
+          } finally {
+            applyingStoredModel = false;
+          }
+          if (ok) {
+            ctx.ui.notify(`Restored primary model: ${primaryModelRef}`, "info");
+            primaryModelRef = undefined;
+          } else {
+            ctx.ui.notify(`Could not restore primary model ${primaryModelRef} — no API key. Staying on fallback.`, "warning");
+          }
+        } else {
+          // Keep the reference so the next fresh turn (before_agent_start) can
+          // retry the restore; tell the user they're still on the fallback.
+          ctx.ui.notify(`Could not restore primary model ${primaryModelRef} — not in registry. Staying on fallback.`, "warning");
+        }
+      } else {
+        primaryModelRef = undefined;
+      }
+    }
   });
 
   // Cross-extension signal: a late-loading provider (e.g. pi-9router) has
@@ -1748,6 +1886,37 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
    * extensions regardless of load order.
    */
   pi.on("before_agent_start", async (_event, ctx) => {
+    // Fresh turn: if a prior turn ended while on a fallback (chain exhausted,
+    // retry budget consumed), restore the primary model BEFORE clearing the
+    // reference — otherwise the user is silently stranded on the fallback.
+    if (primaryModelRef) {
+      const primary = parseModel(primaryModelRef);
+      const primaryModel = primary ? ctx.modelRegistry.find(primary.provider, primary.id) : undefined;
+      if (primaryModel) {
+        // Guard so model_select (if emitted for this setModel) cannot record the
+        // restored model as a per-mode pick — same guard as every other setModel site.
+        applyingStoredModel = true;
+        let ok: boolean;
+        try {
+          ok = await pi.setModel(primaryModel);
+        } finally {
+          applyingStoredModel = false;
+        }
+        if (ok) {
+          ctx.ui.notify(`Restored primary model: ${primaryModelRef}`, "info");
+          primaryModelRef = undefined;
+        } else {
+          // Keep the reference for a later turn; the user is still on a fallback.
+          ctx.ui.notify(`Could not restore primary model ${primaryModelRef} — no API key. Staying on fallback.`, "warning");
+        }
+      } else {
+        // Keep the reference so a later turn (after provider reload) can retry.
+        ctx.ui.notify(`Could not restore primary model ${primaryModelRef} — not in registry. Staying on fallback.`, "warning");
+      }
+    }
+    // Fresh turn: reset the fallback chain to the primary model.
+    consecutiveOverloads = 0;
+    fallbackIndex = 0;
     // One-shot retry: re-apply a per-mode model that was skipped at startup
     // because auth wasn't configured yet (e.g. before /login). Consumed once —
     // authApplyDone prevents any re-arm, so this can't loop or override an

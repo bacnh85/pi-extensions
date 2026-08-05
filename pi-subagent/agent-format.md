@@ -24,7 +24,7 @@ models:                   # Optional ordered fallbacks; comma form also accepted
   - provider/fast-model
   - provider/backup-model
 thinking: low             # Optional: off|minimal|low|medium|high|xhigh|max.
-sandbox: read-only        # Optional: read-only | workspace-write. Auto-derives tool restrictions.
+sandbox: read-only        # Optional: read-only | workspace-write | worktree. Auto-derives tool restrictions.
 color: cyan               # Optional: red|blue|green|yellow|purple|orange|pink|cyan.
 ---
 ```
@@ -33,6 +33,7 @@ color: cyan               # Optional: red|blue|green|yellow|purple|orange|pink|c
 
 - `read-only`: Restricts tools to `read`, `grep`, `find`, `ls`. Overrides any `tools` field.
 - `workspace-write` (default): Uses the agent's `tools` list or defaults to all tools.
+- `worktree`: Runs the agent in an isolated git worktree (`.pi-worktrees/<id>` under the repo root). All file mutations land in the worktree; the main checkout is untouched. On completion, a unified diff of the changes is returned in the result (visible in the thread viewer as a `🌿 worktree` badge) — the parent merges explicitly via `apply_patch`/cherry-pick; nothing is applied automatically. Falls back to in-process execution when the cwd is not a git repo (with a warning). Requires git.
 
 ### `color`
 

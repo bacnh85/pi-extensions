@@ -9,6 +9,7 @@ Each package lives in its own directory and can be installed independently. This
 | Package | Version | What it adds |
 | --- | ---: | --- |
 | [`@bacnh85/pi-9router`](./pi-9router) | 0.1.4 | Connect to 9router AI routing proxy instance via OpenAI-compatible API. |
+| [`@bacnh85/pi-budget`](./pi-budget) | 0.1.0 | Spend cap enforcement — aborts the agent at a `--budget <usd>` limit. |
 | [`@bacnh85/pi-agy`](./pi-agy) | 0.2.2 | Google Antigravity CLI bridge for bulk implementation, scaffolding, and test generation. |
 | [`@bacnh85/pi-fff`](./pi-fff) | 0.7.8 | FFF-powered fuzzy file and content search for Pi. |
 | [`@bacnh85/pi-kicad`](./pi-kicad) | 0.1.2 | KiCad CAD-design extension driving schematic capture and PCB layout via Konnect daemon. |
@@ -16,13 +17,13 @@ Each package lives in its own directory and can be installed independently. This
 | [`@bacnh85/pi-munin`](./pi-munin) | 0.5.0 | Munin long-term memory tools and skill integration. |
 | [`@bacnh85/pi-notebooklm`](./pi-notebooklm) | 0.1.7 | Google NotebookLM notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | [`@bacnh85/pi-obsidian`](./pi-obsidian) | 0.8.11 | Obsidian vault integration for Pi. |
-| [`@bacnh85/pi-plan`](./pi-plan) | 0.8.6 | Read-only planning plus fresh implement → verify → independent review workflow. |
+| [`@bacnh85/pi-plan`](./pi-plan) | 0.10.0 | Read-only planning plus fresh implement → verify → independent review workflow; fallback model chain on overload. |
 | [`@bacnh85/pi-ponytail`](./pi-ponytail) | 0.1.9 | Lazy senior-dev mode: YAGNI, stdlib-first coding discipline, and ponytail skills. |
 | [`@bacnh85/pi-review`](./pi-review) | 0.2.6 | Isolated read-only review with same-session fallback. |
 | [`@bacnh85/pi-rtk`](./pi-rtk) | 0.1.11 | Bash command rewriting through RTK for token savings. |
 | [`@bacnh85/pi-serena`](./pi-serena) | 0.9.4 | Serena semantic code navigation, references, refactors, and diagnostics through a persistent worker. |
 | [`@bacnh85/pi-sub`](./pi-sub) | 0.1.23 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
-| [`@bacnh85/pi-subagent`](./pi-subagent) | 0.12.4 | Isolated in-process subagents, parallel/chain delegation, and inspectable threads. |
+| [`@bacnh85/pi-subagent`](./pi-subagent) | 0.14.0 | Isolated in-process subagents, parallel/chain delegation, inspectable threads, and git worktree isolation (`sandbox: worktree`). |
 | [`@bacnh85/pi-ux`](./pi-ux) | 0.4.2 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, ships medium-tuned presets (Web/Mobile) so the agent stays unblocked when DESIGN.md is missing, runs deterministic slop-audit gates (APCA contrast/tokens/states/slop tells), works with text-only models. |
 | [`@bacnh85/pi-web`](./pi-web) | 0.5.6 | Web search, page extraction, site mapping/crawling, screenshots, and PDFs. |
 | [`@bacnh85/pi-windows-tools`](./pi-windows-tools) | 0.5.0 | Windows-specific developer tools, shell configuration, and WSL integration. |
@@ -34,6 +35,7 @@ Install the published package you want:
 ```bash
 pi install npm:@bacnh85/pi-9router
 pi install npm:@bacnh85/pi-agy
+pi install npm:@bacnh85/pi-budget
 pi install npm:@bacnh85/pi-fff
 pi install npm:@bacnh85/pi-kicad
 pi install npm:@bacnh85/pi-model-tools
@@ -67,6 +69,7 @@ Packages are standalone npm packages. Most TypeScript packages use Mocha + `tsx`
 pi-extensions/
   pi-9router/
   pi-agy/
+  pi-budget/
   pi-fff/
   pi-kicad/
   pi-model-tools/

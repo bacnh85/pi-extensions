@@ -1,0 +1,35 @@
+{
+  "name": "@bacnh85/pi-budget",
+  "version": "0.1.0",
+  "description": "Spend cap enforcement for Pi — halts the agent when session cost exceeds a --budget USD limit. Companion to pi-sub (which renders usage); this one enforces.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "budget",
+    "spend",
+    "cost",
+    "cap"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git"
+  },
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "extensions/index.js",
+    "extensions/package.json"
+  ],
+  "scripts": {
+    "test": "node --test extensions/test/*.test.js"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.js"
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

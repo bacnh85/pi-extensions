@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmdirSync, unlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmdirSync, unlinkSync, existsSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { describe, it } from "mocha";
 import { ModelRuntime, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { discoverAgents, getModelCandidates, invalidateAgentCache } from "../agents.ts";
 import { resolveModel } from "../model.ts";
-import { mapWithConcurrencyLimit, isFailedResult, getResultOutput, getFinalOutput, runSubAgent, startHeartbeat } from "../runner.ts";
+import { mapWithConcurrencyLimit, isFailedResult, getResultOutput, getFinalOutput, runSubAgent, startHeartbeat, createWorktree, captureWorktreeDiff, removeWorktree } from "../runner.ts";
 import { ThreadStore } from "../threads.ts";
 import {
   isRateLimitError,
@@ -362,6 +363,133 @@ describe("runner helpers", () => {
     });
     assert.equal(peak, 3);
     assert.deepEqual(result, [1, 2, 3, 4, 5, 6]);
+  });
+});
+
+// ===========================================================================
+// Git worktree isolation
+// ===========================================================================
+
+describe("git worktree isolation", () => {
+  function makeGitRepo(prefix: string): string {
+    const repo = mkdtempSync(path.join(os.tmpdir(), prefix));
+    writeFileSync(path.join(repo, "a.txt"), "line1\n");
+    execFileSync("git", ["init", "--quiet"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "test@test"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: repo });
+    execFileSync("git", ["add", "a.txt"], { cwd: repo });
+    execFileSync("git", ["commit", "--quiet", "-m", "init"], { cwd: repo });
+    return repo;
+  }
+
+  it("creates an isolated worktree, captures its diff, and removes it", async function () {
+    this.timeout(30_000);
+    const repo = makeGitRepo("pi-subagent-wt-");
+    try {
+      const wt = await createWorktree(repo);
+      assert.ok(wt.ok, wt.error);
+      const wtPath = wt.path!;
+      assert.notEqual(wtPath, repo, "worktree is a separate directory");
+
+      // Edit inside the worktree; the main checkout must be untouched.
+      writeFileSync(path.join(wtPath, "a.txt"), "line1\nline2\n");
+      const diff = await captureWorktreeDiff(repo, wtPath);
+      assert.ok(diff.ok);
+      assert.match(diff.diff!, /\+line2/);
+      assert.equal(readFileSync(path.join(repo, "a.txt"), "utf8"), "line1\n", "main checkout unchanged");
+
+      await removeWorktree(repo, wtPath);
+      assert.equal(existsSync(wtPath), false, "worktree removed after cleanup");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("fails gracefully when the cwd is not a git repo", async function () {
+    this.timeout(10_000);
+    const nonRepo = mkdtempSync(path.join(os.tmpdir(), "pi-subagent-norepo-"));
+    try {
+      const wt = await createWorktree(nonRepo);
+      assert.equal(wt.ok, false);
+      assert.ok(wt.error, "has an error message");
+    } finally {
+      rmSync(nonRepo, { recursive: true, force: true });
+    }
+  });
+
+  it("captures staged + unstaged changes in the diff", async function () {
+    this.timeout(30_000);
+    const repo = makeGitRepo("pi-subagent-wt2-");
+    try {
+      const wt = await createWorktree(repo);
+      const wtPath = wt.path!;
+      // Unstaged edit + staged new file.
+      writeFileSync(path.join(wtPath, "a.txt"), "line1\nline2\n");
+      writeFileSync(path.join(wtPath, "b.txt"), "new\n");
+      execFileSync("git", ["add", "b.txt"], { cwd: wtPath });
+      const diff = await captureWorktreeDiff(repo, wtPath);
+      assert.match(diff.diff!, /\+line2/);
+      assert.match(diff.diff!, /new file/);
+      // Review: no duplicate hunks for the staged file (single diff --cached).
+      assert.equal(diff.diff!.match(/new file mode/g)?.length ?? 0, 1, "exactly one diff section for b.txt");
+      await removeWorktree(repo, wtPath);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("captures NEW untracked files the way an agent creates them (review: HIGH)", async function () {
+    this.timeout(30_000);
+    const repo = makeGitRepo("pi-subagent-wt3-");
+    try {
+      const wt = await createWorktree(repo);
+      const wtPath = wt.path!;
+      // The child's write tool creates a new file WITHOUT git add — this is the
+      // untracked path the old `git diff HEAD` silently dropped.
+      writeFileSync(path.join(wtPath, "new-file.txt"), "brand new content\n");
+      const diff = await captureWorktreeDiff(repo, wtPath);
+      assert.ok(diff.ok);
+      assert.match(diff.diff!, /new file/);
+      assert.match(diff.diff!, /brand new content/);
+      await removeWorktree(repo, wtPath);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves multi-byte UTF-8 in the diff (review: MEDIUM)", async function () {
+    this.timeout(30_000);
+    const repo = makeGitRepo("pi-subagent-wt4-");
+    try {
+      const wt = await createWorktree(repo);
+      const wtPath = wt.path!;
+      writeFileSync(path.join(wtPath, "a.txt"), "café — 日本語 🎉\n");
+      const diff = await captureWorktreeDiff(repo, wtPath);
+      assert.ok(diff.ok);
+      assert.match(diff.diff!, /café — 日本語 🎉/);
+      assert.equal(diff.diff!.includes("\uFFFD"), false, "no replacement characters");
+      await removeWorktree(repo, wtPath);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("reports diff failures instead of masking them as no changes (review: MEDIUM)", async function () {
+    this.timeout(10_000);
+    const repo = makeGitRepo("pi-subagent-wt5-");
+    try {
+      const wt = await createWorktree(repo);
+      const wtPath = wt.path!;
+      // Inject a failing git: add -A fails -> captureWorktreeDiff must return
+      // ok:false with an error, not "(no changes)".
+      const failingExec = async () => ({ code: 1, stdout: "", stderr: "mock git failure" });
+      const diff = await captureWorktreeDiff(repo, wtPath, failingExec as any);
+      assert.equal(diff.ok, false);
+      assert.match(diff.error!, /mock git failure/);
+      await removeWorktree(repo, wtPath);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
 

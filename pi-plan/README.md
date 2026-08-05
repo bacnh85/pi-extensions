@@ -38,6 +38,7 @@ pi --plan
 | `/doctor` | Show compact workspace, Git, Node, model-auth, and tool health. |
 | `/goal [objective\|status\|pause\|resume\|clear]` | Keep the agent working toward a verifiable condition across turns until a small-fast-model evaluator confirms it is met. |
 | `/goal-model [model hint\|off]` | Configure the `/goal` evaluator model with `/model`-style search. |
+| `/plan-fallback [set <provider/model> ...\|clear]` | View, set, or clear the fallback model chain tried on provider overload/rate-limit. |
 | `Esc Esc` | With an empty idle editor, prefill `/rewind` in the TUI. |
 | `Ctrl+Alt+P` | Toggle plan mode. |
 

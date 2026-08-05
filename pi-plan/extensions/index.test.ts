@@ -2422,6 +2422,293 @@ describe("per-mode model preferences", () => {
   });
 });
 
+describe("fallback model chain", () => {
+  function fallbackCtx(model: any): any {
+    const models = [
+      { provider: "test", id: "model-1" },
+      { provider: "opencode-go", id: "deepseek-v4-flash" },
+      { provider: "zai-coding-cn", id: "glm-5-turbo" },
+    ];
+    return fakeCtx({
+      model,
+      modelRegistry: {
+        getAvailable: () => models,
+        refresh: async () => {},
+        find: (p: string, i: string) => models.find((m) => m.provider === p && m.id === i),
+      },
+    });
+  }
+
+  function overloadMsg(): any {
+    return { role: "assistant", stopReason: "error", errorMessage: "429 Too Many Requests: rate limit exceeded" };
+  }
+
+  function successMsg(): any {
+    return { role: "assistant", stopReason: "end_turn", errorMessage: undefined };
+  }
+
+  it("switches to the first fallback on overload", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2,
+      defaults: { planThinking: "high", normalThinking: "medium" },
+      perModel: {},
+      fallbackModels: ["opencode-go/deepseek-v4-flash", "zai-coding-cn/glm-5-turbo"],
+    }));
+    const ext = createFakePi(["read"], {});
+    const ctx = fallbackCtx({ provider: "test", id: "model-1" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.handlers.before_agent_start?.[0]({ prompt: "fix the bug" }, ctx);
+
+    await ext.handlers.message_end?.[0]({ message: overloadMsg() }, ctx);
+    assert.ok(ext.modelSets.some((m: any) => m.provider === "opencode-go" && m.id === "deepseek-v4-flash"),
+      "switches to first fallback on overload");
+  });
+
+  it("advances through the chain when each fallback also overloads (review: CRITICAL)", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2,
+      defaults: { planThinking: "high", normalThinking: "medium" },
+      perModel: {},
+      fallbackModels: ["opencode-go/deepseek-v4-flash", "zai-coding-cn/glm-5-turbo"],
+    }));
+    const ext = createFakePi(["read"], {});
+    const ctx = fallbackCtx({ provider: "test", id: "model-1" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.handlers.before_agent_start?.[0]({ prompt: "task" }, ctx);
+
+    // Overload on primary -> switch to fallback[0] (deepseek). Pi's own retry
+    // loop continues the SAME turn against the new model (agent.continue — no
+    // before_agent_start fires on retry continuations, verified in
+    // agent-session.js: emitBeforeAgentStart is only in the prompt() path).
+    await ext.handlers.message_end?.[0]({ message: overloadMsg() }, ctx);
+    // Overload on fallback[0] -> advance to fallback[1] (glm-5-turbo).
+    await ext.handlers.message_end?.[0]({ message: overloadMsg() }, ctx);
+    assert.ok(ext.modelSets.some((m: any) => m.provider === "zai-coding-cn" && m.id === "glm-5-turbo"),
+      "advances to fallback[1] after fallback[0] also overloads");
+  });
+
+  it("skips a fallback missing from the registry (review: MEDIUM)", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2,
+      defaults: { planThinking: "high", normalThinking: "medium" },
+      perModel: {},
+      fallbackModels: ["missing/model", "opencode-go/deepseek-v4-flash"],
+    }));
+    const ext = createFakePi(["read"], {});
+    const ctx = fallbackCtx({ provider: "test", id: "model-1" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.handlers.before_agent_start?.[0]({ prompt: "task" }, ctx);
+
+    await ext.handlers.message_end?.[0]({ message: overloadMsg() }, ctx);
+    assert.ok(ext.modelSets.some((m: any) => m.provider === "opencode-go" && m.id === "deepseek-v4-flash"),
+      "missing model is skipped, next valid fallback is used");
+  });
+
+  it("restores the primary model on a successful message (review: HIGH)", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2,
+      defaults: { planThinking: "high", normalThinking: "medium" },
+      perModel: {},
+      fallbackModels: ["opencode-go/deepseek-v4-flash"],
+    }));
+    const ext = createFakePi(["read"], {});
+    const ctx = fallbackCtx({ provider: "test", id: "model-1" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.handlers.before_agent_start?.[0]({ prompt: "task" }, ctx);
+
+    await ext.handlers.message_end?.[0]({ message: overloadMsg() }, ctx);
+    assert.equal(ext.modelSets.length, 1, "first overload switches once");
+
+    // Success -> restores the primary model (test/model-1), not just resets
+    // the index.
+    await ext.handlers.message_end?.[0]({ message: successMsg() }, ctx);
+    assert.ok(ext.modelSets.some((m: any) => m.provider === "test" && m.id === "model-1"),
+      "success restores the primary model");
+  });
+
+  it("resets the chain on a successful message so the next overload switches again", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2,
+      defaults: { planThinking: "high", normalThinking: "medium" },
+      perModel: {},
+      fallbackModels: ["opencode-go/deepseek-v4-flash"],
+    }));
+    const ext = createFakePi(["read"], {});
+    const ctx = fallbackCtx({ provider: "test", id: "model-1" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.handlers.before_agent_start?.[0]({ prompt: "task" }, ctx);
+
+    await ext.handlers.message_end?.[0]({ message: overloadMsg() }, ctx);
+    assert.equal(ext.modelSets.length, 1, "first overload switches once");
+
+    // Success -> reset. Next overload switches to fallback[0] again.
+    await ext.handlers.message_end?.[0]({ message: successMsg() }, ctx);
+    await ext.handlers.message_end?.[0]({ message: overloadMsg() }, ctx);
+    assert.equal(ext.modelSets.length, 3, "success reset the chain (restore + switch again)");
+  });
+
+  it("does not trigger on non-overload errors (e.g. context overflow)", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2,
+      defaults: { planThinking: "high", normalThinking: "medium" },
+      perModel: {},
+      fallbackModels: ["opencode-go/deepseek-v4-flash"],
+    }));
+    const ext = createFakePi(["read"], {});
+    const ctx = fallbackCtx({ provider: "test", id: "model-1" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.handlers.before_agent_start?.[0]({ prompt: "task" }, ctx);
+
+    await ext.handlers.message_end?.[0]({
+      message: { role: "assistant", stopReason: "error", errorMessage: "context_length_exceeded" },
+    }, ctx);
+    assert.equal(ext.modelSets.length, 0, "context overflow does not trigger fallback");
+  });
+
+  it("does not fall back when no fallbackModels are configured", async () => {
+    cleanPrefs();
+    const ext = createFakePi(["read"], {});
+    const ctx = fallbackCtx({ provider: "test", id: "model-1" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.handlers.before_agent_start?.[0]({ prompt: "task" }, ctx);
+
+    await ext.handlers.message_end?.[0]({ message: overloadMsg() }, ctx);
+    assert.equal(ext.modelSets.length, 0, "no chain configured -> no switch");
+  });
+
+  it("restores the primary on the NEXT turn when a turn ended on a fallback (review: HIGH)", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2,
+      defaults: { planThinking: "high", normalThinking: "medium" },
+      perModel: {},
+      normalModel: "test/model-1",
+      fallbackModels: ["opencode-go/deepseek-v4-flash"],
+    }));
+    const ext = createFakePi(["read"], {});
+    const ctx = fallbackCtx({ provider: "test", id: "model-1" });
+    // Emulate a host that emits model_select (source 'set') on setModel — the
+    // applyingStoredModel guard in before_agent_start must suppress preference
+    // writes (review: MEDIUM — regression risk across plan-mode transitions).
+    const origSetModel = ext.pi.setModel.bind(ext.pi);
+    ext.pi.setModel = async (m: any) => {
+      const ok = await origSetModel(m);
+      const ms = ext.handlers.model_select?.[0];
+      if (ms) await ms({ model: m, previousModel: ctx.model, source: "set" }, ctx);
+      return ok;
+    };
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.handlers.before_agent_start?.[0]({ prompt: "task" }, ctx);
+
+    // Overload -> on fallback, turn ends (no success message; retry budget gone).
+    await ext.handlers.message_end?.[0]({ message: overloadMsg() }, ctx);
+    // Next fresh turn: before_agent_start MUST restore the primary, not strand us.
+    await ext.handlers.before_agent_start?.[0]({ prompt: "next task" }, ctx);
+    assert.ok(ext.modelSets.some((m: any) => m.provider === "test" && m.id === "model-1"),
+      "before_agent_start restores the primary after a turn ended on a fallback");
+    // The model_select emission during restore must NOT have overwritten the
+    // persisted per-mode preference.
+    const saved = JSON.parse(readFileSync(prefsPath(), "utf8"));
+    assert.equal(saved.normalModel, "test/model-1", "restore did not corrupt normalModel");
+  });
+
+  it("does not corrupt per-mode model preferences on fallback switch (review: MEDIUM)", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2,
+      defaults: { planThinking: "high", normalThinking: "medium" },
+      perModel: {},
+      normalModel: "test/model-1",
+      fallbackModels: ["opencode-go/deepseek-v4-flash"],
+    }));
+    const ext = createFakePi(["read"], {});
+    const ctx = fallbackCtx({ provider: "test", id: "model-1" });
+    // Emulate a host that emits model_select (source 'set') when setModel is
+    // called — the applyingStoredModel guard must suppress preference writes.
+    const origSetModel = ext.pi.setModel.bind(ext.pi);
+    ext.pi.setModel = async (m: any) => {
+      const ok = await origSetModel(m);
+      const ms = ext.handlers.model_select?.[0];
+      if (ms) await ms({ model: m, previousModel: ctx.model, source: "set" }, ctx);
+      return ok;
+    };
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.handlers.before_agent_start?.[0]({ prompt: "task" }, ctx);
+
+    await ext.handlers.message_end?.[0]({ message: overloadMsg() }, ctx);
+    const saved = JSON.parse(readFileSync(prefsPath(), "utf8"));
+    assert.equal(saved.normalModel, "test/model-1", "per-mode pick not overwritten by fallback switch");
+  });
+
+  it("exhausts the chain without looping when all fallbacks overload (review: LOW)", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2,
+      defaults: { planThinking: "high", normalThinking: "medium" },
+      perModel: {},
+      fallbackModels: ["opencode-go/deepseek-v4-flash"],
+    }));
+    const ext = createFakePi(["read"], {});
+    const ctx = fallbackCtx({ provider: "test", id: "model-1" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.handlers.before_agent_start?.[0]({ prompt: "task" }, ctx);
+
+    await ext.handlers.message_end?.[0]({ message: overloadMsg() }, ctx); // -> deepseek
+    await ext.handlers.message_end?.[0]({ message: overloadMsg() }, ctx); // deepseek overloaded, no more fallbacks
+    assert.equal(ext.modelSets.length, 1, "no further switches after chain exhausted");
+    assert.equal(ext.modelSets.filter((m: any) => m.provider === "test").length, 0, "no fallback re-loop");
+  });
+
+  it("notifies and keeps the reference when the primary is not in the registry (review: MEDIUM)", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), JSON.stringify({
+      version: 2,
+      defaults: { planThinking: "high", normalThinking: "medium" },
+      perModel: {},
+      fallbackModels: ["opencode-go/deepseek-v4-flash"],
+    }));
+    const ext = createFakePi(["read"], {});
+    const ctx = fallbackCtx({ provider: "gone", id: "vanished" }); // primary NOT in registry
+    const notices: string[] = [];
+    ctx.ui.notify = (m: string) => notices.push(m);
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.handlers.before_agent_start?.[0]({ prompt: "task" }, ctx);
+
+    await ext.handlers.message_end?.[0]({ message: overloadMsg() }, ctx); // -> deepseek, primary=gone/vanished
+    await ext.handlers.message_end?.[0]({ message: successMsg() }, ctx);   // restore fails: not in registry
+    assert.ok(notices.some((n) => /Could not restore primary model gone\/vanished/.test(n)), "user warned");
+  });
+
+  it("/plan-fallback set/clear/view manage the chain", async () => {
+    cleanPrefs();
+    const ext = createFakePi(["read"], {});
+    const ctx = fallbackCtx({ provider: "test", id: "model-1" });
+    const notices: string[] = [];
+    ctx.ui.notify = (m: string) => notices.push(m);
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    await ext.commands["plan-fallback"].handler("set opencode-go/deepseek-v4-flash zai-coding-cn/glm-5-turbo", ctx);
+    assert.ok(notices.some((n) => /Fallback chain set: opencode-go\/deepseek-v4-flash → zai-coding-cn\/glm-5-turbo/.test(n)));
+
+    await ext.commands["plan-fallback"].handler("", ctx);
+    assert.ok(notices.some((n) => /fallback: opencode-go\/deepseek-v4-flash → zai-coding-cn\/glm-5-turbo/.test(n)), "view shows the chain");
+
+    await ext.commands["plan-fallback"].handler("set invalid-ref", ctx);
+    assert.ok(notices.some((n) => /Invalid model ref/.test(n)), "invalid ref rejected");
+
+    await ext.commands["plan-fallback"].handler("clear", ctx);
+    assert.ok(notices.some((n) => /cleared/.test(n)));
+    await ext.commands["plan-fallback"].handler("", ctx);
+    assert.ok(notices.some((n) => /No fallback models configured/.test(n)), "view after clear");
+  });
+});
+
 describe("ask_user_question validation", () => {
   it("schema requires 2-4 options and exposes recommended", async () => {
     const { toolDefs } = createFakePi(["read"], { plan: true });

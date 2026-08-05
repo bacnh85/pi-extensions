@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.14.0 (2026-08-05)
+
+### Git worktree isolation (`sandbox: worktree`)
+
+Agents can now run in an isolated **git worktree** instead of the parent's
+working tree — the safe way to run parallel implementation agents that edit
+files. Set `sandbox: worktree` in agent frontmatter (see `agent-format.md`).
+
+- Child file mutations land in `.pi-worktrees/<id>` under the repo root; the
+  main checkout stays untouched, so two parallel `worker` agents can never
+  clobber each other's edits.
+- On completion, a unified diff of the child's changes is returned as
+  `result.patch` and shown in the thread viewer as a `🌿 worktree` badge.
+- **Merging is explicit** — the parent receives the diff and applies it via
+  `apply_patch` / cherry-pick / discard; nothing is auto-merged.
+- The worktree is removed in a `finally` on success, error, or abort.
+- Falls back to in-process execution with a warning when the cwd is not a git
+  repo (`ponytail`: isolation optimization, not a hard requirement).
+- Wired through the `subagent` tool, the service path (`pi-subagent:run` for
+  pi-review), and `runner.ts`'s `runSubAgent` (new `sandbox` + `exec` options).
+
 ## 0.13.0 (2026-07-31)
 
 ### Subagents inherit parent extensions & tools by default

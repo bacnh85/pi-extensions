@@ -236,6 +236,15 @@ export function renderSingleResult(
       container.addChild(new Spacer(1));
       container.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
     }
+    if (result.patch) {
+      container.addChild(new Spacer(1));
+      container.addChild(new Text(theme.fg("success", "🌿 worktree"), 0, 0));
+      const patchLines = result.patch.split("\n").length;
+      container.addChild(new Text(theme.fg("dim", `${patchLines} diff lines — merge explicitly via apply_patch/cherry-pick`), 0, 0));
+      if (result.patch !== "(no changes)") {
+        container.addChild(new Text(theme.fg("muted", result.patch.slice(0, 2000)), 0, 0));
+      }
+    }
     return container;
   }
 
@@ -258,6 +267,7 @@ export function renderSingleResult(
   }
   const usageStr = formatUsageStats(result.usage, result.model);
   if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
+  if (result.patch) text += `\n${theme.fg("success", "🌿 worktree")} (${result.patch.split("\n").length} diff lines)`;
   return new Text(text, 0, 0);
 }
 

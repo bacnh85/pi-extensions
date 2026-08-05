@@ -16,6 +16,7 @@
 
 import type { Message, Model } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import * as path from "node:path";
 import {
   createAgentSession,
   createExtensionRuntime,
@@ -115,6 +116,8 @@ export interface SubAgentResult {
   model?: string;
   stopReason?: string;
   errorMessage?: string;
+  /** Unified diff of changes made in an isolated worktree (sandbox: "worktree"). */
+  patch?: string;
   /** Canonical result status (added in 0.6.0). */
   status?: SubagentStatus;
 }
@@ -135,6 +138,8 @@ export async function runSubAgent(options: {
   task: string;
   tools: string[];
   model: Model<any>;
+  /** "worktree" runs the child in an isolated git worktree; the resulting diff is returned as result.patch. */
+  sandbox?: "worktree";
   /** Pi 0.80.10's canonical credential/model runtime. */
   modelRuntime?: unknown;
   /** Legacy Pi SDK session options retained for 0.80.6 tests and hosts. */
@@ -147,6 +152,8 @@ export async function runSubAgent(options: {
   onProgress?: (progress: SubAgentProgress) => void;
   timeoutMs?: number;
   hardTimeoutMs?: number;
+  /** Exec used for the git worktree lifecycle (add/remove/diff). Defaults to a child_process spawn when unset. */
+  exec?: (command: string, args: string[], options?: { cwd?: string; timeout?: number }) => Promise<{ code: number; stdout: string; stderr: string }>;
   /**
    * When true, build a DefaultResourceLoader so the child inherits the parent's
    * extensions (and thus extension tools: web, serena, munin, …). When false or
@@ -164,7 +171,7 @@ export async function runSubAgent(options: {
     cwd, systemPrompt, task, tools, model, modelRuntime, authStorage, modelRegistry, signal,
     agentName = "subagent", thinkingLevel = "off", onMessage, onProgress,
     timeoutMs = DEFAULT_INACTIVITY_TIMEOUT_MS, hardTimeoutMs = HARD_TIMEOUT_MS,
-    loadExtensions = false, projectTrusted = true,
+    loadExtensions = false, projectTrusted = true, sandbox, exec,
   } = options;
   const result: SubAgentResult = {
     agent: agentName, task, exitCode: 0, messages: [], stderr: "",
@@ -210,12 +217,36 @@ export async function runSubAgent(options: {
       result.status = classifyStopReason(result.stopReason, !timedOut, timedOut);
       return result;
     }
-    const { session } = await createAgentSession({
-      cwd, model, thinkingLevel, resourceLoader, tools, sessionManager: SessionManager.inMemory(cwd), settingsManager,
-      ...(modelRuntime ? { modelRuntime } : {}),
-      // Pi 0.80.10 owns credentials in ModelRuntime; older SDKs still accept these.
-      ...(authStorage ? { authStorage, modelRegistry } : {}),
-    } as any);
+
+    // Isolated git worktree: the child edits a sibling checkout; the resulting
+    // diff is returned as result.patch and the worktree is removed on exit.
+    // ponytail: falls back to the in-process cwd when git is unavailable — the
+    // worktree is an isolation optimization, not a hard requirement.
+    let worktreeDir: string | undefined;
+    let childCwd = cwd;
+    if (sandbox === "worktree") {
+      const wt = await createWorktree(cwd, exec);
+      if (wt.ok) {
+        worktreeDir = wt.path;
+        childCwd = wt.path!;
+      } else if (wt.error) {
+        result.stderr = `Worktree unavailable (${wt.error}); running in workspace.`;
+      }
+    }
+
+    let session: Awaited<ReturnType<typeof createAgentSession>>["session"];
+    try {
+      const created = await createAgentSession({
+        cwd: childCwd, model, thinkingLevel, resourceLoader, tools, sessionManager: SessionManager.inMemory(childCwd), settingsManager,
+        ...(modelRuntime ? { modelRuntime } : {}),
+        // Pi 0.80.10 owns credentials in ModelRuntime; older SDKs still accept these.
+        ...(authStorage ? { authStorage, modelRegistry } : {}),
+      } as any);
+      session = created.session;
+    } catch (error) {
+      if (worktreeDir) await removeWorktree(cwd, worktreeDir, exec);
+      throw error;
+    }
     let unsubscribe: (() => void) | undefined;
     let removeAbort: (() => void) | undefined;
     try {
@@ -257,10 +288,17 @@ export async function runSubAgent(options: {
       else if (combinedSignal.aborted) { result.stopReason = "aborted"; result.errorMessage ||= "Sub-agent aborted"; }
       result.status = classifyStopReason(result.stopReason, result.stopReason === "aborted", result.stopReason === "timeout");
       result.exitCode = result.status === "success" || result.status === "partial" ? 0 : 1;
+      if (worktreeDir) {
+        // Capture the child's changes as a unified diff before tearing down.
+        const diff = await captureWorktreeDiff(cwd, worktreeDir, exec);
+        if (diff.ok) result.patch = diff.diff;
+        else if (diff.error) result.stderr = result.stderr ? `${result.stderr}; diff unavailable (${diff.error})` : `Diff unavailable (${diff.error})`;
+      }
       return result;
     } finally {
       unsubscribe?.(); removeAbort?.();
       try { session.dispose(); } catch { /* best effort */ }
+      if (worktreeDir) await removeWorktree(cwd, worktreeDir, exec);
     }
   } catch (error) {
     result.exitCode = 1;
@@ -276,6 +314,88 @@ export async function runSubAgent(options: {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Minimal exec fallback (child_process spawn) used when no exec is injected. */
+async function defaultExec(
+  command: string,
+  args: string[],
+  options?: { cwd?: string; timeout?: number },
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const { spawn } = await import("node:child_process");
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { cwd: options?.cwd, stdio: ["ignore", "pipe", "pipe"] });
+    // Decode each chunk as a complete UTF-8 stream (Buffer.toString per chunk
+    // would corrupt multi-byte sequences straddling chunk boundaries).
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    let stdout = ""; let stderr = "";
+    const timer = options?.timeout ? setTimeout(() => child.kill("SIGKILL"), options.timeout) : undefined;
+    child.stdout.on("data", (d) => { stdout += d; });
+    child.stderr.on("data", (d) => { stderr += d; });
+    child.on("error", (err) => { if (timer) clearTimeout(timer); resolve({ code: 1, stdout, stderr: String(err.message ?? err) }); });
+    child.on("close", (code) => { if (timer) clearTimeout(timer); resolve({ code: code ?? 1, stdout, stderr }); });
+  });
+}
+
+async function runGit(
+  cwd: string,
+  args: string[],
+  exec?: (command: string, args: string[], options?: { cwd?: string; timeout?: number }) => Promise<{ code: number; stdout: string; stderr: string }>,
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  const run = exec ?? defaultExec;
+  const res = await run("git", args, { cwd, timeout: 30_000 });
+  return { ok: res.code === 0, stdout: res.stdout, stderr: res.stderr };
+}
+
+/** Create a detached git worktree at .pi-worktrees/<rand> under the repo root. */
+export async function createWorktree(
+  cwd: string,
+  exec?: (command: string, args: string[], options?: { cwd?: string; timeout?: number }) => Promise<{ code: number; stdout: string; stderr: string }>,
+): Promise<{ ok: boolean; path?: string; error?: string }> {
+  try {
+    const root = await runGit(cwd, ["rev-parse", "--show-toplevel"], exec);
+    if (!root.ok) return { ok: false, error: root.stderr.trim() || "not a git repo" };
+    const repoRoot = root.stdout.trim();
+    if (!repoRoot) return { ok: false, error: "empty git root" };
+    const id = `pi-subagent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const wtPath = path.join(repoRoot, ".pi-worktrees", id);
+    const add = await runGit(repoRoot, ["worktree", "add", "--detach", wtPath, "HEAD"], exec);
+    if (!add.ok) return { ok: false, error: add.stderr.trim() || "git worktree add failed" };
+    return { ok: true, path: wtPath };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Unified diff of ALL changes in the worktree vs HEAD (tracked edits, staged
+ *  changes, AND new untracked files). Stages first so untracked files are
+ *  captured — the worktree is removed right after, so mutating its index is
+ *  safe. A single `diff --cached HEAD` avoids duplicate hunks from combining
+ *  `diff HEAD` + `diff --cached`. */
+export async function captureWorktreeDiff(
+  repoRoot: string,
+  worktreeDir: string,
+  exec?: (command: string, args: string[], options?: { cwd?: string; timeout?: number }) => Promise<{ code: number; stdout: string; stderr: string }>,
+): Promise<{ ok: boolean; diff?: string; error?: string }> {
+  const add = await runGit(worktreeDir, ["add", "-A"], exec);
+  if (!add.ok) return { ok: false, error: add.stderr.trim() || "git add -A failed" };
+  const diff = await runGit(worktreeDir, ["diff", "--cached", "HEAD"], exec);
+  if (!diff.ok) return { ok: false, error: diff.stderr.trim() || "git diff --cached HEAD failed" };
+  const text = diff.stdout.trim();
+  return { ok: true, diff: text || "(no changes)" };
+}
+
+/** Remove a worktree and its metadata, best-effort. */
+export async function removeWorktree(
+  repoRoot: string,
+  worktreeDir: string,
+  exec?: (command: string, args: string[], options?: { cwd?: string; timeout?: number }) => Promise<{ code: number; stdout: string; stderr: string }>,
+): Promise<void> {
+  try {
+    await runGit(repoRoot, ["worktree", "remove", "--force", worktreeDir], exec);
+  } catch { /* best effort */ }
+}
+
 
 export function getFinalOutput(messages: Message[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {

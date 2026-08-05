@@ -117,6 +117,7 @@ export async function runNamedAgent(options: {
 
     const result = await runSubAgent({
       cwd: safeCwd.path,
+      sandbox: options.agent.sandbox === "worktree" ? "worktree" : undefined,
       systemPrompt: contract ? `${options.agent.systemPrompt}\n\n## Task Contract\n${contract}` : options.agent.systemPrompt,
       task: options.task,
       tools: toolValidation.tools,

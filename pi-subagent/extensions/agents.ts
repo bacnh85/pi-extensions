@@ -22,7 +22,7 @@ export interface AgentConfig {
   model?: string;
   models?: string[];
   thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-  sandbox?: "read-only" | "workspace-write";
+  sandbox?: "read-only" | "workspace-write" | "worktree";
   color?: AgentColor;
   systemPrompt: string;
   source: "user" | "project" | "bundled";
@@ -203,7 +203,7 @@ function loadAgentsFromDir(
     }
 
     if (typeof frontmatter.sandbox === "string" && frontmatter.sandbox) {
-      const validSandboxes = ["read-only", "workspace-write"];
+      const validSandboxes = ["read-only", "workspace-write", "worktree"];
       if (!validSandboxes.includes(frontmatter.sandbox)) {
         diagnostics.push({
           filePath,
@@ -231,8 +231,8 @@ function loadAgentsFromDir(
       thinking: typeof frontmatter.thinking === "string" && ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(frontmatter.thinking)
         ? frontmatter.thinking as AgentConfig["thinking"]
         : undefined,
-      sandbox: typeof frontmatter.sandbox === "string" && ["read-only", "workspace-write"].includes(frontmatter.sandbox)
-        ? frontmatter.sandbox as "read-only" | "workspace-write"
+      sandbox: typeof frontmatter.sandbox === "string" && ["read-only", "workspace-write", "worktree"].includes(frontmatter.sandbox)
+        ? frontmatter.sandbox as "read-only" | "workspace-write" | "worktree"
         : undefined,
       color: typeof frontmatter.color === "string" && VALID_COLORS.includes(frontmatter.color as any)
         ? frontmatter.color as AgentColor

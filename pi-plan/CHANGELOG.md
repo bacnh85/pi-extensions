@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.0 (2026-08-05)
+
+### Features
+
+- **Fallback model chain on provider overload/rate-limit.** New `/plan-fallback set <provider/model> ...` / `clear` command (persisted in `~/.pi/agent/pi-plan/preferences.json` under `fallbackModels`). When an assistant turn ends with an overload-style error (`429`/`529`, rate limit, quota exhausted, overloaded, 503…), pi-plan switches to the next model in the chain and re-submits the user's prompt. The chain resets to the primary model on the next successful message or fresh turn, so the primary is always tried first. Non-overload errors (e.g. context overflow — handled by Pi's own compaction) never trigger a fallback. Mirrors Claude Code's `fallbackModel`; the overload patterns live in `extensions/lib/fallback.ts` (extend as providers surface new error shapes). `/doctor` now shows the configured chain.
+
+### Notes
+
+- Switch threshold is a constant `1` (switch on first overload); a config knob can be added if transient blips become a problem.
+- The switch rides on Pi's own retry loop: after `setModel`, Pi's retry continuation (`agent.continue`) resumes the SAME turn against the new model. No explicit re-submission is sent (a re-submit would spawn a fresh `before_agent_start` turn and reset the chain, and could duplicate the run — review finding). `before_agent_start` only fires on genuine fresh user prompts (`prompt()` path), never on retry continuations (verified in SDK `agent-session.js`), so the chain advances across retries and resets on the next real turn.
+- The primary model is restored via `setModel` on the first successful message after a fallback switch, AND on the next `before_agent_start` when a turn ended mid-chain (review finding — a turn can end on a fallback when the retry budget is consumed, stranding the user otherwise). Missing-registry fallbacks are skipped, not stalled (review finding). If the primary can't be restored (not in registry / no API key), the user is warned and the reference is kept for the next turn.
+- Fallback `setModel` calls are wrapped in the `applyingStoredModel` guard so Pi's `model_select` event (if emitted) cannot overwrite the user's per-mode `planModel`/`normalModel` preferences (review finding). This includes the `before_agent_start` cross-turn restore.
+
 ## 0.9.3 (2026-08-05)
 
 ### Features

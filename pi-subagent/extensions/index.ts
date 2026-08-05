@@ -647,6 +647,7 @@ export default function (pi: ExtensionAPI) {
 
             const result = await runSubAgent({
               cwd: safeCwd,
+              sandbox: agent.sandbox === "worktree" ? "worktree" : undefined,
               systemPrompt: params.instructions
               ? `${agent.systemPrompt}\n\n## Task Contract\n${params.instructions.slice(0, MAX_INSTRUCTIONS_LENGTH)}`
               : agent.systemPrompt,
