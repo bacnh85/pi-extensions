@@ -119,6 +119,16 @@ function jbIsDeclarationPositionError(result: string): boolean {
   return /not.*resolvable|may not be on|is.*declaration|declaration.*itself/i.test(result);
 }
 
+// The three regex templates in _jb_declaration_regexes must each contain exactly
+// ONE capturing group — find_text_coordinates raises ValueError otherwise, silently
+// disabling the stage-2 find_declaration fallback. These are fixtures mirroring the
+// Python rf-string templates (name -> {last}, re.escape'd).
+const JB_DECLARATION_REGEX_TEMPLATES = [
+  String.raw`\b(?:class|interface|type|function|const|let|var|def|struct|enum|trait|impl)\s+({last})\b`,
+  String.raw`(?<![.\w])({last})\s*\(`,
+  String.raw`\b({last})\b`,
+];
+
 describe("JetBrains tool remapping tables", () => {
   it("maps every LSP-excluded tool to its jet_brains_* variant", () => {
     const excluded = ["get_symbols_overview", "find_symbol", "find_referencing_symbols", "find_declaration", "find_implementations", "rename_symbol", "safe_delete_symbol"];
@@ -229,6 +239,36 @@ describe("JetBrains tool remapping tables", () => {
 
   it("_jb_is_declaration_position_error is case-insensitive", () => {
     expect(jbIsDeclarationPositionError("MAY NOT BE ON a resolvable reference")).to.be.true;
+  });
+
+  it("each _jb_declaration_regexes pattern has exactly one capturing group", () => {
+    const sample = "Foo";
+    for (const template of JB_DECLARATION_REGEX_TEMPLATES) {
+      const pattern = template.replace("{last}", sample);
+      const re = new RegExp(pattern);
+      // A capturing group count: count unescaped '(' that open a capture group.
+      // Non-capturing groups are (?:...) — excluded by this count.
+      let groups = 0;
+      for (let i = 0; i < pattern.length; i++) {
+        if (pattern[i] !== "(") continue;
+        // Skip escaped \(
+        if (i > 0 && pattern[i - 1] === "\\") continue;
+        // Skip non-capturing (?: and lookarounds (?<! / (?=
+        const next = pattern[i + 1];
+        if (next === "?") continue;
+        groups++;
+      }
+      expect(groups, `pattern ${pattern} must have exactly 1 capturing group`).to.equal(1);
+    }
+  });
+
+  it("each _jb_declaration_regexes pattern matches its intended declaration shape", () => {
+    const sample = "methodOne";
+    const [keyword, call, bare] = JB_DECLARATION_REGEX_TEMPLATES.map((t) => new RegExp(t.replace("{last}", sample)));
+    expect(keyword.test("  function methodOne(): void {")).to.be.true; // keyword-anchored
+    expect(call.test("  methodOne(): void {")).to.be.true; // method definition (no preceding word char/dot)
+    expect(call.test("  this.methodOne();")).to.be.false; // call site (preceded by dot) excluded
+    expect(bare.test("  methodOne")).to.be.true; // bare fallback
   });
 });
 

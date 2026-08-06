@@ -348,18 +348,19 @@ def _jb_find_declaration(agent: SerenaAgent, name_path: str, relative_path: str)
     project = agent.get_active_project_or_raise()
     # Stage 1: direct location lookup (robust to ambiguous names).
     try:
-        with JetBrainsPluginClient.from_project(project) as client:
-            response = client.find_symbol(
-                name_path=name_path, relative_path=relative_path,
-                depth=0, include_location=True,
-            )
-        symbols = response.get("symbols") or []
-        sym = _jb_pick_unique_symbol(symbols, name_path)
-        if sym is not None:
-            text_range = sym.get("text_range") or {}
-            start = text_range.get("start_pos") or {}
-            if start.get("line") is not None and start.get("col") is not None:
-                return _json.dumps({"symbols": [{"name_path": sym.get("name_path", name_path), "relative_path": sym.get("relative_path", relative_path), "type": sym.get("type", "unknown"), "text_range": {"start_pos": {"line": start["line"], "col": start["col"]}}}]}, indent=2)
+        with contextlib.redirect_stdout(sys.stderr):
+            with JetBrainsPluginClient.from_project(project) as client:
+                response = client.find_symbol(
+                    name_path=name_path, relative_path=relative_path,
+                    depth=0, include_location=True,
+                )
+            symbols = response.get("symbols") or []
+            sym = _jb_pick_unique_symbol(symbols, name_path)
+            if sym is not None:
+                text_range = sym.get("text_range") or {}
+                start = text_range.get("start_pos") or {}
+                if start.get("line") is not None and start.get("col") is not None:
+                    return _json.dumps({"symbols": [{"name_path": sym.get("name_path", name_path), "relative_path": sym.get("relative_path", relative_path), "type": sym.get("type", "unknown"), "text_range": {"start_pos": {"line": start["line"], "col": start["col"]}}}]}, indent=2)
     except Exception as exc:
         # Plugin/client error — log it, then fall through to the regex stage.
         print(f"[_jb_find_declaration] stage 1 find_symbol failed, falling back to regex: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
@@ -482,8 +483,10 @@ def _handle_diagnostics(req_id, req: dict[str, Any]) -> dict[str, Any]:
 
     agent = get_agent(project, context)
     if agent.get_language_backend().is_jetbrains():
-        # serena-agent 1.2.0 has no JetBrains diagnostics counterpart.
-        return {"id": req_id, "ok": False, "tool": "get_diagnostics_for_file", "errorType": "language_server_error", "error": "get_diagnostics_for_file requires the LSP backend; the JetBrains backend does not provide file diagnostics.", "result": json.dumps({"note": "Not applicable with the JetBrains backend."})}
+        # serena-agent 1.2.0 has no JetBrains diagnostics counterpart. serena_error
+        # (not language_server_error) so the hint doesn't suggest restarting the
+        # language server, which is not applicable to the JetBrains backend.
+        return {"id": req_id, "ok": False, "tool": "get_diagnostics_for_file", "errorType": "serena_error", "error": "get_diagnostics_for_file requires the LSP backend; the JetBrains backend does not provide file diagnostics.", "result": json.dumps({"note": "Not applicable with the JetBrains backend."})}
 
     import json as _json
     import pathlib

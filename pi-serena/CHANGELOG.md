@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.12 (2026-08-06)
+
+### Fixes
+
+- Third review round on the JetBrains work, all findings addressed:
+  - `_jb_find_declaration` stage 1 now wraps the plugin-client call in
+    `contextlib.redirect_stdout(sys.stderr)`, matching every other serena-agent
+    interaction in the bridge. Prevents a stray `print()` in the plugin-client
+    path from corrupting the stdout JSON-line protocol.
+  - `serena_get_diagnostics_for_file` under the JetBrains backend now reports
+    `errorType: serena_error` instead of `language_server_error`, so the error
+    no longer suggests restarting the language server (which is not applicable
+    to the JetBrains backend).
+  - New tests assert that each `_jb_declaration_regexes` pattern contains
+    exactly one capturing group (a second group would make
+    `find_text_coordinates` raise ValueError and silently disable the
+    find_declaration stage-2 fallback), and that the patterns match their
+    intended declaration shapes (keyword-anchored, method definition vs call
+    site, bare fallback).
+
 ## 0.9.11 (2026-08-06)
 
 ### Fixes
