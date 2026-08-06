@@ -5,7 +5,7 @@
 
 import { EventEmitter } from "node:events";
 import { expect } from "chai";
-import { SerenaWorkerClient } from "./worker";
+import { SerenaWorkerClient, JB_TOOL_MAP, JB_DROP_PARAMS, JB_PARAM_RENAMES } from "./worker";
 
 function createMockProcess(onWrite?: (data: string) => void): any {
   const mockStdout = new EventEmitter() as any;
@@ -84,6 +84,102 @@ function createMockedWorker(): {
 
   return { worker, mockStdout: mockProcess.stdout, mockStdin: mockProcess.stdin, mockProcess };
 }
+
+// Mirrors resolve_jb_tool_call in the Python bridge (worker.ts PYTHON_BRIDGE),
+// which is built from the same exported tables via JSON interpolation.
+function resolveJbToolCall(toolName: string, params: Record<string, unknown>): { name: string; params: Record<string, unknown> } {
+  const jbName = JB_TOOL_MAP[toolName] ?? toolName;
+  const mapped: Record<string, unknown> = { ...params };
+  for (const [renameFrom, renameTo] of Object.entries(JB_PARAM_RENAMES[jbName] ?? {})) {
+    if (renameFrom in mapped) {
+      mapped[renameTo] = mapped[renameFrom];
+      delete mapped[renameFrom];
+    }
+  }
+  for (const drop of JB_DROP_PARAMS[jbName] ?? []) {
+    delete mapped[drop];
+  }
+  return { name: jbName, params: mapped };
+}
+
+describe("JetBrains tool remapping tables", () => {
+  it("maps every LSP-excluded tool to its jet_brains_* variant", () => {
+    const excluded = ["get_symbols_overview", "find_symbol", "find_referencing_symbols", "find_declaration", "find_implementations", "rename_symbol", "safe_delete_symbol"];
+    for (const tool of excluded) {
+      expect(JB_TOOL_MAP[tool], tool).to.be.a("string");
+      expect(JB_TOOL_MAP[tool].startsWith("jet_brains_"), tool).to.be.true;
+    }
+  });
+
+  it("maps to the exact serena-agent variant names", () => {
+    expect(JB_TOOL_MAP).to.deep.equal({
+      get_symbols_overview: "jet_brains_get_symbols_overview",
+      find_symbol: "jet_brains_find_symbol",
+      find_referencing_symbols: "jet_brains_find_referencing_symbols",
+      find_declaration: "jet_brains_find_declaration",
+      find_implementations: "jet_brains_find_implementations",
+      rename_symbol: "jet_brains_rename",
+      safe_delete_symbol: "jet_brains_safe_delete",
+    });
+  });
+
+  it("drop/rename tables only reference known jet_brains_* variants", () => {
+    const jbNames = new Set(Object.values(JB_TOOL_MAP));
+    for (const key of Object.keys(JB_DROP_PARAMS)) {
+      expect(jbNames.has(key), `JB_DROP_PARAMS key ${key}`).to.be.true;
+      expect(JB_DROP_PARAMS[key].length).to.be.greaterThan(0);
+    }
+    for (const key of Object.keys(JB_PARAM_RENAMES)) {
+      expect(jbNames.has(key), `JB_PARAM_RENAMES key ${key}`).to.be.true;
+    }
+  });
+
+  it("safe_delete remaps name_path_pattern -> name_path and drops LSP-only params", () => {
+    const out = resolveJbToolCall("safe_delete_symbol", {
+      name_path_pattern: "Foo",
+      relative_path: "a.ts",
+      delete_even_if_used: false,
+    });
+    expect(out.name).to.equal("jet_brains_safe_delete");
+    expect(out.params).to.deep.equal({ name_path: "Foo", relative_path: "a.ts", delete_even_if_used: false });
+  });
+
+  it("find_symbol drops include_kinds/exclude_kinds/substring_matching", () => {
+    const out = resolveJbToolCall("find_symbol", {
+      name_path_pattern: "Foo",
+      include_kinds: [5, 6],
+      exclude_kinds: [7],
+      substring_matching: true,
+      relative_path: "a.ts",
+    });
+    expect(out.name).to.equal("jet_brains_find_symbol");
+    expect(out.params).to.deep.equal({ name_path_pattern: "Foo", relative_path: "a.ts" });
+  });
+
+  it("find_referencing_symbols drops include_kinds/exclude_kinds", () => {
+    const out = resolveJbToolCall("find_referencing_symbols", {
+      name_path: "Foo/bar",
+      relative_path: "a.ts",
+      include_kinds: [5],
+      exclude_kinds: [7],
+    });
+    expect(out.name).to.equal("jet_brains_find_referencing_symbols");
+    expect(out.params).to.deep.equal({ name_path: "Foo/bar", relative_path: "a.ts" });
+  });
+
+  it("rename_symbol maps to jet_brains_rename with unchanged params", () => {
+    const out = resolveJbToolCall("rename_symbol", { name_path: "Foo", relative_path: "a.ts", new_name: "Bar" });
+    expect(out.name).to.equal("jet_brains_rename");
+    expect(out.params).to.deep.equal({ name_path: "Foo", relative_path: "a.ts", new_name: "Bar" });
+  });
+
+  it("is a no-op for shared tools (replace_symbol_body, search_for_pattern)", () => {
+    for (const tool of ["replace_symbol_body", "insert_before_symbol", "search_for_pattern", "replace_content"]) {
+      const out = resolveJbToolCall(tool, { relative_path: "a.ts" });
+      expect(out.name).to.equal(tool);
+    }
+  });
+});
 
 describe("SerenaWorkerClient", () => {
   describe("request/response protocol", () => {

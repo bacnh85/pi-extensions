@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.9.9 (2026-08-06)
+
+### Fixes
+
+- JetBrains backend (`SERENA_LANGUAGE_BACKEND=JetBrains`): the `serena_*` tools
+  are now transparently routed to Serena's active `jet_brains_*` variants
+  instead of failing with "tool not active". Serena's internal `jetbrains` mode
+  excludes the LSP-flavored tools (`find_symbol`, `get_symbols_overview`,
+  `find_referencing_symbols`, `rename_symbol`, `safe_delete_symbol`), so the
+  Python bridge remaps the pi-facing tool names and parameters when the backend
+  is JetBrains:
+  - `serena_get_symbols_overview` → `jet_brains_get_symbols_overview`
+  - `serena_find_symbol` → `jet_brains_find_symbol` (LSP-only `include_kinds`/
+    `exclude_kinds`/`substring_matching` dropped)
+  - `serena_find_referencing_symbols` → `jet_brains_find_referencing_symbols`
+    (LSP-only `include_kinds`/`exclude_kinds` dropped)
+  - `serena_find_declaration` → `jet_brains_find_declaration` (the JetBrains
+    variant requires a one-group regex; the bridge tries declaration-context
+    regexes in order and, when the regex lands on the declaration itself,
+    returns the matched position)
+  - `serena_find_implementations` → `jet_brains_find_implementations`
+  - `serena_rename_symbol` → `jet_brains_rename`
+  - `serena_safe_delete_symbol` → `jet_brains_safe_delete` (`name_path_pattern`
+    mapped to `name_path`)
+  - `serena_get_diagnostics_for_file` and `serena_restart_language_server` have
+    no JetBrains counterpart (no `jet_brains_run_inspections` in serena-agent
+    1.2.0) and now return a clear "not applicable to the JetBrains backend"
+    message.
+
+  The LSP backend path is unchanged (remap tables are a no-op). The remap
+  tables live in `worker.ts` as exported TS constants, are interpolated into the
+  bridge as JSON, and are covered by 8 new unit tests.
+
 ## 0.9.8 (2026-08-06)
 
 ### Improvements

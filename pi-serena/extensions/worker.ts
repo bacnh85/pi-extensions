@@ -25,6 +25,31 @@ type QueuedRequest = {
   reject: (error: Error) => void;
 };
 
+// JetBrains backend tool remapping tables — single source of truth, interpolated
+// into the Python bridge via JSON and unit-tested here (see worker.test.ts).
+// Serena's internal 'jetbrains' mode excludes the LSP-flavored tools and activates
+// only jet_brains_* variants; the bridge maps pi-facing names + params accordingly.
+export const JB_TOOL_MAP: Record<string, string> = {
+  get_symbols_overview: "jet_brains_get_symbols_overview",
+  find_symbol: "jet_brains_find_symbol",
+  find_referencing_symbols: "jet_brains_find_referencing_symbols",
+  find_declaration: "jet_brains_find_declaration",
+  find_implementations: "jet_brains_find_implementations",
+  rename_symbol: "jet_brains_rename",
+  safe_delete_symbol: "jet_brains_safe_delete",
+};
+
+// LSP-only params the JetBrains variants do not accept (unknown kwargs raise TypeError).
+export const JB_DROP_PARAMS: Record<string, string[]> = {
+  jet_brains_find_symbol: ["include_kinds", "exclude_kinds", "substring_matching"],
+  jet_brains_find_referencing_symbols: ["include_kinds", "exclude_kinds"],
+};
+
+// pi-facing param key -> JetBrains param key (safe_delete uses name_path, not name_path_pattern).
+export const JB_PARAM_RENAMES: Record<string, Record<string, string>> = {
+  jet_brains_safe_delete: { name_path_pattern: "name_path" },
+};
+
 const PYTHON_BRIDGE = String.raw`
 from __future__ import annotations
 
@@ -88,6 +113,31 @@ def load_bridge_config() -> SerenaConfig:
     if backend:
         config.language_backend = LanguageBackend.from_str(backend)
     return config
+
+
+# --- JetBrains backend tool remapping -------------------------------------
+# Serena's internal 'jetbrains' mode excludes the LSP-flavored tools
+# (find_symbol, get_symbols_overview, find_referencing_symbols, rename_symbol,
+# safe_delete_symbol, restart_language_server) and activates only jet_brains_*
+# variants. pi-serena keeps a stable pi-facing tool contract (serena_* tools),
+# so the bridge transparently maps LSP-flavored names + params to the active
+# JetBrains variants when the backend is JetBrains.
+
+JB_TOOL_MAP = ${JSON.stringify(JB_TOOL_MAP)}
+JB_DROP_PARAMS = ${JSON.stringify(JB_DROP_PARAMS)}
+JB_PARAM_RENAMES = ${JSON.stringify(JB_PARAM_RENAMES)}
+
+
+def resolve_jb_tool_call(tool_name: str, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Map an LSP-flavored pi tool call to the active JetBrains variant."""
+    jb_name = JB_TOOL_MAP.get(tool_name, tool_name)
+    mapped = dict(params)
+    for rename_from, rename_to in JB_PARAM_RENAMES.get(jb_name, {}).items():
+        if rename_from in mapped:
+            mapped[rename_to] = mapped.pop(rename_from)
+    for drop in JB_DROP_PARAMS.get(jb_name, set()):
+        mapped.pop(drop, None)
+    return jb_name, mapped
 
 
 def classify_error(message: str) -> str:
@@ -183,6 +233,9 @@ def handle(req: dict[str, Any]) -> dict[str, Any]:
         project = str(req.get("project") or os.getcwd())
         context = str(req.get("context") or "ide")
         agent = get_agent(project, context)
+        if agent.get_language_backend().is_jetbrains():
+            # The JetBrains backend has no language server to restart.
+            return {"id": req_id, "ok": True, "tool": "restart_language_server", "result": "Language server restart is not applicable with the JetBrains backend."}
         with contextlib.redirect_stdout(sys.stderr):
             agent.reset_language_server_manager()
         return {"id": req_id, "ok": True, "tool": "restart_language_server", "result": "OK"}
@@ -197,6 +250,8 @@ def handle(req: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(params, dict):
             raise ValueError("call request field 'params' must be an object")
         agent = get_agent(project, context)
+        if agent.get_language_backend().is_jetbrains():
+            tool_name, params = resolve_jb_tool_call(tool_name, params)
         with contextlib.redirect_stdout(sys.stderr):
             result = agent.get_tool_by_name(tool_name).apply_ex(**params)
         # Serena's apply_ex catches many tool failures and returns an "Error: ..." string.
@@ -217,6 +272,61 @@ def _get_symbol_retriever(agent: SerenaAgent):
     from serena.symbol import LanguageServerSymbolRetriever
     project = agent.get_active_project_or_raise()
     return project, LanguageServerSymbolRetriever(project)
+
+
+def _jb_declaration_regexes(name_path: str) -> list[str]:
+    """Candidate one-group regexes for jet_brains_find_declaration.
+
+    The JetBrains variant locates the symbol via a regex with exactly one group
+    and require_unique=True (the whole regex must match exactly once in the
+    file). We try progressively looser declaration-context patterns so common
+    names (methods like request) still resolve; each alternative has exactly
+    one capturing group.
+    """
+    import re as _re
+    last = _re.escape(name_path.split("/")[-1].split("[")[0])
+    return [
+        rf"\b(?:class|interface|type|function|const|let|var|def|struct|enum|trait|impl)\s+({last})\b",
+        rf"(?<![.\w])({last})\s*\(",
+        rf"\b({last})\b",
+    ]
+
+
+def _jb_find_declaration(agent: SerenaAgent, name_path: str, relative_path: str) -> str:
+    """Route find_declaration through jet_brains_find_declaration.
+
+    The JetBrains variant locates a symbol via a one-group regex and resolves the
+    declaration from a *reference* position. pi passes a name path, so we anchor
+    on declaration contexts (function/class/... <name>). When the regex lands on
+    the declaration itself, the JetBrains API reports "not on a resolvable
+    reference" — which means the declaration IS at that position, so we return
+    the position captured from the regex match.
+    """
+    import json as _json
+    from serena.util.text_utils import find_text_coordinates
+
+    tool = agent.get_tool_by_name("jet_brains_find_declaration")
+    content = tool.create_code_editor().read_file(relative_path)
+    last_error = None
+    for regex in _jb_declaration_regexes(name_path):
+        try:
+            coords = find_text_coordinates(content, regex, require_unique=True)
+        except ValueError as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            continue
+        if coords is None:
+            last_error = f"No match for regex: {regex}"
+            continue
+        with contextlib.redirect_stdout(sys.stderr):
+            result = tool.apply_ex(relative_path=relative_path, regex=regex)
+        if isinstance(result, str) and result.startswith("Error"):
+            last_error = result
+            if "resolvable reference" in result:
+                # The regex matched the declaration itself — that IS the declaration.
+                return _json.dumps({"symbols": [{"name_path": name_path, "relative_path": relative_path, "text_range": {"start_pos": {"line": coords.line, "col": coords.col}}}]}, indent=2)
+            continue
+        return result
+    return last_error or "Error: no declaration regex matched"
 
 
 def _find_symbol_or_raise(retriever, name_path: str, relative_path: str):
@@ -255,6 +365,18 @@ def _handle_find_symbol_action(req_id, action: str, req: dict[str, Any]) -> dict
         return {"id": req_id, "ok": False, "tool": action, "error": f"{action} requires string parameter 'relative_path'"}
 
     agent = get_agent(project, context)
+    if agent.get_language_backend().is_jetbrains():
+        # Route through the active JetBrains tools: find_declaration locates the
+        # symbol via a one-group regex, find_implementations takes the name path.
+        if action == "find_declaration":
+            result = _jb_find_declaration(agent, name_path, relative_path)
+        else:
+            with contextlib.redirect_stdout(sys.stderr):
+                result = agent.get_tool_by_name("jet_brains_find_implementations").apply_ex(relative_path=relative_path, name_path=name_path)
+        if isinstance(result, str) and result.startswith("Error"):
+            return {"id": req_id, "ok": False, "tool": action, "errorType": classify_error(result), "error": result, "result": result}
+        return {"id": req_id, "ok": True, "tool": action, "result": result}
+
     project_obj, retriever = _get_symbol_retriever(agent)
     try:
         symbol = _find_symbol_or_raise(retriever, name_path, relative_path)
@@ -297,11 +419,15 @@ def _handle_diagnostics(req_id, req: dict[str, Any]) -> dict[str, Any]:
     if os.path.isabs(relative_path):
         return {"id": req_id, "ok": False, "tool": "get_diagnostics_for_file", "error": "relative_path must be a relative path, not absolute"}
 
+    agent = get_agent(project, context)
+    if agent.get_language_backend().is_jetbrains():
+        # serena-agent 1.2.0 has no JetBrains diagnostics counterpart.
+        return {"id": req_id, "ok": False, "tool": "get_diagnostics_for_file", "errorType": "language_server_error", "error": "get_diagnostics_for_file requires the LSP backend; the JetBrains backend does not provide file diagnostics.", "result": json.dumps({"note": "Not applicable with the JetBrains backend."})}
+
     import json as _json
     import pathlib
     from pathlib import PurePath
 
-    agent = get_agent(project, context)
     project_obj = agent.get_active_project_or_raise()
     ls_manager = agent.execute_task(project_obj.get_language_server_manager_or_raise, name="GetDiagnosticsLanguageServerManager")
     lang_server = ls_manager.get_language_server(relative_path)
