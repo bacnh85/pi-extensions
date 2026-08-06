@@ -17,7 +17,7 @@ Each package lives in its own directory and can be installed independently. This
 | [`@bacnh85/pi-munin`](./pi-munin) | 0.5.1 | Munin long-term memory tools and skill integration. |
 | [`@bacnh85/pi-notebooklm`](./pi-notebooklm) | 0.1.8 | Google NotebookLM notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | [`@bacnh85/pi-obsidian`](./pi-obsidian) | 0.8.13 | Obsidian vault integration for Pi. |
-| [`@bacnh85/pi-plan`](./pi-plan) | 0.10.1 | Read-only planning plus fresh implement → verify → independent review workflow; fallback model chain on overload. |
+| [`@bacnh85/pi-plan`](./pi-plan) | 0.10.2 | Read-only planning plus fresh implement → verify → independent review workflow; fallback model chain on overload. |
 | [`@bacnh85/pi-ponytail`](./pi-ponytail) | 0.1.10 | Lazy senior-dev mode: YAGNI, stdlib-first coding discipline, and ponytail skills. |
 | [`@bacnh85/pi-review`](./pi-review) | 0.2.8 | Isolated read-only review with same-session fallback. |
 | [`@bacnh85/pi-rtk`](./pi-rtk) | 0.1.12 | Bash command rewriting through RTK for token savings. |

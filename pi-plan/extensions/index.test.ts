@@ -1612,6 +1612,17 @@ describe("write_plan lifecycle", () => {
     const result = await wd.execute("c1", { title: "Test", content: "# Test" }, undefined, undefined, fakeCtx());
     assert.ok(result);
   });
+
+  it("directs approval to /plan-approve, not to ask_user_question options", async () => {
+    const { toolDefs } = createFakePi(["read"], { plan: true });
+    const ctx = fakeCtx({ hasUI: true, cwd: TMP });
+    const wd = toolDefs.write_plan;
+    assert.ok(wd);
+    const result = await wd.execute("c1", { title: "My Plan", content: "# Plan\nDo work." }, undefined, undefined, ctx);
+    const text = result.content?.[0]?.text ?? "";
+    assert.match(text, /\/plan-approve/, "result points approval at /plan-approve");
+    assert.doesNotMatch(text, /ask the user to approve, refine, execute/, "result no longer instructs offering approve/execute via a question");
+  });
 });
 
 describe("open question warning", () => {
@@ -1629,7 +1640,7 @@ describe("open question warning", () => {
     }, undefined, undefined, ctx);
     assert.ok(result);
     const text = result.content?.[0]?.text ?? "";
-    assert.ok(text.includes("ask_user_question"), "should warn about open questions");
+    assert.ok(text.includes("blocking user-answerable open questions"), "should warn about open questions");
   });
 
   it("excludes warning when 'Open Questions' section has no question mark", async () => {
@@ -1646,7 +1657,7 @@ describe("open question warning", () => {
     }, undefined, undefined, ctx);
     assert.ok(result);
     const text = result.content?.[0]?.text ?? "";
-    assert.ok(!text.includes("ask_user_question"), "should not warn when no questions");
+    assert.ok(!text.includes("blocking user-answerable open questions"), "should not warn when no questions");
   });
 
   it("excludes warning when question mark is in a later section, not under 'Open Questions'", async () => {
@@ -1665,7 +1676,7 @@ describe("open question warning", () => {
     const text = result.content?.[0]?.text ?? "";
     // ponytail: the ? in "Should we use a library?" is under a different heading,
     // so hasOpenQuestionWarning must NOT fire.
-    assert.ok(!text.includes("ask_user_question"), "should not cross section boundaries");
+    assert.ok(!text.includes("blocking user-answerable open questions"), "should not cross section boundaries");
   });
 
   it("detects question mark in sub-bullets under 'Open Questions'", async () => {

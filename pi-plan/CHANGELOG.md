@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.10.2 (2026-08-06)
+
+### Fixes
+
+- **Plan mode no longer strands the agent after a clarifying question.** The
+  `write_plan` tool result previously told the model to "ask the user to
+  approve, refine, execute in current session, execute in a new session, or
+  keep planning" — steering it into offering approve/execute options via
+  `ask_user_question`, a path with no execution trigger (session replacement
+  requires a command context). The tool result now directs approval to the
+  existing `/plan-approve` flow (prefilled after the plan is written), and the
+  plan-mode system prompt explicitly scopes `ask_user_question` to unresolved
+  clarifying questions. Approval and execution continue to work exactly as
+  before via `/plan-approve` (current/fresh/reviewed).
+
 ## 0.10.1 (2026-08-05)
 
 ### Improvements
