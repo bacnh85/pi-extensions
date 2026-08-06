@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.9.11 (2026-08-06)
+
+### Fixes
+
+- Reviewer findings on the 0.9.9/0.9.10 JetBrains work, all addressed:
+  - `serena_find_declaration` stage-1 no longer picks an arbitrary symbol when
+    the name-path *pattern* matches multiple symbols. It now requires a single
+    match or exactly one exact name-path match (`_jb_pick_unique_symbol`);
+    otherwise it falls through to the regex stage, which enforces uniqueness,
+    so an ambiguous name returns an `Error:`-prefixed failure instead of a
+    wrong declaration position as a success.
+  - Stage-1 plugin/client errors are now logged to stderr before falling back
+    to the regex stage, so a real plugin failure is observable instead of
+    silently swallowed.
+  - The "resolvable reference" detection (regex landed on the declaration
+    itself) now matches the plugin's error text tolerantly
+    (`_jb_is_declaration_position_error`, case-insensitive regex covering
+    "not ... resolvable", "may not be on", "is a declaration", "declaration
+    itself") instead of a fragile exact substring, since the wording is
+    plugin-server-side and may vary across plugin versions.
+  - Synthesized declaration results now include the `type` field (from the
+    plugin response, or `"unknown"` in the regex fallback), matching the
+    shape of `jet_brains_find_declaration`'s normal output.
+  - New unit tests cover the decision helpers (`_jb_pick_unique_symbol`
+    ambiguity handling and `_jb_is_declaration_position_error` phrasing
+    variants) as TS mirrors of the Python logic.
+
+## 0.9.10 (2026-08-06)
+
+### Fixes
+
+- Non-ASCII tool output is no longer garbled on hosts whose default locale is
+  not UTF-8. The bridge's `respond()` now serializes responses with
+  `ensure_ascii=True`, keeping the stdout wire format pure ASCII regardless of
+  the host locale. Node reads the worker stdout as UTF-8, and `JSON.parse`
+  decodes the `\uXXXX` escapes back to the original characters. Previously
+  `ensure_ascii=False` wrote raw non-ASCII bytes that Python's `sys.stdout`
+  encoded with the locale codec, garbling code-context snippets (e.g. from
+  `find_referencing_symbols`) on `C`/`cp1252` locales. macOS is unaffected
+  (UTF-8 by default).
+- `serena_find_declaration` under the JetBrains backend now resolves the
+  symbol's exact location via the plugin client (`find_symbol` with
+  `include_location=True`), which handles class fields/properties and other
+  ambiguous names that the regex fallback missed (e.g. a field appearing
+  multiple times in a file). Previously such names returned a bare
+  `ValueError: ...` string misclassified as a success result. All failure paths
+  now return `Error:`-prefixed strings so the caller classifies them as
+  failures.
+
 ## 0.9.9 (2026-08-06)
 
 ### Fixes

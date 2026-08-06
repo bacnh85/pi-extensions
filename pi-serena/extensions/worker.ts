@@ -152,7 +152,12 @@ def classify_error(message: str) -> str:
     return "serena_error"
 
 def respond(payload: dict[str, Any]) -> None:
-    print(json.dumps(payload, ensure_ascii=False), flush=True)
+    # ensure_ascii=True keeps the stdout wire format pure ASCII regardless of the
+    # host locale — Node reads stdout as UTF-8, and JSON.parse decodes \uXXXX
+    # escapes back to the original characters. ensure_ascii=False wrote raw
+    # non-ASCII bytes that sys.stdout encoded with the locale codec, garbling
+    # tool output on non-UTF-8 locales.
+    print(json.dumps(payload, ensure_ascii=True), flush=True)
 
 
 def agent_key(project: str, context: str) -> str:
@@ -292,19 +297,75 @@ def _jb_declaration_regexes(name_path: str) -> list[str]:
     ]
 
 
-def _jb_find_declaration(agent: SerenaAgent, name_path: str, relative_path: str) -> str:
-    """Route find_declaration through jet_brains_find_declaration.
+def _jb_pick_unique_symbol(symbols: list[dict], name_path: str) -> dict | None:
+    """Return the single symbol whose name_path exactly matches, else None.
 
-    The JetBrains variant locates a symbol via a one-group regex and resolves the
-    declaration from a *reference* position. pi passes a name path, so we anchor
-    on declaration contexts (function/class/... <name>). When the regex lands on
-    the declaration itself, the JetBrains API reports "not on a resolvable
-    reference" — which means the declaration IS at that position, so we return
-    the position captured from the regex match.
+    find_symbol performs name-path *pattern* matching, so multiple symbols may
+    match (overloads foo[0]/foo[1], same-named methods in different classes,
+    a field and a method sharing a name). Picking an arbitrary match would
+    return the wrong declaration. Only a single match, or exactly one exact
+    name-path match, is accepted; otherwise the caller falls through to the
+    regex stage (which enforces uniqueness). Mirrored in worker.test.ts.
+    """
+    if not symbols:
+        return None
+    if len(symbols) == 1:
+        return symbols[0]
+    suffix = "/" + name_path
+    exact = [s for s in symbols if s.get("name_path") == name_path or (s.get("name_path") or "").endswith(suffix)]
+    return exact[0] if len(exact) == 1 else None
+
+
+def _jb_is_declaration_position_error(result: str) -> bool:
+    """True when jet_brains_find_declaration reports the position IS the declaration.
+
+    The JetBrains plugin resolves declarations from a *reference* position; when
+    the regex lands on the declaration itself it reports something like "The
+    cursor may not be on a resolvable reference". That error text is plugin-
+    server-side (not in serena-agent), so match it tolerantly. Mirrored in
+    worker.test.ts.
+    """
+    import re as _re
+    return bool(_re.search(r"not.*resolvable|may not be on|is.*declaration|declaration.*itself", result, _re.IGNORECASE))
+
+
+def _jb_find_declaration(agent: SerenaAgent, name_path: str, relative_path: str) -> str:
+    """Route find_declaration through the JetBrains backend.
+
+    Strategy (in order, first success wins):
+    1. Resolve the symbol's exact location via the plugin client's find_symbol
+       (include_location=True) — the declaration position, no regex ambiguity.
+       This handles class fields/properties that the regex heuristics miss.
+    2. Fall back to jet_brains_find_declaration with declaration-context regexes;
+       when the regex lands on the declaration itself the JetBrains API reports
+       "not on a resolvable reference", which means the position IS the declaration.
+    Any unresolved case returns an "Error:"-prefixed string so the caller classifies
+    it as a failure (never a bare "ValueError:" leaked as a success result).
     """
     import json as _json
-    from serena.util.text_utils import find_text_coordinates
+    from serena.jetbrains.jetbrains_plugin_client import JetBrainsPluginClient
 
+    project = agent.get_active_project_or_raise()
+    # Stage 1: direct location lookup (robust to ambiguous names).
+    try:
+        with JetBrainsPluginClient.from_project(project) as client:
+            response = client.find_symbol(
+                name_path=name_path, relative_path=relative_path,
+                depth=0, include_location=True,
+            )
+        symbols = response.get("symbols") or []
+        sym = _jb_pick_unique_symbol(symbols, name_path)
+        if sym is not None:
+            text_range = sym.get("text_range") or {}
+            start = text_range.get("start_pos") or {}
+            if start.get("line") is not None and start.get("col") is not None:
+                return _json.dumps({"symbols": [{"name_path": sym.get("name_path", name_path), "relative_path": sym.get("relative_path", relative_path), "type": sym.get("type", "unknown"), "text_range": {"start_pos": {"line": start["line"], "col": start["col"]}}}]}, indent=2)
+    except Exception as exc:
+        # Plugin/client error — log it, then fall through to the regex stage.
+        print(f"[_jb_find_declaration] stage 1 find_symbol failed, falling back to regex: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+    # Stage 2: regex fallback (handles symbols the plugin lookup misses).
+    from serena.util.text_utils import find_text_coordinates
     tool = agent.get_tool_by_name("jet_brains_find_declaration")
     content = tool.create_code_editor().read_file(relative_path)
     last_error = None
@@ -312,21 +373,21 @@ def _jb_find_declaration(agent: SerenaAgent, name_path: str, relative_path: str)
         try:
             coords = find_text_coordinates(content, regex, require_unique=True)
         except ValueError as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
+            last_error = f"Error: {type(exc).__name__}: {exc}"
             continue
         if coords is None:
-            last_error = f"No match for regex: {regex}"
+            last_error = f"Error: no match for regex {regex}"
             continue
         with contextlib.redirect_stdout(sys.stderr):
             result = tool.apply_ex(relative_path=relative_path, regex=regex)
         if isinstance(result, str) and result.startswith("Error"):
             last_error = result
-            if "resolvable reference" in result:
+            if _jb_is_declaration_position_error(result):
                 # The regex matched the declaration itself — that IS the declaration.
-                return _json.dumps({"symbols": [{"name_path": name_path, "relative_path": relative_path, "text_range": {"start_pos": {"line": coords.line, "col": coords.col}}}]}, indent=2)
+                return _json.dumps({"symbols": [{"name_path": name_path, "relative_path": relative_path, "type": "unknown", "text_range": {"start_pos": {"line": coords.line, "col": coords.col}}}]}, indent=2)
             continue
         return result
-    return last_error or "Error: no declaration regex matched"
+    return last_error or f"Error: could not resolve declaration for {name_path}"
 
 
 def _find_symbol_or_raise(retriever, name_path: str, relative_path: str):

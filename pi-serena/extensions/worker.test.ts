@@ -102,6 +102,23 @@ function resolveJbToolCall(toolName: string, params: Record<string, unknown>): {
   return { name: jbName, params: mapped };
 }
 
+// Mirrors _jb_pick_unique_symbol in the Python bridge (worker.ts PYTHON_BRIDGE):
+// find_symbol matches name-path *patterns*, so multiple symbols may match; only a
+// single match or exactly one exact name-path match is accepted.
+function jbPickUniqueSymbol(symbols: Array<{ name_path?: string }>, namePath: string): { name_path?: string } | null {
+  if (!symbols || symbols.length === 0) return null;
+  if (symbols.length === 1) return symbols[0]!;
+  const suffix = "/" + namePath;
+  const exact = symbols.filter((s) => s.name_path === namePath || (s.name_path ?? "").endsWith(suffix));
+  return exact.length === 1 ? exact[0]! : null;
+}
+
+// Mirrors _jb_is_declaration_position_error in the Python bridge: the JetBrains
+// plugin reports declarations-at-position with varying wording; match tolerantly.
+function jbIsDeclarationPositionError(result: string): boolean {
+  return /not.*resolvable|may not be on|is.*declaration|declaration.*itself/i.test(result);
+}
+
 describe("JetBrains tool remapping tables", () => {
   it("maps every LSP-excluded tool to its jet_brains_* variant", () => {
     const excluded = ["get_symbols_overview", "find_symbol", "find_referencing_symbols", "find_declaration", "find_implementations", "rename_symbol", "safe_delete_symbol"];
@@ -178,6 +195,40 @@ describe("JetBrains tool remapping tables", () => {
       const out = resolveJbToolCall(tool, { relative_path: "a.ts" });
       expect(out.name).to.equal(tool);
     }
+  });
+
+  it("_jb_pick_unique_symbol returns the single match as-is", () => {
+    const syms = [{ name_path: "Foo/bar" }];
+    expect(jbPickUniqueSymbol(syms, "bar")).to.deep.equal({ name_path: "Foo/bar" });
+  });
+
+  it("_jb_pick_unique_symbol returns null for no matches", () => {
+    expect(jbPickUniqueSymbol([], "bar")).to.be.null;
+  });
+
+  it("_jb_pick_unique_symbol disambiguates by exact name-path suffix match", () => {
+    const syms = [{ name_path: "Foo/bar" }, { name_path: "Baz/bar" }, { name_path: "Foo/baz" }];
+    // "bar" matches Foo/bar and Baz/bar (2 exact suffix matches) -> ambiguous -> null
+    expect(jbPickUniqueSymbol(syms, "bar")).to.be.null;
+    // "Foo/bar" has exactly one exact match -> returned
+    expect(jbPickUniqueSymbol(syms, "Foo/bar")).to.deep.equal({ name_path: "Foo/bar" });
+  });
+
+  it("_jb_pick_unique_symbol returns null for ambiguous bare name", () => {
+    const syms = [{ name_path: "Foo/bar" }, { name_path: "Baz/bar" }];
+    expect(jbPickUniqueSymbol(syms, "bar")).to.be.null;
+  });
+
+  it("_jb_is_declaration_position_error matches the plugin's phrasing variants", () => {
+    expect(jbIsDeclarationPositionError("Error executing tool: APIError - No declaration found at line 1. The cursor may not be on a resolvable reference.")).to.be.true;
+    expect(jbIsDeclarationPositionError("Error: The selected element is a declaration, not a reference")).to.be.true;
+    expect(jbIsDeclarationPositionError("Error: Symbol at this position is itself a declaration")).to.be.true;
+    expect(jbIsDeclarationPositionError("Error executing tool: APIError - No symbol found for NamePathMatcher")).to.be.false;
+    expect(jbIsDeclarationPositionError("OK")).to.be.false;
+  });
+
+  it("_jb_is_declaration_position_error is case-insensitive", () => {
+    expect(jbIsDeclarationPositionError("MAY NOT BE ON a resolvable reference")).to.be.true;
   });
 });
 
