@@ -58,6 +58,7 @@ Optional prompt/tool-selection knobs:
 - `PI_SERENA_REMIND_ON_FIRST_MISS=1` — send the Serena reminder after the first obvious code-read/search miss instead of the default threshold.
 - `PI_SERENA_STRICT=1` or `PI_SERENA_STRICT_MISSES=1` — block obvious raw code reads or semantic code searches until Serena is used first. Docs/config/non-code reads are still allowed.
 - `SERENA_EAGER_STARTUP=1` — pre-spawn the worker on session start.
+- `SERENA_LANGUAGE_BACKEND` — select Serena's code-intelligence backend at worker startup: `LSP` (default) or `JetBrains`. When set to `JetBrains`, install the Serena JetBrains Plugin and open the project in your JetBrains IDE, then restart the worker (`/serena-restart`). The backend is fixed for the session and cannot be changed without a restart. Per-project overrides in `<project>/.serena/project.yml` (`language_backend: JetBrains`) are honored by Serena automatically and take precedence at project activation.
 
 When a worker request exceeds the configured timeout, the Python bridge process is automatically killed and a fresh worker is started for the next call. Requests are serialized to match the Python bridge's sequential protocol, so a timed-out request should not reject later queued requests. The Pi adapter retries transient worker timeout/restart failures once. If a request is expected to take longer, pass a larger `timeout_ms`; if worker state appears stale, run `/serena-restart`. Exiting Pi should not normally be needed.
 
@@ -106,7 +107,7 @@ The Pi bridge also implements `serena_get_current_config` and `serena_restart_la
 - `/serena-dashboard [project]`
 - `/serena-restart`
 
-The persistent Pi worker keeps one Serena bridge process per Pi process/session. It keeps the dashboard server available by default but does not open a browser tab automatically; use `/serena-dashboard` when you want to open it. Set `SERENA_BRIDGE_WEB_DASHBOARD=0` to disable the dashboard server, or `SERENA_BRIDGE_OPEN_DASHBOARD=1` to restore automatic browser launch. These variables are read from the process environment, current working directory `.env.local`/`.env`, or Pi global config `.env.local`/`.env` under `$PI_CODING_AGENT_DIR` or `~/.pi/agent`.
+The persistent Pi worker keeps one Serena bridge process per Pi process/session. It keeps the dashboard server available by default but does not open a browser tab automatically; use `/serena-dashboard` when you want to open it. Set `SERENA_BRIDGE_WEB_DASHBOARD=0` to disable the dashboard server, or `SERENA_BRIDGE_OPEN_DASHBOARD=1` to restore automatic browser launch. `SERENA_*` configuration variables (`SERENA_LANGUAGE_BACKEND`, `SERENA_BRIDGE_WEB_DASHBOARD`, `SERENA_BRIDGE_OPEN_DASHBOARD`, etc.) are resolved at worker startup from the process environment first, then the current working directory `.env.local`/`.env`, then the Pi global config `.env.local`/`.env` under `$PI_CODING_AGENT_DIR` or `~/.pi/agent` (first dot file wins; process env is never overridden). Changing any of them requires a worker restart (`/serena-restart`).
 
 ## Changelog
 

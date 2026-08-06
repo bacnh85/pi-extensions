@@ -2,6 +2,7 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:chil
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { loadDotenvValues } from "./lib/env";
 
 export type SerenaWorkerResponse = {
   id: string | null;
@@ -39,7 +40,7 @@ os.environ.setdefault("SERENA_USAGE_REPORTING", "false")
 try:
     from serena.agent import SerenaAgent
     from serena.config.context_mode import SerenaAgentContext
-    from serena.config.serena_config import SerenaConfig
+    from serena.config.serena_config import SerenaConfig, LanguageBackend
 except Exception as exc:
     print(json.dumps({"id": None, "ok": False, "error": f"Failed to import Serena: {type(exc).__name__}: {exc}"}), flush=True)
     raise
@@ -80,6 +81,12 @@ def load_bridge_config() -> SerenaConfig:
     # but do not open browser tabs unless explicitly requested.
     config.web_dashboard = env_flag("SERENA_BRIDGE_WEB_DASHBOARD", True)
     config.web_dashboard_open_on_launch = env_flag("SERENA_BRIDGE_OPEN_DASHBOARD", False)
+    # SERENA_LANGUAGE_BACKEND selects the code-intelligence backend at worker startup.
+    # Unset = Serena's default (LSP). Invalid values raise LanguageBackend.from_str's
+    # ValueError, surfaced on worker start rather than silently falling back.
+    backend = os.environ.get("SERENA_LANGUAGE_BACKEND")
+    if backend:
+        config.language_backend = LanguageBackend.from_str(backend)
     return config
 
 
@@ -504,7 +511,12 @@ export class SerenaWorkerClient {
 
       this.generation += 1;
       const proc = spawn(python, ["-u", "-c", PYTHON_BRIDGE], {
-        env: { ...process.env, SERENA_USAGE_REPORTING: process.env.SERENA_USAGE_REPORTING ?? "false" },
+        // Merge dot-file values (cwd .env.local/.env, then Pi global config) into the
+        // worker env so SERENA_* knobs work from project/global dot files, matching the
+        // rest of the monorepo. process.env always wins; first dot file wins.
+        // SERENA_USAGE_REPORTING defaults to "false" inside the Python bridge
+        // (os.environ.setdefault), so dot-file opt-in works without a TS-side override.
+        env: { ...process.env, ...loadDotenvValues(process.cwd()) },
         stdio: "pipe",
       });
       this.process = proc;

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.9.8 (2026-08-06)
+
+### Improvements
+
+- `SERENA_*` configuration variables (`SERENA_LANGUAGE_BACKEND`,
+  `SERENA_BRIDGE_WEB_DASHBOARD`, `SERENA_BRIDGE_OPEN_DASHBOARD`, ...) are now
+  resolved from project/global dot files as well as the process environment:
+  process env → `<cwd>/.env.local` → `<cwd>/.env` → Pi global config
+  `.env.local`/`.env` (under `$PI_CODING_AGENT_DIR` or `~/.pi/agent`), matching
+  the pi-web/pi-munin env-discovery chain. First dot file wins; process env is
+  never overridden. Values are captured at worker spawn, so a worker restart
+  (`/serena-restart`) is required after editing dot files.
+
+## 0.9.7 (2026-08-06)
+
+### Improvements
+
+- Added `SERENA_LANGUAGE_BACKEND` env var (`LSP` default, `JetBrains`) to select
+  Serena's code-intelligence backend at worker startup, via config. The `JetBrains`
+  value requires the Serena JetBrains Plugin and the project open in the IDE; the
+  backend is fixed for the session and needs a worker restart (`/serena-restart`)
+  to change. Per-project `project.yml` overrides continue to be honored by Serena.
+
 ## 0.9.6 (2026-08-05)
 
 ### Improvements
