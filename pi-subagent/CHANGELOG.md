@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.1 (2026-08-07)
+
+### Improvements
+
+- Widen peer dependency range to support Pi 0.84.0 (`>=0.80.0 <0.85.0`).
+  No code changes — verified compatible against the 0.84.0 SDK types.
+
 ## 0.14.0 (2026-08-05)
 
 ### Git worktree isolation (`sandbox: worktree`)

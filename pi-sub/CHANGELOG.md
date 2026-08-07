@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.25 (2026-08-07)
+
+### Improvements
+
+- Widen peer dependency range to support Pi 0.84.0 (`>=0.80.8 <0.85.0`).
+  No code changes — verified compatible against the 0.84.0 SDK types.
+
 ## 0.1.24 (2026-08-05)
 
 ### Improvements
