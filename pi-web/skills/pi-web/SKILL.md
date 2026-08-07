@@ -5,14 +5,14 @@ description: Web search, content extraction, site crawling, and page capture via
 
 # pi-web — Unified Web Tools
 
-Use the **7 unified tools** from the `pi-web` extension for all web-related tasks. These tools automatically select the best backend from SearXNG, Brave Search, Firecrawl, and Crawl4AI — you don't need to know which backend to use. Search selection is adaptive: broad discovery prefers self-hosted SearXNG, while precision-sensitive queries and inline content prefer Brave.
+Use the **7 unified tools** from the `pi-web` extension for all web-related tasks. These tools automatically select the best backend from SearXNG, Brave Search, Firecrawl, Crawl4AI, and agy (when installed) — you don't need to know which backend to use. Search selection is adaptive: broad discovery prefers self-hosted SearXNG, while precision-sensitive queries and inline content prefer Brave.
 
 ## Quick Reference
 
 | Tool | Purpose | Auto-selection |
 |---|---|---|
 | `web_search` | Search the web for sources, docs, facts | SearXNG → Brave → Firecrawl |
-| `web_extract` | Extract readable content from a URL | Static (JSDOM) → Dynamic (Firecrawl) → Full (Crawl4AI) |
+| `web_extract` | Extract readable content from a URL | Static (JSDOM) → Dynamic (Firecrawl) → Full (Crawl4AI) → agy (model-backed) |
 | `web_map` | Discover URLs from a site | Firecrawl Map (only option) |
 | `web_crawl` | Crawl multiple pages from a site | Light (Firecrawl) or Full (Crawl4AI) |
 | `web_screenshot` | Capture page screenshot as PNG | Crawl4AI (only option) |
@@ -35,7 +35,8 @@ What do you need?
 │     ├─ static page (blog, docs): mode=static (fastest, no API key)
 │     ├─ dynamic page (JS-rendered): mode=dynamic
 │     ├─ JS-heavy SPA: mode=full
-│     └─ auto (default): tries static > dynamic > full
+│     ├─ bot-protected / blocked to scrapers: mode=agy (Gemini/Claude via agy)
+│     └─ auto (default): tries static > dynamic > full > agy
 │
 ├── Site URL discovery (find pages on a site)
 │   → web_map
@@ -78,6 +79,9 @@ What do you need?
    - ❌ Fails on bot-protected sites (Ansible docs, many CDN-backed doc sites). Falls through Crawl4AI in `auto` mode.
    - ✅ Supported: prompt-based JSON extraction, schema-based structured extraction.
 3. **full** (Crawl4AI headless browser) — handles all content types. **Resource-intensive** (launches a full headless browser). Use only when static and dynamic modes fail, or when explicitly needed.
+4. **agy** (Gemini/Claude via agy CLI) — last-resort fallback. Uses agy's native `read_url` web tool with a model-driven browser, so it can fetch pages that block Firecrawl/Crawl4AI (bot protection, anti-AI scraping). Requires the `agy` CLI installed and authenticated. Also supports prompt/schema-based structured extraction.
+
+> **Requirement for agy mode**: install and authenticate the Antigravity CLI: `curl -fsSL https://antigravity.google/cli/install.sh | bash` then run `agy` once interactively. If agy is not installed, `auto` mode skips it silently; explicit `mode: "agy"` reports the install hint.
 
 ## Fallback Strategy
 
@@ -85,8 +89,9 @@ If one tool fails, try the next option in the chain:
 
 - **Search issues**: `web_search` auto-fallbacks and reports backend diagnostics. If all backends fail, configure at least one via env vars (check `web_status`).
 - **Extraction issues**: `web_extract` auto-fallbacks in `auto` mode. If all modes fail:
-  1. Try `web_screenshot` for a visual snapshot — may work when extraction is blocked.
-  2. The page may require interactive login, CAPTCHA, or be a non-HTML resource.
+  1. Try `mode: "agy"` explicitly — agy's model-backed browser often gets pages that block Firecrawl/Crawl4AI.
+  2. Try `web_screenshot` for a visual snapshot — may work when extraction is blocked.
+  3. The page may require interactive login, CAPTCHA, or be a non-HTML resource.
 - **Tool not found**: Ensure `pi-web` extension is installed (`pi install ./extensions/pi-web`).
 
 ## Cross-tool Decision Guide
@@ -95,6 +100,7 @@ If one tool fails, try the next option in the chain:
 |---|---|---|
 | A few specific pages from a site | `web_map` + `web_extract` on each URL | `web_crawl` (heavier than needed) |
 | Content from a JS-heavy page that fails in `auto` mode | `web_extract` with `mode: "full"` | Retrying `auto` mode repeatedly |
+| Content from a bot-protected page that blocks Firecrawl/Crawl4AI | `web_extract` with `mode: "agy"` | Retrying `web_extract` with all modes |
 | A visual of a bot-protected page | `web_screenshot` | Retrying `web_extract` with all modes |
 | Content alongside search results | `web_search` with `include_content: true` (auto prefers Brave) or `backend: "brave"` | Search snippets alone |
 | Printable/archivable page | `web_pdf` | Taking a screenshot and converting |
@@ -105,4 +111,5 @@ If one tool fails, try the next option in the chain:
 - **Always cite source URLs** when using web content in answers.
 - `web_status` shows which backends are configured without printing secrets. For Firecrawl, `apiKeyFound: false` is normal for self-hosted instances without auth — check the `ready` field to see if Firecrawl is actually usable.
 - The `backend` and `mode` parameters give explicit control when auto-selection is not desired.
+- `mode: "agy"` requires the `agy` CLI (Antigravity) installed and authenticated. `web_status` reports `agy.installed` so you can check availability without guessing.
 - Backend-specific config (API keys, URLs) comes from environment variables, not tool parameters. Use `web_status` to verify configuration.

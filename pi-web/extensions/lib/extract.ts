@@ -3,16 +3,18 @@
 //   "static"  → JSDOM+Readability (no external API)
 //   "dynamic" → Firecrawl Scrape (JS rendering/structured JSON)
 //   "full"    → Crawl4AI markdown endpoint
-//   "auto"    → static → dynamic → full
+//   "agy"     → agy (Gemini/Claude) native read_url — bot-protected/JS-heavy pages
+//   "auto"    → static → dynamic → full → agy
 
 import { cwdFromContext, includeProjectEnv } from "./config";
 import { loadFirecrawlConfig, loadCrawl4aiConfig, type FirecrawlConfig, type Crawl4aiConfig } from "./config";
 import { fetchReadableContent } from "./content";
 import { firecrawlRequest, type FirecrawlResult } from "./firecrawl";
 import { fetchCrawl4aiMarkdown } from "./crawl4ai";
+import { isAgyInstalled, extractViaAgy, parseAgyStructured } from "./agy";
 import { formatFirecrawlScrape, sanitizeError } from "./format";
 
-export type ExtractMode = "auto" | "static" | "dynamic" | "full";
+export type ExtractMode = "auto" | "static" | "dynamic" | "full" | "agy";
 export type ExtractAttemptStatus = "success" | "empty" | "error";
 
 export interface ExtractParams {
@@ -142,13 +144,49 @@ async function extractFull(params: ExtractParams, ctx?: Record<string, unknown>)
 function modesFor(params: ExtractParams): Array<Exclude<ExtractMode, "auto">> {
   const mode = params.mode ?? "auto";
   if (mode !== "auto") return [mode];
-  return ["static", "dynamic", "full"];
+  return ["static", "dynamic", "full", "agy"];
 }
 
 async function runExtractor(mode: Exclude<ExtractMode, "auto">, params: ExtractParams, ctx?: Record<string, unknown>): Promise<ExtractResult | null> {
   if (mode === "static") return extractStatic(params);
   if (mode === "dynamic") return extractDynamic(params, ctx);
-  return extractFull(params, ctx);
+  if (mode === "full") return extractFull(params, ctx);
+  return extractAgy(params);
+}
+
+async function extractAgy(params: ExtractParams): Promise<ExtractResult | null> {
+  if (!isAgyInstalled()) return null; // graceful skip — recorded as skipped attempt
+  const run = () => extractViaAgy({
+    url: params.url,
+    prompt: params.prompt,
+    schema: params.schema,
+    contentChars: params.content_chars,
+    signal: params.signal,
+  });
+  // ponytail: the model occasionally returns empty output (transient); one retry
+  // materially improves reliability at the cost of one extra spawn.
+  let markdown = await run();
+  if (!markdown.trim()) markdown = await run();
+  let structured: unknown;
+  // Match dynamic mode: prompt OR schema requests structured output.
+  if (params.prompt || params.schema !== undefined) {
+    structured = parseAgyStructured(markdown);
+    if (structured !== undefined) {
+      // Strip the JSON (fenced or bare) so the result is clean markdown; the
+      // structured payload is surfaced separately (rendered like dynamic mode).
+      const fenced = /```(?:json)?\s*[\s\S]*?```/.test(markdown);
+      let clean = fenced ? markdown.replace(/```(?:json)?\s*[\s\S]*?```/, "").trim() : "";
+      if (!fenced && markdown.trim().length > 0) {
+        // Bare JSON (no fence) — the whole output is JSON, so nothing remains.
+        clean = "";
+      }
+      // When the model returned only JSON, don't duplicate it as plain text body
+      // (it is already surfaced via structuredSection below).
+      const body = clean || "(Structured extraction only — see JSON below)";
+      return { title: "", markdown: body + structuredSection(structured), backend: "agy", structured };
+    }
+  }
+  return { title: "", markdown, backend: "agy" };
 }
 
 export async function extractWithDiagnostics(params: ExtractParams): Promise<ExtractDiagnostics> {
@@ -162,7 +200,8 @@ export async function extractWithDiagnostics(params: ExtractParams): Promise<Ext
       const result = await runExtractor(mode, params, ctx);
       if (isUseful(result, mode, explicit)) {
         if (!explicit && attempts.length > 0) {
-          result.markdown = `[Extraction fell back to ${mode === "dynamic" ? "Firecrawl Scrape (dynamic mode)" : "Crawl4AI (full browser mode)"}]\n\n${result.markdown}`;
+          const backendLabel = mode === "dynamic" ? "Firecrawl Scrape (dynamic mode)" : mode === "full" ? "Crawl4AI (full browser mode)" : "agy (model-backed browser)";
+          result.markdown = `[Extraction fell back to ${backendLabel}]\n\n${result.markdown}`;
         }
         attempts.push({ mode, backend: result.backend, status: "success", message: `Selected ${mode}`, contentLength: result.markdown.length });
         return { result, attempts, selectedMode: mode, fallbackUsed: attempts.length > 1 };

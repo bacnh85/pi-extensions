@@ -2,7 +2,7 @@
 
 Pi extension for **unified web search, content extraction, site crawling, and page capture**.
 
-Auto-selects the best backend from SearXNG (self-hosted), Brave Search, Firecrawl, and Crawl4AI — so agents don't have to know which backend to use. Search selection is adaptive: broad discovery prefers self-hosted SearXNG, while precision-sensitive searches and inline content prefer Brave.
+Auto-selects the best backend from SearXNG (self-hosted), Brave Search, Firecrawl, Crawl4AI, and agy (Gemini/Claude, when installed) — so agents don't have to know which backend to use. Search selection is adaptive: broad discovery prefers self-hosted SearXNG, while precision-sensitive searches and inline content prefer Brave.
 
 ## Install
 
@@ -79,12 +79,13 @@ Use `backend` parameter to force a specific backend when needed.
 
 ### `web_extract` — Unified content extraction
 
-Extracts readable content from a URL. Auto-selects backend: static (JSDOM) → dynamic (Firecrawl) → full (Crawl4AI), with extraction diagnostics showing fallback attempts.
+Extracts readable content from a URL. Auto-selects backend: static (JSDOM) → dynamic (Firecrawl) → full (Crawl4AI) → agy (model-backed), with extraction diagnostics showing fallback attempts.
 
 ```
 web_extract url="https://docs.ansible.com/..."
 web_extract url="https://riven.tv/" mode=static
 web_extract url="https://example.com" mode=dynamic prompt="Extract pricing plans"
+web_extract url="https://blocked.example.com" mode=agy
 ```
 
 Parameters:
@@ -92,9 +93,9 @@ Parameters:
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `url` | string | — | URL to extract |
-| `mode` | string | `auto` | `auto`, `static`, `dynamic`, or `full` |
-| `prompt` | string | — | Prompt for JSON extraction (dynamic mode) |
-| `schema` | any | — | JSON schema for structured extraction (dynamic mode) |
+| `mode` | string | `auto` | `auto`, `static`, `dynamic`, `full`, or `agy` |
+| `prompt` | string | — | Prompt for JSON extraction (dynamic/agy modes) |
+| `schema` | any | — | JSON schema for structured extraction (dynamic/agy modes) |
 | `content_chars` | number | 20000 | Max content chars |
 | `wait_for` | number | — | Milliseconds to wait for Firecrawl dynamic rendering. Crawl4AI `/md` full mode may ignore this. |
 | `mobile` | boolean | false | Emulate mobile viewport (dynamic mode) |
@@ -106,11 +107,14 @@ Parameters:
 | `static` | JSDOM+Readability | Simple static pages, blog posts, docs | No |
 | `dynamic` | Firecrawl Scrape | JS-rendered pages, dynamic content | Maybe |
 | `full` | Crawl4AI | JS-heavy SPA, complex rendering | Maybe |
-| `auto` (default) | static → dynamic → full | Unknown page type | Maybe |
+| `agy` | agy (Gemini/Claude) | Bot-protected / anti-AI-scraping pages | agy CLI installed |
+| `auto` (default) | static → dynamic → full → agy | Unknown page type | Maybe |
 
 In `auto` mode, fallbacks are noted in the output (e.g., `[Extraction fell back to Firecrawl Scrape (dynamic mode)]`). If `static` extraction fails, the tool gracefully escalates to heavier backends.
 
-> ⚠️ **Note on Firecrawl Scrape**: Fails on bot-protected sites (Ansible docs, many CDN-backed doc sites). Falls back to `full` mode (Crawl4AI) in `auto` mode.
+> ⚠️ **Note on Firecrawl Scrape**: Fails on bot-protected sites (Ansible docs, many CDN-backed doc sites). Falls back to `full` mode (Crawl4AI) in `auto` mode, and to `agy` mode as a last resort.
+
+> **`agy` mode (optional)**: Uses the [Antigravity CLI](https://antigravity.google/) with Gemini/Claude — its native `read_url` browser tool can fetch pages that block Firecrawl/Crawl4AI. Install with `curl -fsSL https://antigravity.google/cli/install.sh | bash`, authenticate once with `agy`, then `auto` mode falls back to it automatically. If agy is not installed, `auto` mode skips it silently; `web_status` reports `agy.installed`.
 
 ### `web_map` — Site URL discovery
 
@@ -172,7 +176,8 @@ Typical output:
     "baseUrl": "http://172.30.55.22:11235",
     ...
     "health": { "status": "healthy", "version": "0.5.0", ... }
-  }
+  },
+  "agy": { "installed": true }
 }
 ```
 
@@ -188,6 +193,7 @@ Typical output:
 | `lib/searxng.ts` | SearXNG metasearch fetch client (internal) |
 | `lib/firecrawl.ts` | Firecrawl API fetch client with v2→v1 fallback (internal) |
 | `lib/crawl4ai.ts` | Crawl4AI Docker API fetch client (internal) |
+| `lib/agy.ts` | agy (Antigravity CLI) spawn helper — `read_url` extraction via Gemini/Claude |
 | `lib/search.ts` | Unified search orchestrator — probes backends, fallback chain |
 | `lib/extract.ts` | Unified extraction orchestrator — mode-based backend selection |
 

@@ -1,12 +1,19 @@
 # Changelog
 
+## 0.6.0 (2026-08-07)
+
+### Features
+
+- **agy extraction backend:** `web_extract` gains a new `agy` mode that uses the Antigravity CLI (Gemini/Claude) native `read_url` web tool to fetch bot-protected and anti-AI-scraping pages that block Firecrawl/Crawl4AI. `auto` mode now falls back static → dynamic → full → agy; explicit `mode: "agy"` forces it. Structured extraction (`prompt`/`schema`) is supported. `web_status` reports `agy.installed`.
+- agy is optional and self-contained: if the CLI is not installed, `auto` mode skips it silently and existing flows are unchanged. Install: `curl -fsSL https://antigravity.google/cli/install.sh | bash`, then authenticate once with `agy`.
+
+All notable changes to `pi-web` will be documented in this file.
+
 ## 0.5.7 (2026-08-05)
 
 ### Improvements
 
 - Patch version bump for release sync and package documentation update.
-
-All notable changes to `pi-web` will be documented in this file.
 
 ## 0.5.6 (2026-08-01)
 

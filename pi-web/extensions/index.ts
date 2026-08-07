@@ -62,7 +62,8 @@ The pi-web extension provides 7 unified tools that auto-select the best backend:
 - **\`web_search\`** — Search the web (auto: SearXNG → Brave → Firecrawl). Use
   \`backend\` for explicit control, \`engines\` for SearXNG tuning.
 - **\`web_extract\`** — Extract readable content from a URL (auto: static JSDOM
-  → dynamic Firecrawl → full Crawl4AI). Use \`mode\` for explicit control.
+  → dynamic Firecrawl → full Crawl4AI → agy model-backed). Use \`mode\` for
+  explicit control.
 - **\`web_map\`** — Discover URLs from a site (Firecrawl Map).
 - **\`web_crawl\`** — Crawl multiple pages. \`mode: "light"\` (Firecrawl) or
   \`mode: "full"\` (Crawl4AI).
@@ -74,7 +75,8 @@ Backend selection rules:
 - Firecrawl Search has poor semantic accuracy on domain-specific queries; prefer
   SearXNG or Brave for precision (force via \`backend\`).
 - Firecrawl Scrape fails on bot-protected sites (e.g. Ansible docs); Crawl4AI
-  handles those (force via \`mode: "full"\`).
+  handles those (force via \`mode: "full"\`), and agy (Gemini/Claude read_url)
+  handles the rest as a last-resort fallback (force via \`mode: "agy"\`).
 - Always cite source URLs when web results materially support an answer.`;
 
 
@@ -136,23 +138,24 @@ export default function piWebExtension(pi: ExtensionAPI) {
     name: "web_extract",
     label: "Web Content Extraction",
     description:
-      "Extract readable content from a URL. Auto mode: static\u2192dynamic\u2192full.",
+      "Extract readable content from a URL. Auto mode: static\u2192dynamic\u2192full\u2192agy.",
     promptSnippet: "Extract readable webpage content as markdown",
     promptGuidelines: [
       "Clean markdown from a known URL.",
-      "mode: 'static' (no API key, JSDOM), 'dynamic' (Firecrawl JS), 'full' (Crawl4AI).",
-      "'auto' tries static\u2192dynamic\u2192full; see diagnostics for fallback chain.",
-      "Use prompt+schema for structured JSON extraction (dynamic mode only).",
+      "mode: 'static' (no API key, JSDOM), 'dynamic' (Firecrawl JS), 'full' (Crawl4AI), 'agy' (Gemini/Claude via agy).",
+      "'auto' tries static\u2192dynamic\u2192full\u2192agy; see diagnostics for fallback chain.",
+      "mode: 'agy' uses agy's native read_url for bot-protected/JS-heavy pages \u2014 last-resort fallback in auto.",
+      "Use prompt+schema for structured JSON extraction (dynamic/agy modes).",
       "Cite the source URL.",
     ],
     parameters: Type.Object({
       url: Type.String(),
       mode: Type.Optional(Type.Union(
-        [Type.Literal("auto"), Type.Literal("static"), Type.Literal("dynamic"), Type.Literal("full")],
-        { default: "auto", description: "auto, static, dynamic, full." },
+        [Type.Literal("auto"), Type.Literal("static"), Type.Literal("dynamic"), Type.Literal("full"), Type.Literal("agy")],
+        { default: "auto", description: "auto, static, dynamic, full, agy." },
       )),
-      prompt: Type.Optional(Type.String({ description: "Prompt for structured JSON extraction (dynamic mode only)." })),
-      schema: Type.Optional(Type.Any({ description: "JSON schema for structured extraction (dynamic mode only)." })),
+      prompt: Type.Optional(Type.String({ description: "Prompt for structured JSON extraction (dynamic/agy modes)." })),
+      schema: Type.Optional(Type.Any({ description: "JSON schema for structured extraction (dynamic/agy modes)." })),
       content_chars: Type.Optional(Type.Number({ default: 20000 })),
       wait_for: Type.Optional(Type.Number({ description: "Ms to wait for Firecrawl render before extraction." })),
       mobile: Type.Optional(Type.Boolean({ default: false, description: "Mobile viewport (dynamic mode only)." })),
@@ -407,6 +410,8 @@ export default function piWebExtension(pi: ExtensionAPI) {
       const c4aiUrl = findEnvValue("CRAWL4AI_API_URL", cwd, trusted);
       const c4aiToken = findEnvValue("CRAWL4AI_API_TOKEN", cwd, trusted);
 
+      const { isAgyInstalled } = await import("./lib/agy");
+
       const fcBaseUrl = normalizeFirecrawlBaseUrl(fireUrl.value);
       const fcHosted = !fireUrl.value || fcBaseUrl.startsWith(HOSTED_FIRECRAWL_BASE_URL);
 
@@ -427,6 +432,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
           apiTokenFound: Boolean(c4aiToken.value),
           apiTokenSource: c4aiToken.value ? c4aiToken.source : "not set",
         },
+        agy: { installed: isAgyInstalled() },
       };
 
       // Crawl4AI health check
