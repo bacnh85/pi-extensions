@@ -234,8 +234,6 @@ export function parseFlags(s: string): Record<string, string> {
 // modify/sync pipeline that can deadlock on open+synced files).
 // ---------------------------------------------------------------------------
 
-const MAX_B64_CHUNK = 6000; // chars per eval call (safe under Windows cmd.exe ~8 KB ceiling)
-
 /** Decode a base64 string to UTF-8 inside the Obsidian app context. */
 const b64Decode = (chunk: string) =>
   `new TextDecoder('utf-8').decode(Uint8Array.from(atob(${JSON.stringify(chunk)}),c=>c.charCodeAt(0)))`;
@@ -292,6 +290,19 @@ export function buildChunkScript(notePath: string, b64Chunk: string): string {
   return wrapEval(`const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('File not found after chunk 0');const o=await app.vault.adapter.read(tn);await app.vault.adapter.write(tn,o+${b64Decode(b64Chunk)});return 'ok'`);
 }
 
+/**
+ * Build a prepend chunk eval for chunks 1..N on an existing file: inserts the
+ * chunk after the frontmatter block plus the already-inserted prefix (offset),
+ * keeping all prepended chunks contiguous before the old content.
+ * (buildChunkScript appends to the END, which would sandwich old content
+ * between prepend chunks — a corruption for multi-chunk prepend.)
+ */
+export function buildPrependChunkScript(notePath: string, b64Chunk: string, insertOffset: number): string {
+  const t = JSON.stringify(notePath);
+  const tn = `t.replace(/\\\\/g,'/')`;
+  return wrapEval(`const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('File not found after chunk 0');const o=await app.vault.adapter.read(tn);const m=o.match(/^---\\s*\\n[\\s\\S]*?\\n---\\s*\\n/);const i=m?m[0].length:0;const at=i+${insertOffset};await app.vault.adapter.write(tn,o.slice(0,at)+${b64Decode(b64Chunk)}+o.slice(at));return 'ok'`);
+}
+
 /** Build an eval script that reads the file back and returns "length hash". */
 export function buildVerifyScript(notePath: string): string {
   const t = JSON.stringify(notePath);
@@ -299,12 +310,30 @@ export function buildVerifyScript(notePath: string): string {
   return wrapEval(`const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('not found after write');const s=await app.vault.adapter.read(tn);const b=new TextEncoder().encode(s);let h=5381;for(let i=0;i<b.length;i++)h=((h<<5)+h+b[i])>>>0;return h+' '+b.length`);
 }
 
-/** Verify that the file ends with the last-appended base64 chunk (for append/prepend). */
-export function buildSuffixScript(notePath: string, lastChunkB64: string): string {
+/**
+ * Verify the last N bytes of the file hash to the expected djb2 value.
+ * Small script (embeds only a byte count), so it stays under the eval
+ * payload ceiling even for large appended content. Catches a missing chunk 0
+ * in multi-chunk append: file = OLD + chunk1..N hashes differently than the
+ * full appended content at the tail.
+ */
+export function buildTailHashScript(notePath: string, tailBytes: number): string {
   const t = JSON.stringify(notePath);
   const tn = `t.replace(/\\\\/g,'/')`;
-  const decoded = b64Decode(lastChunkB64);
-  return wrapEval(`const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('not found');const s=await app.vault.adapter.read(tn);const suffix=${decoded};const slen=suffix.length;if(s.length<slen||s.slice(-slen)!==suffix)throw new Error('suffix mismatch: file does not end with appended content ('+slen+' bytes)');return 'ok'`);
+  return wrapEval(`const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('not found');const s=await app.vault.adapter.read(tn);if(s.length<${tailBytes})throw new Error('file shorter than appended content');const tail=s.slice(-${tailBytes});const b=new TextEncoder().encode(tail);let h=5381;for(let i=0;i<b.length;i++)h=((h<<5)+h+b[i])>>>0;return h+' '+b.length`);
+}
+
+/**
+ * Verify the first N bytes after any frontmatter block hash to the expected
+ * djb2 value — the full-content gate for prepend (mirror of
+ * buildTailHashScript). Small script (embeds only a byte count), so it stays
+ * under the eval payload ceiling. Catches a silently-no-op'd chunk 1..N in
+ * multi-chunk prepend, which a chunk-0-only prefix check cannot.
+ */
+export function buildPrefixHashScript(notePath: string, prefixBytes: number): string {
+  const t = JSON.stringify(notePath);
+  const tn = `t.replace(/\\\\/g,'/')`;
+  return wrapEval(`const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('not found');let s=await app.vault.adapter.read(tn);const fm=s.match(/^---\\s*\\n[\\s\\S]*?\\n---\\s*\\n/);if(fm)s=s.slice(fm[0].length);if(s.length<${prefixBytes})throw new Error('file shorter than prepended content');const head=s.slice(0,${prefixBytes});const b=new TextEncoder().encode(head);let h=5381;for(let i=0;i<b.length;i++)h=((h<<5)+h+b[i])>>>0;return h+' '+b.length`);
 }
 
 /** Compute a djb2 hash + byte length for a UTF-8 string, matching the in-eval formula. */
@@ -338,21 +367,97 @@ export function vaultWrite(
   exec: (args: string[], formatJson?: boolean, timeoutMs?: number) => { stdout: string; stderr: string; parsed: unknown } = execObsidian
 ): string {
   const j = JSON.stringify;
-  const b64 = Buffer.from(content, "utf8").toString("base64");
+  // Adaptive chunk size: Obsidian 1.13.x is unreliable for eval scripts above
+  // ~3200 chars — it HANGS (wedging the app, ~3300-3900) or rejects (exit 1,
+  // ≥4000) or silently no-ops. Script size = fixed per-mode overhead (worst:
+  // prepend first-chunk ≈ 825) + 3×pathLen (path is embedded in const t=,
+  // prepare(), ensureFolder) + 4/3×decodedBytes (base64). Size chunks so the
+  // worst script stays ≤ ~3000 regardless of path length.
+  const SAFE_SCRIPT_LEN = 3000;
+  const pathLen = j(notePath).length;
+  const worstOverhead = 825 + 3 * pathLen; // prepend first-chunk
+  const maxDecodedPerChunk = Math.max(256, Math.floor((SAFE_SCRIPT_LEN - worstOverhead) / 1.34));
+  // base64 chars per chunk; MUST be a multiple of 4 so every slice is a valid
+  // standalone base64 unit (slicing mid-quad drops bytes on decode).
+  const chunkB64Size = Math.floor((maxDecodedPerChunk / 3) * 4 / 4) * 4;
+  // Split on UTF-8 CHARACTER boundaries: each chunk is decoded independently in
+  // the eval, and a multi-byte char (emoji/CJK) split across two chunks would
+  // decode to U+FFFD replacement chars in both. Walk the UTF-8 bytes and only
+  // cut at a boundary where the next byte is not a continuation byte (0x80-0xBF).
+  const utf8 = Buffer.from(content, "utf8");
   const b64Chunks: string[] = [];
-  for (let i = 0; i < b64.length; i += MAX_B64_CHUNK) b64Chunks.push(b64.slice(i, i + MAX_B64_CHUNK));
+  const maxDecodedBytes = Math.floor(chunkB64Size / 4) * 3;
+  let pos = 0;
+  while (pos < utf8.length) {
+    let end = Math.min(pos + maxDecodedBytes, utf8.length);
+    // back up to a character boundary (end may equal utf8.length → fine)
+    while (end < utf8.length && end > pos && (utf8[end] & 0xc0) === 0x80) end--;
+    if (end === pos) end = Math.min(pos + maxDecodedBytes, utf8.length); // safety: no boundary found
+    b64Chunks.push(utf8.slice(pos, end).toString("base64"));
+    pos = end;
+  }
   if (b64Chunks.length === 0) b64Chunks.push("");
 
-  const run = (script: string, label: string): string => {
-    // ponytail: hard guard against transport truncation (belt-and-suspenders over chunking)
-    if (script.length > 7000) throw new Error(`eval payload ${script.length} bytes exceeds transport limit 7000; reduce MAX_B64_CHUNK`);
+  // Obsidian 1.13.x corrupts the eval payload when large evals run back-to-back
+  // (rapid successive calls → atob "not correctly encoded" errors). Space them
+  // out with a short sync delay. 75ms is ample; the CLI round-trip is ~50-150ms.
+  const EVAL_GAP_MS = 75;
+  let _lastEvalAt = 0;
+  const evalGap = () => {
+    const now = Date.now();
+    const wait = EVAL_GAP_MS - (now - _lastEvalAt);
+    if (wait > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
+    _lastEvalAt = Date.now();
+  };
+
+  const run = (script: string, label: string, tolerant = false): string => {
+    // ponytail: hard guard against transport truncation. Obsidian 1.13.x hangs
+    // (~3200-3900 chars, wedging the app) or fails (≥4000) eval scripts, so
+    // this backstop fires at 3100 — before the hang zone — with a clear error.
+    // Adaptive chunking keeps scripts ≤ ~3000; this catches any regression.
+    if (script.length > 3100) throw new Error(`eval payload ${script.length} bytes exceeds the Obsidian eval ceiling (~3100 chars; hangs/fails beyond); reduce content chunk size or shorten the note path`);
     const args: string[] = [];
     if (vault) args.push(`vault=${vault}`);
     args.push("eval", `code=${script}`);
-    const result = exec(args, false, timeoutMs);
-    const out = result.stdout.trim().replace(/^=>\s?/, "");
-    const stderr = (result.stderr || "").trim();
-    if (!out || /^Error[:\s]/.test(out)) {
+    evalGap();
+    let result = exec(args, false, timeoutMs);
+    let out = result.stdout.trim().replace(/^=>\s?/, "");
+    let stderr = (result.stderr || "").trim();
+    // Verify steps are strict but read-only and idempotent: the 1.13.x race
+    // occasionally drops their echo too, so retry once on empty before failing.
+    if (!tolerant && !out && !stderr) {
+      result = exec(args, false, timeoutMs);
+      out = result.stdout.trim().replace(/^=>\s?/, "");
+      stderr = (result.stderr || "").trim();
+    }
+    // Write steps: Obsidian 1.13.x intermittently corrupts the code= payload in
+    // transit (atob: "string to be decoded is not correctly encoded") or drops
+    // the echo. Retry once on a transient Error:/empty. If the retry also
+    // errors, do NOT fail here for tolerant steps — the write may have
+    // succeeded anyway (e.g. create → "File already exists" means chunk 0
+    // landed); the read-back verify step is the real gate.
+    if (tolerant && (/^Error[:\s]/.test(out) || (!out && !stderr))) {
+      const firstOut = out;
+      result = exec(args, false, timeoutMs);
+      out = result.stdout.trim().replace(/^=>\s?/, "");
+      stderr = (result.stderr || "").trim();
+      if (/^Error[:\s]/.test(out) || (!out && !stderr)) {
+        // ambiguous retry: keep the first result; verify step decides
+        out = firstOut;
+      }
+    }
+    // Write-step evals on Obsidian 1.13.x intermittently lose the resolved
+    // value on a successful new-file write (vault reindex races the result
+    // printer) while the write itself succeeds, or corrupt the payload (atob
+    // error) without writing. For tolerant write steps, ANY non-stderr outcome
+    // (empty echo, atob Error:, File already exists) is left to the read-back
+    // verify step to judge — it distinguishes wrote-vs-not definitively.
+    // stderr is a hard failure for write steps; verify steps (strict) judge
+    // the returned content directly.
+    const failed = tolerant
+      ? !!stderr
+      : !out || /^Error[:\s]/.test(out);
+    if (failed) {
       throw new Error(
         `vaultWrite ${label} failed for "${notePath}": ${out || "(no output)"}` +
         (stderr ? `\n  Stderr: ${stderr.slice(0, 500)}` : "") +
@@ -362,38 +467,99 @@ export function vaultWrite(
     return out;
   };
 
-  // --- first chunk: mode-specific initial write ---
-  const status = run(buildFirstScript(notePath, mode, b64Chunks[0]), mode);
+  // --- write + verify, retried once on verification failure ---
+  // Obsidian 1.13.x intermittently drops a chunk's write (silent no-op) during
+  // multi-chunk writes. The verify step catches it; retrying the whole write
+  // repairs it (writes are idempotent; create retries as overwrite since the
+  // file now exists). Max 2 attempts — a persistent mismatch is a real error.
+  let attempts = 0;
+  for (;;) {
+    attempts++;
+    const effectiveMode = attempts > 1 && mode === "create" ? "overwrite" : mode;
 
-  // --- remaining chunks: always read+append to end ---
-  for (let i = 1; i < b64Chunks.length; i++) {
-    run(buildChunkScript(notePath, b64Chunks[i]), `chunk ${i}`);
-  }
+    // --- first chunk: mode-specific initial write (tolerant: 1.13.x write echo can be empty; verify step is the real gate) ---
+    run(buildFirstScript(notePath, effectiveMode, b64Chunks[0]), effectiveMode, true);
 
-  // --- verify: read back and confirm content ---
-  if (mode === "create" || mode === "overwrite") {
-    const verResult = run(buildVerifyScript(notePath), "verify");
-    if (verResult.startsWith("Error:")) {
-      throw new Error(`vaultWrite ${mode} verification failed for "${notePath}": ${verResult}`);
+    // --- remaining chunks: read + insert (prepend keeps chunks contiguous before
+    // old content) or read + append to end (create/overwrite/append). Tolerant:
+    // 1.13.x write echo can be empty; verify step is the real gate. ---
+    let prependOffset = effectiveMode === "prepend" ? Buffer.from(b64Chunks[0], "base64").toString("utf8").length : 0;
+    for (let i = 1; i < b64Chunks.length; i++) {
+      if (effectiveMode === "prepend") {
+        run(buildPrependChunkScript(notePath, b64Chunks[i], prependOffset), `chunk ${i}`, true);
+        prependOffset += Buffer.from(b64Chunks[i], "base64").toString("utf8").length;
+      } else {
+        run(buildChunkScript(notePath, b64Chunks[i]), `chunk ${i}`, true);
+      }
     }
-    const [verHash, verBytes] = verResult.split(" ", 2).map(Number);
-    const expected = djb2Utf8(content);
-    if (verHash !== expected.hash || verBytes !== expected.bytes) {
-      throw new Error(
-        `vaultWrite ${mode} verification failed for "${notePath}": ` +
-        `written ${verBytes} bytes (hash ${verHash}), expected ${expected.bytes} bytes (hash ${expected.hash})`
-      );
+
+    // --- verify: read back and confirm content ---
+    let verifyError: Error | undefined;
+    try {
+      if (effectiveMode === "create" || effectiveMode === "overwrite") {
+        const verResult = run(buildVerifyScript(notePath), "verify");
+        if (verResult.startsWith("Error:")) {
+          throw new Error(`vaultWrite ${effectiveMode} verification failed for "${notePath}": ${verResult}`);
+        }
+        const [verHash, verBytes] = verResult.split(" ", 2).map(Number);
+        const expected = djb2Utf8(content);
+        if (verHash !== expected.hash || verBytes !== expected.bytes) {
+          throw new Error(
+            `vaultWrite ${effectiveMode} verification failed for "${notePath}": ` +
+            `written ${verBytes} bytes (hash ${verHash}), expected ${expected.bytes} bytes (hash ${expected.hash})`
+          );
+        }
+      } else if (effectiveMode === "append") {
+        // Append: verify the FULL appended content is the file's tail by hashing
+        // the last content.length code units (small script — no content
+        // embedding, stays under the eval payload ceiling). Catches a missing
+        // chunk 0 in multi-chunk append: file = OLD + chunk1..N would not hash
+        // to the full content. Note: the eval's s.slice() uses UTF-16 code
+        // units, so content.length (not byte length) is the correct slice size.
+        if (!content) break; // empty append is a no-op
+        const contentUnits = content.length;
+        const tailResult = run(buildTailHashScript(notePath, contentUnits), "verify-tail");
+        if (tailResult.startsWith("Error:")) {
+          throw new Error(`vaultWrite ${effectiveMode} verification failed for "${notePath}": ${tailResult}`);
+        }
+        const [tailHash, tailBytes] = tailResult.split(" ", 2).map(Number);
+        const expected = djb2Utf8(content);
+        if (tailHash !== expected.hash || tailBytes !== expected.bytes) {
+          throw new Error(
+            `vaultWrite ${effectiveMode} verification failed for "${notePath}": ` +
+            `tail ${tailBytes} bytes (hash ${tailHash}), expected ${expected.bytes} bytes (hash ${expected.hash})`
+          );
+        }
+      } else {
+        // Prepend: hash the FULL prepended content (first content.length code
+        // units after any frontmatter) — catches a silently-no-op'd chunk 1..N
+        // that a chunk-0-only prefix check would miss. s.slice() uses UTF-16
+        // code units, so content.length (not byte length) is the slice size.
+        const contentUnits = content.length;
+        const headResult = run(buildPrefixHashScript(notePath, contentUnits), "verify-prefix-hash");
+        if (headResult.startsWith("Error:")) {
+          throw new Error(`vaultWrite ${effectiveMode} verification failed for "${notePath}": ${headResult}`);
+        }
+        const [headHash, headBytes] = headResult.split(" ", 2).map(Number);
+        const expected = djb2Utf8(content);
+        if (headHash !== expected.hash || headBytes !== expected.bytes) {
+          throw new Error(
+            `vaultWrite ${effectiveMode} verification failed for "${notePath}": ` +
+            `head ${headBytes} bytes (hash ${headHash}), expected ${expected.bytes} bytes (hash ${expected.hash})`
+          );
+        }
+      }
+    } catch (e) {
+      verifyError = e as Error;
     }
-  } else if (mode === "append") {
-    // Append: verify the last chunk's content is a suffix of the file
-    const lastChunk = b64Chunks[b64Chunks.length - 1];
-    run(buildSuffixScript(notePath, lastChunk), "verify-suffix");
-  } else {
-    // Prepend: at least confirm the file exists (content is at the beginning, not suffix checkable)
-    const verResult = run(buildVerifyScript(notePath), "verify-exists");
-    if (verResult.startsWith("Error:")) {
-      throw new Error(`vaultWrite ${mode} verification failed for "${notePath}": ${verResult}`);
-    }
+    if (!verifyError) break; // verified OK
+    // Retry only for idempotent modes (create→overwrite, overwrite). append/
+    // prepend are NON-idempotent: re-running the write would duplicate content
+    // (OLD+content+content), and tail/prefix verify cannot detect the extra
+    // copy. For those, surface the verify error immediately — the caller can
+    // retry the whole operation.
+    if (attempts >= 2 || mode === "append" || mode === "prepend") throw verifyError;
+    // transient chunk-drop race: retry the whole write once (idempotent modes only)
   }
 
   // Return a bridge-constructed success message (decoupled from eval echo)
@@ -470,9 +636,25 @@ function createFromTemplate(templateName: string, noteName: string, folder: stri
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
   args.push("eval", `code=${wrapEval(script)}`);
-  const _out332 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
-  if (!_out332 || /^Error[:\s]/.test(_out332)) throw new Error(`createFromTemplate failed for "${notePath}": ${_out332 || "(no output)"}`);
-  return _out332;
+  const _res332 = execObsidian(args, false, timeoutMs);
+  const _out332 = _res332.stdout.trim().replace(/^=>\s?/, "");
+  const _stderr332 = (_res332.stderr || "").trim();
+  // Friendly outcomes (template not found / multiple matches) are returned as-is.
+  if (/^(Template not found|Multiple templates match)/.test(_out332)) return _out332;
+  if (/^Error[:\s]/.test(_out332) || _stderr332) {
+    throw new Error(`createFromTemplate failed for "${notePath}": ${_out332 || "(no output)"}${_stderr332 ? `\n  Stderr: ${_stderr332.slice(0, 500)}` : ""}`);
+  }
+  // Obsidian 1.13.x can drop the eval echo on a successful new-file write
+  // (same race as vaultWrite). Empty echo → confirm the file exists via a
+  // read-back check before reporting success.
+  if (!_out332) {
+    const verArgs: string[] = [];
+    if (vault) verArgs.push(`vault=${vault}`);
+    verArgs.push("eval", `code=${wrapEval(`const t=${j(notePath)};const f=app.vault.getAbstractFileByPath(t);return f?'ok':'not found'`)}`);
+    const verOut = execObsidian(verArgs, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
+    if (!/^ok$/.test(verOut)) throw new Error(`createFromTemplate verification failed for "${notePath}": ${verOut || "(no output)"}`);
+  }
+  return "Created.";
 }
 
 function propertyRename(from: string, to: string, filePath?: string, vault?: string, timeoutMs = 30_000): string {
@@ -951,7 +1133,13 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
         if (!code) throw new Error("'code=' or 'file=' required.");
         // ponytail: auto-add return for simple bare expressions
         const trimmed = code.trim();
+        // If the caller already supplied a complete async IIFE (with its own
+        // try/catch), pass it through as-is — wrapping it again would discard
+        // its return value (inner IIFE result lost → empty echo).
+        const alreadyWrapped =
+          /^\(async\s+function/.test(trimmed) || /^\(async\s*\(/.test(trimmed) || /^\(async\s*\w*\s*=>/.test(trimmed);
         if (
+          !alreadyWrapped &&
           !trimmed.startsWith("return ") &&
           !trimmed.startsWith("if") &&
           !trimmed.startsWith("for") &&
@@ -971,9 +1159,18 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
         }
         const eArgs: string[] = [];
         if (v) eArgs.push(`vault=${v}`);
-        eArgs.push("eval", `code=(async function(){try{${code}}catch(e){return 'Error: '+String(e&&e.message||e)}})()`);
-        const evalOut = execObsidian(eArgs, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
-        if (!evalOut || /^Error[:\s]/.test(evalOut)) throw new Error(`eval returned no result or error: ${evalOut || "(empty)"}`);
+        eArgs.push("eval", `code=${alreadyWrapped ? code : `(async function(){try{${code}}catch(e){return 'Error: '+String(e&&e.message||e)}})()`}`);
+        let _evalRes = execObsidian(eArgs, false, timeoutMs);
+        let evalOut = _evalRes.stdout.trim().replace(/^=>\s?/, "");
+        // Obsidian 1.13.x intermittently drops the eval echo on successful
+        // writes (side effect happens, result lost). Retry once; if still empty
+        // with no stderr, the code ran — report that instead of throwing.
+        if (!evalOut && !(_evalRes.stderr || "").trim()) {
+          _evalRes = execObsidian(eArgs, false, timeoutMs);
+          evalOut = _evalRes.stdout.trim().replace(/^=>\s?/, "");
+        }
+        if (/^Error[:\s]/.test(evalOut)) throw new Error(`eval returned error: ${evalOut}`);
+        if (!evalOut && !(_evalRes.stderr || "").trim()) return "(eval ran; result echo was dropped by Obsidian 1.13.x — verify the effect)";
         return evalOut;
       }
 

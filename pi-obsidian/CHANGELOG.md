@@ -8,6 +8,37 @@
 
 All notable changes to `pi-obsidian` will be documented in this file.
 
+## 0.8.13 (2026-08-08)
+
+### Fixes
+
+- `vaultWrite` write operations no longer fail with "(no output)" on
+  Obsidian 1.13.x. Root causes fixed (live-verified):
+  - Adaptive base64 chunking now keeps chunk sizes a **multiple of 4** and
+    splits on **UTF-8 character boundaries** — previously, non-multiple-of-4
+    chunks silently dropped bytes on decode (e.g. 4998 of 5000 bytes), and
+    multi-byte characters (emoji/CJK) split across chunks corrupted to U+FFFD.
+  - Eval scripts are sized to stay under the Obsidian 1.13.x ~3100-char
+    hang/corruption ceiling (path-length aware), with a 75ms spacing between
+    successive evals to avoid payload corruption.
+  - Write steps tolerate the empty-echo race (write succeeds but the CLI drops
+    the result); the read-back djb2 verification is the single success gate.
+    Verification now covers the full content for all modes (full-file hash for
+    create/overwrite, tail-hash for append, prefix-hash for prepend).
+  - Whole-write retry on verification failure applies to idempotent modes
+    only (create→overwrite, overwrite); append/prepend throw instead of
+    risking duplicated content.
+  - Multi-chunk prepend inserts chunks at the correct offset (was: appended
+    to the end, sandwiching old content between prepended chunks).
+  - `createFromTemplate` tolerates the empty-echo race with a read-back
+    existence check.
+  - Removed dead `buildSuffixScript` / `buildPrefixScript`.
+
+### Notes
+
+- The original report's premise (async IIFE → pending Promise → empty stdout)
+  was incorrect; `obsidian eval` does await Promises.
+
 ## 0.8.12 (2026-08-01)
 
 ### Fixes

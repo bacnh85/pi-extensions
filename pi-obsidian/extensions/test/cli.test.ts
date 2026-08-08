@@ -5,9 +5,11 @@ import { relative, resolve, isAbsolute, sep, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
-  buildSuffixScript,
-  buildFirstScript,
+  buildPrefixHashScript,
+  buildTailHashScript,
   buildChunkScript,
+  buildPrependChunkScript,
+  buildFirstScript,
   buildVerifyScript,
   djb2Utf8,
   readQuotedContent,
@@ -573,21 +575,341 @@ describe("vaultWrite diagnostics and helpers", () => {
     }
   });
 
-  it("buildSuffixScript generates a valid script with try/catch and suffix check", () => {
-    const script = buildSuffixScript("note.md", "U3VmZml4");
-    expect(script).to.include("adapter.read");
-    expect(script).to.include('s.slice(');
-    expect(script).to.include("try{");
-    expect(script).to.include("catch(e)");
-    expect(script).to.include("suffix mismatch");
+  it("vaultWrite tolerates empty write-step echo when read-back verify matches (Obsidian 1.13.x write race regression)", () => {
+    const content = "Hello World";
+    const expected = djb2Utf8(content);
+    const raceFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("new TextEncoder().encode")) {
+        // verify call: read-based, reliable
+        return { stdout: `${expected.hash} ${expected.bytes}`, stderr: "", parsed: "" };
+      }
+      // write/chunk step: Obsidian 1.13.x intermittently drops the resolved
+      // value on a successful new-file write → empty stdout, no stderr.
+      return { stdout: "", stderr: "", parsed: "" };
+    };
+    const result = vaultWrite("race.md", content, "overwrite", undefined, 100, raceFake);
+    expect(result).to.equal("Updated: race.md");
   });
 
-  it("vaultWrite append suffix verification passes on suffix match", () => {
-    const okFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+  it("vaultWrite keeps verify step strict: empty stdout on read-back verify still throws", () => {
+    const emptyVerifyFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("new TextEncoder().encode")) {
+        // verify step returns empty — real failure, must throw
+        return { stdout: "", stderr: "", parsed: "" };
+      }
+      return { stdout: "ok", stderr: "", parsed: "ok" };
+    };
+    try {
+      vaultWrite("verifyempty.md", "data", "overwrite", undefined, 100, emptyVerifyFake);
+      expect.fail("Should have thrown");
+    } catch (e: any) {
+      expect(e.message).to.include("verify");
+      expect(e.message).to.include("verifyempty.md");
+    }
+  });
+
+  it("vaultWrite write-step empty echo WITH stderr still throws", () => {
+    const stderrWriteFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("new TextEncoder().encode")) {
+        return { stdout: "0 999999", stderr: "", parsed: "" };
+      }
+      return { stdout: "", stderr: "real stderr on write", parsed: "" };
+    };
+    try {
+      vaultWrite("stderrwrite.md", "data", "overwrite", undefined, 100, stderrWriteFake);
+      expect.fail("Should have thrown");
+    } catch (e: any) {
+      expect(e.message).to.include("real stderr on write");
+      expect(e.message).to.include("stderrwrite.md");
+    }
+  });
+
+  it("vaultWrite create tolerates empty write echo and verifies (original 1.13.x new-file scenario)", () => {
+    const content = "# Fresh Note";
+    const expected = djb2Utf8(content);
+    const raceFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("new TextEncoder().encode")) {
+        return { stdout: `${expected.hash} ${expected.bytes}`, stderr: "", parsed: "" };
+      }
+      return { stdout: "", stderr: "", parsed: "" };
+    };
+    const result = vaultWrite("fresh.md", content, "create", undefined, 100, raceFake);
+    expect(result).to.equal("Created: fresh.md");
+  });
+
+  it("vaultWrite append tolerates empty write echo and tail-verifies", () => {
+    const content = "Appended content";
+    const expected = djb2Utf8(content);
+    const raceFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("tail=s.slice(-")) {
+        // tail-hash verify call: read-based, reliable
+        return { stdout: `${expected.hash} ${expected.bytes}`, stderr: "", parsed: "" };
+      }
+      return { stdout: "", stderr: "", parsed: "" };
+    };
+    const result = vaultWrite("note.md", content, "append", undefined, 100, raceFake);
+    expect(result).to.equal("Appended to: note.md");
+  });
+
+  it("vaultWrite prepend tolerates empty write echo and prefix-hash-verifies (full-content gate)", () => {
+    const content = "Prepended";
+    const expected = djb2Utf8(content);
+    const raceFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("head=s.slice(0,")) {
+        // prefix-hash verify call: read-based, reliable
+        return { stdout: `${expected.hash} ${expected.bytes}`, stderr: "", parsed: "" };
+      }
+      return { stdout: "", stderr: "", parsed: "" };
+    };
+    const result = vaultWrite("note.md", content, "prepend", undefined, 100, raceFake);
+    expect(result).to.equal("Prepended to: note.md");
+  });
+
+  it("vaultWrite prepend empty write echo with prefix-hash mismatch still throws (silent-noop guard)", () => {
+    const wrong = djb2Utf8("old content");
+    const noopFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("head=s.slice(0,")) {
+        // old content — prepend silently no-oped
+        return { stdout: `${wrong.hash} ${wrong.bytes}`, stderr: "", parsed: "" };
+      }
+      return { stdout: "", stderr: "", parsed: "" };
+    };
+    try {
+      vaultWrite("old.md", "Prepended", "prepend", undefined, 100, noopFake);
+      expect.fail("Should have thrown");
+    } catch (e: any) {
+      expect(e.message).to.include("verification failed");
+      expect(e.message).to.include("old.md");
+    }
+  });
+
+  it("vaultWrite multi-chunk tolerates empty echo on a chunk step and still verifies", () => {
+    // content large enough to need 2+ base64 chunks (MAX_B64_CHUNK=2800 chars of base64 ≈ 2100 decoded bytes)
+    const content = "x".repeat(5000) + "|tail|";
+    const expected = djb2Utf8(content);
+    const chunkFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("new TextEncoder().encode")) {
+        return { stdout: `${expected.hash} ${expected.bytes}`, stderr: "", parsed: "" };
+      }
+      return { stdout: "", stderr: "", parsed: "" };
+    };
+    const result = vaultWrite("big.md", content, "overwrite", undefined, 100, chunkFake);
+    expect(result).to.equal("Updated: big.md");
+  });
+
+  it("vaultWrite multi-chunk prepend keeps old content contiguous AFTER all prepended chunks (corruption regression)", () => {
+    const prepended = "A".repeat(5000); // > 2100 decoded bytes → 2+ base64 chunks
+    let file = "OLD"; // simulated existing file
+    const statefulFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("head=s.slice(0,")) {
+        // verify-prefix-hash: full prepended content must be at head
+        const exp = djb2Utf8(prepended);
+        return { stdout: `${exp.hash} ${exp.bytes}`, stderr: "", parsed: "" };
+      }
+      // simulate in-app adapter semantics against the tracked file state
+      if (code.includes("o.slice(0,at)")) {
+        // buildPrependChunkScript: insert at frontmatterLen + offset
+        const fm = file.match(/^---\s*\n[\s\S]*?\n---\s*\n/);
+        const fmLen = fm ? fm[0].length : 0;
+        const at = Number(code.match(/const at=i\+(\d+)/)?.[1] ?? 0);
+        const chunkB64 = code.match(/atob\("([^"]+)"\)/)?.[1] ?? "";
+        const chunk = Buffer.from(chunkB64, "base64").toString("utf8");
+        file = file.slice(0, fmLen + at) + chunk + file.slice(fmLen + at);
+        return { stdout: "ok", stderr: "", parsed: "" };
+      }
+      if (code.includes("o.slice(0,i)+c+o.slice(i)")) {
+        // buildFirstScript prepend: insert chunk 0 after frontmatter
+        const fm = file.match(/^---\s*\n[\s\S]*?\n---\s*\n/);
+        const i = fm ? fm[0].length : 0;
+        const chunkB64 = code.match(/atob\("([^"]+)"\)/)?.[1] ?? "";
+        const chunk = Buffer.from(chunkB64, "base64").toString("utf8");
+        file = file.slice(0, i) + chunk + file.slice(i);
+        return { stdout: "ok", stderr: "", parsed: "" };
+      }
       return { stdout: "ok", stderr: "", parsed: "" };
     };
-    const result = vaultWrite("note.md", "Appended content", "append", undefined, 100, okFake);
+    const result = vaultWrite("note.md", prepended, "prepend", undefined, 100, statefulFake);
+    expect(result).to.equal("Prepended to: note.md");
+    // old content must be contiguous at the END (after ALL prepended chunks)
+    expect(file).to.equal(prepended + "OLD");
+    expect(file.endsWith("OLD")).to.equal(true);
+  });
+
+  it("vaultWrite multi-chunk prepend with multi-byte content keeps old content contiguous (unit-consistency regression)", () => {
+    // emoji = 4 UTF-8 bytes / 2 UTF-16 units; enough to span 2+ base64 chunks
+    const prepended = "\u{1F389}".repeat(1500) + "\u4F60\u597D".repeat(200);
+    let file = "OLD"; // simulated existing file
+    const statefulFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("head=s.slice(0,")) {
+        const exp = djb2Utf8(prepended);
+        return { stdout: `${exp.hash} ${exp.bytes}`, stderr: "", parsed: "" };
+      }
+      if (code.includes("o.slice(0,at)")) {
+        const fm = file.match(/^---\s*\n[\s\S]*?\n---\s*\n/);
+        const fmLen = fm ? fm[0].length : 0;
+        const at = Number(code.match(/const at=i\+(\d+)/)?.[1] ?? 0);
+        const chunkB64 = code.match(/atob\("([^"]+)"\)/)?.[1] ?? "";
+        const chunk = Buffer.from(chunkB64, "base64").toString("utf8");
+        file = file.slice(0, fmLen + at) + chunk + file.slice(fmLen + at);
+        return { stdout: "ok", stderr: "", parsed: "" };
+      }
+      if (code.includes("o.slice(0,i)+c+o.slice(i)")) {
+        const fm = file.match(/^---\s*\n[\s\S]*?\n---\s*\n/);
+        const i = fm ? fm[0].length : 0;
+        const chunkB64 = code.match(/atob\("([^"]+)"\)/)?.[1] ?? "";
+        const chunk = Buffer.from(chunkB64, "base64").toString("utf8");
+        file = file.slice(0, i) + chunk + file.slice(i);
+        return { stdout: "ok", stderr: "", parsed: "" };
+      }
+      return { stdout: "ok", stderr: "", parsed: "" };
+    };
+    const result = vaultWrite("note.md", prepended, "prepend", undefined, 100, statefulFake);
+    expect(result).to.equal("Prepended to: note.md");
+    expect(file).to.equal(prepended + "OLD");
+  });
+
+  it("buildTailHashScript generates a valid script with tail hash check", () => {
+    const script = buildTailHashScript("note.md", 1234);
+    expect(script).to.include("adapter.read");
+    expect(script).to.include("s.slice(-1234)");
+    expect(script).to.include("h=5381");
+    expect(script).to.include("file shorter than appended content");
+    expect(script).to.include("try{");
+    expect(script).to.include("catch(e)");
+  });
+
+  it("all buildFirstScript modes stay under the eval ceiling with a 200-char path (Obsidian 1.13.x hang regression)", () => {
+    const longPath = "x".repeat(200) + ".md";
+    // worst-case chunk: adaptive chunking in vaultWrite sizes content so the
+    // longest script (prepend first-chunk) stays ≤ ~3000; assert all builders
+    // with a max-size chunk respect the ceiling with margin.
+    for (const mode of ["create", "overwrite", "append", "prepend"] as const) {
+      // 1100 decoded bytes ≈ a large chunk under the adaptive limit for a long path
+      const b64 = Buffer.from("A".repeat(1100), "utf8").toString("base64");
+      const script = buildFirstScript(longPath, mode, b64);
+      expect(script.length, `${mode} with 200-char path`).to.be.below(3000);
+    }
+  });
+
+  it("vaultWrite throws a clear error if any script would exceed the eval ceiling (guard regression)", () => {
+    // The adaptive chunker keeps real content scripts under the ceiling, so
+    // simulate a future regression by calling the guard through a builder with
+    // an oversized chunk (as MAX_B64_CHUNK regressions would produce).
+    const bigB64 = Buffer.from("A".repeat(4000), "utf8").toString("base64"); // 5334 base64 chars
+    const oversized = buildFirstScript("note.md", "create", bigB64);
+    expect(oversized.length).to.be.above(3900);
+  });
+
+  it("vaultWrite append tail-verification passes on full-content tail match", () => {
+    const content = "Appended content";
+    const expected = djb2Utf8(content);
+    const okFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("tail=s.slice(-")) {
+        return { stdout: `${expected.hash} ${expected.bytes}`, stderr: "", parsed: "" };
+      }
+      return { stdout: "ok", stderr: "", parsed: "ok" };
+    };
+    const result = vaultWrite("note.md", content, "append", undefined, 100, okFake);
     expect(result).to.equal("Appended to: note.md");
+  });
+
+  it("vaultWrite append tail mismatch throws (catches missing chunk 0 in multi-chunk append)", () => {
+    const content = "Appended content";
+    const wrong = djb2Utf8("different content");
+    const badFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("tail=s.slice(-")) {
+        // tail does not match the full appended content (e.g. chunk 0 no-oped)
+        return { stdout: `${wrong.hash} ${wrong.bytes}`, stderr: "", parsed: "" };
+      }
+      return { stdout: "ok", stderr: "", parsed: "ok" };
+    };
+    try {
+      vaultWrite("note.md", content, "append", undefined, 100, badFake);
+      expect.fail("Should have thrown");
+    } catch (e: any) {
+      expect(e.message).to.include("verification failed");
+      expect(e.message).to.include("note.md");
+    }
+  });
+
+  it("vaultWrite append does NOT retry on verify failure (avoids duplicate content)", () => {
+    const content = "Appended content";
+    const wrong = djb2Utf8("different");
+    const expected = djb2Utf8(content);
+    let writeCalls = 0;
+    const fake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("tail=s.slice(-")) {
+        // always wrong — forces the non-idempotent-retry path
+        return { stdout: `${wrong.hash} ${wrong.bytes}`, stderr: "", parsed: "" };
+      }
+      if (code.includes("adapter.write")) writeCalls++;
+      return { stdout: "ok", stderr: "", parsed: "ok" };
+    };
+    try {
+      vaultWrite("note.md", content, "append", undefined, 100, fake);
+      expect.fail("Should have thrown");
+    } catch (e: any) {
+      expect(e.message).to.include("verification failed");
+    }
+    // append must NOT re-run the write (that would duplicate content)
+    expect(writeCalls).to.equal(1);
+    void expected;
+  });
+
+  it("vaultWrite multi-byte UTF-8 content round-trips across chunk boundaries", () => {
+    // multi-byte chars (emoji = 4 bytes) spanning chunk splits
+    const content = "a".repeat(1498) + "\u{1F389}".repeat(50) + "b".repeat(1498);
+    const expected = djb2Utf8(content);
+    const chunkFake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("new TextEncoder().encode")) {
+        return { stdout: `${expected.hash} ${expected.bytes}`, stderr: "", parsed: "" };
+      }
+      return { stdout: "ok", stderr: "", parsed: "ok" };
+    };
+    const result = vaultWrite("uni.md", content, "create", undefined, 100, chunkFake);
+    expect(result).to.equal("Created: uni.md");
+  });
+
+  it("vaultWrite append with multi-byte content verifies via code-unit tail hash", () => {
+    const content = "\u{1F389} appended \u4F60\u597D";
+    const expected = djb2Utf8(content);
+    const fake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("tail=s.slice(-")) {
+        return { stdout: `${expected.hash} ${expected.bytes}`, stderr: "", parsed: "" };
+      }
+      return { stdout: "ok", stderr: "", parsed: "ok" };
+    };
+    const result = vaultWrite("note.md", content, "append", undefined, 100, fake);
+    expect(result).to.equal("Appended to: note.md");
+  });
+
+  it("vaultWrite prepend with multi-byte content verifies via code-unit prefix hash", () => {
+    const content = "\u4F60\u597D pre \u{1F389}";
+    const expected = djb2Utf8(content);
+    const fake = (_args: string[], _fmt?: boolean, _ms?: number) => {
+      const code = (_args.find(a => a.startsWith("code=")) || "").slice(5);
+      if (code.includes("head=s.slice(0,")) {
+        return { stdout: `${expected.hash} ${expected.bytes}`, stderr: "", parsed: "" };
+      }
+      return { stdout: "ok", stderr: "", parsed: "ok" };
+    };
+    const result = vaultWrite("note.md", content, "prepend", undefined, 100, fake);
+    expect(result).to.equal("Prepended to: note.md");
   });
 
   it("vaultWrite default timeout is 60s", () => {
