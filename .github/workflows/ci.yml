@@ -43,6 +43,7 @@ jobs:
             pi-9router: pi-9router/**
             pi-ux: pi-ux/**
             pi-budget: pi-budget/**
+            pi-themes: pi-themes/**
 
       - name: Build matrix
         id: set-matrix
@@ -69,6 +70,7 @@ jobs:
               { pkg: 'pi-kicad', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-ux', cmd: 'node --test extensions/test/*.test.js' },
               { pkg: 'pi-budget', cmd: 'node --test extensions/test/*.test.js' },
+              { pkg: 'pi-themes', cmd: 'npm pack --dry-run' },
             ];
 
             const selected = '${{ github.event_name }}' === 'workflow_dispatch'

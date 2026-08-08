@@ -23,6 +23,7 @@ Each package lives in its own directory and can be installed independently. This
 | [`@bacnh85/pi-rtk`](./pi-rtk) | 0.1.12 | Bash command rewriting through RTK for token savings. |
 | [`@bacnh85/pi-serena`](./pi-serena) | 0.9.6 | Serena semantic code navigation, references, refactors, and diagnostics through a persistent worker. |
 | [`@bacnh85/pi-sub`](./pi-sub) | 0.1.25 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
+| [`@bacnh85/pi-themes`](./pi-themes) | 0.1.1 | Ayu-based theme collection (dark, mirage, light) for the Pi TUI. |
 | [`@bacnh85/pi-subagent`](./pi-subagent) | 0.14.1 | Isolated in-process subagents, parallel/chain delegation, inspectable threads, and git worktree isolation (`sandbox: worktree`). |
 | [`@bacnh85/pi-ux`](./pi-ux) | 0.4.4 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, ships medium-tuned presets (Web/Mobile) so the agent stays unblocked when DESIGN.md is missing, runs deterministic slop-audit gates (APCA contrast/tokens/states/slop tells), works with text-only models. |
 | [`@bacnh85/pi-web`](./pi-web) | 0.5.7 | Web search, page extraction, site mapping/crawling, screenshots, and PDFs. |
@@ -48,6 +49,7 @@ pi install npm:@bacnh85/pi-review
 pi install npm:@bacnh85/pi-rtk
 pi install npm:@bacnh85/pi-serena
 pi install npm:@bacnh85/pi-sub
+pi install npm:@bacnh85/pi-themes
 pi install npm:@bacnh85/pi-subagent
 pi install npm:@bacnh85/pi-ux
 pi install npm:@bacnh85/pi-web
@@ -83,6 +85,7 @@ pi-extensions/
   pi-rtk/
   pi-serena/
   pi-sub/
+  pi-themes/
   pi-subagent/
   pi-web/
   pi-windows-tools/

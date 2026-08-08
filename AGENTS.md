@@ -22,6 +22,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-rtk** | 0.1.12 | Bash command token rewriting through RTK. |
 | **pi-serena** | 0.9.6 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
 | **pi-sub** | 0.1.25 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
+| **pi-themes** | 0.1.1 | Ayu-based theme collection (dark, mirage, light) for the Pi TUI — pure-themes package (no extension code). |
 | **pi-subagent** | 0.14.1 | Isolated in-process subagents with parallel/chain modes, inspectable threads, and git worktree isolation (`sandbox: worktree`). |
 | **pi-web** | 0.5.7 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
 | **pi-ux** | 0.4.4 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, ships medium-tuned presets (Web/Mobile) so the agent stays unblocked when DESIGN.md is missing, runs deterministic slop-audit gates (APCA contrast + tokens + states + slop tells), works with text-only models. |
@@ -46,6 +47,7 @@ pi-extensions/
   pi-9router/           # TS extension to connect to a 9router AI routing proxy.
   pi-budget/            # JS extension for spend-cap enforcement (--budget <usd>).
   pi-sub/               # TS extension for subscription usage footer
+  pi-themes/            # JSON theme files — pure-themes package (no extension code)
   .github/workflows/    # ci.yml (matrix, GitHub-hosted runners)
   .agents/skills/       # shared skills (skill-creator)
   .env.local            # shared dev credentials (gitignored)
@@ -70,6 +72,9 @@ pi-<name>/
       *.test.ts         # .ts or .js, matching extension entrypoint
 
   skills/               # skill sub-skills, each in its own directory
+
+  # OR (pure-themes package like pi-themes): themes/*.json + previews/ + LICENSE,
+  # no extensions/ or skills/ dirs. pi.themes in package.json points at ./themes.
     <name>/SKILL.md     # YAML frontmatter + markdown body
 
   hooks/                # (optional) shared modules for extensions + skills
@@ -118,6 +123,7 @@ cd pi-<name> && npm test
 # pi-review:     cd extensions && mocha                (mocha + tsx)
 # pi-rtk:        npm pack --dry-run                    (packaging check)
 # pi-sub:        npm pack --dry-run                    (packaging check)
+# pi-themes:     npm pack --dry-run                    (packaging check; pure-themes, no extension code)
 # pi-9router:    node --import tsx --node test          (node:test + tsx)
 ```
 

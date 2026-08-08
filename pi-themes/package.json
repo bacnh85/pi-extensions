@@ -1,0 +1,38 @@
+{
+  "name": "@bacnh85/pi-themes",
+  "version": "0.1.1",
+  "description": "Custom pi themes collection — Ayu-based dark, mirage, and light variants",
+  "license": "MIT",
+  "author": "bacnh85",
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-themes",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git",
+    "directory": "pi-themes"
+  },
+  "bugs": {
+    "url": "https://github.com/bacnh85/pi-extensions/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-theme",
+    "pi-themes",
+    "ayu"
+  ],
+  "files": [
+    "themes",
+    "previews",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "themes": [
+      "./themes"
+    ],
+    "image": "https://raw.githubusercontent.com/bacnh85/pi-extensions/main/pi-themes/previews/dark.png"
+  }
+}
