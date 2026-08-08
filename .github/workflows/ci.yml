@@ -44,6 +44,11 @@ jobs:
             pi-ux: pi-ux/**
             pi-budget: pi-budget/**
             pi-themes: pi-themes/**
+            pi-init: pi-init/**
+            pi-permission: pi-permission/**
+            pi-checkpoint: pi-checkpoint/**
+            pi-notify: pi-notify/**
+            pi-references: pi-references/**
 
       - name: Build matrix
         id: set-matrix
@@ -71,6 +76,11 @@ jobs:
               { pkg: 'pi-ux', cmd: 'node --test extensions/test/*.test.js' },
               { pkg: 'pi-budget', cmd: 'node --test extensions/test/*.test.js' },
               { pkg: 'pi-themes', cmd: 'npm pack --dry-run' },
+              { pkg: 'pi-init', cmd: 'node --test extensions/test/*.test.js' },
+              { pkg: 'pi-permission', cmd: 'node --test extensions/test/*.test.js' },
+              { pkg: 'pi-checkpoint', cmd: 'node --test extensions/test/*.test.js' },
+              { pkg: 'pi-notify', cmd: 'node --test extensions/test/*.test.js' },
+              { pkg: 'pi-references', cmd: 'node --test extensions/test/*.test.js' },
             ];
 
             const selected = '${{ github.event_name }}' === 'workflow_dispatch'

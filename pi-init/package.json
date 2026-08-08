@@ -1,0 +1,36 @@
+{
+  "name": "@bacnh85/pi-init",
+  "version": "0.1.0",
+  "description": "Guided AGENTS.md generation for Pi — /init scans the repo (package.json, CI, dir structure) and generates/updates AGENTS.md with build/test/lint commands, architecture, and conventions. Inspired by OpenCode's /init.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "init",
+    "agents-md",
+    "onboarding",
+    "context"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-init",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git"
+  },
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "extensions/index.js",
+    "extensions/package.json"
+  ],
+  "scripts": {
+    "test": "node --test extensions/test/*.test.js"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.js"
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

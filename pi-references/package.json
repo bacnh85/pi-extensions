@@ -1,0 +1,38 @@
+{
+  "name": "@bacnh85/pi-references",
+  "version": "0.1.0",
+  "description": "External context roots for Pi — alias sibling dirs or git repos as @docs, @sdk and reference them in chat. Auto-clones git repos into a local cache; injects descriptions into agent context. Inspired by OpenCode's references feature.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "references",
+    "context",
+    "external",
+    "monorepo",
+    "docs",
+    "sdk"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-references",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git"
+  },
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "extensions/index.js",
+    "extensions/package.json"
+  ],
+  "scripts": {
+    "test": "node --test extensions/test/*.test.js"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.js"
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

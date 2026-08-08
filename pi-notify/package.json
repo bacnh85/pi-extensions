@@ -1,0 +1,38 @@
+{
+  "name": "@bacnh85/pi-notify",
+  "version": "0.1.0",
+  "description": "Desktop notifications and sounds for Pi — fires on task completion, errors, and when the agent asks a question. Cross-platform (macOS notification center, Linux libnotify, Windows toast, plus OSC 777/99 terminal protocols). Inspired by OpenCode's attention feature.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "notify",
+    "notification",
+    "sound",
+    "desktop",
+    "alert",
+    "attention"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-notify",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git"
+  },
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "extensions/index.js",
+    "extensions/package.json"
+  ],
+  "scripts": {
+    "test": "node --test extensions/test/*.test.js"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.js"
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

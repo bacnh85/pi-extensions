@@ -8,7 +8,12 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | Package | Version | Description |
 |---------|---------|-------------|
 | **pi-9router** | 0.1.7 | Connect to a 9router AI routing proxy instance via its OpenAI-compatible API with interactive login. |
+| **pi-checkpoint** | 0.1.0 | Git-backed undo/redo — snapshots file state per turn into a dedicated ref namespace so `/undo` rolls back a message AND its file changes. |
+| **pi-notify** | 0.1.0 | Desktop notifications and sounds — fires on task completion, errors, and questions; cross-platform (macOS/Linux/Windows + terminal OSC). |
+| **pi-references** | 0.1.0 | External context roots — alias sibling dirs or git repos as `@docs`/`@sdk`; auto-clones repos and injects descriptions into agent context. |
 | **pi-budget** | 0.1.1 | Spend cap enforcement — `--budget <usd>` aborts the agent at the cap; companion to pi-sub (render vs enforce). |
+| **pi-init** | 0.1.0 | Guided AGENTS.md generation — `/init` scans the repo and generates/updates AGENTS.md with build/test/lint commands, architecture, and conventions. |
+| **pi-permission** | 0.1.0 | Granular permission system — config-driven allow/ask/deny rules per tool with wildcard patterns, external-directory boundary, and a doom-loop guard. |
 | **pi-agy** | 0.3.1 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
 | **pi-fff** | 0.7.9 | FFF-powered fuzzy file and content search for Pi. |
 | **pi-kicad** | 0.1.3 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon (no MCP SDK). |
@@ -48,6 +53,11 @@ pi-extensions/
   pi-budget/            # JS extension for spend-cap enforcement (--budget <usd>).
   pi-sub/               # TS extension for subscription usage footer
   pi-themes/            # JSON theme files — pure-themes package (no extension code)
+  pi-init/              # JS extension for guided AGENTS.md generation (/init)
+  pi-permission/        # JS extension for config-driven allow/ask/deny permission rules
+  pi-checkpoint/        # JS extension for git-backed /undo /redo tied to turns
+  pi-notify/            # JS extension for desktop notifications + sounds
+  pi-references/        # JS extension for external context roots (@docs, @sdk)
   .github/workflows/    # ci.yml (matrix, GitHub-hosted runners)
   .agents/skills/       # shared skills (skill-creator)
   .env.local            # shared dev credentials (gitignored)
@@ -115,6 +125,11 @@ cd pi-<name> && npm test
 # pi-ponytail:   node --test extensions/test/*.test.js (no framework, plain JS)
 # pi-ux:        node --test extensions/test/*.test.js (no framework, plain JS)
 # pi-budget:    node --test extensions/test/*.test.js (no framework, plain JS)
+# pi-init:       node --test extensions/test/*.test.js (no framework, plain JS)
+# pi-permission: node --test extensions/test/*.test.js (no framework, plain JS)
+# pi-checkpoint: node --test extensions/test/*.test.js (no framework, plain JS)
+# pi-notify:     node --test extensions/test/*.test.js (no framework, plain JS)
+# pi-references: node --test extensions/test/*.test.js (no framework, plain JS)
 # pi-serena:     cd extensions && mocha                (mocha + tsx)
 # pi-web:        cd extensions && mocha                (mocha + tsx, ESM)
 # pi-munin:      npx mocha                             (mocha + tsx)

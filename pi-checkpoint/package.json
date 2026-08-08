@@ -1,0 +1,38 @@
+{
+  "name": "@bacnh85/pi-checkpoint",
+  "version": "0.1.0",
+  "description": "Git-backed undo/redo for Pi — snapshots file state at each turn into a dedicated ref namespace, so /undo rolls back the last message AND its file changes. Fills PI's gap vs OpenCode's git-backed /undo /redo (PI has conversation-level /tree but not file-state snapshots).",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "checkpoint",
+    "undo",
+    "redo",
+    "git",
+    "snapshot",
+    "rollback"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-checkpoint",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git"
+  },
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "extensions/index.js",
+    "extensions/package.json"
+  ],
+  "scripts": {
+    "test": "node --test extensions/test/*.test.js"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.js"
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
