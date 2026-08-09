@@ -3,9 +3,11 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { createRequire } from "node:module";
 import {
   CONFIG_DIR_NAME,
   CustomEditor,
+  getAgentDir,
   isToolCallEventType,
   withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
@@ -249,6 +251,78 @@ function splitShellSegments(cmd: string): string[] {
   return segments;
 }
 
+// Read-only git subcommands auto-allowed in plan mode. Anything not matched here
+// falls through to "write" (hard-blocked) in classifySegment — the conservative
+// default. Ambiguous forms (e.g. `git config` without --get/--list) are NOT here.
+// ponytail: one allowlist, conservative fallthrough; when unsure, omit → block.
+const GIT_READ_ONLY = /^git\s+(?:status|rev-parse|diff|show|log|ls-files|ls-tree|ls-remote|cat-file|rev-list|shortlog|describe|for-each-ref|show-ref|symbolic-ref|name-rev|blame|annotate)\b/i;
+const GIT_BRANCH_READ_ONLY = /^git\s+branch\s+(?:-[va]+|--(?:list|all|remote|merged|no-merged|contains|show-current))\b/i;
+const GIT_TAG_READ_ONLY = /^git\s+tag\s+(?:--list\b|-\w*l\b)/i;
+const GIT_REMOTE_READ_ONLY = /^git\s+remote(?:\s+(?:-[va]+|show\b|get-url\b)[^\n]*)?$/i;
+const GIT_CONFIG_READ_ONLY = /^git\s+config\s+(?:--(?:get|get-regexp|get-all|list)|-l)\b/i;
+const GIT_REFLOG_READ_ONLY = /^git\s+reflog(?:\s+show\b.*)?$/i;
+
+function isGitReadOnly(inspection: string): boolean {
+  return GIT_READ_ONLY.test(inspection)
+    || GIT_BRANCH_READ_ONLY.test(inspection)
+    || GIT_TAG_READ_ONLY.test(inspection)
+    || GIT_REMOTE_READ_ONLY.test(inspection)
+    || GIT_CONFIG_READ_ONLY.test(inspection)
+    || GIT_REFLOG_READ_ONLY.test(inspection);
+}
+
+// Resolve whether a named subagent is read-only (safe to auto-allow in plan mode).
+// A subagent is read-only when its frontmatter declares `sandbox: read-only` OR
+// its `tools:` is a subset of READ_ONLY_TOOLS (covers versions predating the
+// `sandbox:` field). Bundled agents resolve from @bacnh85/pi-subagent (production)
+// or a monorepo sibling dir (dev); user agents from getAgentDir(). Failures fail
+// closed (confirm). ponytail: single resolver, cached per name.
+const subagentReadOnlyCache = new Map<string, boolean>();
+
+async function isSubagentReadOnly(name: string): Promise<boolean> {
+  const cached = subagentReadOnlyCache.get(name);
+  if (cached !== undefined) return cached;
+  const result = await resolveSubagentReadOnly(name).catch(() => false);
+  subagentReadOnlyCache.set(name, result);
+  return result;
+}
+
+async function resolveSubagentReadOnly(name: string): Promise<boolean> {
+  const candidates: string[] = [];
+  try {
+    const require = createRequire(import.meta.url);
+    const bundledDir = path.dirname(require.resolve("@bacnh85/pi-subagent/agents/scout.md"));
+    candidates.push(path.join(bundledDir, `${name}.md`));
+  } catch { /* pi-subagent not resolvable → try monorepo sibling */ }
+  candidates.push(path.resolve(import.meta.dirname, "../../pi-subagent/agents", `${name}.md`));
+  candidates.push(path.join(getAgentDir(), "agents", `${name}.md`));
+  for (const candidate of candidates) {
+    let text: string;
+    try { text = await readFile(candidate, "utf8"); } catch { continue; }
+    if (!text.startsWith("---")) continue;
+    const end = text.indexOf("\n---", 3);
+    if (end < 0) continue;
+    const fm = text.slice(3, end);
+    if (/^sandbox:\s*read-only\b/im.test(fm)) return true;
+    const toolsMatch = fm.match(/^tools:\s*(.+)$/m);
+    if (toolsMatch) {
+      const tools = toolsMatch[1].split(",").map((t) => t.trim()).filter(Boolean);
+      if (tools.length > 0 && tools.every((t) => READ_ONLY_TOOLS.has(t))) return true;
+    }
+  }
+  return false;
+}
+
+function extractSubagentNames(input: unknown): string[] {
+  if (!input || typeof input !== "object") return [];
+  const obj = input as Record<string, unknown>;
+  const names: string[] = [];
+  if (typeof obj.agent === "string") names.push(obj.agent);
+  if (Array.isArray(obj.tasks)) for (const t of obj.tasks) if (t && typeof t === "object" && typeof (t as { agent?: unknown }).agent === "string") names.push((t as { agent: string }).agent);
+  if (Array.isArray(obj.chain)) for (const c of obj.chain) if (c && typeof c === "object" && typeof (c as { agent?: unknown }).agent === "string") names.push((c as { agent: string }).agent);
+  return [...new Set(names)];
+}
+
 function classifyCommand(cmd: string): CommandDisposition {
   const c = cmd.trim();
   if (!c) return "confirm";
@@ -273,9 +347,7 @@ function classifyCommand(cmd: string): CommandDisposition {
 function classifySegment(seg: string): CommandDisposition {
   const inspection = seg.replace(/^\S*\/(?=[^/\s]+(?:\s|$))/, "");
   if (/^git\s+/i.test(inspection)) {
-    const read = /^git\s+(status|rev-parse|diff|show|log|ls-files)\b/i.test(inspection)
-      || /^git\s+branch\s+--(?:list|all|remote|merged|no-merged|contains|show-current)\b/i.test(inspection);
-    return read ? (inspection === seg ? "read" : "confirm") : "write";
+    return isGitReadOnly(inspection) ? (inspection === seg ? "read" : "confirm") : "write";
   }
   if (/^(?:(?:rm|rmdir|mv|cp|mkdir|touch|chmod|chown|ln|install|truncate|dd|mktemp)|sudo|env|command|time|nohup)\b/i.test(inspection)) return "write";
   if (/^sed\b/i.test(inspection) && (/\s(?:-i\S*|--in-place(?:=\S*)?)(?:\s|$)/i.test(inspection) || /\b(?:\d+)?w\s+/i.test(inspection) || /\/w\s/i.test(inspection))) return "write";
@@ -1868,6 +1940,16 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
         return { block: true, reason: `pi-plan: bash command rejected by user.\nCommand: ${event.input.command}` };
       }
       return;
+    }
+
+    // subagent delegation auto-allowed only when every named agent resolves to read-only.
+    // Children do not inherit plan mode, so a mutating agent (worker/general-purpose)
+    // can bypass the write gate — keep those behind the confirm prompt below.
+    if (event.toolName === "subagent") {
+      const names = extractSubagentNames(event.input);
+      if (names.length > 0 && await Promise.all(names.map((n) => isSubagentReadOnly(n))).then((rs) => rs.every(Boolean))) {
+        return;
+      }
     }
 
     // ponytail: even baseline/unknown custom tools (e.g. obsidian) need confirm unless known-read

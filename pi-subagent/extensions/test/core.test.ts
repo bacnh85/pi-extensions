@@ -654,7 +654,10 @@ describe("validateAgentTools", () => {
   });
 
   it("read-only mode allows all read-only tools", () => {
-    const result = validateAgentTools({ tools: [...READ_ONLY_TOOLS], readOnly: true });
+    // The read-only set now includes extension tools (serena/web/munin), so
+    // availableTools must list them for the validator to accept them.
+    const extensionReadOnly = [...READ_ONLY_TOOLS].filter((t) => !BUILTIN_TOOLS.includes(t as any));
+    const result = validateAgentTools({ tools: [...READ_ONLY_TOOLS], readOnly: true, availableTools: extensionReadOnly });
     assert.deepEqual(result.errors, []);
     assert.deepEqual(result.tools, [...READ_ONLY_TOOLS]);
   });
@@ -707,18 +710,20 @@ describe("validateAgentTools", () => {
     assert.deepEqual(result.tools, ["read", "bash", "web_search", "serena_find_symbol"]);
   });
 
-  it("read-only still filters inherited extension tools", () => {
+  it("read-only still filters non-read-only extension tools", () => {
+    // web_search is now read-only, so use a non-read-only extension tool to
+    // verify the read-only filter still rejects mutating extension tools.
     const result = validateAgentTools({
-      tools: ["read", "web_search"],
+      tools: ["read", "apply_patch"],
       readOnly: true,
-      availableTools: ["web_search"],
+      availableTools: ["apply_patch"],
     });
     assert.ok(result.errors.length > 0);
     assert.ok(result.errors[0].includes("read-only"));
     assert.deepEqual(result.tools, ["read"]);
   });
 
-  it("read-only inherited set keeps only built-in read-only tools (service path invariant)", () => {
+  it("read-only inherited set keeps only read-only tools (service path invariant)", () => {
     // service.ts runNamedAgent: readOnly requests (pi-review) enforce the read-only
     // filter even when agent.sandbox is unset. Replicates the effectiveReadOnly
     // logic: filter rawTools to READ_ONLY_TOOLS, then validate.
@@ -726,7 +731,9 @@ describe("validateAgentTools", () => {
     const rawTools = parentTools.filter((t) => READ_ONLY_TOOLS.includes(t));
     const result = validateAgentTools({ tools: rawTools, readOnly: true, availableTools: parentTools });
     assert.deepEqual(result.errors, []);
-    assert.deepEqual(result.tools, [...READ_ONLY_TOOLS]);
+    // rawTools = the intersection of parentTools and READ_ONLY_TOOLS (built-ins + the 3 research tools).
+    assert.deepEqual(result.tools, rawTools);
+    assert.deepEqual(result.tools, ["read", "grep", "find", "ls", "web_search", "serena_find_symbol", "munin_search"]);
     // Mutation/execution tools must never leak even when the parent has them.
     for (const t of result.tools) {
       assert.ok(READ_ONLY_TOOLS.includes(t), `non-read-only tool leaked: ${t}`);
@@ -1232,9 +1239,19 @@ describe("security constants", () => {
     assert.deepEqual([...ALLOWED_CHILD_TOOLS].sort(), ["bash", "edit", "find", "grep", "ls", "read", "write"]);
   });
 
-  it("READ_ONLY_TOOLS are all in ALLOWED_CHILD_TOOLS", () => {
-    for (const t of READ_ONLY_TOOLS) {
-      assert.ok(ALLOWED_CHILD_TOOLS.includes(t as any));
+  it("READ_ONLY_TOOLS includes built-in reads plus research extensions", () => {
+    // Built-in read tools are always present.
+    for (const t of ["read", "grep", "find", "ls"]) {
+      assert.ok(READ_ONLY_TOOLS.includes(t), `${t} in READ_ONLY_TOOLS`);
+    }
+    // Research extensions (serena/web/munin/fff) are now part of the read-only set
+    // so sandbox: read-only agents (scout/planner/reviewer) can use them.
+    for (const t of ["serena_find_symbol", "web_search", "munin_search", "ffgrep"]) {
+      assert.ok(READ_ONLY_TOOLS.includes(t), `${t} in READ_ONLY_TOOLS`);
+    }
+    // Mutation/execution tools must never be read-only.
+    for (const t of ["edit", "write", "bash"]) {
+      assert.ok(!READ_ONLY_TOOLS.includes(t), `${t} must not be read-only`);
     }
   });
 

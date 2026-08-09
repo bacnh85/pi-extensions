@@ -37,7 +37,30 @@ export const ALLOWED_CHILD_TOOLS = BUILTIN_TOOLS;
  */
 export const DENIED_CHILD_TOOLS = new Set(["subagent"]);
 
-export const READ_ONLY_TOOLS: readonly string[] = ["read", "grep", "find", "ls"];
+// ponytail: keep in sync with pi-plan/extensions/lib/plan-tools.ts READ_ONLY_TOOLS
+// and pi-review/extensions/index.ts SAFE_REVIEW_TOOLS (additions must be mirrored).
+// Used by sandbox: read-only agents to inherit the full read/research toolset
+// (serena/web/munin/fff), not just the 4 built-ins — otherwise read-only research
+// subagents (scout/planner/reviewer) can't use the tools plan mode tells them to prefer.
+export const READ_ONLY_TOOLS: readonly string[] = [
+  // Built-in reads
+  "read", "grep", "find", "ls",
+  // FFF tools
+  "ffgrep", "fffind", "resolve_file", "fff_multi_grep", "related_files",
+  // Windows tools (read-only: detect, audit, path-convert, classify, doctor)
+  "windows_shell_detect", "windows_audit_log",
+  "windows_path_to_windows", "windows_path_to_wsl", "windows_path_to_gitbash", "windows_path_quote",
+  "windows_safety_classify", "windows_doctor", "windows_tool_discover", "windows_wsl_list_distros",
+  // Web tools
+  "web_search", "web_extract", "web_map", "web_crawl", "web_screenshot", "web_pdf", "web_status",
+  // Serena read-only
+  "serena_status", "serena_list_tools", "serena_get_current_config",
+  "serena_check_onboarding_performed", "serena_get_symbols_overview", "serena_find_symbol", "serena_find_declaration",
+  "serena_find_implementations", "serena_find_referencing_symbols",
+  "serena_search_for_pattern", "serena_get_diagnostics_for_file",
+  // Munin read-only
+  "munin_search", "munin_get", "munin_list", "munin_recent", "munin_capabilities",
+];
 export const MUTATION_TOOLS: readonly string[] = ["edit", "write"];
 export const EXECUTION_TOOLS: readonly string[] = ["bash"];
 

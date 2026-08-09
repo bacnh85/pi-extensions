@@ -1205,6 +1205,16 @@ describe("tool gating in plan mode", () => {
     ["sort output", "sort -o output.txt input.txt"],
     ["git mutation", "git reset --hard"],
     ["git output", "git show --output=patch HEAD"],
+    ["git clone", "git clone https://example.com/repo.git"],
+    ["git fetch", "git fetch origin"],
+    ["git pull", "git pull origin main"],
+    ["git config add", "git config --add core.foo bar"],
+    ["git config set", "git config user.email a@b.com"],
+    ["git remote add", "git remote add origin https://example.com/repo.git"],
+    ["git tag create", "git tag v1.0.0"],
+    ["git reflog expire", "git reflog expire --expire=now --all"],
+    ["git checkout", "git checkout -b new-branch"],
+    ["git stash push", "git stash push"],
     ["known writer", "cp source target"],
     ["absolute writer", "/bin/rm output.txt"],
     ["wrapped writer", "sudo rm output.txt"],
@@ -1249,7 +1259,7 @@ describe("tool gating in plan mode", () => {
     const tc = handlers.tool_call?.[0];
     assert.ok(tc);
 
-    for (const cmd of ["ls -la", "grep -R foo src/", "find . -name '*.ts'", "git status --short", "cat index.ts", "/bin/ls -la", "/usr/bin/grep foo src/", "sort -n input.txt"]) {
+    for (const cmd of ["ls -la", "grep -R foo src/", "find . -name '*.ts'", "git status --short", "cat index.ts", "/bin/ls -la", "/usr/bin/grep foo src/", "sort -n input.txt", "git blame file.ts", "git log --oneline -5", "git ls-tree HEAD", "git cat-file -p HEAD:file.ts", "git remote -v", "git remote show origin", "git config --get user.email", "git config --list", "git describe --tags", "git tag -l", "git tag --list", "git for-each-ref", "git rev-list --count HEAD", "git shortlog -sne", "git branch -v", "git branch -vv", "git reflog", "git reflog show", "git ls-files", "git ls-remote", "git name-rev HEAD", "git show-ref", "git symbolic-ref HEAD"]) {
       assert.equal(await tc({ toolName: "bash", input: { command: cmd } }, ctx), undefined, `${cmd} auto-allowed`);
     }
     assert.equal(confirmations, 0);
@@ -1344,6 +1354,113 @@ describe("tool gating in plan mode", () => {
     const r = await tc({ toolName: "obsidian", input: {} }, ctx);
     assert.ok(r?.block);
     assert.ok(r?.reason?.includes("confirmation"));
+  });
+
+  describe("subagent delegation gating", () => {
+    it("auto-allows read-only bundled agents (scout/planner/reviewer) without confirmation", async () => {
+      let confirmations = 0;
+      const { handlers } = createFakePi(["read", "subagent"], { plan: true });
+      const ctx = fakeCtx({
+        hasUI: true,
+        ui: {
+          confirm: async () => { confirmations++; return false; },
+          select: async () => null, editor: async () => "",
+          setStatus: () => {}, setWidget: () => {}, notify: () => {},
+          theme: { fg: (_s: string, t: string) => t },
+        },
+      });
+      await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+      const tc = handlers.tool_call?.[0];
+      assert.ok(tc);
+      for (const agent of ["scout", "planner", "reviewer"]) {
+        const r = await tc({ toolName: "subagent", input: { agent, task: "recon" } }, ctx);
+        assert.equal(r, undefined, `subagent:${agent} auto-allowed (no block, no confirm)`);
+      }
+      assert.equal(confirmations, 0, "no confirmations for read-only agents");
+    });
+
+    it("requires confirmation for mutating agents (worker/general-purpose)", async () => {
+      const confirmations: string[] = [];
+      const { handlers } = createFakePi(["read", "subagent"], { plan: true });
+      const ctx = fakeCtx({
+        hasUI: true,
+        ui: {
+          confirm: async (_t: string, body: string) => { confirmations.push(body); return true; },
+          select: async () => null, editor: async () => "",
+          setStatus: () => {}, setWidget: () => {}, notify: () => {},
+          theme: { fg: (_s: string, t: string) => t },
+        },
+      });
+      await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+      const tc = handlers.tool_call?.[0];
+      assert.ok(tc);
+      for (const agent of ["worker", "general-purpose"]) {
+        const r = await tc({ toolName: "subagent", input: { agent, task: "implement" } }, ctx);
+        assert.equal(r, undefined, `subagent:${agent} allowed after confirm`);
+      }
+      assert.equal(confirmations.length, 2, "each mutating agent required confirmation");
+      assert.ok(confirmations.every((c) => c.includes("subagent")), "confirm prompts mention subagent");
+    });
+
+    it("auto-allows parallel tasks when all agents are read-only", async () => {
+      let confirmations = 0;
+      const { handlers } = createFakePi(["read", "subagent"], { plan: true });
+      const ctx = fakeCtx({
+        hasUI: true,
+        ui: {
+          confirm: async () => { confirmations++; return false; },
+          select: async () => null, editor: async () => "",
+          setStatus: () => {}, setWidget: () => {}, notify: () => {},
+          theme: { fg: (_s: string, t: string) => t },
+        },
+      });
+      await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+      const tc = handlers.tool_call?.[0];
+      assert.ok(tc);
+      const r = await tc({ toolName: "subagent", input: { tasks: [{ agent: "scout", task: "a" }, { agent: "planner", task: "b" }] } }, ctx);
+      assert.equal(r, undefined, "parallel all-read-only auto-allowed");
+      assert.equal(confirmations, 0, "no confirmations");
+    });
+
+    it("requires confirmation for parallel tasks when any agent can mutate", async () => {
+      let confirmations = 0;
+      const { handlers } = createFakePi(["read", "subagent"], { plan: true });
+      const ctx = fakeCtx({
+        hasUI: true,
+        ui: {
+          confirm: async () => { confirmations++; return true; },
+          select: async () => null, editor: async () => "",
+          setStatus: () => {}, setWidget: () => {}, notify: () => {},
+          theme: { fg: (_s: string, t: string) => t },
+        },
+      });
+      await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+      const tc = handlers.tool_call?.[0];
+      assert.ok(tc);
+      const r = await tc({ toolName: "subagent", input: { tasks: [{ agent: "scout", task: "a" }, { agent: "worker", task: "b" }] } }, ctx);
+      assert.equal(r, undefined, "mixed parallel allowed after confirm");
+      assert.equal(confirmations, 1, "one confirmation for the whole call");
+    });
+
+    it("requires confirmation for unknown agent names", async () => {
+      let confirmations = 0;
+      const { handlers } = createFakePi(["read", "subagent"], { plan: true });
+      const ctx = fakeCtx({
+        hasUI: true,
+        ui: {
+          confirm: async () => { confirmations++; return true; },
+          select: async () => null, editor: async () => "",
+          setStatus: () => {}, setWidget: () => {}, notify: () => {},
+          theme: { fg: (_s: string, t: string) => t },
+        },
+      });
+      await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+      const tc = handlers.tool_call?.[0];
+      assert.ok(tc);
+      const r = await tc({ toolName: "subagent", input: { agent: "nonexistent-agent", task: "x" } }, ctx);
+      assert.equal(r, undefined, "unknown agent allowed after confirm");
+      assert.equal(confirmations, 1, "unknown agent required confirmation");
+    });
   });
 
   it("allows plan-only tools without gating", async () => {
