@@ -28,7 +28,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-serena** | 0.9.6 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
 | **pi-sub** | 0.1.25 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | **pi-themes** | 0.1.1 | Ayu-based theme collection (dark, mirage, light) for the Pi TUI — pure-themes package (no extension code). |
-| **pi-subagent** | 0.14.1 | Isolated in-process subagents with parallel/chain modes, inspectable threads, and git worktree isolation (`sandbox: worktree`). |
+| **pi-subagent** | 0.15.0 | Isolated in-process subagents with parallel/chain modes, inspectable threads, git worktree isolation (`sandbox: worktree`), live progress widget, and background mode. |
 | **pi-web** | 0.5.7 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
 | **pi-ux** | 0.4.4 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, ships medium-tuned presets (Web/Mobile) so the agent stays unblocked when DESIGN.md is missing, runs deterministic slop-audit gates (APCA contrast + tokens + states + slop tells), works with text-only models. |
 | **pi-windows-tools** | 0.5.2 | Windows-specific tools for Pi. |

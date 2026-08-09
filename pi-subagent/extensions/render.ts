@@ -10,7 +10,7 @@ import * as os from "node:os";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import type { Message } from "@earendil-works/pi-ai";
-import { type SubAgentResult, isFailedResult, getResultOutput } from "./runner.ts";
+import { type SubAgentResult, isFailedResult, getResultOutput, getFinalOutput } from "./runner.ts";
 
 // ---------------------------------------------------------------------------
 // Safe type guards
@@ -41,11 +41,24 @@ function formatTokens(count: number): string {
   return `${(count / 1000000).toFixed(1)}M`;
 }
 
+// ---------------------------------------------------------------------------
+// Duration formatting (inline to avoid a widget↔render import cycle)
+// ---------------------------------------------------------------------------
+
+function formatMs(ms: number): string {
+  if (ms >= 60_000) return `${Math.floor(ms / 60_000)}m ${Math.floor((ms % 60_000) / 1_000)}s`;
+  if (ms >= 1_000) return `${(ms / 1_000).toFixed(1)}s`;
+  return `${ms}ms`;
+}
+
 export function formatUsageStats(
   usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; contextTokens?: number; turns?: number },
   model?: string,
+  opts?: { toolCount?: number; durationMs?: number },
 ): string {
   const parts: string[] = [];
+  if (opts?.toolCount) parts.push(`${opts.toolCount} toolcall${opts.toolCount > 1 ? "s" : ""}`);
+  if (opts?.durationMs && opts.durationMs > 0) parts.push(formatMs(opts.durationMs));
   if (usage.turns) parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
   if (usage.input) parts.push(`↑${formatTokens(usage.input)}`);
   if (usage.output) parts.push(`↓${formatTokens(usage.output)}`);
@@ -154,30 +167,27 @@ export function getDisplayItems(messages: Message[]): DisplayItem[] {
   return items;
 }
 
-// ---------------------------------------------------------------------------
-// Collapsed renderer
-// ---------------------------------------------------------------------------
-
-const COLLAPSED_ITEM_COUNT = 10;
-
-function renderDisplayItems(
-  items: DisplayItem[],
-  theme: { fg: (c: string, t: string) => string },
-  limit?: number,
-): string {
-  const toShow = limit ? items.slice(-limit) : items;
-  const skipped = limit && items.length > limit ? items.length - limit : 0;
-  let text = "";
-  if (skipped > 0) text += theme.fg("muted", `... ${skipped} earlier items\n`);
-  for (const item of toShow) {
-    if (item.type === "text") {
-      const preview = item.text.split("\n").slice(0, 3).join("\n");
-      text += `${theme.fg("toolOutput", preview)}\n`;
-    } else {
-      text += `${theme.fg("muted", "→ ")}${formatToolCall(item.name, item.args, theme.fg.bind(theme))}\n`;
+/**
+ * First prose line of a markdown answer: skips code fences (delimiter AND
+ * interior), ATX headings, blockquotes, bullets, ordered lists, and tables.
+ * Returns "" when no prose line exists.
+ */
+function firstProseLine(raw: string): string {
+  let inFence = false;
+  for (const rawLine of raw.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    // Toggle fenced code blocks (``` or ~~~, optionally with a language tag).
+    if (/^[`~]{3,}/.test(line)) {
+      inFence = !inFence;
+      continue;
     }
+    if (inFence) continue;
+    // Skip structural markdown lines.
+    if (/^(#{1,6}\s|\s*[>|*+-]\s|\s*\d+\.\s|\|)/.test(line)) continue;
+    return line;
   }
-  return text.trimEnd();
+  return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -192,8 +202,9 @@ export function renderSingleResult(
 ): Container | Text {
   const isError = isFailedResult(result);
   const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
-  const displayItems = getDisplayItems(result.messages);
+  const displayItems = expanded ? getDisplayItems(result.messages) : [];
   const finalOutput = getResultOutput(result);
+  const toolCount = result.messages.filter((m) => m.role === "toolResult").length;
 
   if (expanded) {
     const mdTheme = getMarkdownTheme();
@@ -248,7 +259,9 @@ export function renderSingleResult(
     return container;
   }
 
-  // Collapsed
+  // Collapsed — compact: icon + agent, answer preview, usage, hint.
+  // No tool-call trace here (Claude Code / pi-task style) — the trace lives
+  // in Ctrl+O (expanded) and /agent (thread viewer).
   let text = `${icon} ${theme.fg(agentColor ?? "toolTitle", theme.bold(result.agent))}`;
   if (isError && result.stopReason) {
     const reasonColor = result.stopReason === "timeout" ? "warning" : "error";
@@ -258,16 +271,34 @@ export function renderSingleResult(
     const messageColor = result.stopReason === "timeout" ? "warning" : "error";
     text += `\n${theme.fg(messageColor, `Error: ${result.errorMessage}`)}`;
   }
-  else if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
-  else {
-    text += `\n${renderDisplayItems(displayItems, theme, COLLAPSED_ITEM_COUNT)}`;
-    if (displayItems.length > COLLAPSED_ITEM_COUNT) {
-      text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+  // Success preview: first prose line of the final answer, skipping markdown
+  // structural lines (fences + interior, headings, bullets, tables). Error
+  // results show their message once on the Error: line; never echo under ⎿.
+  const rawOutput = getFinalOutput(result.messages);
+  if (!isError) {
+    const prose = firstProseLine(rawOutput);
+    if (prose) {
+      const preview = prose.length > 200 ? `${prose.slice(0, 197)}...` : prose;
+      text += `\n${theme.fg("dim", `⎿ ${preview}`)}`;
+    } else if (rawOutput.trim() === "" && displayItems.length === 0) {
+      text += `\n${theme.fg("muted", "(no output)")}`;
+    } else if (rawOutput.trim() !== "") {
+      // All-structural output (headings/bullets/fences only) — still say so.
+      text += `\n${theme.fg("dim", "⎿ (markdown answer — Ctrl+O to view)")}`;
     }
+  } else if (!result.errorMessage && rawOutput.trim() === "" && !result.stderr) {
+    // Error with no message, no stderr, no assistant output — say so.
+    // (When errorMessage IS set, the Error: line above already conveys it.)
+    text += `\n${theme.fg("muted", "(no output)")}`;
   }
-  const usageStr = formatUsageStats(result.usage, result.model);
+  const usageStr = formatUsageStats(result.usage, result.model, { toolCount, durationMs: result.durationMs });
   if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
   if (result.patch) text += `\n${theme.fg("success", "🌿 worktree")} (${result.patch.split("\n").length} diff lines)`;
+  // Hint: getResultOutput always returns at least "(no output)", so finalOutput
+  // is always truthy — show the hint whenever there's any trace to expand.
+  if (displayItems.length > 0 || (finalOutput && finalOutput !== "(no output)") || result.messages.length > 0) {
+    text += `\n${theme.fg("muted", "(Ctrl+O to expand · /agent for full thread)")}`;
+  }
   return new Text(text, 0, 0);
 }
 

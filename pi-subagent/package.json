@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-subagent",
-  "version": "0.14.1",
+  "version": "0.15.0",
   "description": "In-process subagents for Pi with isolated SDK sessions, parallel and chained delegation, and inspectable threads.",
   "type": "module",
   "license": "MIT",
@@ -40,6 +40,10 @@
     "extensions/threads.ts",
     "extensions/thread-viewer.ts",
     "extensions/security.ts",
+    "extensions/background.ts",
+    "extensions/history.ts",
+    "extensions/result.ts",
+    "extensions/widget.ts",
     "extensions/package.json"
   ],
   "pi": {

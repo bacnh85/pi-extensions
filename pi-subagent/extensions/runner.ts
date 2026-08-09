@@ -120,6 +120,8 @@ export interface SubAgentResult {
   patch?: string;
   /** Canonical result status (added in 0.6.0). */
   status?: SubagentStatus;
+  /** Wall-clock duration of the run, set by runSubAgent (Date.now() - startedAt). */
+  durationMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +310,7 @@ export async function runSubAgent(options: {
     return result;
   } finally {
     clearTimers(); cleanupCombined?.();
+    result.durationMs = Date.now() - startedAt;
   }
 }
 

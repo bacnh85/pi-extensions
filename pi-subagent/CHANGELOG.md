@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.15.0 (2026-08-09)
+
+### Packaging
+
+- Added `extensions/background.ts`, `history.ts`, `result.ts`, `widget.ts`
+  to `files[]` — they were imported by `index.ts` but missing from the
+  manifest, so the published package would have failed to load.
+
+### Compact collapsed result (no tool-call trace in conversation)
+
+Completed single subagent results no longer dump the tool-call trace
+(`→ ls`, `→ grep`, `→ read …`) into the conversation block. The collapsed
+view now shows the answer preview + usage, matching Claude Code's
+`⎿ Done (N tool uses · tokens)` and pi-task's `⎿ <summary> (Ctrl+O to expand)`
+UX. The full trace remains available via Ctrl+O (expanded) and `/agent`
+(thread viewer); the hint text now points to both.
+
+- `renderSingleResult` collapsed branch: `✓ agent` + `⎿ <first ~200 chars of
+  final output>` + usage + `(Ctrl+O to expand · /agent for full thread)`.
+- Removed the dead `renderDisplayItems` / `COLLAPSED_ITEM_COUNT` — the
+  collapsed path no longer lists tool calls (was the noise source).
+- Parallel and chain collapsed views were already compact (per-task/step
+  one-liners) — unchanged.
+- New tests: `render.test.ts` (5 cases) asserting collapsed shows the answer
+  preview and NOT the tool-call trace, plus error/no-output/hint paths.
+
+### Live progress widget (Phase 1)
+
+A persistent above-editor widget now shows what each running subagent is doing
+right now — spinner, agent name, elapsed time, tool-call count, and the latest
+tool call with ✓/✗/⟳ status. Fed by live `threadStore` subscriptions (per SDK
+session event), not JSONL polling. Replaces the old 30s plain-text
+"still running…" heartbeat.
+
+- One block per running thread (single, parallel, chain), capped at 8 +
+  `+N more running`.
+- Latest tool-call line with `done`/`error`/`in_progress` status derived by
+  pairing assistant `toolCall` parts against later `toolResult` messages.
+- Clears automatically when no threads are running.
+- Inspired by [pi-task](https://github.com/heyhuynhgiabuu/pi-task)'s widget UX,
+  but cheaper: in-process SDK gives per-event live data without polling.
+
+### Background mode + task control (Phase 2)
+
+- `background: true` (single mode only) runs the subagent detached: `execute`
+  returns immediately with a receipt, and completion arrives as a follow-up
+  turn via `sendMessage({ triggerTurn: true, deliverAs: "followUp" })`.
+- `operation: "status"` / `operation: "cancel"` with `taskId` inspects or
+  cancels a running background task without relaunching.
+- A `pi-subagent-complete` message renderer renders the follow-up turn
+  compactly (status icon, agent, output, usage).
+- Background tasks are aborted and the widget is disposed on `session_shutdown`.
+
+### Structured result + history registry (Phase 3)
+
+- New `result.ts`: parent-side structured extraction of the child's final
+  message (summary, findings, files, caveats, next steps) by detecting
+  markdown headers. No child XML contract — we structure the output ourselves.
+- New `history.ts`: durable metadata under `.pi/subagent-history.json`. Every
+  completed task (foreground and background) is recorded.
+- `/subagent history` lists recent delegations with status and timestamp.
+- On restart, prior-session `running` entries are marked `interrupted` (honest
+  about the in-process ceiling: we cannot resume a live SDK session).
+
 ## 0.14.1 (2026-08-07)
 
 ### Improvements

@@ -1,6 +1,39 @@
 # @bacnh85/pi-subagent
 
-Isolated in-process subagents for Pi. The `subagent` tool supports single, parallel (8 tasks, 4 concurrent), and chained execution; `/agent` opens inspectable child threads.
+Isolated in-process subagents for Pi. The `subagent` tool supports single, parallel (8 tasks, 4 concurrent), and chained execution; `/agent` opens inspectable child threads. A live progress widget shows running tasks above the editor; `background: true` runs detached with follow-up-turn completion.
+
+## Live progress widget
+
+When subagents run, a persistent widget appears above the editor showing each
+running task: spinner, agent name, elapsed time, tool count, and the latest tool
+call with ✓/✗/⟳ status. The widget clears when no tasks are running. Fed by live
+SDK session events — no polling.
+
+## Background mode
+
+Single-mode tasks can run detached with `background: true`:
+
+```ts
+subagent({ agent: "planner", task: "Design the cache layer", background: true })
+```
+
+The tool returns immediately with a receipt (including a `taskId`), and when
+the subagent finishes, the result arrives as a follow-up turn that the parent
+agent reads and acts on. Use task control to inspect or cancel:
+
+```ts
+subagent({ operation: "status", taskId: "bg-..." })   // read-only snapshot
+subagent({ operation: "cancel", taskId: "bg-..." })   // abort a running task
+```
+
+You will be notified on completion — do not poll or sleep.
+
+## History
+
+Every completed task (foreground and background) is recorded to
+`.pi/subagent-history.json`. Use `/subagent history` to list recent
+delegations with status and timestamp. Prior-session running tasks are marked
+`interrupted` on restart (in-process SDK sessions cannot be resumed).
 
 ## Install
 

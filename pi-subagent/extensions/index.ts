@@ -61,6 +61,16 @@ import { type SubagentThread, threadStore } from "./threads.ts";
 import { SUBAGENT_REQUEST_EVENT, runNamedAgent, type SubagentRunRequest } from "./service.ts";
 import { resolveModel } from "./model.ts";
 import { ThreadViewer, type ThreadViewerCallbacks } from "./thread-viewer.ts";
+import { createTaskWidgetController, renderLiveThreadLine, type TaskWidgetController } from "./widget.ts";
+import {
+  startBackgroundTask,
+  cancelBackgroundTask,
+  getBackgroundTask,
+  snapshotTask,
+  clearBackgroundTasks,
+} from "./background.ts";
+import { parseStructuredResult } from "./result.ts";
+import { appendHistory, readHistory, markInterruptedOnRestart, trimHistory, getHistoryPath } from "./history.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -111,6 +121,20 @@ const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 });
 
 const SubagentParams = Type.Object({
+  operation: Type.Optional(
+    Type.Union([Type.Literal("status"), Type.Literal("cancel")], {
+      description: 'Task control: inspect ("status") or cancel ("cancel") an existing task by taskId, without starting a new agent. Omit for normal start/resume.',
+    }),
+  ),
+  taskId: Type.Optional(
+    Type.String({ description: "Existing background task id, for operation: status/cancel" }),
+  ),
+  background: Type.Optional(
+    Type.Boolean({
+      description: "Run async (single mode only). You will be notified on completion — DO NOT poll or sleep. Default: false.",
+      default: false,
+    }),
+  ),
   agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (single mode)" })),
   task: Type.Optional(Type.String({ description: "Task to delegate (single mode)" })),
   tasks: Type.Optional(
@@ -140,6 +164,8 @@ interface SubagentDetails {
   agentScope: AgentScope;
   projectAgentsDir: string | null;
   results: SubAgentResult[];
+  /** Set when a background task was started (single mode + background:true). */
+  backgroundTaskId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -149,11 +175,30 @@ interface SubagentDetails {
 export default function (pi: ExtensionAPI) {
   let currentCtx: ExtensionContext | undefined;
 
+  // Live progress widget — fed by threadStore subscriptions (per SDK event).
+  const widget: TaskWidgetController = createTaskWidgetController(
+    () => threadStore.getAllThreads(),
+    (listener) => threadStore.subscribe(listener),
+  );
+
   // Invalidate agent cache + clear thread store on session replacement.
   pi.on("session_start", (event, ctx) => {
     currentCtx = ctx;
     if (event.reason === "reload") invalidateAgentCache();
     threadStore.clear();
+    // Clear any widget from a prior session.
+    widget.clearWidgetIfIdle();
+    // Mark prior-session running tasks as interrupted (we can't resume them).
+    // ponytail: honest about the in-process ceiling — no live-session resume.
+    try {
+      markInterruptedOnRestart(path.join(ctx.cwd, CONFIG_DIR_NAME));
+    } catch { /* history file not writable — non-fatal */ }
+  });
+
+  // Clear the widget + abort background tasks on shutdown.
+  pi.on("session_shutdown", () => {
+    widget.dispose();
+    clearBackgroundTasks();
   });
 
   // Resolve bundled agents directory relative to this extension file
@@ -203,6 +248,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     const thread = threadStore.createThread({ agentName: agent.name, task: request.task, mode: "single", color: agent.color ? AGENT_TO_THEME_COLOR[agent.color as AgentColor] : undefined });
+    if (ctx.mode === "tui") widget.ensureWidget(ctx);
     void runNamedAgent({
       agent: request.readOnly ? { ...agent, tools: ["read", "grep", "find", "ls"] } : agent,
       task: request.task,
@@ -231,12 +277,74 @@ export default function (pi: ExtensionAPI) {
     });
   });
 
-  // /subagent command — list available agents
+  // Register renderer for background-task completion (follow-up turn).
+  pi.registerMessageRenderer?.("pi-subagent-complete", (message, _opts, theme) => {
+    const d = (message.details ?? {}) as {
+      agent?: string; status?: string; summary?: string; full_output?: string;
+      elapsed_ms?: number; model?: string; usage?: { turns?: number; cost?: number };
+    };
+    const fg = theme.fg.bind(theme);
+    const isErr = d.status && d.status !== "completed";
+    const icon = isErr ? fg("error", "✗") : fg("success", "✓");
+    const container = new Container();
+    const agentColor = "accent";
+    container.addChild(new Text(
+      `${icon} ${fg(agentColor, theme.bold(d.agent ?? "subagent"))} ${fg("muted", `[background · ${d.status ?? "done"}]`)}`,
+      0, 0,
+    ));
+    if (d.full_output) {
+      const md = new Markdown(d.full_output.trim(), 0, 0, getMarkdownTheme());
+      for (const line of md.render(100)) {
+        container.addChild(new Text(line, 0, 0));
+      }
+    }
+    const usageParts: string[] = [];
+    if (d.usage?.turns) usageParts.push(`${d.usage.turns} turn${d.usage.turns > 1 ? "s" : ""}`);
+    if (d.usage?.cost) usageParts.push(`$${d.usage.cost.toFixed(4)}`);
+    if (d.elapsed_ms) {
+      const secs = Math.round(d.elapsed_ms / 1000);
+      usageParts.push(`${secs}s`);
+    }
+    if (d.model) usageParts.push(d.model);
+    if (usageParts.length > 0) {
+      container.addChild(new Text(fg("dim", usageParts.join(" · ")), 0, 0));
+    }
+    return container;
+  });
   pi.registerCommand("subagent", {
     description: "List available sub-agents, reload agent definitions, or show agent details",
     handler: async (args, ctx) => {
       const cmd = args.trim().toLowerCase();
       const discovery = discoverAgents(ctx.cwd, "both", bundledAgentsDir);
+
+      // /subagent history — list recent task delegations (durable metadata).
+      if (cmd === "history" || cmd === "hist") {
+        const piDir = path.join(ctx.cwd, CONFIG_DIR_NAME);
+        const entries = readHistory(piDir)
+          .sort((a, b) => (b.completedAt ?? b.startedAt) - (a.completedAt ?? a.startedAt))
+          .slice(0, 20);
+        if (entries.length === 0) {
+          pi.sendMessage({
+            customType: "pi-subagent",
+            content: "No task history yet. History is recorded when subagent tasks complete.",
+            display: true,
+          });
+          return;
+        }
+        const lines = entries.map((e) => {
+          const time = new Date(e.startedAt).toLocaleString();
+          const statusIcon = e.status === "completed" ? "✓" : e.status === "interrupted" ? "⚠" : "✗";
+          const bg = e.background ? " [bg]" : "";
+          const summary = e.summary ? ` — ${e.summary.slice(0, 60)}` : "";
+          return `  ${statusIcon} ${e.agent}${bg} · ${time}${summary}`;
+        });
+        pi.sendMessage({
+          customType: "pi-subagent",
+          content: `Recent task history (${entries.length}${entries.length === 20 ? "+" : ""}):\n${lines.join("\n")}\n\nFile: ${getHistoryPath(piDir)}`,
+          display: true,
+        });
+        return;
+      }
 
       if (cmd === "reload" || cmd === "refresh") {
         invalidateAgentCache();
@@ -349,6 +457,8 @@ export default function (pi: ExtensionAPI) {
     description: [
       "Delegate tasks to specialized subagents with isolated context (SDK-based, minimal overhead).",
       "Modes: single (agent + task), parallel (tasks array, max 8, 4 concurrent), chain (sequential with {previous}).",
+      "Task control: operation \"status\" or \"cancel\" with taskId inspects/cancels an existing background task without starting an agent.",
+      "Background: single mode accepts background:true to run detached; completion arrives as a follow-up turn.",
       `Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
       `To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" or "project".`,
     ].join(" "),
@@ -358,6 +468,8 @@ export default function (pi: ExtensionAPI) {
       "Use subagent to delegate work that would flood the main context with search results or file contents.",
       "Modes: single {agent, task}, parallel {tasks: [...]} (max 8, 4 concurrent), chain {chain: [...]} (sequential with {previous}).",
       "Bundled agents: scout (fast recon), tester (verification), worker (implementation), general-purpose (fallback), planner (planning), reviewer (review).",
+      "For background single tasks use background:true — you will be notified on completion; DO NOT poll or sleep.",
+      "Use operation: \"status\" with taskId to inspect a running/completed background task; operation: \"cancel\" to abort one.",
       "Use /subagent to list all available agents or /subagent <name> for agent details.",
     ],
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -402,6 +514,47 @@ export default function (pi: ExtensionAPI) {
           details: makeDetails("single")([]),
           isError: true,
         };
+      }
+
+      // Control requests (status/cancel) legitimately have no mode — handle
+      // them before the mode-count validation rejects them.
+      if (params.operation === "status" || params.operation === "cancel") {
+        const taskId = params.taskId;
+        if (!taskId) {
+          return {
+            content: [{ type: "text" as const, text: `Missing taskId for operation "${params.operation}". Provide the taskId returned when the task was started.` }],
+            details: makeDetails("single")([]),
+            isError: true,
+          };
+        }
+        const bgTask = getBackgroundTask(taskId);
+        if (params.operation === "status") {
+          if (!bgTask) {
+            return { content: [{ type: "text" as const, text: `No background task with id "${taskId}".` }], details: makeDetails("single")([]) };
+          }
+          const snap = snapshotTask(bgTask);
+          const lines = [
+            `Task ${snap.id} (${snap.agent}): ${snap.status}`,
+            `Elapsed: ${Math.round(snap.elapsedMs / 1000)}s`,
+            `Task: ${snap.task}`,
+          ];
+          if (snap.result) {
+            lines.push(`Output: ${String(snap.result.output).slice(0, 2000)}`);
+          } else {
+            lines.push("(still running — no final output yet)");
+          }
+          return { content: [{ type: "text" as const, text: lines.join("\n") }], details: makeDetails("single")([]) };
+        }
+
+        // cancel
+        const result = cancelBackgroundTask(taskId);
+        if (result.outcome === "not_found") {
+          return { content: [{ type: "text" as const, text: `No background task with id "${taskId}".` }], details: makeDetails("single")([]), isError: true };
+        }
+        if (result.outcome === "already_done") {
+          return { content: [{ type: "text" as const, text: `Task ${taskId} already finished (${result.task?.status}).` }], details: makeDetails("single")([]) };
+        }
+        return { content: [{ type: "text" as const, text: `Cancelled background task ${taskId}.` }], details: makeDetails("single")([]) };
       }
 
       // Validate: exactly one mode
@@ -484,6 +637,39 @@ export default function (pi: ExtensionAPI) {
           throw new Error(safe.error);
         }
         return safe.path;
+      }
+
+      // Helper: record a completed foreground task to the history registry.
+      // ponytail: best-effort — history is non-fatal metadata for /subagent history.
+      function recordForegroundHistory(
+        agentName: string,
+        taskText: string,
+        result: SubAgentResult,
+        startedAt: number,
+        background = false,
+      ): void {
+        try {
+          const output = getFinalOutput(result.messages) || getResultOutput(result) || "";
+          const structured = parseStructuredResult(output);
+          const status = isFailedResult(result)
+            ? result.stopReason === "timeout"
+              ? "timeout"
+              : result.stopReason === "aborted"
+                ? "aborted"
+                : "failed"
+            : "completed";
+          appendHistory(path.join(ctx.cwd, CONFIG_DIR_NAME), {
+            id: `fg-${startedAt.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+            agent: agentName,
+            task: taskText,
+            status,
+            startedAt,
+            completedAt: Date.now(),
+            summary: structured.summary,
+            background,
+            model: result.model,
+          });
+        } catch { /* history file not writable — non-fatal */ }
       }
 
       // Helper: validate and normalise tools for an agent. Returns the effective
@@ -591,9 +777,13 @@ export default function (pi: ExtensionAPI) {
         const candidates = getModelCandidates(agent);
         const triedModels: string[] = [];
 
+        // Transport keep-alive only: resets parent idle timeout so a long child
+        // run isn't killed. The visible progress now lives in the live widget;
+        // we no longer push the plain "still running…" text.
         const stopHeartbeat = onUpdate ? startHeartbeat(() => {
           onHeartbeat?.();
-          onUpdate({ content: [{ type: "text", text: `Subagent ${agentName} is still running…` }], details: heartbeatDetails?.() ?? makeDetails("single")([]) });
+          onUpdate({ content: [{ type: "text", text: "" }], details: heartbeatDetails?.() ?? makeDetails("single")([]) });
+          widget.requestRender();
         }) : undefined;
         try {
           const tryWithFallback = async (): Promise<SubAgentResult> => {
@@ -713,6 +903,7 @@ export default function (pi: ExtensionAPI) {
             toolCallId: _toolCallId,
             color: agentToThemeColor(step.agent),
           });
+          if (ctx.mode === "tui") widget.ensureWidget(ctx);
           const result = await runOne(
             step.agent, taskWithContext, step.cwd,
             signal, step.timeout ?? params.timeout,
@@ -725,6 +916,7 @@ export default function (pi: ExtensionAPI) {
             status: isFailedResult(result) ? (result.stopReason === "aborted" ? "aborted" : "failed") : "completed",
             result,
           });
+          recordForegroundHistory(step.agent, taskWithContext, result, thread.createdAt);
           results.push(result);
 
           const isError = isFailedResult(result);
@@ -809,6 +1001,7 @@ export default function (pi: ExtensionAPI) {
               color: agentToThemeColor(t.agent),
             }),
           );
+          if (ctx.mode === "tui") widget.ensureWidget(ctx);
 
           const allResults: SubAgentResult[] = new Array(params.tasks.length);
           // Initialize placeholder results for streaming
@@ -882,6 +1075,7 @@ export default function (pi: ExtensionAPI) {
                   status: isFailedResult(result) ? (result.stopReason === "aborted" ? "aborted" : "failed") : "completed",
                   result,
                 });
+                recordForegroundHistory(t.agent, t.task, result, parallelThreads[index].createdAt);
                 // Early-abort: if this task failed and abortOnFailure is set
                 if (abortOnFailure && isFailedResult(result) && !abortCause) {
                   abortCause = result.stopReason === "timeout" ? "timeout" : "sibling";
@@ -920,6 +1114,23 @@ export default function (pi: ExtensionAPI) {
 
       // --- Single mode ---
       if (params.agent && params.task) {
+        // Background: run detached, return receipt immediately, notify on completion.
+        if (params.background) {
+          const { taskId, receipt } = startBackgroundTask({
+            agent: params.agent,
+            task: params.task,
+            cwd: params.cwd,
+            timeout: params.timeout,
+            agentColor: agentToThemeColor(params.agent),
+            toolCallId: _toolCallId,
+            deps: { pi, ctx, runOne, threadStore },
+          });
+          if (ctx.mode === "tui") widget.ensureWidget(ctx);
+          return {
+            content: [{ type: "text", text: receipt }],
+            details: { ...makeDetails("single")([]), backgroundTaskId: taskId },
+          };
+        }
         const thread = threadStore.createThread({
           agentName: params.agent,
           task: params.task,
@@ -927,6 +1138,7 @@ export default function (pi: ExtensionAPI) {
           toolCallId: _toolCallId,
           color: agentToThemeColor(params.agent),
         });
+        if (ctx.mode === "tui") widget.ensureWidget(ctx);
         const result = await runOne(
           params.agent, params.task, params.cwd,
           signal, params.timeout,
@@ -939,6 +1151,7 @@ export default function (pi: ExtensionAPI) {
           status: isFailedResult(result) ? (result.stopReason === "aborted" ? "aborted" : "failed") : "completed",
           result,
         });
+        recordForegroundHistory(params.agent, params.task, result, thread.createdAt);
         const isError = isFailedResult(result);
 
         if (onUpdate) {
@@ -981,48 +1194,79 @@ export default function (pi: ExtensionAPI) {
     // TUI rendering
     // ------------------------------------------------------------------
 
-    renderCall(args, theme, _context) {
+    renderCall(args, theme, context) {
       const scope: AgentScope = args.agentScope ?? "user";
       const fg = theme.fg.bind(theme);
+      const now = Date.now();
+
+      // Live-render driver: while the tool executes, re-render every second
+      // (bash.js pattern) so elapsed + tool-call count stay fresh in the TUI.
+      // The interval lives in shared renderer state, cleared by renderResult.
+      const state = context.state as { interval?: ReturnType<typeof setInterval> };
+      if (context.executionStarted && !state.interval) {
+        state.interval = setInterval(() => context.invalidate(), 1000);
+      }
+
+      // Look up threads for this tool call (stable toolCallId).
+      const threads = threadStore
+        .getAllThreads()
+        .filter((t) => t.toolCallId === context.toolCallId);
+      const runningThread = threads.find((t) => t.status === "running");
+
+      // Task control (status/cancel) — no agent/task; show the operation.
+      if (args.operation) {
+        return new Text(
+          fg("accent", String(args.operation)) +
+          fg("muted", args.taskId ? ` [${args.taskId}]` : ""),
+          0, 0,
+        );
+      }
 
       // Chain
       if (args.chain && args.chain.length > 0) {
         let text =
-          fg("toolTitle", theme.bold("subagent ")) +
           fg("accent", `chain (${args.chain.length} steps)`) +
           fg("muted", ` [${scope}]`);
         for (let i = 0; i < Math.min(args.chain.length, 3); i++) {
           const step = args.chain[i];
           const cleanTask = step.task.replace(/\{previous\}/g, "").trim();
           const preview = cleanTask.length > 40 ? `${cleanTask.slice(0, 40)}...` : cleanTask;
+          const stepThread = threads[i];
+          const live = stepThread && stepThread.status === "running"
+            ? "\n  " + renderLiveThreadLine(stepThread, theme, now, resolveAgentColor(step.agent))
+            : "";
           text +=
             "\n  " +
             fg("muted", `${i + 1}.`) +
             " " +
             fg(resolveAgentColor(step.agent), step.agent) +
-            fg("dim", ` ${preview}`);
+            fg("dim", ` ${preview}`) +
+            live;
         }
         if (args.chain.length > 3)
           text += `\n  ${fg("muted", `... +${args.chain.length - 3} more`)}`;
         return new Text(text, 0, 0);
       }
 
-      // Parallel
+      // Parallel — live line per task with a running thread.
       if (args.tasks && args.tasks.length > 0) {
         let text =
-          fg("toolTitle", theme.bold("subagent ")) +
           fg("accent", `parallel (${args.tasks.length} tasks)`) +
           fg("muted", ` [${scope}]`);
         for (const t of args.tasks.slice(0, 3)) {
           const preview = t.task.length > 40 ? `${t.task.slice(0, 40)}...` : t.task;
-          text += `\n  ${fg(resolveAgentColor(t.agent), t.agent)}${fg("dim", ` ${preview}`)}`;
+          const taskThread = threads.find((th) => th.agentName === t.agent && th.task === t.task);
+          const live = taskThread && taskThread.status === "running"
+            ? "\n  " + renderLiveThreadLine(taskThread, theme, now, resolveAgentColor(t.agent))
+            : "";
+          text += `\n  ${fg(resolveAgentColor(t.agent), t.agent)}${fg("dim", ` ${preview}`)}${live}`;
         }
         if (args.tasks.length > 3)
           text += `\n  ${fg("muted", `... +${args.tasks.length - 3} more`)}`;
         return new Text(text, 0, 0);
       }
 
-      // Single
+      // Single — live header while running, static summary otherwise.
       const agentName = args.agent || "...";
       const preview = args.task
         ? args.task.length > 60
@@ -1030,14 +1274,25 @@ export default function (pi: ExtensionAPI) {
           : args.task
         : "...";
       let text =
-        fg("toolTitle", theme.bold("subagent ")) +
         fg(resolveAgentColor(agentName), agentName) +
-        fg("muted", ` [${scope}]`);
-      text += `\n  ${fg("dim", preview)}`;
+        fg("muted", ` [${scope}]`) +
+        (args.background ? fg("dim", " bg") : "");
+      if (runningThread) {
+        text += "\n" + renderLiveThreadLine(runningThread, theme, now, resolveAgentColor(agentName));
+      } else {
+        text += `\n  ${fg("dim", preview)}`;
+      }
       return new Text(text, 0, 0);
     },
 
     renderResult(result, { expanded }, theme, _context) {
+      // Stop the live-render interval started by renderCall (shared state).
+      const state = _context.state as { interval?: ReturnType<typeof setInterval> };
+      if (state?.interval) {
+        clearInterval(state.interval);
+        state.interval = undefined;
+      }
+
       const details = result.details as SubagentDetails | undefined;
       if (!details || details.results.length === 0) {
         const text = result.content[0];
