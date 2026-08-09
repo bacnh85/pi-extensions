@@ -18,6 +18,8 @@ const ZAI_CODING_CN_PROVIDER = "zai-coding-cn";
 const ZAI_CODING_CN_USAGE_URL = "https://open.bigmodel.cn/api/monitor/usage/quota/limit";
 const NINE_ROUTER_PROVIDER = "9router";
 const NINE_ROUTER_CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "9router-config.json");
+const COMMAND_CODE_PROVIDER = "commandcode";
+const COMMAND_CODE_USAGE_URL = "https://api.commandcode.ai/alpha/billing/credits";
 
 type ModelLike = { provider?: string; id?: string } | undefined;
 
@@ -59,6 +61,8 @@ interface SubscriptionAccountSnapshot {
   plan?: string;
   fiveHour?: UsageWindow;
   weekly?: UsageWindow;
+  // Command Code-only: monthly credit balance in USD (not a rolling window).
+  monthlyCredits?: number;
   // Z.ai-only extras surfaced in the /sub detail view.
   mcpMonthly?: UsageWindow; // from TIME_LIMIT already present in the quota response
   usageBreakdown?: string; // per-model / per-tool summary line(s)
@@ -115,6 +119,10 @@ function isZaiCodingCnModel(model: ModelLike): boolean {
 
 function isNineRouterModel(model: ModelLike): boolean {
   return (model?.provider?.toLowerCase() ?? "") === NINE_ROUTER_PROVIDER;
+}
+
+function isCommandCodeModel(model: ModelLike): boolean {
+  return (model?.provider?.toLowerCase() ?? "") === COMMAND_CODE_PROVIDER;
 }
 
 function piAuthPath(): string {
@@ -340,6 +348,7 @@ function redactedError(error: unknown, provider = "Codex"): string {
   if (/missing openai-codex/i.test(message)) return "openai-codex auth not found";
   if (/missing opencode-go/i.test(message)) return "opencode-go auth not found";
   if (/missing zai/i.test(message)) return "zai auth not found";
+  if (/missing commandcode/i.test(message)) return "commandcode auth not found";
   if (/timed out|timeout|aborted/i.test(message)) return `${provider} usage refresh timed out`;
   if (/401|403|auth|token|unauthorized|forbidden/i.test(message)) return `${provider} auth unavailable`;
   return `${provider} usage unavailable`;
@@ -411,6 +420,60 @@ async function fetchNineRouterUsage(_signal?: AbortSignal): Promise<Subscription
   };
 }
 
+// Command Code's /alpha/billing/credits endpoint (auth: same Provider API key
+// as /provider/v1 models) returns live 5-hour and weekly rolling windows plus
+// the monthly credit balance — the same data as the cmd /usage CLI.
+async function fetchCommandCodeUsage(signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> {
+  try {
+    const { key: apiKey, account: authAccount } = await readZaiAuth(COMMAND_CODE_PROVIDER, "Command Code");
+    const timeoutSignal = AbortSignal.timeout(7_000);
+    const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+
+    const headers = {
+      Accept: "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "User-Agent": "pi-sub/0.1.27",
+    };
+    const response = await fetch(COMMAND_CODE_USAGE_URL, { headers, signal: combinedSignal });
+    if (!response.ok) {
+      throw new Error(`Command Code usage request failed with HTTP ${response.status}`);
+    }
+    const body = (await response.json()) as CommandCodeCreditsApiResponse;
+
+    const credits = body.credits;
+    const windowLimits = body.windowLimits;
+    const fiveHour = commandCodeWindowToUsageWindow(windowLimits?.fiveHour);
+    const weekly = commandCodeWindowToUsageWindow(windowLimits?.weekly);
+
+    // Monthly allowance is an absolute USD balance, not a rolling window.
+    const monthlyCredits = typeof credits?.monthlyCredits === "number" ? credits.monthlyCredits : undefined;
+    const monthlyLine = monthlyCredits !== undefined ? `Monthly: $${monthlyCredits.toFixed(2)} remaining` : undefined;
+    const breakdown = [monthlyLine].filter((s): s is string => !!s);
+
+    const account: SubscriptionAccountSnapshot = {
+      ...authAccount,
+      fiveHour,
+      weekly,
+      monthlyCredits,
+      usageBreakdown: breakdown.length > 0 ? breakdown.join("\n") : undefined,
+    };
+
+    return {
+      providerDisplayName: "Command Code",
+      accounts: [account],
+      activeAccount: account,
+      fetchedAt: Date.now(),
+    };
+  } catch (error) {
+    return {
+      providerDisplayName: "Command Code",
+      accounts: [],
+      fetchedAt: Date.now(),
+      error: redactedError(error, "Command Code"),
+    };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Z.ai adapter
 // ---------------------------------------------------------------------------
@@ -436,6 +499,48 @@ interface ZaiUsageApiError {
   code: number;
   msg: string;
   success?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Command Code adapter
+// ---------------------------------------------------------------------------
+// Live-verified 2026-08-09: GET https://api.commandcode.ai/alpha/billing/credits
+// with the Provider API key (same user_... key as /provider/v1 models) returns
+// USD windows + monthly credit balance. resetAt is epoch milliseconds.
+
+interface CommandCodeWindowApi {
+  used: number;
+  cap: number;
+  exceeded?: boolean | null;
+  resetAt?: number;
+}
+
+interface CommandCodeCreditsApiResponse {
+  credits?: {
+    monthlyCredits?: number;
+    purchasedCredits?: number;
+    freeCredits?: number;
+    belowThreshold?: boolean;
+  };
+  windowLimits?: {
+    limited?: boolean;
+    fiveHour?: CommandCodeWindowApi;
+    weekly?: CommandCodeWindowApi;
+  };
+}
+
+/** Map a Command Code USD window (used/cap in dollars, resetAt in ms) into
+ *  the shared UsageWindow shape (remaining%, reset labels). */
+function commandCodeWindowToUsageWindow(window: CommandCodeWindowApi | undefined): UsageWindow | undefined {
+  if (!window || typeof window.used !== "number" || typeof window.cap !== "number" || window.cap <= 0) return undefined;
+  const usedPct = Math.round((window.used / window.cap) * 100);
+  const percent = Math.min(100, usedPct);
+  const remaining = Math.max(0, 100 - percent);
+  // resetAt is epoch ms; format helpers expect seconds.
+  const resetAtSec = window.resetAt ? window.resetAt / 1000 : undefined;
+  const resetLabel = formatReset(resetAtSec);
+  const remainingLabel = formatRemainingTime(resetAtSec);
+  return { percent, remaining, remainingLabel, resetLabel };
 }
 
 function zaiLimitToUsageWindow(limit: ZaiLimitEntry): UsageWindow | undefined {
@@ -600,6 +705,7 @@ function supportedAdapter(model: ModelLike): SubscriptionProviderAdapter | undef
   if (isZaiModel(model)) return { id: ZAI_PROVIDER, displayName: "Z.ai", ...zaiUsageAdapter(ZAI_PROVIDER, ZAI_USAGE_URL, "Z.ai") };
   if (isZaiCodingCnModel(model)) return { id: ZAI_CODING_CN_PROVIDER, displayName: "Z.ai (CN)", ...zaiUsageAdapter(ZAI_CODING_CN_PROVIDER, ZAI_CODING_CN_USAGE_URL, "Z.ai (CN)") };
   if (isNineRouterModel(model)) return { id: NINE_ROUTER_PROVIDER, displayName: "9router", fetchUsage: fetchNineRouterUsage };
+  if (isCommandCodeModel(model)) return { id: COMMAND_CODE_PROVIDER, displayName: "Command Code", fetchUsage: fetchCommandCodeUsage };
   return undefined;
 }
 
@@ -647,6 +753,8 @@ function renderSubscriptionLine(ctx: ExtensionContext, state: State): void {
     const segments = accountPart ? [accountPart, ...windowParts] : [...windowParts];
     const cost = state.cumulativeCost;
     const hasWindows = windowParts.length > 0;
+    // Command Code monthly balance: compact USD figure, e.g. M:$69.99.
+    if (typeof account?.monthlyCredits === "number") segments.push(`M:$${account.monthlyCredits.toFixed(2)}`);
     if (cost > 0) segments.push(`$${cost.toFixed(2)}`);
     if (state.lastTokPerSec !== undefined) segments.push(`${state.lastTokPerSec} tok/s`);
     if (segments.length === 0) {

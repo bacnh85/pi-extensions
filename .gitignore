@@ -2,5 +2,8 @@
 .env.*
 node_modules/
 
+# Pi agent runtime state (local)
+.pi/
+
 # Serena auto-generated config (local)
 .serena/project.yml

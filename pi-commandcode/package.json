@@ -1,0 +1,51 @@
+{
+  "name": "@bacnh85/pi-commandcode",
+  "version": "0.1.1",
+  "description": "Pi extension that connects to Command Code's OpenAI-compatible Provider API.",
+  "type": "module",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-commandcode",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git",
+    "directory": "pi-commandcode"
+  },
+  "bugs": {
+    "url": "https://github.com/bacnh85/pi-extensions/issues"
+  },
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "commandcode",
+    "command-code",
+    "openai-compatible",
+    "ai-provider"
+  ],
+  "scripts": {
+    "test": "node --import tsx --test extensions/test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "extensions/index.ts",
+    "extensions/lib/"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "tsx": "^4.23.1",
+    "typescript": "^5.9.3"
+  }
+}

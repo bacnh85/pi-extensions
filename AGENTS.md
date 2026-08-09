@@ -8,6 +8,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | Package | Version | Description |
 |---------|---------|-------------|
 | **pi-9router** | 0.1.7 | Connect to a 9router AI routing proxy instance via its OpenAI-compatible API with interactive login. |
+| **pi-commandcode** | 0.1.0 | Connect to Command Code's OpenAI-compatible Provider API; uses built-in `/login` for API-key setup. |
 | **pi-checkpoint** | 0.1.0 | Git-backed undo/redo — snapshots file state per turn into a dedicated ref namespace so `/undo` rolls back a message AND its file changes. |
 | **pi-notify** | 0.1.0 | Desktop notifications and sounds — fires on task completion, errors, and questions; cross-platform (macOS/Linux/Windows + terminal OSC). |
 | **pi-references** | 0.1.0 | External context roots — alias sibling dirs or git repos as `@docs`/`@sdk`; auto-clones repos and injects descriptions into agent context. |
@@ -49,7 +50,8 @@ pi-extensions/
   pi-fff/               # TS extension for FFF-powered find/grep/autocomplete
   pi-rtk/               # TS extension for RTK bash command rewriting
   pi-model-tools/        # TS extension for unified tool-wrapping + DeepSeek guidance + Super Power Mode (DeepSeek V4 + GLM)
-  pi-9router/           # TS extension to connect to a 9router AI routing proxy.
+   pi-9router/           # TS extension to connect to a 9router AI routing proxy.
+  pi-commandcode/       # TS extension for Command Code Provider API.
   pi-budget/            # JS extension for spend-cap enforcement (--budget <usd>).
   pi-sub/               # TS extension for subscription usage footer
   pi-themes/            # JSON theme files — pure-themes package (no extension code)
@@ -140,6 +142,7 @@ cd pi-<name> && npm test
 # pi-sub:        npm pack --dry-run                    (packaging check)
 # pi-themes:     npm pack --dry-run                    (packaging check; pure-themes, no extension code)
 # pi-9router:    node --import tsx --node test          (node:test + tsx)
+# pi-commandcode: node --import tsx --test extensions/test/*.test.ts (node:test + tsx)
 ```
 
 Test files use unit-test style (no fixture frameworks, consistent with ponytail

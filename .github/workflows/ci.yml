@@ -41,6 +41,7 @@ jobs:
             pi-windows-tools: pi-windows-tools/**
             pi-kicad: pi-kicad/**
             pi-9router: pi-9router/**
+            pi-commandcode: pi-commandcode/**
             pi-ux: pi-ux/**
             pi-budget: pi-budget/**
             pi-themes: pi-themes/**
@@ -72,6 +73,7 @@ jobs:
               { pkg: 'pi-obsidian', cmd: 'npm ci && npm test' },
               { pkg: 'pi-windows-tools', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-9router', cmd: 'npm ci && npm test && npm run typecheck' },
+              { pkg: 'pi-commandcode', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-kicad', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-ux', cmd: 'node --test extensions/test/*.test.js' },
               { pkg: 'pi-budget', cmd: 'node --test extensions/test/*.test.js' },
