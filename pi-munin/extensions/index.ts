@@ -13,6 +13,8 @@ import {
   classifyError,
   sanitizeErrorMessage,
   getMuninConfig,
+  extractRemediation,
+  formatRemediation,
 } from "./lib/helpers";
 import { withRetry } from "./lib/retry";
 
@@ -128,7 +130,7 @@ function withMuninClient<T extends Record<string, unknown>>(
  * Some actions like 'delete' are not advertised in server capabilities
  * but are still supported. Pass ensureCapability: false for those.
  */
-async function callMunin(
+export async function callMunin(
   client: any,
   projectId: string,
   action: string,
@@ -142,24 +144,75 @@ async function callMunin(
     : { ensureCapability: true };
 
   try {
-    return await withRetry(async () => {
-      if (directAction === "capabilities") return client.capabilities(true);
-      // ponytail: share() has different signature — skip direct call, use invoke
-      if (typeof client[directAction] === "function" && directAction !== "share") {
-        return client[directAction](projectId, payload);
-      }
-      if (typeof client.invoke === "function") {
-        return client.invoke(projectId, directAction, payload, invokeOptions);
-      }
-      throw new Error(`Munin SDK does not support action: ${directAction}`);
-    });
+    return await withRetry(async () => invokeMuninAction(client, projectId, directAction, payload, invokeOptions));
   } catch (error) {
-    // Let the tool_result event handler classify the error;
-    // avoid double-wrapping by not adding "Munin error:" prefix here.
+    // Layer 1: auto-recover from ERR_STALE_PROTOCOL via the server's
+    // acknowledge_setup handshake, then retry the original call exactly once.
+    // ponytail: single retry — no loop; ack is idempotent and server-side remembered.
     const err = error instanceof Error ? error : new Error(String(error));
-    err.message = sanitizeErrorMessage(err);
-    throw err;
+    const remediation = extractRemediation(err);
+    const ack = remediation?.acknowledge_after_reading;
+    const isStale =
+      classifyError(err).type === "stale_protocol" &&
+      !!ack?.payload?.version;
+    if (isStale && typeof client.invoke === "function") {
+      const version = ack!.payload.version;
+      // Server directs the action name (default acknowledge_setup if absent).
+      const ackAction = ack!.action || "acknowledge_setup";
+      try {
+        // ack is a real action even when not advertised in capabilities.
+        // Inspect the result: some servers return a non-throwing failure
+        // (e.g. {ok:false} or {acknowledged:false}) that the SDK does not throw on.
+        const ackResult = await client.invoke(projectId, ackAction, { version }, { ensureCapability: false });
+        if (ackResult && typeof ackResult === "object" &&
+            ((ackResult as any).ok === false || (ackResult as any).success === false || (ackResult as any).acknowledged === false)) {
+          err.message = sanitizeErrorMessage(new Error(err.message + formatRemediation(remediation)));
+          throw err;
+        }
+      } catch {
+        // ack failed (thrown or resolved-failure) → surface remediation, do NOT retry (no infinite loop).
+        err.message = sanitizeErrorMessage(new Error(err.message + formatRemediation(remediation)));
+        throw err;
+      }
+      // Retry the original action exactly once. Wrap in withRetry so a transient
+      // network blip during the retry (after ack already succeeded) is tolerated —
+      // same as the initial call. Safe: withRetry never retries stale_protocol.
+      try {
+        return await withRetry(async () => invokeMuninAction(client, projectId, directAction, payload, invokeOptions));
+      } catch (retryErr) {
+        const r = retryErr instanceof Error ? retryErr : new Error(String(retryErr));
+        // Only fall back to the original stale remediation when the retry error is itself stale.
+        // A non-stale retry failure (e.g. VALIDATION_ERROR) must surface its own cause, not a
+        // handshake that already succeeded.
+        const retryIsStale = classifyError(r).type === "stale_protocol";
+        r.message = sanitizeErrorMessage(new Error(r.message + formatRemediation(extractRemediation(r) ?? (retryIsStale ? remediation : undefined))));
+        throw r;
+      }
+    }
+    // Layer 2: surface remediation in the error message even when auto-ack is skipped.
+    const err2 = error instanceof Error ? error : new Error(String(error));
+    err2.message = sanitizeErrorMessage(new Error(err2.message + formatRemediation(remediation)));
+    throw err2;
   }
+}
+
+/** Dispatch a single Munin action (direct method or client.invoke). Extracted for one-shot retry reuse. */
+function invokeMuninAction(
+  client: any,
+  projectId: string,
+  directAction: string,
+  payload: Record<string, unknown>,
+  invokeOptions: { ensureCapability: boolean },
+): Promise<unknown> {
+  if (directAction === "capabilities") return client.capabilities(true);
+  // ponytail: share() has different signature — skip direct call, use invoke
+  if (typeof client[directAction] === "function" && directAction !== "share") {
+    return client[directAction](projectId, payload);
+  }
+  if (typeof client.invoke === "function") {
+    return client.invoke(projectId, directAction, payload, invokeOptions);
+  }
+  throw new Error(`Munin SDK does not support action: ${directAction}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -515,11 +568,14 @@ export default function muninExtension(pi: ExtensionAPI) {
     const cleanText = text.replace(/^Munin \w+ error: /, "");
     const classified = classifyError(new Error(cleanText));
     const sanitized = sanitizeErrorMessage(new Error(classified.message));
+    // Error messages are also bounded — a malicious server can balloon agent context
+    // via oversized remediation fields (url/version), so truncate like success paths.
+    const bounded = truncateText(`Munin ${classified.type} error: ${sanitized}`);
     return {
       content: [
         {
           type: "text" as const,
-          text: `Munin ${classified.type} error: ${sanitized}`,
+          text: bounded,
         },
       ],
       details: { errorType: classified.type, message: sanitized },

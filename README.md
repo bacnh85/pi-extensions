@@ -17,7 +17,7 @@ Each package lives in its own directory and can be installed independently. This
 | [`@bacnh85/pi-init`](./pi-init) | 0.1.0 | Guided AGENTS.md generation — `/init` scans the repo and generates/updates AGENTS.md with build/test/lint commands, architecture, and conventions. |
 | [`@bacnh85/pi-kicad`](./pi-kicad) | 0.1.3 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon. |
 | [`@bacnh85/pi-model-tools`](./pi-model-tools) | 0.5.5 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, and a Codex-style `apply_patch` diff tool. |
-| [`@bacnh85/pi-munin`](./pi-munin) | 0.5.1 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and cross-project sharing. |
+| [`@bacnh85/pi-munin`](./pi-munin) | 0.5.2 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and cross-project sharing. |
 | [`@bacnh85/pi-notebooklm`](./pi-notebooklm) | 0.1.8 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | [`@bacnh85/pi-notify`](./pi-notify) | 0.1.0 | Desktop notifications and sounds — fires on task completion, errors, and questions; cross-platform (macOS/Linux/Windows + terminal OSC). |
 | [`@bacnh85/pi-obsidian`](./pi-obsidian) | 0.8.13 | Obsidian vault integration for Pi. |

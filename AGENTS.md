@@ -19,7 +19,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-fff** | 0.7.9 | FFF-powered fuzzy file and content search for Pi. |
 | **pi-kicad** | 0.1.3 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon (no MCP SDK). |
 | **pi-model-tools** | 0.5.5 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, and a Codex-style apply_patch diff tool. |
-| **pi-munin** | 0.5.1 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and confirmed cross-project sharing. |
+| **pi-munin** | 0.5.2 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and confirmed cross-project sharing. |
 | **pi-notebooklm** | 0.1.8 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | **pi-obsidian** | 0.8.13 | Obsidian vault integration for Pi. |
 | **pi-plan** | 0.10.3 | Plan mode with read-only gating and plan → implement → verify → review workflow; fallback model chain on overload. |

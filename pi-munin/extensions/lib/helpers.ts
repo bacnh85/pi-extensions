@@ -249,8 +249,9 @@ export function validateSearchQuery(query: unknown): string {
 // Error classification
 // ---------------------------------------------------------------------------
 
-export function classifyError(error: unknown): { type: string; message: string } {
+export function classifyError(error: unknown): { type: string; message: string; remediation?: Remediation } {
   const err = error instanceof Error ? error : new Error(String(error));
+  const remediation = extractRemediation(err);
   const code = String((err as Error & { code?: unknown }).code ?? "").toUpperCase();
   const structuredTypes: Record<string, string> = {
     AUTH_INVALID: "auth",
@@ -260,7 +261,7 @@ export function classifyError(error: unknown): { type: string; message: string }
     ERR_STALE_PROTOCOL: "stale_protocol",
     NOT_FOUND: "not_found",
   };
-  if (structuredTypes[code]) return { type: structuredTypes[code], message: err.message };
+  if (structuredTypes[code]) return { type: structuredTypes[code], message: err.message, remediation };
 
   const message = err.message.toLowerCase().replace(/_/g, " ");
   const name = err.name.toLowerCase();
@@ -283,6 +284,80 @@ export function classifyError(error: unknown): { type: string; message: string }
 // ponytail: only redacts the env-var name, not heuristic base64 (fragile, false positives).
 export function sanitizeErrorMessage(error: Error): string {
   return error.message.replace(/MUNIN_API_KEY[=\s]+[A-Za-z0-9+/=_-]{4,}/gi, "MUNIN_API_KEY=[REDACTED]");
+}
+
+// ---------------------------------------------------------------------------
+// ERR_STALE_PROTOCOL remediation (server setup handshake)
+// ---------------------------------------------------------------------------
+
+export interface Remediation {
+  action?: string;
+  url?: string;
+  version_from?: string | null;
+  version_to?: string;
+  acknowledge_after_reading?: {
+    action: string;
+    payload: { version: string };
+  };
+}
+
+/** Pull the server's remediation block from an SDK error's `details`. Null-safe. */
+export function extractRemediation(error: unknown): Remediation | undefined {
+  const err = error instanceof Error ? error : new Error(String(error));
+  const details = (err as Error & { details?: unknown }).details;
+  if (details && typeof details === "object") {
+    const remediation = (details as { remediation?: unknown }).remediation;
+    if (remediation && typeof remediation === "object") {
+      return remediation as Remediation;
+    }
+  }
+  return undefined;
+}
+
+/** Human-readable remediation suffix for an error message. Empty string when none.
+ *  Server-provided url/action are validated + sanitized: url must be http(s) (rejects
+ *  javascript:/file:/data: and non-URLs), control chars stripped, phrased as data not
+ *  an imperative to avoid a prompt-injection vector via a malicious/buggy server. */
+export function formatRemediation(remediation: Remediation | undefined): string {
+  if (!remediation) return "";
+  const parts: string[] = [];
+  const safeUrl = sanitizeRemediationUrl(remediation.url);
+  const hasUrl = !!safeUrl;
+  if (safeUrl) parts.push(`Setup guide: ${safeUrl}`);
+  if (remediation.version_to) {
+    const action = sanitizeRemediationToken(remediation.acknowledge_after_reading?.action) || "acknowledge_setup";
+    const safeVersion = sanitizeRemediationToken(remediation.version_to);
+    if (safeVersion) parts.push(`${hasUrl ? "then " : ""}run ${action} with version ${safeVersion}`);
+  }
+  if (!parts.length) return "";
+  return ` Setup handshake required: ${parts.join(" ")}.`;
+}
+
+// C0 control + DEL + Unicode control/format chars that enable injection or deceptive rendering:
+// bidi overrides (U+202E), zero-width (U+200B-200D), Unicode line/para separators (U+2028/2029),
+// LTR/RTL marks (U+200E/200F), isolates (U+2066-2069), BOM/ZWNBSP (U+FEFF).
+const REMEDIATION_CTRL_RE = /[\r\n\t\x00-\x1f\x7f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/;
+
+/** Allow only clean http(s) URLs. Rejects non-URLs, non-http schemes, URLs with credentials
+ *  (mirrors normalizeBaseUrl's policy), and any URL containing control/bidi/format chars. */
+function sanitizeRemediationUrl(url: string | undefined): string {
+  if (!url || typeof url !== "string") return "";
+  if (REMEDIATION_CTRL_RE.test(url)) return "";
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return "";
+    // No credentials — matches normalizeBaseUrl's reject policy.
+    if (u.username || u.password) return "";
+    return u.href;
+  } catch {
+    return "";
+  }
+}
+
+/** Strip C0/DEL + Unicode control/format chars from a short token (action name / version). */
+function sanitizeRemediationToken(token: string | undefined): string {
+  if (!token || typeof token !== "string") return "";
+  return token.replace(/[\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff\r\n\t\x00-\x1f\x7f]/g, "");
 }
 
 
