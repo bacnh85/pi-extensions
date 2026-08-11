@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.4 (2026-08-11)
+
+### Fixes
+
+- **Hide `off`/`minimal` thinking levels: they sent invalid `reasoning_effort`
+  values and caused HTTP 400.** Command Code's `reasoning_effort` only accepts
+  `low|medium|high|xhigh|max` — there is no disable value. Unlike pi-core's
+  deepseek format (which sends `thinking:{type:"disabled"}` to turn reasoning
+  off), the generic OpenAI `reasoning_effort` path used by this extension maps
+  `off` verbatim, so the previous `off:"none"` (and `minimal:"minimal"`) were
+  forwarded and rejected with `Invalid option: expected one of
+  "low"|"medium"|"high"|"xhigh"|"max"`. Every map now sets `off:null` and
+  `minimal:null` (hidden in the Pi UI); selecting "off" omits `reasoning_effort`
+  entirely (the upstream default) instead of sending an invalid string.
+
 ## 0.1.3 (2026-08-11)
 
 ### Fixes

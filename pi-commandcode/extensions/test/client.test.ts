@@ -107,16 +107,16 @@ describe("mapModel", () => {
 
   it("attaches a per-family thinkingLevelMap to reasoning models", () => {
     // DeepSeek V4: high + max only (low/medium normalize to high upstream,
-    // xhigh maps to max per Command Code docs). off stays available.
+    // xhigh maps to max per Command Code docs). off/minimal hidden (no disable).
     const ds = mapModel({ id: "deepseek/deepseek-v4-flash" });
     assert.deepEqual(ds.thinkingLevelMap, {
-      off: "none", minimal: null, low: null, medium: null, high: "high", xhigh: null, max: "max",
+      off: null, minimal: null, low: null, medium: null, high: "high", xhigh: null, max: "max",
     });
     assert.deepEqual(mapModel({ id: "deepseek/deepseek-v4-pro" }).thinkingLevelMap, ds.thinkingLevelMap);
 
     // GLM-5.2: single thinking tier — low/medium/high all map to "high", max to "max".
     assert.deepEqual(mapModel({ id: "zai-org/glm-5.2" }).thinkingLevelMap, {
-      off: "none", minimal: null, low: "high", medium: "high", high: "high", xhigh: null, max: "max",
+      off: null, minimal: null, low: "high", medium: "high", high: "high", xhigh: null, max: "max",
     });
 
     // Kimi K3: native levels low/high/max (pi-core moonshotai catalog); no off/medium/xhigh.
@@ -126,17 +126,17 @@ describe("mapModel", () => {
 
     // GPT-5.6-sol accepts a native max effort (pi-9router "openai-max").
     assert.deepEqual(mapModel({ id: "gpt-5.6-sol" }).thinkingLevelMap, {
-      off: "none", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max",
+      off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max",
     });
 
     // Qwen: low/medium/high only (xhigh/max unsupported).
     assert.deepEqual(mapModel({ id: "qwen/qwen3.7-max" }).thinkingLevelMap, {
-      off: "none", minimal: null, low: "low", medium: "medium", high: "high", xhigh: null, max: null,
+      off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: null, max: null,
     });
 
-    // Unknown reasoning model: full OpenAI-style set (prior behavior preserved).
+    // Unknown reasoning model: low..max only (off/minimal hidden — no disable value).
     assert.deepEqual(mapModel({ id: "unknown/future-model" }).thinkingLevelMap, {
-      off: "none", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh",
+      off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh",
     });
   });
 

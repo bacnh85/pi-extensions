@@ -117,23 +117,29 @@ type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "
  *  built-in catalogs in pi-core for the same upstream models.
  *  Source: model docs pages + upstream effort sets (see CHANGELOG 0.1.3). */
 type ThinkingLevelMap = Partial<Record<ThinkingLevel, string | null>>;
+// ponytail: off is hidden everywhere. Command Code's reasoning_effort only
+// accepts low|medium|high|xhigh|max — there is no disable value, and unlike
+// pi-core's deepseek format (which sends thinking:{type:"disabled"}) the openai
+// thinkingFormat used here maps off to reasoning_effort verbatim, so off="none"
+// or minimal="minimal" would be sent and rejected with HTTP 400. Hiding off
+// means selecting it omits reasoning_effort entirely (the upstream default).
 const THINKING_LEVEL_MAP_BY_FORMAT: Record<string, ThinkingLevelMap> = {
   // DeepSeek V4: native levels are high + max only; low/medium normalize to
   // high upstream, xhigh maps to max. Command Code docs: "Reasoning efforts
   // high and xhigh are supported; xhigh maps to max reasoning."
-  deepseek: { off: "none", minimal: null, low: null, medium: null, high: "high", xhigh: null, max: "max" },
+  deepseek: { off: null, minimal: null, low: null, medium: null, high: "high", xhigh: null, max: "max" },
   // GLM-5.2: single thinking tier; low/medium/high all map to "high", max to "max"
   // (mirrors pi-core zai glm-5.2 thinkingLevelMap).
-  zai: { off: "none", minimal: null, low: "high", medium: "high", high: "high", xhigh: null, max: "max" },
+  zai: { off: null, minimal: null, low: "high", medium: "high", high: "high", xhigh: null, max: "max" },
   // Kimi K2.7/K3: native levels low/high/max (pi-core moonshotai catalog);
   // thinking cannot be disabled (off hidden). medium/xhigh unsupported.
   kimi: { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
   // GPT-5.6-sol: accepts a native max effort (pi-9router "openai-max").
-  "openai-max": { off: "none", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
+  "openai-max": { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
   // Qwen / Step / Hy3: low/medium/high only (DashScope set); xhigh/max unsupported.
-  qwen: { off: "none", minimal: null, low: "low", medium: "medium", high: "high", xhigh: null, max: null },
-  // OpenAI-style (GPT, Gemini, Grok, Claude, unknown models): full set.
-  openai: { off: "none", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh" },
+  qwen: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: null, max: null },
+  // OpenAI-style (GPT, Gemini, Grok, Claude, unknown models): low..max only.
+  openai: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh" },
 };
 
 /** Detect the upstream thinking-effort family from a model id. Unknown models
