@@ -58,14 +58,51 @@ describe("mapModel", () => {
   });
 
   it("advertises image input only when capabilities.vision === true", () => {
+    // API field wins when present (forward-compat).
     const vision = mapModel({ id: "moonshotai/Kimi-K3", capabilities: { vision: true } });
     assert.deepEqual(vision.input, ["text", "image"]);
 
     const noVision = mapModel({ id: "moonshotai/Kimi-K3", capabilities: { vision: false } });
     assert.deepEqual(noVision.input, ["text"]);
+  });
 
-    const absent = mapModel({ id: "moonshotai/Kimi-K3" });
-    assert.deepEqual(absent.input, ["text"]);
+  it("resolves vision from the override table when the API sends no capabilities", () => {
+    // Kimi-K3 is vision-capable per the docs registry → image input even though
+    // the Provider API sends no capabilities field.
+    const k3 = mapModel({ id: "moonshotai/Kimi-K3" });
+    assert.deepEqual(k3.input, ["text", "image"]);
+
+    // DeepSeek V4 Flash is text-only per the docs registry.
+    const ds = mapModel({ id: "deepseek/deepseek-v4-flash" });
+    assert.deepEqual(ds.input, ["text"]);
+
+    // Unknown model: safe text-only default.
+    assert.deepEqual(mapModel({ id: "unknown/future-model" }).input, ["text"]);
+  });
+
+  it("resolves reasoning per-model from the override table", () => {
+    // GLM-5 has no extended thinking.
+    assert.equal(mapModel({ id: "zai-org/GLM-5" }).reasoning, false);
+    // ...and is also text-only — locks in the vision=false + reasoning=false combo
+    // so a table-value edit regression is caught on both fields.
+    assert.deepEqual(mapModel({ id: "zai-org/GLM-5" }).input, ["text"]);
+    // DeepSeek V4 Flash supports reasoning.
+    assert.equal(mapModel({ id: "deepseek/deepseek-v4-flash" }).reasoning, true);
+    // Dated API id normalizes to the registry key (claude-haiku-4-5).
+    assert.equal(mapModel({ id: "claude-haiku-4-5-20251001" }).reasoning, false);
+    assert.deepEqual(mapModel({ id: "claude-haiku-4-5-20251001" }).input, ["text", "image"]);
+    // Unknown model: preserves prior reasoning-on default.
+    assert.equal(mapModel({ id: "unknown/future-model" }).reasoning, true);
+    // Forward-compat: an explicit API capabilities.reasoning wins over the table.
+    assert.equal(mapModel({ id: "zai-org/GLM-5", capabilities: { reasoning: true } }).reasoning, true);
+  });
+
+  it("uses the API display name when present, falling back to the id", () => {
+    assert.equal(
+      mapModel({ id: "zai-org/glm-5.2", name: "GLM-5.2" }).name,
+      "GLM-5.2",
+    );
+    assert.equal(mapModel({ id: "zai-org/glm-5.2" }).name, "zai-org/glm-5.2");
   });
 });
 
