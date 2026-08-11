@@ -21,6 +21,8 @@ export const READ_ONLY_TOOLS = new Set([
   "serena_search_for_pattern", "serena_get_diagnostics_for_file",
   // Munin read-only
   "munin_search", "munin_get", "munin_list", "munin_recent", "munin_capabilities",
+  // pi-evolve read-only (reads the in-memory trajectory buffer; evolve_save is a mutation and stays out)
+  "evolve_reflect",
   // Plan tools (path-constrained to .agents/plans/, safe in plan mode)
   "write_plan",
   // Advisor returns guidance only; it has no filesystem tools.
@@ -41,5 +43,7 @@ export const BLOCKED_TOOLS = new Set([
   "munin_store", "munin_delete", "munin_share",
   "munin_capture", "munin_batch_store", "munin_rollback",
   "munin_acknowledge_setup", "munin_encrypt", "munin_decrypt", "munin_export",
+  // pi-evolve mutation (stores learnings to Munin/JSONL — blocked like munin_store)
+  "evolve_save",
 ]);
 

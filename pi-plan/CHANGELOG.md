@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.4 (2026-08-11)
+
+### Improvements
+
+- Allow `evolve_reflect` (pi-evolve) in plan mode — it reads the in-memory
+  trajectory buffer (read-only). `evolve_save` (pi-evolve's learning store
+  mutation) is hard-blocked like `munin_store`.
+
 ## 0.10.3 (2026-08-07)
 
 ### Improvements

@@ -1013,6 +1013,7 @@ describe("plan-mode tool lists", () => {
     for (const tool of ["read", "grep", "find", "ls", "ffgrep", "fffind", "web_search", "web_extract", "advisor",
       "serena_check_onboarding_performed", "serena_find_symbol", "serena_get_symbols_overview",
       "munin_search", "munin_get", "munin_list",
+      "evolve_reflect",
       "windows_shell_detect", "windows_audit_log", "windows_path_to_windows", "windows_path_to_wsl",
       "windows_path_to_gitbash", "windows_path_quote", "windows_safety_classify", "windows_doctor",
       "windows_tool_discover", "windows_wsl_list_distros",
@@ -1026,6 +1027,7 @@ describe("plan-mode tool lists", () => {
       "serena_replace_symbol_body", "serena_insert_before_symbol",
       "serena_rename_symbol", "serena_replace_content",
       "munin_store", "munin_delete",
+      "evolve_save",
     ]) {
       assert.ok(BLOCKED_TOOLS.has(tool), `${tool} should be blocked`);
     }
