@@ -13,6 +13,7 @@ Each package lives in its own directory and can be installed independently. This
 | [`@bacnh85/pi-agy`](./pi-agy) | 0.3.1 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
 | [`@bacnh85/pi-budget`](./pi-budget) | 0.1.1 | Spend cap enforcement — `--budget <usd>` aborts the agent at the cap. |
 | [`@bacnh85/pi-checkpoint`](./pi-checkpoint) | 0.1.0 | Git-backed undo/redo — snapshots file state per turn so `/undo` rolls back a message AND its file changes. |
+| [`@bacnh85/pi-evolve`](./pi-evolve) | 0.2.1 | Trajectory-based self-learning loop — captures tool-call trajectories, reflects to extract learnings, persists to Munin or local JSONL, injects recent learnings into future sessions. |
 | [`@bacnh85/pi-fff`](./pi-fff) | 0.7.9 | FFF-powered fuzzy file and content search for Pi. |
 | [`@bacnh85/pi-init`](./pi-init) | 0.1.0 | Guided AGENTS.md generation — `/init` scans the repo and generates/updates AGENTS.md with build/test/lint commands, architecture, and conventions. |
 | [`@bacnh85/pi-kicad`](./pi-kicad) | 0.1.3 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon. |
@@ -21,10 +22,10 @@ Each package lives in its own directory and can be installed independently. This
 | [`@bacnh85/pi-notebooklm`](./pi-notebooklm) | 0.1.8 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | [`@bacnh85/pi-notify`](./pi-notify) | 0.1.0 | Desktop notifications and sounds — fires on task completion, errors, and questions; cross-platform (macOS/Linux/Windows + terminal OSC). |
 | [`@bacnh85/pi-obsidian`](./pi-obsidian) | 0.8.13 | Obsidian vault integration for Pi. |
-| [`@bacnh85/pi-permission`](./pi-permission) | 0.1.0 | Granular permission system — config-driven allow/ask/deny rules per tool with wildcard patterns, external-directory boundary, and a doom-loop guard. |
+| [`@bacnh85/pi-permission`](./pi-permission) | 0.1.1 | Granular permission system — config-driven allow/ask/deny rules per tool with wildcard patterns, external-directory boundary, and a doom-loop guard. |
 | [`@bacnh85/pi-plan`](./pi-plan) | 0.10.3 | Plan mode with read-only gating and plan → implement → verify → review workflow; fallback model chain on overload. |
 | [`@bacnh85/pi-ponytail`](./pi-ponytail) | 0.1.10 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
-| [`@bacnh85/pi-references`](./pi-references) | 0.1.0 | External context roots — alias sibling dirs or git repos as `@docs`/`@sdk`; auto-clones repos and injects descriptions into agent context. |
+| [`@bacnh85/pi-references`](./pi-references) | 0.1.1 | External context roots — alias sibling dirs or git repos as `@docs`/`@sdk`; auto-clones repos and injects descriptions into agent context. |
 | [`@bacnh85/pi-review`](./pi-review) | 0.2.8 | Isolated read-only code review with corrected same-session fallback. |
 | [`@bacnh85/pi-rtk`](./pi-rtk) | 0.1.12 | Bash command token rewriting through RTK. |
 | [`@bacnh85/pi-serena`](./pi-serena) | 0.9.12 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
@@ -44,6 +45,7 @@ pi install npm:@bacnh85/pi-9router
 pi install npm:@bacnh85/pi-agy
 pi install npm:@bacnh85/pi-budget
 pi install npm:@bacnh85/pi-checkpoint
+pi install npm:@bacnh85/pi-evolve
 pi install npm:@bacnh85/pi-fff
 pi install npm:@bacnh85/pi-init
 pi install npm:@bacnh85/pi-kicad
