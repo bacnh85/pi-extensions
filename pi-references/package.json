@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-references",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "External context roots for Pi — alias sibling dirs or git repos as @docs, @sdk and reference them in chat. Auto-clones git repos into a local cache; injects descriptions into agent context. Inspired by OpenCode's references feature.",
   "keywords": [
     "pi-package",

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,7 +8,43 @@ import referencesExtension, {
   normalizeReference,
   ensureCloned,
   buildContextSnippet,
+  readSettingsKey,
 } from "../index.js";
+
+test("readSettingsKey reads .pi/settings.json from cwd (production path)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "refs-settings-"));
+  try {
+    mkdirSync(join(dir, ".pi"), { recursive: true });
+    writeFileSync(
+      join(dir, ".pi", "settings.json"),
+      JSON.stringify({ references: { docs: { path: "../d" } } }),
+    );
+    const key = readSettingsKey(dir, "references");
+    assert.deepEqual(key, { docs: { path: "../d" } });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readSettingsKey returns undefined when no settings file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "refs-settings-"));
+  try {
+    assert.equal(readSettingsKey(dir, "references"), undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readSettingsKey treats non-object values as misconfig (undefined)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "refs-settings-"));
+  try {
+    mkdirSync(join(dir, ".pi"), { recursive: true });
+    writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ references: "../d" }));
+    assert.equal(readSettingsKey(dir, "references"), undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 // ── normalizeReference ────────────────────────────────────────────────────
 

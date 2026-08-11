@@ -1,7 +1,46 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-import permissionExtension, { wildcardToRegex, resolveRule } from "../index.js";
+import permissionExtension, { wildcardToRegex, resolveRule, readSettingsKey } from "../index.js";
+
+test("readSettingsKey reads .pi/settings.json from cwd (production path)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "perm-settings-"));
+  try {
+    mkdirSync(join(dir, ".pi"), { recursive: true });
+    writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ permission: { bash: { "*": "deny" } } }));
+    const key = readSettingsKey(dir, "permission");
+    assert.deepEqual(key, { bash: { "*": "deny" } });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readSettingsKey returns undefined when no settings file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "perm-settings-"));
+  try {
+    assert.equal(readSettingsKey(dir, "permission"), undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readSettingsKey treats non-object values as misconfig (undefined)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "perm-settings-"));
+  try {
+    mkdirSync(join(dir, ".pi"), { recursive: true });
+    // String value is invalid config — must not be returned.
+    writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ permission: "ask" }));
+    assert.equal(readSettingsKey(dir, "permission"), undefined);
+    // Array value is also invalid.
+    writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ permission: ["bash"] }));
+    assert.equal(readSettingsKey(dir, "permission"), undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 // ── Pattern matching (the non-trivial logic) ──────────────────────────────
 

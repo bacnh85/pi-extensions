@@ -20,9 +20,36 @@
  * Zero deps, plain JS (pi-budget pattern).
  */
 
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve, isAbsolute } from "node:path";
+import os from "node:os";
 
+/**
+ * Read a settings.json key directly from disk. The SDK's ExtensionAPI has NO
+ * getSetting/config (only registerFlag/getFlag for CLI flags), so structured
+ * config must be read from <cwd>/.pi/settings.json → ~/.pi/agent/settings.json,
+ * first existing file wins (per-package settings readers — extract to a shared
+ * helper when a fourth copy appears).
+ */
+export function readSettingsKey(cwd, key) {
+  const home = os.homedir();
+  const dirs = [
+    join(cwd || process.cwd(), ".pi"),
+    process.env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent"),
+    join(home, ".pi", "agents"),
+  ];
+  for (const dir of dirs) {
+    try {
+      const parsed = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
+      const v = parsed?.[key];
+      // Only plain objects are valid config; arrays/strings/numbers are misconfig.
+      if (v && typeof v === "object" && !Array.isArray(v)) return v;
+    } catch {
+      // missing/unreadable settings.json is fine — try next location
+    }
+  }
+  return undefined;
+}
 const CACHE_DIR_SUFFIX = "refs";
 
 /**
@@ -137,7 +164,12 @@ export default function referencesExtension(pi) {
   let snippet = "";
 
   function loadConfig(ctx) {
-    const cfg = pi.getSetting?.("references") || pi.config?.references || {};
+    // Settings.json first (production), then the legacy getSetting stub (tests).
+    const cfg =
+      readSettingsKey(ctx?.cwd, "references") ??
+      pi.getSetting?.("references") ??
+      pi.config?.references ??
+      {};
     const cwd = ctx?.cwd || process.cwd();
     const cacheRoot = join(
       process.env.PI_CODING_AGENT_DIR || join(process.env.HOME || "", ".pi", "agent"),

@@ -23,6 +23,9 @@
  * non-trivial piece — it has its own test suite.
  */
 
+import { readFileSync } from "node:fs";
+import os from "node:os";
+
 /**
  * Convert an OpenCode-style wildcard pattern to a RegExp.
  * `*` → zero+ chars, `?` → exactly one char, everything else literal.
@@ -85,6 +88,34 @@ function join(base, rest) {
 }
 
 /**
+ * Read a settings.json key directly from disk. The SDK's ExtensionAPI has NO
+ * getSetting/config (only registerFlag/getFlag for CLI flags), so structured
+ * config must be read from <cwd>/.pi/settings.json → ~/.pi/agent/settings.json,
+ * first existing file wins (per-package settings readers — extract to a shared
+ * helper when a fourth copy appears).
+ */
+export function readSettingsKey(cwd, key) {
+  const home = os.homedir();
+  const dirs = [
+    join(cwd || process.cwd(), ".pi"),
+    process.env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent"),
+    join(home, ".pi", "agents"),
+  ];
+  for (const dir of dirs) {
+    try {
+      const parsed = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
+      const v = parsed?.[key];
+      // Only plain objects are valid config; arrays/strings/numbers are misconfig.
+      if (v && typeof v === "object" && !Array.isArray(v)) return v;
+    } catch {
+      // missing/unreadable settings.json is fine — try next location
+    }
+  }
+  return undefined;
+}
+
+
+/**
  * Normalize a tool's "subject" — the string patterns are matched against.
  * bash → the command; read/write/edit → the raw path as the model passed it
  * (patterns are written relative, e.g. `src/*.ts`, so we do NOT resolve to
@@ -138,7 +169,11 @@ export default function permissionExtension(pi) {
   const DOOM_THRESHOLD = 3;
 
   pi.on("tool_call", async (event, ctx) => {
-    const rules = pi.getSetting?.("permission") || pi.config?.permission;
+    // Settings.json first (production), then the legacy getSetting stub (tests).
+    const rules =
+      readSettingsKey(ctx?.cwd, "permission") ??
+      pi.getSetting?.("permission") ??
+      pi.config?.permission;
     if (!rules) return undefined; // not configured → no opinion
 
     const yolo = pi.getFlag("yolo") || pi.getFlag("auto");
