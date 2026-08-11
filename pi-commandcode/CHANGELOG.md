@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.3 (2026-08-11)
+
+### Fixes
+
+- **Accurate per-model reasoning levels via `thinkingLevelMap`.** Every
+  reasoning-capable model previously advertised Pi's default thinking levels
+  (off/minimal/low/medium/high) and Pi forwarded unsupported `reasoning_effort`
+  values (e.g. `low`/`medium`) to Command Code, where DeepSeek V4 only accepts
+  `high`/`max` (low/medium normalize to high, xhigh maps to max). `mapModel`
+  now attaches a per-family `thinkingLevelMap` derived from the upstream effort
+  set (mirrors pi-9router's `FORMAT_TO_LEVEL_MAP` and pi-core's built-in
+  catalogs): DeepSeek V4 → high/max, GLM-5.2 → single tier (low/medium/high all
+  map to `high`), Kimi K2.7/K3 → low/high/max (thinking cannot be disabled),
+  GPT-5.6-sol → full set with native `max`, Qwen/Step/Hy3 → low/medium/high,
+  everything else (GPT, Gemini, Grok, Claude, unknown) → full OpenAI-style set.
+  Non-reasoning models stay map-less (Pi shows only `off`). The map constant is
+  typed with literal level keys so typos fail at compile time.
+
 ## 0.1.2 (2026-08-11)
 
 ### Fixes

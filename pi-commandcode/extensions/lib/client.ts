@@ -107,6 +107,47 @@ const CAPABILITIES: Record<string, { vision: boolean; reasoning: boolean }> = {
   "zai-org/glm-5.2-fast": { vision: false, reasoning: false },
 };
 
+// ── Thinking level maps ────────────────────────────────────────────────────────
+
+/** The seven pi thinking levels (matches pi-ai's ModelThinkingLevel). */
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+/** Maps pi thinking levels to the provider's reasoning_effort value; null hides
+ *  a level in the Pi UI ("Thinking level" submenu / cycle key). Mirrors the
+ *  per-format maps maintained in pi-9router (FORMAT_TO_LEVEL_MAP) and the
+ *  built-in catalogs in pi-core for the same upstream models.
+ *  Source: model docs pages + upstream effort sets (see CHANGELOG 0.1.3). */
+type ThinkingLevelMap = Partial<Record<ThinkingLevel, string | null>>;
+const THINKING_LEVEL_MAP_BY_FORMAT: Record<string, ThinkingLevelMap> = {
+  // DeepSeek V4: native levels are high + max only; low/medium normalize to
+  // high upstream, xhigh maps to max. Command Code docs: "Reasoning efforts
+  // high and xhigh are supported; xhigh maps to max reasoning."
+  deepseek: { off: "none", minimal: null, low: null, medium: null, high: "high", xhigh: null, max: "max" },
+  // GLM-5.2: single thinking tier; low/medium/high all map to "high", max to "max"
+  // (mirrors pi-core zai glm-5.2 thinkingLevelMap).
+  zai: { off: "none", minimal: null, low: "high", medium: "high", high: "high", xhigh: null, max: "max" },
+  // Kimi K2.7/K3: native levels low/high/max (pi-core moonshotai catalog);
+  // thinking cannot be disabled (off hidden). medium/xhigh unsupported.
+  kimi: { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
+  // GPT-5.6-sol: accepts a native max effort (pi-9router "openai-max").
+  "openai-max": { off: "none", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
+  // Qwen / Step / Hy3: low/medium/high only (DashScope set); xhigh/max unsupported.
+  qwen: { off: "none", minimal: null, low: "low", medium: "medium", high: "high", xhigh: null, max: null },
+  // OpenAI-style (GPT, Gemini, Grok, Claude, unknown models): full set.
+  openai: { off: "none", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh" },
+};
+
+/** Detect the upstream thinking-effort family from a model id. Unknown models
+ *  fall back to the full OpenAI-style set (same as the pre-map behavior). */
+function detectThinkingFormat(id: string): keyof typeof THINKING_LEVEL_MAP_BY_FORMAT {
+  const norm = normalizeId(id);
+  if (/deepseek-v[34]/.test(norm)) return "deepseek";
+  if (/glm-5\.2/.test(norm)) return "zai";
+  if (/kimi/.test(norm)) return "kimi";
+  if (/gpt-5\.6-sol/.test(norm)) return "openai-max";
+  if (/qwen|step-|hy3/.test(norm)) return "qwen";
+  return "openai";
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /** Fetch raw model list from GET /provider/v1/models.
@@ -150,6 +191,9 @@ export function mapModel(raw: CommandCodeModelRaw): ProviderModelConfig {
     id: raw.id,
     name: typeof raw.name === "string" ? raw.name : raw.id,
     reasoning: resolveReasoning(raw),
+    ...(resolveReasoning(raw)
+      ? { thinkingLevelMap: THINKING_LEVEL_MAP_BY_FORMAT[detectThinkingFormat(raw.id)] }
+      : {}),
     input,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow,
