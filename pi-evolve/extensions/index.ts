@@ -23,6 +23,12 @@ const buffer = new TrajectoryBuffer();
 let sealedSnapshot: TrajectoryEntry[] = [];
 let lastSealTs: number | null = null;
 let learningsWritten = 0;
+// v0.3: per-{tool:category} error counts for repeat escalation (Layer 3).
+const errorHistory = new Map<string, number>();
+
+// v0.3 Layer 4: plan-mode deferred hint for write-recommending categories.
+const PLAN_DEFER_HINT =
+  "Plan mode active: edit is blocked. Note the exact oldText + surrounding context lines now; apply the edit when you exit plan mode.";
 
 /** Test helper: reset the module-level buffer + counters. Exported for tests only. */
 export function _resetForTest(): void {
@@ -30,6 +36,7 @@ export function _resetForTest(): void {
   sealedSnapshot = [];
   lastSealTs = null;
   learningsWritten = 0;
+  errorHistory.clear();
 }
 
 const INJECT_HEADER = `## pi-evolve: trajectory self-learning
@@ -220,6 +227,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
       sealedSnapshot = [];
       lastSealTs = null;
       learningsWritten = 0;
+      errorHistory.clear();
     }
   });
 
@@ -232,15 +240,97 @@ export default function evolveExtension(pi: ExtensionAPI) {
     buffer.record(tool, inputDigest, event?.toolCallId);
   });
 
-  // Capture: tool result (error classification)
-  pi.on("tool_result", (event: any, ctx: any) => {
+  // Capture: tool result (error classification + v0.3 triage: inline hint,
+  // stored-fix recall, repeat escalation, plan-mode deferral).
+  pi.on("tool_result", async (event: any, ctx: any) => {
     const settings = readEvolveSettings(ctx?.cwd);
-    if (!settings.enabled) return;
+    if (!settings.enabled || !settings.errorTriage) {
+      // Triage off: still record basic ok/error status (no hint/recall).
+      const tool0 = String(event?.toolName ?? "");
+      if (tool0) buffer.markResult(tool0, Boolean(event?.isError), undefined, event?.toolCallId);
+      return;
+    }
     const tool = String(event?.toolName ?? "");
     if (!tool) return;
     const isError = Boolean(event?.isError);
-    const errorCategory = isError ? categorizeError(extractText(event?.content)) : undefined;
-    buffer.markResult(tool, isError, errorCategory, event?.toolCallId);
+    if (!isError) {
+      // Success: mark ok (synchronous) — no hint/recall needed.
+      buffer.markResult(tool, false, undefined, event?.toolCallId);
+      return;
+    }
+    const text = extractText(event?.content);
+    const info = categorizeError(tool, text);
+    if (!info) {
+      // Unclassifiable/empty content: still record the error in the buffer so
+      // agent_end's recovery detection + errorCount stay correct.
+      buffer.markResult(tool, true, undefined, event?.toolCallId);
+      return;
+    }
+    // Layer 4: plan-mode aware hint — defer write-recommending categories.
+    const inPlan = pi.getFlag?.("plan") === true;
+    const hint = inPlan && info.category === "edit_mismatch" ? PLAN_DEFER_HINT : info.hint;
+    // Layer 3: repeat escalation (per {tool:category} count).
+    const histKey = `${tool}:${info.category}`;
+    const count = (errorHistory.get(histKey) ?? 0) + 1;
+    errorHistory.set(histKey, count);
+    let hintText = hint;
+    if (count >= 2 && info.category !== "edit_mismatch") {
+      hintText += ` You've hit ${info.category} on ${tool} ${count}× — try a different approach.`;
+    }
+    // Single markResult with the FINAL hint (escalation/plan-mode aware).
+    buffer.markResult(tool, true, info.category, event?.toolCallId, hintText);
+    // Build the augmented content: original content first (array OR string), then the hint.
+    const parts = Array.isArray(event?.content)
+      ? [...event.content]
+      : typeof event?.content === "string" && event.content
+        ? [{ type: "text" as const, text: event.content }]
+        : [];
+    const hintPart = { type: "text" as const, text: `\n💡 ${hintText}` };
+    // Layer 2: stored-fix recall (best-effort, bounded by a race so it can't
+    // block the tool result forever). Live Munin semantic search measures
+    // ~1.8s (verified 2026-08-11), so the budget must exceed that — 3s gives
+    // headroom; the static hint still ships even if recall times out.
+    const RECALL_TIMEOUT_MS = 3000;
+    let recallPart: { type: "text"; text: string } | null = null;
+    if (settings.recallStoredFixes) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const storeCfg = resolveStoreConfig(settings);
+        const timeout = new Promise<Awaited<ReturnType<typeof searchLearnings>>>((resolve) => {
+          timer = setTimeout(() => resolve([]), RECALL_TIMEOUT_MS);
+        });
+        const found = await Promise.race([searchLearnings(text, 1, {}, storeCfg, ctx.cwd), timeout]);
+        if (found.length > 0 && found[0]?.lesson) {
+          // Sanitize like the injection path (inject.ts sanitize): single-line,
+          // strip heading markers + code fences, so a stored lesson can't inject
+          // directives into the tool-result context.
+          const safeLesson = found[0].lesson
+            .replace(/[\r\n]+/g, " ")
+            .replace(/(^|\s)#{1,6}(?=\s)/g, "$1")
+            .replace(/^>\s?/g, "")
+            .replace(/```/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+          if (safeLesson) {
+            recallPart = { type: "text", text: `\n📚 Prior fix for similar issue: ${safeLesson}` };
+          }
+        }
+      } catch {
+        // recall is best-effort; static hint still ships
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+    return {
+      content: [...parts, hintPart, ...(recallPart ? [recallPart] : [])],
+      // Merge triage metadata into the original details rather than replacing it.
+      details: {
+        ...(event?.details && typeof event.details === "object" ? event.details : {}),
+        errorCategory: info.category,
+        hint: hintText,
+        repeatCount: count,
+      },
+    };
   });
 
   // Capture: usage per turn
@@ -264,11 +354,15 @@ export default function evolveExtension(pi: ExtensionAPI) {
     lastSealTs = Date.now();
     // v0.2: auto-reflect nudge — when the sealed buffer shows a recovery
     // (error → later ok on the same tool), surface a hint so the model can
-    // extract a recovery learning. Best-effort; never throws.
+    // extract a recovery learning. Best-effort; never throws. Layer 4: in plan
+    // mode, defer saving (evolve_save is blocked there).
     if (settings.autoReflect && countRecoveries(sealedSnapshot) > 0) {
       try {
+        const inPlan = pi.getFlag?.("plan") === true;
         ctx?.ui?.notify?.(
-          "pi-evolve: recovery pattern detected — consider evolve_reflect to capture a learning.",
+          inPlan
+            ? "pi-evolve: recovery pattern detected — consider evolve_reflect; save learnings after exiting plan mode."
+            : "pi-evolve: recovery pattern detected — consider evolve_reflect to capture a learning.",
           "info",
         );
       } catch { /* best-effort */ }
@@ -350,8 +444,9 @@ function renderSnapshotForModel(entries: TrajectoryEntry[]): string {
     .slice(-40) // keep the most recent 40 for the model prompt
     .map((e, i) => {
       const status = e.status ? ` → ${e.status}${e.errorCategory ? `(${e.errorCategory})` : ""}` : "";
+      const hint = e.hint ? ` — ${e.hint.slice(0, 160)}` : "";
       const usage = e.usage ? ` [in:${e.usage.input ?? "?"} out:${e.usage.output ?? "?"}]` : "";
-      return `${i + 1}. ${e.tool}${status}${usage}: ${e.inputDigest}`;
+      return `${i + 1}. ${e.tool}${status}${usage}: ${e.inputDigest}${hint}`;
     })
     .join("\n");
 }

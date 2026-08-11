@@ -145,14 +145,34 @@ describe("digestInput", () => {
 });
 
 describe("categorizeError", () => {
-  it("classifies into known buckets", () => {
-    expect(categorizeError("Operation timed out")).to.equal("timeout");
-    expect(categorizeError("ECONNREFUSED")).to.equal("network");
-    expect(categorizeError("Unauthorized access")).to.equal("auth");
-    expect(categorizeError("File not found")).to.equal("not_found");
-    expect(categorizeError("validation failed")).to.equal("validation");
-    expect(categorizeError("unexpected token }")).to.equal("parse");
-    expect(categorizeError("something weird")).to.equal("generic");
-    expect(categorizeError("")).to.equal(undefined);
+  it("classifies into the 9 buckets with action hints", () => {
+    const cases: Array<[string, string, string]> = [
+      // [input, toolName, expected category]
+      ["Operation timed out", "bash", "timeout"],
+      ["rate limit exceeded (429)", "bash", "rate_limit"],
+      ["validation failed: required", "bash", "validation"],
+      ["ENOENT: no such file or directory", "read", "path_not_found"],
+      ["No such tool: read_file", "bash", "tool_not_found"],
+      ["status 500 internal server error", "bash", "api_error"],
+      ["something weird happened", "bash", "unknown"],
+    ];
+    for (const [input, tool, expected] of cases) {
+      const info = categorizeError(tool, input);
+      expect(info).to.not.equal(undefined, `expected ${input} to classify`);
+      expect(info!.category).to.equal(expected, `for input: ${input}`);
+      expect(info!.hint.length).to.be.greaterThan(5, `hint for ${expected}`);
+    }
+  });
+
+  it("edit_mismatch takes precedence over timeout/rate-limit in enriched errors", () => {
+    // An enriched edit error may contain 'timeout'/'429' in the nearest-region snippet.
+    const text = "Could not find the exact text\nconst timeout = 5000; // if (status === 429)";
+    const info = categorizeError("edit", text);
+    expect(info!.category).to.equal("edit_mismatch");
+  });
+
+  it("returns undefined for empty/no result", () => {
+    expect(categorizeError("bash", "")).to.equal(undefined);
+    expect(categorizeError("bash", undefined)).to.equal(undefined);
   });
 });

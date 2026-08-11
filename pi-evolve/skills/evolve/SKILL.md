@@ -98,6 +98,8 @@ future sessions. Apply one only if its trigger matches the current work.
 | `bufferCap` | `200` | max in-memory trajectory entries |
 | `localCap` | `500` | max JSONL entries (bounded at append) |
 | `autoReflect` | `true` | nudge at `agent_end` when a recovery pattern is detected (v0.2) |
+| `errorTriage` | `true` | master switch for error hints + recall + escalation (v0.3) |
+| `recallStoredFixes` | `true` | search stored learnings by error text on error (v0.3, Layer 2) |
 
 ## Storage
 

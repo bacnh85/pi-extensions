@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.0 (2026-08-11)
+
+### Added — tool-error triage: detect issues + propose fixes
+
+- **Inline error hints (Layer 1).** When a tool call errors, the `tool_result`
+  is augmented with an actionable diagnosis (`path_not_found` → "Discover the
+  exact path with find first"). Categorizer upgraded from the 6-bucket
+  `{category}` shape to pi-model-tools' 9-bucket `{category, hint}`
+  (`edit_mismatch`/`rate_limit`/`timeout`/`validation`/`path_not_found`/
+  `tool_not_found`/`api_error`/`unknown`), with `edit_mismatch` precedence.
+- **Stored-fix recall (Layer 2).** On error, searches stored recovery learnings
+  by the error text (Munin semantic search or local keyword rank) and appends
+  `📚 Prior fix for similar issue: ...` — best-effort, bounded by a ~1s race so
+  it never blocks the tool result.
+- **Repeat escalation (Layer 3).** Same `{tool, category}` ≥2× → escalation
+  suffix (`You've hit X on Y N× — try a different approach`). Per-session map,
+  cleared on `session_start`.
+- **Plan-mode awareness (Layer 4).** Reads pi-plan's `plan` flag
+  (cross-extension `pi.getFlag`); in plan mode the `edit_mismatch` hint defers
+  ("note the exact text; apply the edit when you exit plan mode") and the
+  auto-reflect nudge says to save learnings after exiting plan mode.
+- **New settings:** `errorTriage` (master switch, default true) and
+  `recallStoredFixes` (Layer 2 toggle, default true).
+- Hints recorded on trajectory entries and surfaced in `evolve_reflect`.
+- Tests: 70 → 79.
+
 ## 0.2.1 (2026-08-11)
 
 ### Fixed

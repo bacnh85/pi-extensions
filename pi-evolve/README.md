@@ -38,6 +38,28 @@ pi install npm:@bacnh85/pi-evolve
 
 - `/evolve` — show buffer size, last seal, learnings written this session, active store backend.
 
+## Error triage (v0.3)
+
+When a tool call errors, pi-evolve augments the `tool_result` with an actionable
+diagnosis and, when available, a stored fix:
+
+```
+read → error(ENOENT)
+  💡 Path missing or guessed. Discover the exact path with find first.
+  📚 Prior fix for similar issue: use fffind before read for fuzzy paths.
+```
+
+- **Static hint** — 9 error categories with action-oriented hints (adapted from
+  pi-model-tools' `categorizeToolError`).
+- **Stored-fix recall** — searches recovery learnings by the error text
+  (Munin search or local keyword rank), best-effort within ~1s.
+- **Repeat escalation** — same error ≥2× adds `You've hit X on Y N× — try a
+  different approach`.
+- **Plan-mode aware** — in pi-plan read-only mode, the `edit_mismatch` hint
+  defers the fix ("apply the edit when you exit plan mode") instead of
+  recommending a blocked action. `evolve_reflect` is allowed in plan mode;
+  `evolve_save` is blocked (it's a mutation).
+
 ## Configuration
 
 Optional `evolve` key in `settings.json`:
@@ -65,6 +87,8 @@ Optional `evolve` key in `settings.json`:
 | `bufferCap` | `200` | max in-memory trajectory entries |
 | `localCap` | `500` | max JSONL entries (bounded at append) |
 | `autoReflect` | `true` | nudge at `agent_end` when a recovery pattern is detected (v0.2) |
+| `errorTriage` | `true` | master switch for error hints + recall + escalation (v0.3) |
+| `recallStoredFixes` | `true` | search stored learnings by error text on error (v0.3, Layer 2) |
 
 ## Storage backends
 

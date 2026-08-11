@@ -9,6 +9,7 @@ export interface TrajectoryEntry {
   inputDigest: string;
   status?: "ok" | "error";
   errorCategory?: string;
+  hint?: string;
   usage?: { input?: number; output?: number };
 }
 
@@ -30,7 +31,7 @@ export class TrajectoryBuffer {
   }
 
   /** Mark the matching entry: prefer toolCallId, fall back to most-recent unmatched tool name. */
-  markResult(tool: string, isError: boolean, errorCategory?: string, toolCallId?: string): void {
+  markResult(tool: string, isError: boolean, errorCategory?: string, toolCallId?: string, hint?: string): void {
     // Match by toolCallId first — correct for parallel calls to the same tool.
     if (toolCallId) {
       for (let i = this.entries.length - 1; i >= 0; i--) {
@@ -38,6 +39,7 @@ export class TrajectoryBuffer {
         if (e.toolCallId === toolCallId && e.status === undefined) {
           e.status = isError ? "error" : "ok";
           if (errorCategory) e.errorCategory = errorCategory;
+          if (hint) e.hint = hint;
           return;
         }
       }
@@ -48,6 +50,7 @@ export class TrajectoryBuffer {
       if (e.tool === tool && e.status === undefined) {
         e.status = isError ? "error" : "ok";
         if (errorCategory) e.errorCategory = errorCategory;
+        if (hint) e.hint = hint;
         return;
       }
     }
@@ -114,18 +117,30 @@ export function digestInput(input: unknown, maxLen = 200): string {
   return text;
 }
 
-/** Lightweight error categorizer — 6 buckets, no deps. */
-export function categorizeError(result: unknown): string | undefined {
+export interface ErrorInfo {
+  category: string;
+  hint: string;
+}
+
+/**
+ * Error categorizer with actionable hints — 9 buckets, no deps.
+ * adapted from pi-model-tools categorizeToolError (shell-helpers.ts:196-211);
+ * sync categories/hints there if behavior diverges.
+ */
+export function categorizeError(toolName: string, result: unknown): ErrorInfo | undefined {
   if (!result) return undefined;
   const text = typeof result === "string" ? result.toLowerCase() : JSON.stringify(result).toLowerCase();
-  // ponytail: prefix matches without trailing \b — 'ECONNREFUSED' has no boundary after 'econn'.
-  if (/timeout|timed out|etimedout|abort/.test(text)) return "timeout";
-  if (/econn|enotfound|network|socket|fetch failed|unreachable/.test(text)) return "network";
-  if (/unauthorized|invalid api key|forbidden|\b401\b|\b403\b/.test(text)) return "auth";
-  if (/not found|\b404\b|enoent/.test(text)) return "not_found";
-  if (/validation|invalid|bad request|\b400\b|\b422\b/.test(text)) return "validation";
-  if (/parse|syntax|unexpected token/.test(text)) return "parse";
-  return "generic";
+  // Edit mismatch is checked before rate_limit/timeout because an enriched edit error may
+  // append a nearest-region file snippet containing 'timeout'/'429'/'rate limit' strings
+  // (e.g. `const timeout = 5000;`), which would otherwise misclassify and give the wrong hint.
+  if (toolName === "edit" && /could not find (?:edits|the exact text)|old ?text must match exactly|found \d+ occurrences|(?:old)?text must be unique|provide more context to make it unique/i.test(text)) return { category: "edit_mismatch", hint: "Edit requires exact unique matching. Read a narrow range, copy oldText verbatim, include surrounding lines." };
+  if (/rate limit|429|too many requests|exceeded.*limit/i.test(text)) return { category: "rate_limit", hint: "Rate-limited. Wait before retrying or simplify the request." };
+  if (/timed? ?out|timeout/i.test(text)) return { category: "timeout", hint: "Timed out. Use simpler inputs or reduce scope." };
+  if (/validation failed|invalid_type|required|missing.*(field|argument|property)/i.test(text)) return { category: "validation", hint: "Invalid arguments. Provide all required fields with correct types." };
+  if (/enoent|no such file or directory|(?:file|path) not found/i.test(text)) return { category: "path_not_found", hint: "Path missing or guessed. Discover the exact path with find first." };
+  if (/no such tool|unknown tool|is not a function|tool\s+\S+\s+(?:was\s+)?not found/i.test(text)) return { category: "tool_not_found", hint: "Use only exact Pi tool names. Never invent names like read_file." };
+  if (/(?:http(?: status)?|status(?: code)?|api(?: error)?)[^\n]{0,20}[45]\d{2}\b|\b[45]\d{2}\s+(?:bad request|unauthorized|forbidden|not found|conflict|too many requests|internal server error|bad gateway|service unavailable|gateway timeout)\b/i.test(text)) return { category: "api_error", hint: `Tool call to ${toolName} failed. Retry with simpler inputs.` };
+  return { category: "unknown", hint: "Previous tool call(s) had errors. Use simpler inputs." };
 }
 
 // keep SECRET_KEY_RE referenced for documentation; the inline regex in digestInput

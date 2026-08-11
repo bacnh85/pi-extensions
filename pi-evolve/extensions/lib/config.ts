@@ -15,6 +15,8 @@ export interface EvolveSettings {
   bufferCap: number;
   localCap: number;
   autoReflect: boolean; // v0.2: nudge at agent_end when recovery detected
+  errorTriage: boolean; // v0.3: master switch for error hints + recall + escalation
+  recallStoredFixes: boolean; // v0.3: search stored learnings by error text (Layer 2)
 }
 
 const DEFAULTS: EvolveSettings = {
@@ -26,6 +28,8 @@ const DEFAULTS: EvolveSettings = {
   bufferCap: 200,
   localCap: 500,
   autoReflect: true,
+  errorTriage: true,
+  recallStoredFixes: true,
 };
 
 /** Resolve the settings.json path: <cwd>/.pi/settings.json → ~/.pi/agent/settings.json. */
@@ -70,5 +74,7 @@ export function readEvolveSettings(cwd = process.cwd()): EvolveSettings {
     bufferCap: num(raw.bufferCap, DEFAULTS.bufferCap),
     localCap: num(raw.localCap, DEFAULTS.localCap),
     autoReflect: bool(raw.autoReflect, DEFAULTS.autoReflect),
+    errorTriage: bool(raw.errorTriage, DEFAULTS.errorTriage),
+    recallStoredFixes: bool(raw.recallStoredFixes, DEFAULTS.recallStoredFixes),
   };
 }
