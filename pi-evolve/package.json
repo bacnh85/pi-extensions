@@ -1,0 +1,61 @@
+{
+  "name": "@bacnh85/pi-evolve",
+  "version": "0.2.1",
+  "description": "Pi extension that adds a trajectory-based self-learning loop — automatic capture, reflection, and contextual injection of learnings.",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-evolve",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git",
+    "directory": "pi-evolve"
+  },
+  "bugs": {
+    "url": "https://github.com/bacnh85/pi-extensions/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "self-improvement",
+    "self-learning",
+    "trajectory",
+    "agent-memory"
+  ],
+  "scripts": {
+    "test": "cd extensions && npx mocha"
+  },
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "extensions/package.json",
+    "extensions/index.ts",
+    "extensions/lib/",
+    "skills/"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "dependencies": {
+    "@kalera/munin-sdk": "^1.5.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "chai": "^4.3.0",
+    "mocha": "^10.8.2",
+    "tsx": "^4.0.0"
+  },
+  "overrides": {
+    "serialize-javascript": "7.0.7"
+  }
+}
