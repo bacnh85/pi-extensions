@@ -26,6 +26,26 @@ let learningsWritten = 0;
 // v0.3: per-{tool:category} error counts for repeat escalation (Layer 3).
 const errorHistory = new Map<string, number>();
 
+// v0.3.1: per-turn injection latency fix — TTL cache + timeout bound. Learnings
+// are stable within a session; the old code re-ran a Munin semantic search
+// (~1.9s live) on EVERY before_agent_start, blocking the message send. Cache is
+// per-cwd; empty digests are cached too, so a dead Munin costs at most one
+// timeout per window instead of one per turn. Timeout results get a short TTL
+// so a recovered Munin is retried soon (not suppressed for the full window).
+let injectCache: { key: string; digest: string; ts: number; ttl: number } | null = null;
+// In-flight background seed promise (for deterministic tests; null when idle).
+let seedInFlight: Promise<void> | null = null;
+const INJECT_TTL_MS = 5 * 60 * 1000; // 5 min — non-timeout results (incl. genuine empties)
+const INJECT_EMPTY_TTL_MS = 30 * 1000; // 30s — timeout results, self-healing retry
+// Fresh budget for the recent fallback after the similar search burned the
+// shared deadline — a slow search must not starve the recent fallback.
+// ponytail: 1s per the reviewer's suggestion; worst case dead-Munin turn is
+// 3s + 1s, once per TTL window (30s for timeouts).
+const RECENT_FALLBACK_BUDGET_MS = 1000;
+// Matches RECALL_TIMEOUT_MS: real Munin semantic search measures ~1.9s live,
+// so 3s gives headroom. Test-overridable via _setInjectTimeoutForTest.
+let injectTimeoutMs = 3000;
+
 // v0.3 Layer 4: plan-mode deferred hint for write-recommending categories.
 const PLAN_DEFER_HINT =
   "Plan mode active: edit is blocked. Note the exact oldText + surrounding context lines now; apply the edit when you exit plan mode.";
@@ -36,7 +56,20 @@ export function _resetForTest(): void {
   sealedSnapshot = [];
   lastSealTs = null;
   learningsWritten = 0;
+  injectCache = null;
+  seedInFlight = null;
   errorHistory.clear();
+}
+
+/** Test helper: override the injection fetch timeout (default 3000ms). Exported for tests only. */
+export function _setInjectTimeoutForTest(ms: number): void {
+  injectTimeoutMs = ms;
+}
+
+/** Test helper: await the in-flight background cache seed (fire-and-forget makes
+ *  the first before_agent_start return before Munin resolves). Exported for tests only. */
+export function _seedInFlightForTest(): Promise<void> | null {
+  return seedInFlight;
 }
 
 const INJECT_HEADER = `## pi-evolve: trajectory self-learning
@@ -185,6 +218,9 @@ export default function evolveExtension(pi: ExtensionAPI) {
         }
       }
       learningsWritten++;
+      // Invalidate the injection cache: the just-saved learning must be
+      // eligible on the next before_agent_start, not after TTL expiry.
+      injectCache = null;
       return {
         content: [
           {
@@ -228,6 +264,9 @@ export default function evolveExtension(pi: ExtensionAPI) {
       lastSealTs = null;
       learningsWritten = 0;
       errorHistory.clear();
+      // Fresh injection cache per session (same-cwd resume/fork must not reuse
+      // a previous session's digest; matches _resetForTest).
+      injectCache = null;
     }
   });
 
@@ -377,21 +416,30 @@ export default function evolveExtension(pi: ExtensionAPI) {
     let prompt = `${INJECT_HEADER}\n\n---\n\n`;
     if (settings.autoInject) {
       try {
-        const storeCfg = resolveStoreConfig(settings);
-        const promptText = String(event?.prompt ?? "");
-        const wantSimilar = settings.injectMode === "similar" || settings.injectMode === "both";
-        const wantRecent = settings.injectMode === "recent" || settings.injectMode === "both";
-        let learnings: Awaited<ReturnType<typeof readRecentLearnings>> = [];
-        // Similarity-keyed first (v0.2): search learnings by the user prompt.
-        if (wantSimilar && promptText.trim()) {
-          learnings = await searchLearnings(promptText, settings.maxInject, {}, storeCfg, ctx.cwd);
+        // Cache key must cover the settings that shape the digest, so a
+        // mid-session config edit (injectMode/maxInject/store) misses the
+        // cache instead of serving a stale digest (reviewer finding).
+        const cacheKey = JSON.stringify({
+          cwd: ctx?.cwd ?? "",
+          injectMode: settings.injectMode,
+          maxInject: settings.maxInject,
+          store: settings.store,
+        });
+        const cached = injectCache;
+        let digest = "";
+        if (cached !== null && cached.key === cacheKey && Date.now() - cached.ts < cached.ttl) {
+          // TTL hit: no Munin round-trip this turn.
+          digest = cached.digest;
+        } else {
+          // Cache miss: seed the cache in the BACKGROUND so the first message
+          // never blocks on a Munin round-trip (~1.6s). Injection is
+          // best-effort context ("apply when its trigger matches") — the agent
+          // rarely needs learnings before it has done any work — so the digest
+          // simply lands in the cache for message 2 onward.
+          seedInFlight = seedInjectCache(cacheKey, settings, String(event?.prompt ?? ""), ctx.cwd)
+            .catch(() => { /* best-effort */ })
+            .finally(() => { seedInFlight = null; });
         }
-        // Fall back to recent when similar returned nothing (any mode), or when
-        // the mode is recent-only (no similar attempt).
-        if (learnings.length === 0 && (wantRecent || settings.injectMode === "similar")) {
-          learnings = await readRecentLearnings(settings.maxInject, {}, storeCfg, ctx.cwd);
-        }
-        const digest = buildInjectDigest(learnings, settings.maxInject);
         if (digest) prompt = `${digest}\n\n---\n\n${prompt}`;
       } catch {
         // injection is best-effort; header still goes through
@@ -407,6 +455,76 @@ export default function evolveExtension(pi: ExtensionAPI) {
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/** Race a promise against a fresh timeout budget. Used for the recent fallback
+ *  after the shared deadline was burned by a slow similar search. */
+async function raceWithBudget<T>(p: Promise<T>, ms: number, onTimeout?: () => void): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => {
+      onTimeout?.();
+      resolve([] as T);
+    }, ms);
+  });
+  return Promise.race([p, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+/** Bounded fetch of learnings + cache write. Runs in the background on a cache
+ *  miss so the first message never blocks on Munin (the digest lands in the
+ *  cache for message 2 onward — injection is best-effort context). */
+async function seedInjectCache(
+  cacheKey: string,
+  settings: ReturnType<typeof readEvolveSettings>,
+  promptText: string,
+  cwd: string,
+): Promise<void> {
+  const storeCfg = resolveStoreConfig(settings);
+  const wantSimilar = settings.injectMode === "similar" || settings.injectMode === "both";
+  const wantRecent = settings.injectMode === "recent" || settings.injectMode === "both";
+  let learnings: Awaited<ReturnType<typeof readRecentLearnings>> = [];
+  let recentRan = false;
+  let searchTimedOut = false;
+  let recentTimedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<Awaited<ReturnType<typeof readRecentLearnings>>>((resolve) => {
+    timer = setTimeout(() => {
+      searchTimedOut = true;
+      resolve([]);
+    }, injectTimeoutMs);
+  });
+  try {
+    if (wantSimilar && promptText.trim()) {
+      learnings = await Promise.race([
+        searchLearnings(promptText, settings.maxInject, {}, storeCfg, cwd),
+        deadline,
+      ]);
+    }
+    if (learnings.length === 0 && (wantRecent || settings.injectMode === "similar")) {
+      recentRan = true;
+      const recentPromise = readRecentLearnings(settings.maxInject, {}, storeCfg, cwd);
+      if (searchTimedOut) {
+        learnings = await raceWithBudget(recentPromise, RECENT_FALLBACK_BUDGET_MS, () => {
+          recentTimedOut = true;
+        });
+      } else {
+        learnings = await Promise.race([recentPromise, deadline]);
+        if (searchTimedOut) recentTimedOut = true;
+      }
+    }
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  const digest = buildInjectDigest(learnings, settings.maxInject);
+  const timedOut = recentRan ? recentTimedOut : searchTimedOut;
+  injectCache = {
+    key: cacheKey,
+    digest,
+    ts: Date.now(),
+    ttl: timedOut ? INJECT_EMPTY_TTL_MS : INJECT_TTL_MS,
+  };
 }
 
 function extractText(content: unknown): string {

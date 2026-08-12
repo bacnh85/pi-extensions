@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-evolve",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Pi extension that adds a trajectory-based self-learning loop — automatic capture, reflection, and contextual injection of learnings.",
   "license": "MIT",
   "publishConfig": {

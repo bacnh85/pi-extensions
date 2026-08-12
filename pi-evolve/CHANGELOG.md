@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.1 (2026-08-11)
+
+### Fixed — per-turn input latency from uncached, unbounded Munin injection
+
+- `before_agent_start` no longer blocks every message send on a Munin semantic
+  search (~2.4s live-measured) + recent fallback. Injection is now
+  **non-blocking**: on a cache miss the hook ships the static header at once
+  (measured 2ms with a 2s-hanging Munin) and seeds the cache in the background;
+  the digest lands for message 2 onward. The Munin round-trip never blocks the
+  Enter→display path.
+- The background seed fetch is bounded by a single 3s deadline shared across
+  the similar-search and recent-fallback calls. If the search burns the
+  deadline, the recent fallback still gets a fresh 1s budget so a slow search
+  can't starve it. Results are cached with a 5-min TTL.
+- Cache correctness (reviewer-driven): `evolve_save` invalidates the cache so
+  a just-saved learning is injectable next turn; `session_start` resets it; the
+  cache key now includes `injectMode`/`maxInject`/`store` so a mid-session config
+  edit misses the cache. Timeout-tainted results get a 30s TTL (self-healing);
+  real results (incl. genuine empties) get the full 5 min — only the source
+  that *produced* the final learnings taints the TTL.
+- New test-only exports `_setInjectTimeoutForTest` / `_seedInFlightForTest`;
+  tests 83 → 88.
+
 ## 0.3.0 (2026-08-11)
 
 ### Added — tool-error triage: detect issues + propose fixes

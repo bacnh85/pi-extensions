@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect } from "chai";
 import { MuninClient } from "@kalera/munin-sdk";
-import evolveExtension, { _resetForTest } from "../index";
+import evolveExtension, { _resetForTest, _setInjectTimeoutForTest, _seedInFlightForTest } from "../index";
 
 const ENV_KEYS = ["MUNIN_API_KEY", "MUNIN_PROJECT", "MUNIN_BASE_URL", "PI_CODING_AGENT_DIR"] as const;
 
@@ -30,6 +30,13 @@ function writeSettings(cwd: string, evolve: Record<string, unknown>): void {
   const dir = join(cwd, ".pi");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "settings.json"), JSON.stringify({ evolve }), "utf8");
+}
+
+// Fire-and-forget seeding means the first before_agent_start returns before the
+// Munin fetch resolves; await the in-flight seed to inspect the cached digest.
+async function awaitSeed(): Promise<void> {
+  const p = _seedInFlightForTest();
+  if (p) await p;
 }
 
 describe("pi-evolve extension", () => {
@@ -140,11 +147,14 @@ describe("pi-evolve extension", () => {
       undefined,
       { cwd },
     );
+    const first = await handlers.before_agent_start[0]({ systemPrompt: "BASE" }, { cwd });
+    expect(first.systemPrompt).to.include("pi-evolve: trajectory self-learning");
+    expect(first.systemPrompt).to.include("BASE");
+    // Fire-and-forget seed: the digest lands in the cache for the next call.
+    await awaitSeed();
     const result = await handlers.before_agent_start[0]({ systemPrompt: "BASE" }, { cwd });
     expect(result.systemPrompt).to.include("## Recent Learnings");
     expect(result.systemPrompt).to.include("the lesson");
-    expect(result.systemPrompt).to.include("pi-evolve: trajectory self-learning");
-    expect(result.systemPrompt).to.include("BASE");
   });
 
   it("before_agent_start adds header even with no learnings", async () => {
@@ -266,6 +276,9 @@ describe("pi-evolve extension", () => {
       undefined,
       { cwd },
     );
+    const first = await handlers.before_agent_start[0]({ systemPrompt: "BASE", prompt: "help me with x" }, { cwd });
+    expect(first.systemPrompt).to.not.include("## SYSTEM");
+    await awaitSeed();
     const result = await handlers.before_agent_start[0]({ systemPrompt: "BASE", prompt: "help me with x" }, { cwd });
     // The injected digest must be a single line per learning and contain no heading.
     expect(result.systemPrompt).to.not.include("## SYSTEM");
@@ -290,6 +303,11 @@ describe("pi-evolve extension", () => {
       { cwd },
     );
     // Prompt about docker → only the docker learning injected.
+    await handlers.before_agent_start[0](
+      { systemPrompt: "BASE", prompt: "docker containers are not networking" },
+      { cwd },
+    );
+    await awaitSeed();
     const result = await handlers.before_agent_start[0](
       { systemPrompt: "BASE", prompt: "docker containers are not networking" },
       { cwd },
@@ -308,6 +326,11 @@ describe("pi-evolve extension", () => {
       { cwd },
     );
     // Query with no overlap → falls back to recent digest.
+    await handlers.before_agent_start[0](
+      { systemPrompt: "BASE", prompt: "zzz zzz zzz" },
+      { cwd },
+    );
+    await awaitSeed();
     const result = await handlers.before_agent_start[0](
       { systemPrompt: "BASE", prompt: "zzz zzz zzz" },
       { cwd },
@@ -529,6 +552,220 @@ describe("pi-evolve extension", () => {
     handlers.tool_result[0]({ toolName: "edit", isError: false, toolCallId: "e2" }, ctx);
     handlers.agent_end[0]({}, ctx);
     expect(notifications.some((n) => n.includes("after exiting plan mode"))).to.equal(true);
+  });
+
+  it("before_agent_start caches the digest within TTL (no second Munin call)", async () => {
+    process.env.MUNIN_API_KEY = "test-key";
+    process.env.MUNIN_PROJECT = "test-project";
+    let searchCalls = 0;
+    let recentCalls = 0;
+    const originalSearch = (MuninClient.prototype as any).search;
+    const originalRecent = (MuninClient.prototype as any).recent;
+    (MuninClient.prototype as any).search = async function () {
+      searchCalls++;
+      return {
+        data: {
+          memories: [
+            {
+              key: "learning/strategy/a",
+              title: "[strategy] x",
+              content: "Kind: strategy\nTrigger: x\nLesson: cached lesson text",
+              storedAt: "2025-01-01",
+            },
+          ],
+        },
+      };
+    };
+    (MuninClient.prototype as any).recent = async function () {
+      recentCalls++;
+      return { data: { memories: [] } };
+    };
+    try {
+      const { handlers } = harness(cwd);
+      const event = { systemPrompt: "BASE", prompt: "docker networking" };
+      const first = await handlers.before_agent_start[0](event, { cwd });
+      expect(first.systemPrompt).to.not.include("## Recent Learnings"); // seed runs async
+      await awaitSeed();
+      expect(searchCalls).to.equal(1);
+      // Second turn within TTL: served from cache, no Munin round-trip.
+      const second = await handlers.before_agent_start[0](event, { cwd });
+      expect(second.systemPrompt).to.include("cached lesson text");
+      expect(searchCalls).to.equal(1);
+      expect(recentCalls).to.equal(0);
+    } finally {
+      (MuninClient.prototype as any).search = originalSearch;
+      (MuninClient.prototype as any).recent = originalRecent;
+    }
+  });
+
+  it("before_agent_start ships header-only when the Munin search times out", async () => {
+    _setInjectTimeoutForTest(25);
+    process.env.MUNIN_API_KEY = "test-key";
+    process.env.MUNIN_PROJECT = "test-project";
+    const originalSearch = (MuninClient.prototype as any).search;
+    const originalRecent = (MuninClient.prototype as any).recent;
+    // A hanging search: never resolves → the race timeout must win.
+    (MuninClient.prototype as any).search = function () {
+      return new Promise(() => {});
+    };
+    (MuninClient.prototype as any).recent = function () {
+      return new Promise(() => {});
+    };
+    try {
+      const { handlers } = harness(cwd);
+      const started = Date.now();
+      const result = await handlers.before_agent_start[0](
+        { systemPrompt: "BASE", prompt: "docker networking" },
+        { cwd },
+      );
+      const elapsed = Date.now() - started;
+      // Fire-and-forget: the turn never blocks on Munin (header ships at once).
+      expect(elapsed).to.be.lessThan(50);
+      expect(result.systemPrompt).to.include("pi-evolve: trajectory self-learning");
+      expect(result.systemPrompt).to.not.include("## Recent Learnings");
+      // The background seed times out; the cache stays empty (no digest).
+      await awaitSeed();
+    } finally {
+      (MuninClient.prototype as any).search = originalSearch;
+      (MuninClient.prototype as any).recent = originalRecent;
+      _setInjectTimeoutForTest(3000);
+    }
+  });
+
+  it("evolve_save invalidates the cache (new learning injected next turn)", async () => {
+    process.env.MUNIN_API_KEY = "test-key";
+    process.env.MUNIN_PROJECT = "test-project";
+    let searchCalls = 0;
+    let saved = false; // flips after evolve_save, simulating Munin being updated
+    const originalSearch = (MuninClient.prototype as any).search;
+    const originalRecent = (MuninClient.prototype as any).recent;
+    (MuninClient.prototype as any).search = async function () {
+      searchCalls++;
+      const lesson = saved ? "fresh lesson" : "old lesson";
+      return {
+        data: {
+          memories: [
+            {
+              key: "learning/strategy/a",
+              title: "[strategy] x",
+              content: `Kind: strategy\nTrigger: x\nLesson: ${lesson}`,
+              storedAt: "2025-01-01",
+            },
+          ],
+        },
+      };
+    };
+    (MuninClient.prototype as any).recent = async function () {
+      return { data: { memories: [] } };
+    };
+    // Flip the mock after the save so the refetch sees the new learning.
+    const originalStore = (MuninClient.prototype as any).store;
+    (MuninClient.prototype as any).store = async function () {
+      saved = true;
+      return { ok: true };
+    };
+    try {
+      const { handlers, tools } = harness(cwd);
+      // Seed the cache with the old digest (fire-and-forget → await it).
+      await handlers.before_agent_start[0]({ systemPrompt: "BASE", prompt: "x" }, { cwd });
+      await awaitSeed();
+      expect(searchCalls).to.equal(1);
+      // Save a new learning → cache must be invalidated.
+      await tools.evolve_save.execute(
+        "id",
+        { kind: "strategy", trigger: "y", lesson: "fresh lesson", anchors: [] },
+        undefined,
+        undefined,
+        { cwd },
+      );
+      // Next turn refetches (fire-and-forget seed → await) and sees the new learning.
+      await handlers.before_agent_start[0]({ systemPrompt: "BASE", prompt: "y" }, { cwd });
+      await awaitSeed();
+      expect(searchCalls).to.equal(2);
+      const second = await handlers.before_agent_start[0]({ systemPrompt: "BASE", prompt: "y" }, { cwd });
+      expect(second.systemPrompt).to.include("fresh lesson");
+    } finally {
+      (MuninClient.prototype as any).search = originalSearch;
+      (MuninClient.prototype as any).recent = originalRecent;
+      (MuninClient.prototype as any).store = originalStore;
+    }
+  });
+
+  it("session_start resets the injection cache (fresh fetch next turn)", async () => {
+    process.env.MUNIN_API_KEY = "test-key";
+    process.env.MUNIN_PROJECT = "test-project";
+    let searchCalls = 0;
+    const originalSearch = (MuninClient.prototype as any).search;
+    const originalRecent = (MuninClient.prototype as any).recent;
+    (MuninClient.prototype as any).search = async function () {
+      searchCalls++;
+      return { data: { memories: [] } };
+    };
+    (MuninClient.prototype as any).recent = async function () {
+      return { data: { memories: [] } };
+    };
+    try {
+      const { handlers } = harness(cwd);
+      // Seed the cache (fire-and-forget → await it).
+      await handlers.before_agent_start[0]({ systemPrompt: "BASE", prompt: "x" }, { cwd });
+      await awaitSeed();
+      expect(searchCalls).to.equal(1);
+      // New session → cache cleared → next turn refetches.
+      handlers.session_start[0]({ reason: "new" }, { cwd });
+      await handlers.before_agent_start[0]({ systemPrompt: "BASE", prompt: "x" }, { cwd });
+      await awaitSeed();
+      expect(searchCalls).to.equal(2);
+    } finally {
+      (MuninClient.prototype as any).search = originalSearch;
+      (MuninClient.prototype as any).recent = originalRecent;
+    }
+  });
+
+  it("recent fallback still gets a budget when the similar search times out", async () => {
+    _setInjectTimeoutForTest(25);
+    process.env.MUNIN_API_KEY = "test-key";
+    process.env.MUNIN_PROJECT = "test-project";
+    const originalSearch = (MuninClient.prototype as any).search;
+    const originalRecent = (MuninClient.prototype as any).recent;
+    // Search hangs; recent returns a learning immediately.
+    (MuninClient.prototype as any).search = function () {
+      return new Promise(() => {});
+    };
+    (MuninClient.prototype as any).recent = async function () {
+      return {
+        data: {
+          memories: [
+            {
+              key: "learning/recovery/b",
+              title: "[recovery] y",
+              content: "Kind: recovery\nTrigger: y\nLesson: recent fallback lesson",
+              storedAt: "2025-01-01",
+            },
+          ],
+        },
+      };
+    };
+    try {
+      const { handlers } = harness(cwd);
+      // Fire-and-forget: first call returns at once (header only).
+      const first = await handlers.before_agent_start[0](
+        { systemPrompt: "BASE", prompt: "docker" },
+        { cwd },
+      );
+      expect(first.systemPrompt).to.not.include("recent fallback lesson");
+      await awaitSeed();
+      // The fresh fallback budget lets the recent digest through on the next call.
+      const result = await handlers.before_agent_start[0](
+        { systemPrompt: "BASE", prompt: "docker" },
+        { cwd },
+      );
+      expect(result.systemPrompt).to.include("recent fallback lesson");
+      expect(result.systemPrompt).to.include("pi-evolve: trajectory self-learning");
+    } finally {
+      (MuninClient.prototype as any).search = originalSearch;
+      (MuninClient.prototype as any).recent = originalRecent;
+      _setInjectTimeoutForTest(3000);
+    }
   });
 });
 
