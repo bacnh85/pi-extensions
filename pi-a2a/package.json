@@ -1,0 +1,61 @@
+{
+  "name": "@bacnh85/pi-a2a",
+  "version": "0.1.1",
+  "description": "A2A Protocol v1.0 bidirectional extension for the Pi coding agent — distribute tasks to remote agents and be called by them.",
+  "type": "module",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-a2a",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git",
+    "directory": "pi-a2a"
+  },
+  "bugs": {
+    "url": "https://github.com/bacnh85/pi-extensions/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "a2a",
+    "agent-to-agent",
+    "agent-interop",
+    "multi-agent",
+    "task-distribution"
+  ],
+  "scripts": {
+    "test": "cd extensions && mocha",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "extensions/package.json",
+    "extensions/index.ts",
+    "extensions/lib/",
+    "skills/"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/chai": "^4.3.20",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.19.43",
+    "chai": "^4.5.0",
+    "mocha": "^10.8.2",
+    "tsx": "^4.22.4"
+  }
+}

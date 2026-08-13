@@ -51,6 +51,7 @@ jobs:
             pi-notify: pi-notify/**
             pi-references: pi-references/**
             pi-evolve: pi-evolve/**
+            pi-a2a: pi-a2a/**
 
       - name: Build matrix
         id: set-matrix
@@ -85,6 +86,7 @@ jobs:
               { pkg: 'pi-notify', cmd: 'node --test extensions/test/*.test.js' },
               { pkg: 'pi-references', cmd: 'node --test extensions/test/*.test.js' },
               { pkg: 'pi-evolve', cmd: 'npm ci && npm test' },
+              { pkg: 'pi-a2a', cmd: 'npm ci && npm test && npm run typecheck' },
             ];
 
             const selected = '${{ github.event_name }}' === 'workflow_dispatch'
