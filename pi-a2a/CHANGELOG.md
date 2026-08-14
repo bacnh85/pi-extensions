@@ -1,5 +1,182 @@
 # Changelog
 
+## 0.3.1 — 2026-08-14
+
+mDNS broadcast hostname-claim fix.
+
+- **Fixed macOS hostname-rename conflict:** enabling mDNS advertising made
+  `bonjour-service` publish A/AAAA records claiming the OS local hostname
+  (its default when no `host` option is given), fighting macOS
+  mDNSResponder's ownership → "This computer's local hostname … is already
+  in use on this network" → the machine was renamed (e.g. `MBP-Sao-2.local`).
+  Broadcasts now claim a unique per-session name
+  (`<hostname>-a2a-<pid>.local`) that never equals the OS hostname, and the
+  service instance name gets a pid suffix (`<agent>-<pid>`), so multiple Pi
+  sessions on one machine no longer probe-collide on the same
+  `<name>._a2a._tcp.local` fqdn.
+- **Test-suite exit hang:** `npm test` could hang after a green run because the
+  optional mDNS live-socket tests were always run (bonjour-service is a dev
+  dep) and their sockets kept the event loop alive. They are now skipped by
+  default (`MDNS_NETWORK_TESTS=1` opts in), so the suite exits naturally and
+  leaks are still detected.
+- **Restoring a pre-0.3.1 rename:** System Settings → General → Sharing
+  (edit Name), or `sudo scutil --set LocalHostName <name>`.
+
+## 0.3.0 — 2026-08-14
+
+Inbound activity visibility + interactive config panel.
+
+### Inbound activity in the host TUI
+
+- When a remote peer sends Pi an A2A task, the host session now shows it:
+  **arrival** (who sent it + task preview), **live progress** (tool calls and
+  assistant text deltas from the isolated session, forwarded through the
+  runner's `onProgress` channel), and **completion/failure** (state, elapsed,
+  reply preview).
+- Surfaced as **transcript messages** (`pi.sendMessage`, customType
+  `a2a-inbound`) with a compact custom renderer, plus `notify()` toasts and a
+  footer status line while tasks are in flight.
+- New `a2a.ui.transcript` toggle (default `true`) — set `false` to keep only
+  toasts + footer status and keep inbound activity out of the host LLM
+  context. (Transcript messages become user-role context for the host agent;
+  content is terse and `[A2A inbound]`-prefixed.)
+- Server emits activity through an optional `onActivity` hook — fully
+  testable, backward compatible (no hook = no UI, same as before).
+
+### Interactive config panel
+
+- `/a2a-config` now opens an **arrow-key config panel** (TUI mode) covering
+  Server (enabled/port/host/agentName/timeouts/concurrency/rate-limit),
+  Discovery (local registry/mDNS/enrich-card), Identity (selfIdentity), Peers
+  (edit URLs, add/remove), and UI (transcript toggle).
+- `/a2a-config show` (or non-TUI mode) prints the config summary as before.
+- Saving persists to settings.json via a new `writeSettingsA2A` (read-modify-
+  write, preserves unrelated keys, atomic rename) **and** applies live via
+  in-memory overrides (`setConfigOverrides`) — no `/reload` needed. Server/
+  discovery changes auto-restart the running inbound server.
+- **Fixed panel runtime bugs** (0.3.0 patch): the panel no longer calls
+  `ctx.ui.input()`/`confirm()`/`select()` while displayed — those open
+  editor-container dialogs that render UNDER the overlay and fight overlay
+  focus (symptoms: toggles not working, panel vanishing after typing a value,
+  command unable to re-open). The panel now embeds its own inline `Input`
+  component (empty prefill, old value shown as hint; Enter confirms, Esc
+  cancels) and saves directly on Esc when dirty — the proven llama-extension
+  single-component pattern. The component is also focusable (focused
+  getter/setter) and scrolls rows (max 14 visible).
+- **Fixed toggle-not-reflecting + width-crash** (0.3.0 patch 2): `row.set` now
+  also updates `row.value` (stale value made toggles render "off" forever),
+  and every rendered line is truncated to the overlay width via
+  `truncateToWidth` (a long peer URL previously threw
+  "Rendered line exceeds terminal width" and crashed Pi).
+- New peer dep `@earendil-works/pi-tui` (panel component only).
+
+## 0.2.0 — 2026-08-14
+
+Session self-declaration + local discovery. Each Pi session running an inbound
+A2A server now declares its identity (working folder, model, tools, pid, URL)
+so other sessions can discover and delegate to the **right** peer without
+port-scanning or manual config.
+
+Three complementary layers, all opt-in and backward-compatible:
+
+### Local file registry (zero-dep)
+
+- Each session writes `<piDir>/a2a_registry/<pid>.json` with `{url, port, cwd,
+  model, tools, sessionName, pid, mtime}`.
+- Dual stale-entry GC: mtime TTL (default 60s) **and** `process.kill(pid,0)`
+  liveness probe on every read → self-heals after crashes.
+- Heartbeat rewrites the file every `heartbeatSec` (default 15). Timer is
+  `unref`'d so it never blocks shutdown.
+- New `a2a_peers` tool + `/a2a-peers` command list the merged peer set.
+- `a2a_list` / `/a2a-agents` now append a "Discovered peers" section.
+
+### Enriched Agent Card (standards-compliant)
+
+- The Agent Card advertises an A2A v1.0 **Extension**
+  (`https://bacnh85.dev/a2a/extensions/pi-session/v1`, `required: false`) plus
+  a top-level `metadata` map with pid/cwd/model/tools/sessionName/startedAt.
+- Any A2A peer (Pi or not, local or network) can read the session metadata
+  directly from the card.
+- Live model changes (`model_select` event) refresh the descriptor + card.
+
+### mDNS / DNS-SD (optional dep)
+
+- Broadcast + discover on `_a2a._tcp` for cross-machine LAN discovery.
+- `bonjour-service` is an `optionalDependency`, dynamically imported with
+  graceful no-op degrade when absent — the zero-dep baseline is preserved.
+- TXT record carries url/cwd/model for screening without a card fetch.
+
+### Config
+
+New `a2a.discovery` block in `settings.json`:
+
+```jsonc
+"a2a": {
+  "discovery": {
+    "local": { "enabled": true, "heartbeatSec": 15, "ttlSec": 60 },
+    "mdns":  { "enabled": false, "serviceType": "a2a" },
+    "enrichCard": true
+  }
+}
+```
+
+New env vars: `A2A_DISCOVERY_LOCAL`, `A2A_DISCOVERY_MDNS`, `A2A_MDNS_TYPE`,
+`A2A_HEARTBEAT_SEC`, `A2A_TTL_SEC`, `A2A_ENRICH_CARD`.
+
+### Tests
+
+109 → 141 (registry GC, card enrichment, discovery merge/dedupe, mDNS handle,
+mdnsPeerKey dedup, clean/sanitization, self-exclusion, server
+register/unregister lifecycle, local-disabled).
+
+### Review-hardened (post-review fixes)
+
+- **mDNS unbounded growth fixed** — added `down` handler + composite dedup key
+  (`mdnsPeerKey`) so URL-less peers don't accumulate and departed peers are
+  removed.
+- **Prompt-injection defense** — discovery fields (name/cwd/tools) from
+  untrusted sources (mDNS TXT, registry files) are sanitized via `clean()`
+  (single-line, length-capped) before rendering to the model.
+- **mDNS independent of local** — `startDiscovery` no longer gated behind
+  `local.enabled`; descriptor built unconditionally so mDNS works standalone.
+- **Self-exclusion** — `listPeers` accepts `selfUrl` so a session doesn't see
+  itself as a delegation target.
+- **Defensive `cfg.peers ?? {}`** in `listPeers` for hand-built configs.
+- Validated with a live two-session mutual-discovery smoke test.
+
+### Security hardening (second review round)
+
+- **Credential exfiltration fixed (HIGH)** — the shared bearer token is now
+  attached to loopback URLs ONLY when the URL is a *known* peer (configured
+  `a2a.peers` or a live local-registry entry — same machine, same user). An
+  arbitrary/prompt-injected `a2a_call("http://localhost:<port>")` sends NO
+  Authorization header. mDNS peers are excluded (network-controllable).
+- **IPv6 `::1` loopback** — `isLoopbackHost` now strips brackets before
+  comparison (consistent with `isPrivateHost`), so `http://[::1]:port` works.
+- `normUrl` exported from config (shared by resolvePeer + known-peer matching).
+- Tests: 141 → 146 (known-loopback token attach, arbitrary-loopback no-token,
+  non-loopback no-token, no-token-configured, IPv6 ::1).
+- Live validation: `a2a_call` to a discovered registry peer (9911) succeeds
+  with auto-attached token; arbitrary localhost port receives no token.
+
+### Per-session identity (third round)
+
+- **Unique caller attribution** — new `selfIdentity` config (env
+  `A2A_SELF_IDENTITY`) names THIS session. When set, the outbound path presents
+  `peerTokens[selfIdentity]` instead of the shared token, so the receiver's
+  `authenticate()` attributes the call to a named session (not the anonymous
+  `ip:` identity). Fixes the all-sessions-share-one-token problem: unique audit
+  entries, per-session rate-limit buckets, and real `trustedPeers` allow-lists.
+- Falls back to the shared token when `selfIdentity` is unset or has no
+  `peerTokens` entry — backward compatible.
+- The session descriptor + Agent Card now carry `selfIdentity` so peers know
+  which token to present when calling this session.
+- Sessions still reach each other: each presents its OWN token; the receiver's
+  global `peerTokens` directory resolves the identity. No caller needs another
+  session's token.
+- Tests: 146 → 149 (own-token preference, shared fallback when identity absent,
+  shared fallback when selfIdentity empty).
+
 ## 0.1.1 — 2026-08-13
 
 Fix: A2A inbound server EADDRINUSE across concurrent Pi sessions.

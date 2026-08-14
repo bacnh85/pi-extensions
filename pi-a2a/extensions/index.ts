@@ -17,7 +17,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { loadConfig, resolvePeer, type A2AConfig } from "./lib/config";
+import { loadConfig, resolvePeer, setConfigOverrides, writeSettingsA2A, type A2AConfig } from "./lib/config";
 import {
   a2aCall,
   a2aDiscover,
@@ -27,6 +27,11 @@ import {
   metrics,
 } from "./lib/client";
 import { A2AServer, type SessionRunner } from "./lib/server";
+import { formatPeers, listPeers } from "./lib/discovery";
+import { activityLine, activityStatusLine, activityToText, type InboundActivity } from "./lib/activity";
+import { openConfigPanel, type PanelAction } from "./lib/config-panel";
+
+import { Container, Text } from "@earendil-works/pi-tui";
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -48,7 +53,7 @@ function cfgFor(ctx: ExtensionContext): A2AConfig {
 // ---------------------------------------------------------------------------
 
 function makeSessionRunner(ctx: ExtensionContext): SessionRunner {
-  return async ({ message, signal }) => {
+  return async ({ message, signal, onProgress }) => {
     const sdk = await import("@earendil-works/pi-coding-agent");
     const { createAgentSession, SessionManager, SettingsManager, DefaultResourceLoader } = sdk;
     const modelRegistry = ctx.modelRegistry as any;
@@ -83,6 +88,10 @@ function makeSessionRunner(ctx: ExtensionContext): SessionRunner {
     let resolveDone!: () => void;
     const done = new Promise<void>((r) => (resolveDone = r));
     const unsub = session.subscribe((event: any) => {
+      // Forward meaningful activity to the host TUI (0.3.0): tool calls and
+      // assistant text deltas become one-line progress entries.
+      const line = activityLine(event);
+      if (line && onProgress) onProgress(line);
       if (event.type === "message_end" && event.message?.role === "assistant") {
         // Agent-session events carry the OpenAI-style message shape: the text
         // parts live under `content` (e.g. [{type:"text",text:"..."}]), not
@@ -125,6 +134,67 @@ function makeSessionRunner(ctx: ExtensionContext): SessionRunner {
 }
 
 // ---------------------------------------------------------------------------
+// Inbound activity → host TUI (0.3.0)
+// ---------------------------------------------------------------------------
+
+/** In-flight inbound tasks (identity + taskId), for the footer status line. */
+const activeInboundTasks = new Map<string, { identity: string; last: InboundActivity }>();
+
+/**
+ * Surface an inbound activity event to the host TUI.
+ * - transcript on: sendMessage (custom message, visible in transcript)
+ * - always: notify() toast on arrived/completed/failed
+ * Caller provides the ctx for ui access (may be undefined in tests).
+ */
+function broadcastActivity(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext | undefined,
+  cfg: A2AConfig | undefined,
+  a: InboundActivity,
+): void {
+  const transcript = cfg?.ui?.transcript ?? true;
+  if (transcript) {
+    try {
+      pi.sendMessage({
+        customType: "a2a-inbound",
+        content: activityToText(a),
+        display: true,
+      });
+    } catch {
+      /* session may be mid-replace; ignore */
+    }
+  }
+  if (!ctx) return;
+  switch (a.type) {
+    case "arrived":
+      activeInboundTasks.set(a.taskId, { identity: a.identity, last: a });
+      ctx.ui.notify(`A2A task from ${a.identity}: ${a.preview}`, "info");
+      break;
+    case "progress":
+      activeInboundTasks.set(a.taskId, { identity: activeInboundTasks.get(a.taskId)?.identity ?? "peer", last: a });
+      break;
+    case "completed":
+    case "failed":
+      activeInboundTasks.delete(a.taskId);
+      ctx.ui.notify(
+        a.type === "completed"
+          ? `A2A task ${a.taskId.slice(0, 8)} completed (${(a.elapsedMs / 1000).toFixed(1)}s)`
+          : `A2A task ${a.taskId.slice(0, 8)} failed: ${a.error}`,
+        a.type === "completed" ? "info" : "error",
+      );
+      break;
+  }
+  // Footer status while tasks are active.
+  const active = [...activeInboundTasks.values()].map((t) => ({ taskId: t.last.taskId, identity: t.identity }));
+  const status = activityStatusLine(active);
+  try {
+    ctx.ui.setStatus("a2a-inbound", status);
+  } catch {
+    /* best-effort */
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tool parameter schemas
 // ---------------------------------------------------------------------------
 
@@ -145,6 +215,25 @@ const contextIdParam = Type.Optional(
 // ---------------------------------------------------------------------------
 
 export default function a2aExtension(pi: ExtensionAPI): void {
+  // Compact transcript renderer for inbound activity messages (0.3.0).
+  // Renders as a terse colored line instead of a full assistant block.
+  pi.registerMessageRenderer?.("a2a-inbound", (message, _opts, theme) => {
+    try {
+      const fg = theme.fg.bind(theme);
+      const raw = message.content;
+      const content = typeof raw === "string"
+        ? raw
+        : (Array.isArray(raw) ? raw.map((p: any) => (typeof p?.text === "string" ? p.text : "")).join("") : "");
+      const isFail = content.includes(" failed ");
+      const icon = isFail ? fg("error", "✗") : fg("accent", "⇄");
+      const c = new Container();
+      c.addChild(new Text(`${icon} ${content}`, 0, 0));
+      return c;
+    } catch {
+      return undefined; // pi-tui unavailable → fall back to default rendering
+    }
+  });
+
   // -------------------------------------------------------------------------
   // Tools (outbound client) — always registered
   // -------------------------------------------------------------------------
@@ -214,7 +303,19 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     parameters: Type.Object({}),
     execute: async (_id, _args, _signal, _onUpdate, ctx) => {
       const cfg = cfgFor(ctx);
-      return { content: [{ type: "text" as const, text: a2aList({ cfg, piDir: piDir() }) }], details: {} };
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: a2aList({
+              cfg,
+              piDir: piDir(),
+              discoveredPeers: listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "" }),
+            }),
+          },
+        ],
+        details: {},
+      };
     },
   });
 
@@ -288,6 +389,25 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerTool({
+    name: "a2a_peers",
+    label: "A2A Peers",
+    description:
+      "List discoverable A2A peers (local file registry, mDNS, and configured) with their " +
+      "working folder, model, and tools. Use before a2a_call to pick the right peer for a task.",
+    promptSnippet: "list discoverable A2A peers with their cwd/model/tools",
+    promptGuidelines: [
+      "Returns peers from three sources: local registry (same machine), mDNS (network), and configured (settings.json).",
+      "Use it to choose which peer to delegate to based on working folder, model, or abilities.",
+    ],
+    parameters: Type.Object({}),
+    execute: async (_id, _args, _signal, _onUpdate, ctx) => {
+      const cfg = cfgFor(ctx);
+      const peers = listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "" });
+      return { content: [{ type: "text" as const, text: formatPeers(peers) }], details: {} };
+    },
+  });
+
   // -------------------------------------------------------------------------
   // Commands
   // -------------------------------------------------------------------------
@@ -309,7 +429,14 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     description: "List configured A2A peers",
     handler: async (_args, ctx) => {
       const cfg = cfgFor(ctx as unknown as ExtensionContext);
-      ctx.ui.notify(a2aList({ cfg, piDir: piDir() }), "info");
+      ctx.ui.notify(
+        a2aList({
+          cfg,
+          piDir: piDir(),
+          discoveredPeers: listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "" }),
+        }),
+        "info",
+      );
     },
   });
 
@@ -363,21 +490,156 @@ export default function a2aExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("a2a-config", {
-    description: "Show current A2A config: /a2a-config",
-    handler: async (_args, ctx) => {
-      const cfg = cfgFor(ctx as unknown as ExtensionContext);
-      ctx.ui.notify(
-        [
-          "Current A2A config:",
-          `  server.enabled: ${cfg.server.enabled}`,
-          `  server.port: ${cfg.server.port}`,
-          `  server.host: ${cfg.server.host}`,
-          `  peers: ${Object.keys(cfg.peers).join(", ") || "(none)"}`,
-          "",
-          "Edit ~/.pi/agent/settings.json under the 'a2a' key to configure peers and server.",
-        ].join("\n"),
-        "info",
-      );
+    description: "Configure A2A interactively (TUI) or show config",
+    handler: async (args, ctx) => {
+      const ectx = ctx as unknown as ExtensionContext;
+      const cfg = cfgFor(ectx);
+      const sub = String(args ?? "").trim().toLowerCase();
+
+      // Non-interactive mode or explicit "show": print the summary.
+      if (sub === "show" || ectx.mode !== "tui" || !ectx.hasUI) {
+        ctx.ui.notify(
+          [
+            "Current A2A config:",
+            `  server.enabled: ${cfg.server.enabled}`,
+            `  server.port: ${cfg.server.port}`,
+            `  server.host: ${cfg.server.host}`,
+            `  discovery: local=${cfg.discovery.local.enabled} mdns=${cfg.discovery.mdns.enabled} enrichCard=${cfg.discovery.enrichCard}`,
+            `  ui.transcript: ${cfg.ui.transcript}`,
+            `  peers: ${Object.keys(cfg.peers).join(", ") || "(none)"}`,
+            "",
+            "Interactive editor: run /a2a-config in TUI mode (no args).",
+            "Or edit ~/.pi/agent/settings.json under the 'a2a' key.",
+          ].join("\n"),
+          "info",
+        );
+        return;
+      }
+
+      // TUI mode: open the interactive panel. Save persists to settings.json,
+      // applies live via overrides, and restarts the server when needed.
+      const workingCfg = structuredClone(cfg);
+      const serverKeys = new Set(["server", "discovery"]);
+      let changedServerKeys = false;
+      let peerChanges = false;
+      const beforePeers = JSON.stringify(workingCfg.peers);
+
+      const actions: Record<string, PanelAction> = {
+        addPeer: {
+          label: "Add peer",
+          run: (prompt) => {
+            return new Promise<void>((resolve) => {
+              prompt("Peer name", (name) => {
+                if (!name) return resolve();
+                prompt("Peer URL", (url) => {
+                  if (!url) return resolve();
+                  if (workingCfg.peers[name]) {
+                    ctx.ui.notify(`Peer '${name}' already exists — edit its URL row instead.`, "warning");
+                    return resolve();
+                  }
+                  workingCfg.peers[name] = {
+                    url,
+                    auth: { type: "none" },
+                    timeout: 120000,
+                    capabilities: [],
+                  };
+                  peerChanges = true;
+                  resolve();
+                });
+              });
+            });
+          },
+        },
+        removePeer: {
+          label: "Remove peer",
+          run: (prompt) => {
+            return new Promise<void>((resolve) => {
+              const names = Object.keys(workingCfg.peers);
+              if (names.length === 0) {
+                ctx.ui.notify("No peers configured to remove.", "warning");
+                return resolve();
+              }
+              prompt(`Remove peer (${names.join(", ")})`, (pick) => {
+                if (!pick || !workingCfg.peers[pick]) return resolve();
+                delete workingCfg.peers[pick];
+                peerChanges = true;
+                resolve();
+              });
+            });
+          },
+        },
+      };
+
+      await openConfigPanel({
+        ctx: ectx,
+        cfg: workingCfg,
+        actions,
+        onSave: (saved) => {
+          if (!saved) return;
+          const afterPeers = JSON.stringify(workingCfg.peers);
+          changedServerKeys = [...serverKeys].some(
+            (k) => JSON.stringify((workingCfg as any)[k]) !== JSON.stringify((cfg as any)[k]),
+          );
+          peerChanges = peerChanges || beforePeers !== afterPeers;
+
+          // Persist to settings.json (a2a key, preserving other keys).
+          const written = writeSettingsA2A({
+            cwd: ectx.cwd,
+            patch: (a2a: any) => ({
+              ...a2a,
+              ...(changedServerKeys ? { server: workingCfg.server } : {}),
+              ...(peerChanges ? { peers: workingCfg.peers } : {}),
+              ...(JSON.stringify(workingCfg.discovery) !== JSON.stringify(cfg.discovery)
+                ? { discovery: workingCfg.discovery }
+                : {}),
+              ...(workingCfg.selfIdentity !== cfg.selfIdentity
+                ? { selfIdentity: workingCfg.selfIdentity }
+                : {}),
+              ...(JSON.stringify(workingCfg.ui) !== JSON.stringify(cfg.ui) ? { ui: workingCfg.ui } : {}),
+            }),
+          });
+
+          // Apply live for this session (no /reload needed).
+          setConfigOverrides({
+            peers: workingCfg.peers,
+            selfIdentity: workingCfg.selfIdentity,
+            server: workingCfg.server,
+            discovery: workingCfg.discovery,
+            ui: workingCfg.ui,
+          });
+
+          ctx.ui.notify(`A2A config saved → ${written}`, "info");
+
+          // Restart the running server if server/discovery settings changed.
+          if (changedServerKeys && server) {
+            void (async () => {
+              ctx.ui.notify("A2A config changed — restarting inbound server…", "info");
+              try {
+                await server!.stop();
+              } catch {
+                /* best-effort */
+              }
+              const fresh = cfgFor(ectx);
+              server = new A2AServer({
+                cfg: fresh,
+                ctx: ectx,
+                cwd: ectx.cwd,
+                piDir: piDir(),
+                runner: makeSessionRunner(ectx),
+                api: pi,
+                onActivity: (a) => broadcastActivity(pi, ectx, fresh, a),
+              });
+              try {
+                const info = await server.start();
+                ctx.ui.notify(`A2A server restarted on ${info.host}:${info.port}`, "info");
+              } catch (e: any) {
+                server = null;
+                ctx.ui.notify(`A2A server restart failed: ${e?.message || e}`, "error");
+              }
+            })();
+          }
+        },
+      });
     },
   });
 
@@ -399,6 +661,8 @@ export default function a2aExtension(pi: ExtensionAPI): void {
             cwd: ectx.cwd,
             piDir: piDir(),
             runner: makeSessionRunner(ectx),
+            api: pi,
+            onActivity: (a) => broadcastActivity(pi, ectx, cfg, a),
           });
           const info = await server.start();
           const defaultNote =
@@ -432,6 +696,15 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerCommand("a2a-peers", {
+    description: "List discoverable A2A peers (local registry + mDNS + configured)",
+    handler: async (_args, ctx) => {
+      const cfg = cfgFor(ctx as unknown as ExtensionContext);
+      const peers = listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "" });
+      ctx.ui.notify(formatPeers(peers), "info");
+    },
+  });
+
   pi.registerCommand("a2a-help", {
     description: "Show A2A help",
     handler: async (_args, ctx) => {
@@ -443,7 +716,8 @@ export default function a2aExtension(pi: ExtensionAPI): void {
           "  /a2a-send <agent> <msg>      Send a task to a peer",
           "  /a2a-broadcast <msg> --agents a,b,c   Parallel fan-out",
           "  /a2a-status                  Metrics + server status",
-          "  /a2a-config                  Show config",
+          "  /a2a-config                  Interactive config panel (TUI)",
+          "  /a2a-config show             Show config summary",
           "  /a2a-server start|stop|status  Manage inbound server",
           "",
           "Tools: a2a_call, a2a_discover, a2a_list, a2a_history, a2a_orchestrate",
@@ -457,6 +731,11 @@ export default function a2aExtension(pi: ExtensionAPI): void {
   // Server lifecycle hooks (auto-start only when a2a.server.enabled)
   // -------------------------------------------------------------------------
 
+  // Live model changes → refresh the session descriptor (registry file + card).
+  pi.on("model_select", async () => {
+    if (server) server.refreshDescriptor();
+  });
+
   pi.on("session_start", async (_event, ctx) => {
     const cfg = cfgFor(ctx);
     if (!cfg.server.enabled) return;
@@ -467,6 +746,8 @@ export default function a2aExtension(pi: ExtensionAPI): void {
         cwd: ctx.cwd,
         piDir: piDir(),
         runner: makeSessionRunner(ctx),
+        api: pi,
+        onActivity: (a) => broadcastActivity(pi, ctx, cfg, a),
       });
       const info = await server.start();
       const defaultNote =

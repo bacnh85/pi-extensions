@@ -131,6 +131,14 @@ export interface AgentSkill {
   tags?: string[];
 }
 
+export interface AgentExtension {
+  /** URI identifying the extension (custom URIs are allowed; not dereferenceable). */
+  uri: string;
+  description?: string;
+  /** If true, clients must understand this extension to interact. false = ignorable. */
+  required?: boolean;
+}
+
 export interface AgentCard {
   name: string;
   description?: string;
@@ -147,13 +155,21 @@ export interface AgentCard {
     pushNotifications: boolean;
     stateTransitionHistory: boolean;
     extendedAgentCard: boolean;
+    /** A2A v1.0 Extensions declared by this agent (custom capabilities). */
+    extensions?: AgentExtension[];
   };
   defaultInputModes: string[];
   defaultOutputModes: string[];
   skills: AgentSkill[];
   securitySchemes?: Record<string, { type: string; scheme: string }>;
   security?: Array<Record<string, string[]>>;
+  /** Implementation-defined metadata (A2A v1.0 — permitted on core structures). */
+  metadata?: Record<string, unknown>;
 }
+
+/** URI identifying the Pi session-metadata A2A extension. Implementation-defined;
+ * peers ignore it when `required` is false (which it always is). */
+export const PI_SESSION_EXTENSION_URI = "https://bacnh85.dev/a2a/extensions/pi-session/v1";
 
 export function buildAgentCard(opts: {
   name: string;
@@ -163,6 +179,8 @@ export function buildAgentCard(opts: {
   streaming?: boolean;
   pushNotifications?: boolean;
   authRequired?: boolean;
+  /** When set, the card advertises the pi-session extension + this metadata. */
+  sessionMetadata?: Record<string, unknown>;
 }): AgentCard {
   const card: AgentCard = {
     name: opts.name,
@@ -197,6 +215,16 @@ export function buildAgentCard(opts: {
   if (opts.authRequired) {
     card.securitySchemes = { bearer: { type: "http", scheme: "bearer" } };
     card.security = [{ bearer: [] }];
+  }
+  if (opts.sessionMetadata && Object.keys(opts.sessionMetadata).length > 0) {
+    card.capabilities.extensions = [
+      {
+        uri: PI_SESSION_EXTENSION_URI,
+        description: "Pi session metadata (cwd, model, tools, pid)",
+        required: false,
+      },
+    ];
+    card.metadata = opts.sessionMetadata;
   }
   return card;
 }

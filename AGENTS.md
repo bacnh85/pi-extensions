@@ -21,7 +21,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-model-tools** | 0.5.5 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, and a Codex-style apply_patch diff tool. |
 | **pi-munin** | 0.5.2 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and confirmed cross-project sharing. |
 | **pi-evolve** | 0.3.1 | Trajectory-based self-learning loop — captures tool-call trajectories, reflects to extract learnings, persists to Munin or local JSONL, injects recent learnings into future sessions. |
-| **pi-a2a** | 0.1.1 | A2A Protocol v1.0 bidirectional — Pi distributes tasks to remote agents (Hermes, ADK, LangChain, any A2A peer) and exposes itself as an A2A-callable agent. |
+| **pi-a2a** | 0.3.1 | A2A Protocol v1.0 bidirectional — Pi distributes tasks to remote agents (Hermes, ADK, LangChain, any A2A peer), exposes itself as an A2A-callable agent, self-declares for local session discovery (file registry + enriched Agent Card + mDNS), shows inbound task activity in the host TUI, and has an interactive config panel. |
 | **pi-notebooklm** | 0.1.8 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | **pi-obsidian** | 0.8.13 | Obsidian vault integration for Pi. |
 | **pi-plan** | 0.10.4 | Plan mode with read-only gating and plan → implement → verify → review workflow; fallback model chain on overload. |
@@ -47,7 +47,7 @@ pi-extensions/
   pi-ux/                # JS extension + hook + skill for anti-slop UI/UX design discipline
   pi-munin/             # TS extension + lib/helpers + skill + references
   pi-evolve/            # TS extension + lib/buffer+store+inject + skill for trajectory self-learning
-  pi-a2a/               # TS extension + lib (protocol/client/server/config/security/persistence) for A2A Protocol v1.0
+  pi-a2a/               # TS extension + lib (protocol/client/server/config/security/persistence/registry/mdns/discovery/activity/config-panel) for A2A Protocol v1.0
   pi-plan/              # TS extension for plan mode + workflow integration
   pi-subagent/          # TS extension for isolated SDK subagents
   pi-review/            # TS extension for isolated/local code review

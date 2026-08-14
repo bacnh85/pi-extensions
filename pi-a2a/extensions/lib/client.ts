@@ -22,6 +22,7 @@ import {
 } from "./protocol";
 import {
   authHeaders,
+  normUrl,
   type A2AConfig,
   type Peer,
   resolvePeer,
@@ -35,6 +36,8 @@ import {
   loadConversation,
   persistMessage,
 } from "./persistence";
+import { clean } from "./discovery";
+import { list as listRegistry } from "./registry";
 
 // ---------------------------------------------------------------------------
 // Card discovery
@@ -391,7 +394,7 @@ export async function a2aCall(opts: {
   const agent = (opts.agent || "").trim();
   const message = (opts.message || "").trim();
   if (!agent || !message) return "Error: both 'agent' and 'message' are required.";
-  const peer = resolvePeer(opts.cfg, agent);
+  const peer = resolvePeer(opts.cfg, agent, { knownLoopbackUrls: knownLoopbackUrls(opts.cfg, opts.piDir) });
   if (!peer || !peer.url) {
     return (
       `Error: unknown agent '${agent}'. Configure it under 'a2a.peers' in ` +
@@ -426,7 +429,38 @@ export async function a2aCall(opts: {
   return `${header}\n${body}`;
 }
 
-export function a2aList(opts: { cfg: A2AConfig; piDir: string }): string {
+/** Build the set of loopback URLs that are KNOWN peers (same-machine, same-user):
+ *  configured peers + live local-registry entries. mDNS peers are excluded —
+ *  their URLs come from the network and must not receive the shared token. */
+function knownLoopbackUrls(cfg: A2AConfig, piDir: string): Set<string> {
+  const known = new Set<string>();
+  for (const p of Object.values(cfg.peers)) {
+    if (p.url) known.add(normUrl(p.url));
+  }
+  try {
+    for (const d of listRegistry({ piDir, ttlSec: cfg.discovery.local.ttlSec })) {
+      if (d.url) known.add(normUrl(d.url));
+    }
+  } catch {
+    /* registry read is best-effort */
+  }
+  return known;
+}
+
+export function a2aList(opts: {
+  cfg: A2AConfig;
+  piDir: string;
+  /** Pre-merged discovered peers (local registry + mDNS). When provided, an
+   * extra "Discovered peers" section is appended. */
+  discoveredPeers?: Array<{
+    name: string;
+    url: string;
+    source: string;
+    cwd?: string;
+    model?: { provider: string; id: string; name?: string } | null;
+    tools?: string[];
+  }>;
+}): string {
   const { cfg, piDir } = opts;
   const peers = cfg.peers;
   const lines: string[] = [];
@@ -441,6 +475,24 @@ export function a2aList(opts: { cfg: A2AConfig; piDir: string }): string {
   } else {
     lines.push("No peers configured. Add them under 'a2a.peers' in settings.json.");
   }
+
+  // Discovered peers (0.2.0) — exclude any already listed as configured (by URL).
+  const configuredUrls = new Set(names.map((n) => peers[n]!.url.replace(/\/+$/, "").toLowerCase()));
+  const discovered = (opts.discoveredPeers ?? []).filter(
+    (p) => !configuredUrls.has(p.url.replace(/\/+$/, "").toLowerCase()),
+  );
+  if (discovered.length > 0) {
+    lines.push("");
+    lines.push(`Discovered peers (${discovered.length}):`);
+    for (const p of discovered) {
+      const parts = [`  - ${clean(p.name)}`, clean(p.url), `[${p.source}]`];
+      if (p.cwd) parts.push(`cwd=${clean(p.cwd)}`);
+      if (p.model) parts.push(`model=${clean(p.model.provider)}/${clean(p.model.id)}`);
+      if (p.tools && p.tools.length) parts.push(`tools=${p.tools.slice(0, 8).map(clean).join(",")}`);
+      lines.push(parts.join("  "));
+    }
+  }
+
   const convos = listConversations(piDir);
   if (convos.length > 0) {
     lines.push("");

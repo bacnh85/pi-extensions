@@ -8,6 +8,7 @@ import { DEFAULTS } from "./helpers";
 import { A2AServer, type SessionRunner } from "../lib/server";
 import { STATE_CANCELED, STATE_COMPLETED, STATE_FAILED, STATE_INPUT_REQUIRED, STATE_REJECTED } from "../lib/protocol";
 import { metrics } from "../lib/client";
+import { list as listRegistry } from "../lib/registry";
 
 // ---------------------------------------------------------------------------
 // Stub session runner — returns a canned reply without spawning a real agent.
@@ -38,7 +39,7 @@ async function freePort(): Promise<number> {
   });
 }
 
-async function startServer(opts: { cfg: typeof DEFAULTS extends infer T ? any : any; runner?: SessionRunner }): Promise<{
+async function startServer(opts: { cfg: typeof DEFAULTS extends infer T ? any : any; runner?: SessionRunner; piDir?: string; cwd?: string; onActivity?: (a: any) => void }): Promise<{
   server: A2AServer;
   url: string;
   stop: () => Promise<void>;
@@ -46,11 +47,13 @@ async function startServer(opts: { cfg: typeof DEFAULTS extends infer T ? any : 
   const port = await freePort();
   const cfg = { ...opts.cfg };
   cfg.server = { ...cfg.server, port };
+  const piDir = opts.piDir ?? tmpDir();
   const server = new A2AServer({
     cfg,
-    cwd: tmpDir(),
-    piDir: tmpDir(),
+    cwd: opts.cwd ?? tmpDir(),
+    piDir,
     runner: opts.runner ?? stubRunner(),
+    onActivity: opts.onActivity,
   });
   const info = await server.start();
   return { server, url: info.url, stop: () => server.stop() };
@@ -89,6 +92,76 @@ describe("server", () => {
         assert.equal(resp.status, 200);
         const card = await resp.json();
         assert.equal(card.version, "1.0.0");
+      } finally {
+        await stop();
+      }
+    });
+  });
+
+  describe("session discovery (0.2.0)", () => {
+    it("registers itself in the local file registry on start", async () => {
+      const piDir = tmpDir();
+      const cwd = "/test-repo";
+      const { server, stop } = await startServer({ cfg: DEFAULTS(), piDir, cwd });
+      try {
+        // The server uses process.pid as the registry key — which is alive.
+        const entries = listRegistry({ piDir, ttlSec: 60 });
+        const self = entries.find((e) => e.pid === process.pid);
+        assert.isOk(self, "server should have registered its own pid");
+        assert.equal(self!.cwd, cwd);
+        assert.equal(self!.port, server.port);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("unregisters from the registry on stop", async () => {
+      const piDir = tmpDir();
+      const { stop } = await startServer({ cfg: DEFAULTS(), piDir });
+      await stop();
+      const entries = listRegistry({ piDir, ttlSec: 60 });
+      const self = entries.find((e) => e.pid === process.pid);
+      assert.isUndefined(self, "registry entry should be removed on stop");
+    });
+
+    it("enriches the Agent Card with session metadata when enrichCard is on", async () => {
+      const cfg = DEFAULTS();
+      const cwd = "/enriched-repo";
+      const { url, stop } = await startServer({ cfg, cwd });
+      try {
+        const resp = await fetch(url + ".well-known/agent-card.json");
+        const card = await resp.json();
+        assert.isDefined(card.capabilities.extensions, "card should declare the extension");
+        assert.isDefined(card.metadata, "card should carry metadata");
+        assert.equal(card.metadata.cwd, cwd);
+        assert.equal(card.metadata.pid, process.pid);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("omits metadata from the card when enrichCard is off", async () => {
+      const cfg = DEFAULTS();
+      cfg.discovery.enrichCard = false;
+      const { url, stop } = await startServer({ cfg });
+      try {
+        const resp = await fetch(url + ".well-known/agent-card.json");
+        const card = await resp.json();
+        assert.isUndefined(card.metadata);
+        assert.isUndefined(card.capabilities.extensions);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("does NOT write a registry file when local discovery is disabled", async () => {
+      const cfg = DEFAULTS();
+      cfg.discovery.local.enabled = false;
+      const piDir = tmpDir();
+      const { stop } = await startServer({ cfg, piDir });
+      try {
+        const entries = listRegistry({ piDir, ttlSec: 60 });
+        assert.lengthOf(entries, 0, "no registry file should be written");
       } finally {
         await stop();
       }
@@ -205,6 +278,96 @@ describe("server", () => {
       try {
         const r = await jsonRpc(url, "tasks/get", { id: "nope" });
         assert.equal(r.error?.code, -32001);
+      } finally {
+        await stop();
+      }
+    });
+  });
+
+  describe("inbound activity (0.3.0)", () => {
+    it("emits arrived → progress → completed for a successful task", async () => {
+      const events: any[] = [];
+      const runner: SessionRunner = async ({ onProgress }) => {
+        onProgress?.("⚙ bash npm test");
+        return { reply: "all good", inputRequired: false };
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner, onActivity: (a) => events.push(a) });
+      try {
+        await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "run tests" }] },
+        });
+        const types = events.map((e) => e.type);
+        assert.deepEqual(types, ["arrived", "progress", "completed"]);
+        assert.equal(events[0]!.identity, "ip:127.0.0.1"); // localhost-only mode
+        assert.match(events[0]!.preview, /run tests/);
+        assert.match(events[1]!.line, /npm test/);
+        assert.match(events[2]!.replyPreview, /all good/);
+        assert.equal(events[2]!.state, STATE_COMPLETED);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("emits failed with the error when the runner throws", async () => {
+      const events: any[] = [];
+      const runner: SessionRunner = async () => {
+        throw new Error("kaboom");
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner, onActivity: (a) => events.push(a) });
+      try {
+        await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "boom" }] },
+        });
+        const types = events.map((e) => e.type);
+        assert.deepEqual(types, ["arrived", "failed"]);
+        assert.match(events[1]!.error, /kaboom/);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("emits completed (canceled) for a user cancel", async () => {
+      const events: any[] = [];
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const runner: SessionRunner = async ({ signal }) => {
+        await new Promise<void>((resolve, reject) => {
+          const onAbort = () => reject(new Error("aborted"));
+          signal.addEventListener("abort", onAbort, { once: true });
+          void gate.then(() => {
+            signal.removeEventListener("abort", onAbort);
+            resolve();
+          });
+        });
+        return { reply: "never", inputRequired: false };
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner, onActivity: (a) => events.push(a) });
+      try {
+        const sendP = jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        // Let the task start, then cancel it.
+        await new Promise((r) => setTimeout(r, 50));
+        const tasks = await jsonRpc(url, "tasks/list", {});
+        const tid = tasks.result.tasks[0]!.id;
+        await jsonRpc(url, "tasks/cancel", { id: tid });
+        await sendP;
+        const types = events.map((e) => e.type);
+        assert.deepEqual(types, ["arrived", "completed"]);
+        assert.equal(events[1]!.state, STATE_CANCELED);
+      } finally {
+        release();
+        await stop();
+      }
+    });
+
+    it("does not crash without an onActivity handler (backward compat)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        assert.equal(r.result.status.state, STATE_COMPLETED);
       } finally {
         await stop();
       }

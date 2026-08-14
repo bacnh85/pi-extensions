@@ -19,6 +19,7 @@ import { hostname } from "node:os";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   PROTOCOL_VERSION,
+  PI_SESSION_EXTENSION_URI,
   STATE_CANCELED,
   STATE_COMPLETED,
   STATE_FAILED,
@@ -49,6 +50,10 @@ import {
   wrapInbound,
 } from "./security";
 import { metrics } from "./client";
+import { heartbeat, register, unregister, type SessionDescriptor } from "./registry";
+import { startBroadcast, startDiscovery, txtRecord, mdnsPeerKey, type MdnsHandle, type MdnsPeer } from "./mdns";
+import type { InboundActivity } from "./activity";
+import { preview } from "./activity";
 
 // ---------------------------------------------------------------------------
 // Task store (in-memory, bounded — evicts DONE tasks only, never running ones)
@@ -179,6 +184,16 @@ export class A2AServer {
   private piDir: string;
   private runner: SessionRunner | undefined;
   private running = 0; // concurrency counter (bounded by cfg.server.maxConcurrent)
+  // Discovery state (0.2.0)
+  private descriptor: SessionDescriptor | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private mdnsBroadcast: MdnsHandle | null = null;
+  private mdnsDiscovery: MdnsHandle | null = null;
+  private mdnsPeers: MdnsPeer[] = [];
+  private pid = process.pid;
+  private api: { getActiveTools?: () => string[] } | undefined;
+  /** Host-TUI activity hook (0.3.0) — fired on task lifecycle events. */
+  private onActivity: ((a: InboundActivity) => void) | undefined;
 
   constructor(opts: {
     cfg: A2AConfig;
@@ -186,9 +201,13 @@ export class A2AServer {
     cwd: string;
     piDir: string;
     runner?: SessionRunner;
+    api?: { getActiveTools?: () => string[] };
+    onActivity?: (a: InboundActivity) => void;
   }) {
     this.cfg = opts.cfg;
     this.ctx = opts.ctx;
+    this.api = opts.api;
+    this.onActivity = opts.onActivity;
     this.cwd = opts.cwd;
     this.piDir = opts.piDir;
     this.runner = opts.runner;
@@ -224,7 +243,139 @@ export class A2AServer {
       streaming: true,
       pushNotifications: false,
       authRequired: !localhostOnly(this.cfg),
+      sessionMetadata: this.cfg.discovery.enrichCard && this.descriptor
+        ? this.cardMetadata()
+        : undefined,
     });
+  }
+
+  /** Build the A2A-Extensions metadata map from the live session descriptor. */
+  private cardMetadata(): Record<string, unknown> {
+    const d = this.descriptor!;
+    return {
+      pid: d.pid,
+      cwd: d.cwd,
+      model: d.model,
+      tools: d.tools,
+      sessionName: d.sessionName,
+      selfIdentity: d.selfIdentity,
+      agentName: d.agentName,
+      startedAt: d.startedAt,
+      // Extension URI echoed in metadata for peers that read metadata before capabilities.
+      extension: PI_SESSION_EXTENSION_URI,
+    };
+  }
+
+  /** Snapshot the current session identity (cwd/model/tools) into a descriptor. */
+  /** Snapshot the current session identity (cwd/model/tools) into a descriptor. */
+  private buildDescriptor(): SessionDescriptor {
+    const m = this.ctx?.model as any;
+    const model = m
+      ? { provider: String(m.provider ?? ""), id: String(m.id ?? ""), name: m.name ? String(m.name) : undefined }
+      : null;
+    return {
+      pid: this.pid,
+      url: this.publicUrl(),
+      port: this.boundPort ?? this.cfg.server.port,
+      host: resolveBindHost(this.cfg),
+      cwd: this.cwd,
+      model,
+      agentName: this.cfg.server.agentName || hostname() || "pi",
+      sessionName: this.ctx ? (this.ctx as any).getSessionName?.() : undefined,
+      selfIdentity: this.cfg.selfIdentity || undefined,
+      tools: this.activeTools(),
+      skills: this.cfg.server.skills.length
+        ? this.cfg.server.skills
+        : [{ id: "coding", name: "coding", description: "Read, edit, run, debug, refactor, test" }],
+      startedAt: this.descriptor?.startedAt ?? new Date().toISOString(),
+      mtime: Date.now(),
+    };
+  }
+
+  /** Best-effort active-tools snapshot (ctx may not expose getActiveTools in all modes). */
+  private activeTools(): string[] {
+    try {
+      if (this.api && typeof this.api.getActiveTools === "function") return this.api.getActiveTools();
+    } catch {
+      /* ignore */
+    }
+    return [];
+  }
+
+  /** Re-snapshot cwd/model/tools and refresh the registry + card (call on model_select). */
+  refreshDescriptor(): void {
+    if (!this.descriptor || !this.cfg.discovery.local.enabled) return;
+    this.descriptor = this.buildDescriptor();
+    heartbeat(this.descriptor, this.piDir);
+  }
+
+  /** Read-only access to discovered mDNS peers (for a2a_peers). */
+  get discoveredMdnsPeers(): MdnsPeer[] {
+    return this.mdnsPeers;
+  }
+
+  /** Start local-registry declaration + optional mDNS broadcast/discovery. */
+  private async startDiscovery(): Promise<void> {
+    // Build the descriptor unconditionally — it's needed for both local and mDNS.
+    this.descriptor = this.buildDescriptor();
+
+    // Layer 1: local file registry (opt-out).
+    if (this.cfg.discovery.local.enabled) {
+      register(this.descriptor, this.piDir);
+      const intervalMs = Math.max(1, this.cfg.discovery.local.heartbeatSec) * 1000;
+      this.heartbeatTimer = setInterval(() => {
+        if (this.descriptor) heartbeat(this.descriptor, this.piDir);
+      }, intervalMs);
+      this.heartbeatTimer.unref?.(); // don't keep the process alive on exit
+    }
+
+    // Layer 3: mDNS broadcast + discovery (independent of local registry).
+    if (this.cfg.discovery.mdns.enabled && this.descriptor) {
+      const model = this.descriptor.model
+        ? `${this.descriptor.model.provider}/${this.descriptor.model.id}`
+        : "";
+      this.mdnsBroadcast = await startBroadcast({
+        serviceType: this.cfg.discovery.mdns.serviceType,
+        name: this.descriptor.agentName,
+        port: this.descriptor.port,
+        txt: txtRecord({ url: this.descriptor.url, cwd: this.descriptor.cwd, model }),
+      });
+      this.mdnsDiscovery = await startDiscovery({
+        serviceType: this.cfg.discovery.mdns.serviceType,
+        onUp: (peer) => {
+          // Dedupe by URL (or name:host:port composite); keep the freshest.
+          const key = mdnsPeerKey(peer);
+          const i = this.mdnsPeers.findIndex((p) => mdnsPeerKey(p) === key);
+          if (i >= 0) this.mdnsPeers[i] = peer;
+          else this.mdnsPeers.push(peer);
+        },
+        onDown: (gone) => {
+          // Remove the departed peer so the list doesn't grow unbounded.
+          this.mdnsPeers = this.mdnsPeers.filter(
+            (p) => !(p.name === gone.name && p.host === gone.host && p.port === gone.port),
+          );
+        },
+      });
+    }
+  }
+
+  /** Stop local-registry declaration + mDNS. */
+  private async stopDiscovery(): Promise<void> {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    if (this.cfg.discovery.local.enabled) {
+      unregister(this.pid, this.piDir);
+    }
+    if (this.mdnsBroadcast) {
+      await this.mdnsBroadcast.stop();
+      this.mdnsBroadcast = null;
+    }
+    if (this.mdnsDiscovery) {
+      await this.mdnsDiscovery.stop();
+      this.mdnsDiscovery = null;
+    }
   }
 
   async start(): Promise<{ host: string; port: number; url: string }> {
@@ -256,6 +407,7 @@ export class A2AServer {
         });
         this.http = srv;
         this.boundPort = (srv.address() as { port: number })?.port ?? port;
+        await this.startDiscovery();
         return { host, port: this.boundPort, url: this.publicUrl() };
       } catch (e: any) {
         lastErr = e;
@@ -298,6 +450,7 @@ export class A2AServer {
     });
     this.http = null;
     this.boundPort = null;
+    await this.stopDiscovery();
   }
 
   get url(): string {
@@ -449,6 +602,7 @@ export class A2AServer {
     const st: StoredTask = { task, controller, done: false, subscribeWatchers: [] };
     this.store.add(taskId, st);
     audit({ piDir: this.piDir, direction: "inbound", identity, taskId, text: inboundText });
+    this.onActivity?.({ type: "arrived", taskId, identity, preview: preview(inboundText), contextId });
 
     // If an external abort fires (client disconnect on streams, or tasks/cancel
     // on a streaming task), propagate it to the runner's controller.
@@ -459,16 +613,22 @@ export class A2AServer {
     }
 
     this.running += 1;
+    const startedAt = Date.now();
     try {
       const timeoutMs = this.cfg.server.replyTimeoutSec * 1000;
       const timer = setTimeout(() => controller.abort(new Error("reply timeout")), timeoutMs);
       controller.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
       const wrapped = wrapInbound(identity, inboundText);
       const runner = this.requireRunner();
-      const out = await runner({ message: wrapped, signal: controller.signal });
+      const out = await runner({
+        message: wrapped,
+        signal: controller.signal,
+        onProgress: (line) => this.onActivity?.({ type: "progress", taskId, line }),
+      });
       clearTimeout(timer);
+      const finalState = out.inputRequired ? STATE_INPUT_REQUIRED : STATE_COMPLETED;
       this.store.update(taskId, (t) => {
-        t.status.state = out.inputRequired ? STATE_INPUT_REQUIRED : STATE_COMPLETED;
+        t.status.state = finalState;
         t.artifacts = [
           {
             artifactId: "reply",
@@ -479,6 +639,13 @@ export class A2AServer {
       });
       st.done = true;
       metrics.tasksCompleted += 1;
+      this.onActivity?.({
+        type: "completed",
+        taskId,
+        state: finalState,
+        replyPreview: preview(out.reply),
+        elapsedMs: Date.now() - startedAt,
+      });
       return st.task; // bare Task as the JSON-RPC result (legacy-compatible)
     } catch (e: any) {
       const aborted = controller.signal.aborted;
@@ -498,8 +665,21 @@ export class A2AServer {
       st.done = true;
       if (state === STATE_CANCELED) {
         // cancel doesn't count as a failure in completion metrics
+        this.onActivity?.({
+          type: "completed",
+          taskId,
+          state,
+          replyPreview: "(canceled)",
+          elapsedMs: Date.now() - startedAt,
+        });
       } else {
         metrics.tasksFailed += 1;
+        this.onActivity?.({
+          type: "failed",
+          taskId,
+          error: e?.message || String(e),
+          elapsedMs: Date.now() - startedAt,
+        });
       }
       return st.task;
     } finally {

@@ -1,7 +1,7 @@
 {
   "name": "@bacnh85/pi-a2a",
-  "version": "0.1.1",
-  "description": "A2A Protocol v1.0 bidirectional extension for the Pi coding agent — distribute tasks to remote agents and be called by them.",
+  "version": "0.3.1",
+  "description": "A2A Protocol v1.0 bidirectional extension for the Pi coding agent — distribute tasks to remote agents, be called by them, and self-declare for local session discovery.",
   "type": "module",
   "license": "MIT",
   "publishConfig": {
@@ -36,6 +36,7 @@
     "extensions/package.json",
     "extensions/index.ts",
     "extensions/lib/",
+    "extensions/types/",
     "skills/"
   ],
   "pi": {
@@ -48,9 +49,14 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
+  "optionalDependencies": {
+    "bonjour-service": "^1.2.1"
+  },
   "devDependencies": {
+    "@earendil-works/pi-tui": "^0.84.1",
     "@types/chai": "^4.3.20",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.43",

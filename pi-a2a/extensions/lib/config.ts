@@ -6,7 +6,7 @@
  * Mirrors the pi-munin/pi-evolve pattern.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -33,6 +33,11 @@ export interface Peer {
 
 export interface A2AConfig {
   peers: Record<string, Peer>;
+  /** Name THIS session presents as the caller identity (outbound). Maps to an
+   *  entry in `server.peerTokens` — that token is attached to outbound calls so
+   *  the receiver attributes the call to this session (not the shared token's
+   *  anonymous `ip:` identity). Empty = use the shared token (anonymous caller). */
+  selfIdentity: string;
   server: {
     enabled: boolean;
     port: number;
@@ -57,10 +62,23 @@ export interface A2AConfig {
   timeouts: { send: number; async: number; stream: number };
   retryAttempts: number;
   verifySsl: boolean;
+  /** Session self-declaration + local/network discovery (0.2.0). */
+  discovery: {
+    local: { enabled: boolean; heartbeatSec: number; ttlSec: number };
+    mdns: { enabled: boolean; serviceType: string };
+    enrichCard: boolean;
+  };
+  /** Host-TUI presentation (0.3.0). */
+  ui: {
+    /** Show inbound task activity as transcript messages (default true). When
+     *  false, activity is still surfaced via notify() toasts + footer status. */
+    transcript: boolean;
+  };
 }
 
 const DEFAULTS: A2AConfig = {
   peers: {},
+  selfIdentity: "",
   server: {
     enabled: false,
     port: 9910,
@@ -82,6 +100,12 @@ const DEFAULTS: A2AConfig = {
   timeouts: { send: 120000, async: 30000, stream: 120000 },
   retryAttempts: 2,
   verifySsl: true,
+  discovery: {
+    local: { enabled: true, heartbeatSec: 15, ttlSec: 60 },
+    mdns: { enabled: false, serviceType: "a2a" },
+    enrichCard: true,
+  },
+  ui: { transcript: true },
 };
 
 // ---------------------------------------------------------------------------
@@ -203,15 +227,21 @@ export function loadConfig(opts: {
 
   const cfg: A2AConfig = {
     peers: {},
+    selfIdentity: "",
     server: { ...DEFAULTS.server },
     timeouts: { ...DEFAULTS.timeouts },
     retryAttempts: DEFAULTS.retryAttempts,
     verifySsl: DEFAULTS.verifySsl,
+    discovery: {
+      local: { ...DEFAULTS.discovery.local },
+      mdns: { ...DEFAULTS.discovery.mdns },
+      enrichCard: DEFAULTS.discovery.enrichCard,
+    },
+    ui: { ...DEFAULTS.ui },
   };
 
   // Peers from settings.json `a2a.peers`
-  const peers = (s.peers && typeof s.peers === "object" ? s.peers : {}) as Record<string, any>;
-  for (const [name, entry] of Object.entries(peers)) {
+  const peers = (s.peers && typeof s.peers === "object" ? s.peers : {}) as Record<string, any>;  for (const [name, entry] of Object.entries(peers)) {
     if (!entry || typeof entry !== "object") continue;
     cfg.peers[name] = {
       url: String(entry.url || ""),
@@ -259,21 +289,181 @@ export function loadConfig(opts: {
   cfg.retryAttempts = num(s.retryAttempts, DEFAULTS.retryAttempts);
   cfg.verifySsl = bool(s.verifySsl ?? env.A2A_VERIFY_SSL, DEFAULTS.verifySsl);
 
+  // Discovery (0.2.0)
+  const d = (s.discovery && typeof s.discovery === "object" ? s.discovery : {}) as Record<string, any>;
+  const dl = (d.local && typeof d.local === "object" ? d.local : {}) as Record<string, any>;
+  const dm = (d.mdns && typeof d.mdns === "object" ? d.mdns : {}) as Record<string, any>;
+  cfg.discovery.local.enabled = bool(dl.enabled ?? env.A2A_DISCOVERY_LOCAL, DEFAULTS.discovery.local.enabled);
+  cfg.discovery.local.heartbeatSec = num(dl.heartbeatSec ?? env.A2A_HEARTBEAT_SEC, DEFAULTS.discovery.local.heartbeatSec);
+  cfg.discovery.local.ttlSec = num(dl.ttlSec ?? env.A2A_TTL_SEC, DEFAULTS.discovery.local.ttlSec);
+  cfg.discovery.mdns.enabled = bool(dm.enabled ?? d.mdnsEnabled ?? env.A2A_DISCOVERY_MDNS, DEFAULTS.discovery.mdns.enabled);
+  cfg.discovery.mdns.serviceType = String(dm.serviceType ?? env.A2A_MDNS_TYPE ?? DEFAULTS.discovery.mdns.serviceType);
+  cfg.discovery.enrichCard = bool(d.enrichCard ?? env.A2A_ENRICH_CARD, DEFAULTS.discovery.enrichCard);
+
+  // Outbound caller identity (0.2.0): the name THIS session presents. Must
+  // match an entry in server.peerTokens so the receiver attributes the call
+  // here. Empty → fall back to the shared token (anonymous caller).
+  cfg.selfIdentity = String(s.selfIdentity ?? env.A2A_SELF_IDENTITY ?? "");
+
+  // Host-TUI presentation (0.3.0)
+  const ui = (s.ui && typeof s.ui === "object" ? s.ui : {}) as Record<string, any>;
+  cfg.ui.transcript = bool(ui.transcript ?? env.A2A_UI_TRANSCRIPT, DEFAULTS.ui.transcript);
+
+  // Live in-memory overrides (set by the /a2a-config panel) — highest
+  // precedence, above env + settings.json, so panel edits apply immediately
+  // without /reload.
+  if (configOverrides) applyOverrides(cfg, configOverrides);
+
   return cfg;
+}
+
+// ---------------------------------------------------------------------------
+// Live config overrides (0.3.0) — panel edits apply without /reload
+// ---------------------------------------------------------------------------
+
+let configOverrides: Partial<A2AConfig> | null = null;
+
+/** Replace the live in-memory config overrides (null clears them). */
+export function setConfigOverrides(patch: Partial<A2AConfig> | null): void {
+  configOverrides = patch;
+}
+
+/** Merge a partial A2AConfig onto a full config (deep for known nested blocks). */
+function applyOverrides(cfg: A2AConfig, patch: Partial<A2AConfig>): void {
+  if (patch.peers) cfg.peers = patch.peers;
+  if (patch.selfIdentity !== undefined) cfg.selfIdentity = patch.selfIdentity;
+  if (patch.server) Object.assign(cfg.server, patch.server);
+  if (patch.timeouts) Object.assign(cfg.timeouts, patch.timeouts);
+  if (patch.retryAttempts !== undefined) cfg.retryAttempts = patch.retryAttempts;
+  if (patch.verifySsl !== undefined) cfg.verifySsl = patch.verifySsl;
+  if (patch.discovery) {
+    if (patch.discovery.local) Object.assign(cfg.discovery.local, patch.discovery.local);
+    if (patch.discovery.mdns) Object.assign(cfg.discovery.mdns, patch.discovery.mdns);
+    if (patch.discovery.enrichCard !== undefined) cfg.discovery.enrichCard = patch.discovery.enrichCard;
+  }
+  if (patch.ui) Object.assign(cfg.ui, patch.ui);
+}
+
+// ---------------------------------------------------------------------------
+// Settings.json writer (0.3.0) — the /a2a-config panel persists edits here
+// ---------------------------------------------------------------------------
+
+/**
+ * Read-modify-write the `a2a` key in settings.json, preserving all other keys.
+ *
+ * Target resolution mirrors readSettingsA2A: the first existing file that has
+ * an `a2a` key, else the global settings path (PI_CODING_AGENT_DIR, then
+ * ~/.pi/agent, then ~/.pi/agents).
+ *
+ * ponytail: no file lock (SDK uses proper-lockfile internally, but that's a
+ * dependency we don't need) — settings edits are rare human actions, and the
+ * atomic rename prevents torn writes. Concurrent external edits are out of
+ * scope.
+ */
+export function writeSettingsA2A(opts: {
+  cwd: string;
+  patch: (a2a: any) => any;
+}): string {
+  const { cwd, patch } = opts;
+  const explicit = process.env.PI_CODING_AGENT_DIR;
+  const candidates = explicit
+    ? [join(cwd, ".pi", "settings.json"), join(explicit, "settings.json")]
+    : [
+        join(cwd, ".pi", "settings.json"),
+        join(homedir(), ".pi", "agent", "settings.json"),
+        join(homedir(), ".pi", "agents", "settings.json"),
+      ];
+
+  // Prefer the first file that already has an `a2a` key.
+  let target: string | undefined;
+  for (const p of candidates) {
+    if (!existsSync(p)) continue;
+    try {
+      const j = JSON.parse(readFileSync(p, "utf-8"));
+      if (j?.a2a && typeof j.a2a === "object") {
+        target = p;
+        break;
+      }
+    } catch {
+      /* unreadable — try next */
+    }
+  }
+  target ??= candidates[candidates.length - 1]!; // fall back to the last (global)
+
+  const dir = dirname(target);
+  mkdirSync(dir, { recursive: true });
+  let json: any = {};
+  try {
+    json = existsSync(target) ? JSON.parse(readFileSync(target, "utf-8")) : {};
+  } catch {
+    json = {}; // corrupt file → start fresh (still preserving nothing, safest)
+  }
+  if (!json.a2a || typeof json.a2a !== "object" || Array.isArray(json.a2a)) json.a2a = {};
+  json.a2a = patch(json.a2a) ?? json.a2a;
+
+  // Atomic write: temp file + rename.
+  const tmp = target + ".tmp";
+  writeFileSync(tmp, JSON.stringify(json, null, 2) + "\n", "utf-8");
+  renameSync(tmp, target);
+  return target;
 }
 
 // ---------------------------------------------------------------------------
 // Peer registry
 // ---------------------------------------------------------------------------
 
-/** Resolve a peer by configured name OR treat as a direct http(s) URL. */
-export function resolvePeer(cfg: A2AConfig, agent: string): Peer | null {
+/** Normalize a URL for dedupe/comparison (lowercase, trailing slashes stripped). */
+export function normUrl(u: string): string {
+  return String(u || "").trim().replace(/\/+$/, "").toLowerCase();
+}
+
+/** Resolve a peer by configured name OR treat as a direct http(s) URL.
+ *  When the direct URL is loopback AND listed in `knownLoopbackUrls` (known
+ *  peers: configured peers or local-registry entries — same-machine, same
+ *  user), a token is auto-attached so discovered local Pi sessions are callable
+ *  without manual per-peer config. Token preference:
+ *    1. THIS session's own peer token (cfg.selfIdentity → cfg.server.peerTokens)
+ *       so the receiver attributes the call to this named session.
+ *    2. else the shared token (anonymous caller).
+ *  Arbitrary loopback URLs are NOT trusted: a prompt-injected localhost URL
+ *  must never receive any credential. */
+export function resolvePeer(
+  cfg: A2AConfig,
+  agent: string,
+  opts?: { knownLoopbackUrls?: Set<string> },
+): Peer | null {
   const a = String(agent || "").trim();
   if (!a) return null;
   if (/^https?:\/\//i.test(a)) {
-    return { url: a, auth: { type: "none" }, timeout: cfg.timeouts.send, capabilities: [] };
+    const url = a;
+    let auth: PeerAuth = { type: "none" };
+    if (isLoopbackHost(url) && opts?.knownLoopbackUrls?.has(normUrl(url))) {
+      const token = outboundToken(cfg);
+      if (token) auth = { type: "bearer", token };
+    }
+    return { url, auth, timeout: cfg.timeouts.send, capabilities: [] };
   }
   return cfg.peers[a] ?? null;
+}
+
+/** Pick the token to present outbound: prefer this session's own peer token
+ *  (so the receiver attributes the call to us), else the shared token. */
+function outboundToken(cfg: A2AConfig): string {
+  if (cfg.selfIdentity && cfg.server.peerTokens[cfg.selfIdentity]) {
+    return cfg.server.peerTokens[cfg.selfIdentity]!;
+  }
+  return cfg.server.sharedToken;
+}
+
+/** True when the URL's host is localhost / 127.0.0.1 / ::1 (brackets stripped). */
+function isLoopbackHost(rawUrl: string): boolean {
+  try {
+    const u = new URL(rawUrl);
+    const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    return h === "localhost" || h === "127.0.0.1" || h === "::1";
+  } catch {
+    return false;
+  }
 }
 
 /** Auth header(s) for an outbound request. */

@@ -14,7 +14,7 @@ Each package lives in its own directory and can be installed independently. This
 | [`@bacnh85/pi-budget`](./pi-budget) | 0.1.1 | Spend cap enforcement — `--budget <usd>` aborts the agent at the cap. |
 | [`@bacnh85/pi-checkpoint`](./pi-checkpoint) | 0.1.0 | Git-backed undo/redo — snapshots file state per turn so `/undo` rolls back a message AND its file changes. |
 | [`@bacnh85/pi-evolve`](./pi-evolve) | 0.3.1 | Trajectory-based self-learning loop — captures tool-call trajectories, reflects to extract learnings, persists to Munin or local JSONL, injects recent learnings into future sessions. |
-| [`@bacnh85/pi-a2a`](./pi-a2a) | 0.1.1 | A2A Protocol v1.0 bidirectional — Pi distributes tasks to remote agents (Hermes, ADK, LangChain, any A2A peer) and exposes itself as an A2A-callable agent. |
+| [`@bacnh85/pi-a2a`](./pi-a2a) | 0.3.1 | A2A Protocol v1.0 bidirectional — Pi distributes tasks to remote agents (Hermes, ADK, LangChain, any A2A peer), exposes itself as an A2A-callable agent, self-declares for local session discovery (file registry + enriched Agent Card + mDNS), shows inbound task activity in the host TUI, and has an interactive config panel. |
 | [`@bacnh85/pi-fff`](./pi-fff) | 0.7.9 | FFF-powered fuzzy file and content search for Pi. |
 | [`@bacnh85/pi-init`](./pi-init) | 0.1.0 | Guided AGENTS.md generation — `/init` scans the repo and generates/updates AGENTS.md with build/test/lint commands, architecture, and conventions. |
 | [`@bacnh85/pi-kicad`](./pi-kicad) | 0.1.3 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon. |

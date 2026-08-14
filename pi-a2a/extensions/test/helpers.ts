@@ -4,6 +4,7 @@ import type { A2AConfig } from "../lib/config";
 export function DEFAULTS(): A2AConfig {
   return {
     peers: {},
+    selfIdentity: "",
     server: {
       enabled: false,
       port: 9910,
@@ -25,5 +26,11 @@ export function DEFAULTS(): A2AConfig {
     timeouts: { send: 120000, async: 30000, stream: 120000 },
     retryAttempts: 2,
     verifySsl: true,
+    discovery: {
+      local: { enabled: true, heartbeatSec: 15, ttlSec: 60 },
+      mdns: { enabled: false, serviceType: "a2a" },
+      enrichCard: true,
+    },
+    ui: { transcript: true },
   };
 }

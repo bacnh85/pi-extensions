@@ -2,6 +2,7 @@ import { assert } from "chai";
 
 import {
   PROTOCOL_VERSION,
+  PI_SESSION_EXTENSION_URI,
   buildAgentCard,
   buildTask,
   extractText,
@@ -89,6 +90,37 @@ describe("protocol", () => {
       assert.isTrue(card.capabilities.streaming);
       assert.isTrue(card.capabilities.pushNotifications);
       assert.equal(card.skills[0]?.id, "s1");
+    });
+
+    it("omits extensions/metadata when no sessionMetadata provided", () => {
+      const card = buildAgentCard({ name: "pi", url: "http://x/" });
+      assert.isUndefined(card.capabilities.extensions);
+      assert.isUndefined(card.metadata);
+    });
+
+    it("emits the pi-session extension + metadata when sessionMetadata provided", () => {
+      const card = buildAgentCard({
+        name: "pi",
+        url: "http://localhost:9910/",
+        sessionMetadata: {
+          pid: 12345,
+          cwd: "/repo",
+          model: { provider: "anthropic", id: "claude" },
+          tools: ["bash", "read"],
+          startedAt: "2026-01-01T00:00:00Z",
+        },
+      });
+      assert.isDefined(card.capabilities.extensions);
+      assert.lengthOf(card.capabilities.extensions!, 1);
+      assert.equal(card.capabilities.extensions![0]!.uri, PI_SESSION_EXTENSION_URI);
+      assert.isFalse(card.capabilities.extensions![0]!.required);
+      assert.deepEqual(card.metadata, {
+        pid: 12345,
+        cwd: "/repo",
+        model: { provider: "anthropic", id: "claude" },
+        tools: ["bash", "read"],
+        startedAt: "2026-01-01T00:00:00Z",
+      });
     });
   });
 
