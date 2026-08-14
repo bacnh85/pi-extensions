@@ -218,6 +218,25 @@ describe("categorizeToolError", () => {
     const info = categorizeToolError("read", "something weird happened");
     assert.equal(info.category, "unknown");
   });
+
+  it("steers a sandboxed ENOENT to request_access when that tool is present", () => {
+    const info = categorizeToolError("read", { content: [{ type: "text", text: "ENOENT: no such file or directory" }] }, { sandboxed: true, hasRequestAccess: true });
+    assert.equal(info.category, "path_not_found");
+    assert.match(info.hint, /request_access/);
+    assert.doesNotMatch(info.hint, /find first/);
+  });
+
+  it("gives generic access guidance for a sandboxed ENOENT without request_access", () => {
+    const info = categorizeToolError("read", { content: [{ type: "text", text: "ENOENT: no such file or directory" }] }, { sandboxed: true, hasRequestAccess: false });
+    assert.equal(info.category, "path_not_found");
+    assert.doesNotMatch(info.hint, /request_access/);
+    assert.match(info.hint, /Grant access/);
+  });
+
+  it("keeps the find-first hint outside a sandbox", () => {
+    const info = categorizeToolError("read", { content: [{ type: "text", text: "ENOENT: no such file or directory" }] }, { sandboxed: false });
+    assert.match(info.hint, /find first/);
+  });
 });
 
 describe("detectReasoningRejection", () => {

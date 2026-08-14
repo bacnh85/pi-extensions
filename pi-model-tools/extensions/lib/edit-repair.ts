@@ -8,7 +8,8 @@
  *  2. leading-whitespace drift: pi's matcher normalizes trailing whitespace
  *     only; Codex's seek_sequence also tolerates leading-ws differences.
  *
- * Pure + testable. The wiring (prepareArguments/execute) lives in index.ts.
+ * Pure + testable. The wiring (tool_call pre-flight + tool_result enrichment
+ * hooks) lives in index.ts.
  */
 
 /** Strip a UTF-8 BOM if present. */
@@ -115,6 +116,54 @@ export function computeRetryEdit(fileContent: string, edits: { oldText: string; 
   const realOld = fileBytesForBlock(fileContent, firstIndex, patternLines.length);
   const fixedEdits = edits.map((e, i) => i === idx ? { ...e, oldText: realOld } : e);
   return { fixedEdits };
+}
+
+/**
+ * Pre-flight indentation-drift correction for the `edit` tool. For every edit,
+ * if there is exactly ONE trim-tolerant match whose real file bytes differ from
+ * the (decontaminated) oldText, rebuild that oldText from the file's bytes so
+ * the core exact matcher succeeds. Edits that already match, or whose match is
+ * ambiguous/absent, are left untouched (the tool reports those normally and the
+ * error is enriched via editErrorEnrichment). Returns null when nothing changed.
+ *
+ * This replaces the execute-level catch-and-retry (index.ts wrapper): it runs
+ * in the tool_call hook BEFORE the sandboxed edit executes, so it also works
+ * for extensions that own the edit tool (e.g. a sandbox's VM-wrapped edit).
+ */
+export function computePreflightEdits(fileContent: string, edits: { oldText: string; newText: string }[]): { fixedEdits: { oldText: string; newText: string }[] } | null {
+  let changed = false;
+  const fixedEdits = edits.map((edit, i) => {
+    const oldText = typeof edit?.oldText === "string" ? edit.oldText : "";
+    if (!oldText) return edit;
+    const decontaminated = stripReadContamination(oldText).text;
+    const { count, firstIndex } = findTrimMatch(fileContent, decontaminated);
+    if (count !== 1) return edit;
+    const patternLines = decontaminated.split("\n");
+    if (patternLines.length > 1 && patternLines[patternLines.length - 1] === "") patternLines.pop();
+    const realOld = fileBytesForBlock(fileContent, firstIndex, patternLines.length);
+    if (realOld === decontaminated) return edit;
+    changed = true;
+    return { ...edit, oldText: realOld };
+  });
+  return changed ? { fixedEdits } : null;
+}
+
+/**
+ * Enrich an edit mismatch error with the nearest numbered file region so the
+ * model can copy verbatim on the next turn. Returns undefined when the error is
+ * not a mismatch, the failing edit is unknown, or no region can be computed.
+ * Used by the tool_result hook (replaces the execute wrapper's rethrown error).
+ */
+export function editErrorEnrichment(fileContent: string, errorText: string, edits: { oldText: string; newText: string }[]): string | undefined {
+  if (!isEditMismatchError(errorText)) return undefined;
+  if (edits.length === 0) return undefined;
+  const idx = Math.min(parseFailedEditIndex(errorText), edits.length - 1);
+  const failing = edits[idx];
+  const oldText = typeof failing?.oldText === "string" ? failing.oldText : "";
+  if (!oldText) return undefined;
+  const nearest = nearestBlock(fileContent, stripReadContamination(oldText).text);
+  if (!nearest) return undefined;
+  return `${errorText}\n\n${nearest}`;
 }
 
 /**
