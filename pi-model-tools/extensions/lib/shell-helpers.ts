@@ -193,7 +193,7 @@ export function detectReasoningRejection(errorText: string): boolean {
   return false;
 }
 
-export function categorizeToolError(toolName: string, errorResult: unknown): ErrorInfo {
+export function categorizeToolError(toolName: string, errorResult: unknown, opts?: { sandboxed?: boolean; hasRequestAccess?: boolean }): ErrorInfo {
   const text = (isRecord(errorResult) && Array.isArray(errorResult.content)
     ? errorResult.content.map((p) => isRecord(p) && typeof p.text === "string" ? p.text : "").join("\n")
     : String(errorResult ?? "")).toLowerCase();
@@ -205,7 +205,18 @@ export function categorizeToolError(toolName: string, errorResult: unknown): Err
   if (/rate limit|429|too many requests|exceeded.*limit/i.test(text)) return { category: "rate_limit", toolName, hint: "Rate-limited. Wait before retrying or simplify the request." };
   if (/timed? ?out|timeout/i.test(text)) return { category: "timeout", toolName, hint: "Timed out. Use simpler inputs or reduce scope." };
   if (/validation failed|invalid_type|required|missing.*(field|argument|property)/i.test(text)) return { category: "validation", toolName, hint: "Invalid arguments. Provide all required fields with correct types." };
-  if (/enoent|no such file or directory|(?:file|path) not found/i.test(text)) return { category: "path_not_found", toolName, hint: "Path missing or guessed. Discover the exact path with find first." };
+  if (/enoent|no such file or directory|(?:file|path) not found/i.test(text)) return {
+    category: "path_not_found",
+    toolName,
+    // Sandboxed sessions deliberately surface permission-denied paths as ENOENT
+    // to hide their existence; "find first" would misdirect. Steer to the
+    // sandbox's access-granting tool only when it is actually available.
+    hint: opts?.sandboxed
+      ? (opts.hasRequestAccess
+        ? "Path not visible in this sandbox — it may exist but be permission-denied. Call request_access to grant the path, then retry."
+        : "Path not visible in this sandbox — it may exist but be permission-denied. Grant access to the path in the sandbox, then retry.")
+      : "Path missing or guessed. Discover the exact path with find first.",
+  };
   if (/no such tool|unknown tool|is not a function|tool\s+\S+\s+(?:was\s+)?not found/i.test(text)) return { category: "tool_not_found", toolName, hint: "Use only exact Pi tool names. Never invent names like read_file." };
   if (/(?:http(?: status)?|status(?: code)?|api(?: error)?)[^\n]{0,20}[45]\d{2}\b|\b[45]\d{2}\s+(?:bad request|unauthorized|forbidden|not found|conflict|too many requests|internal server error|bad gateway|service unavailable|gateway timeout)\b/i.test(text)) return { category: "api_error", toolName, hint: `Tool call to ${toolName} failed. Retry with simpler inputs.` };
   return { category: "unknown", toolName, hint: "Previous tool call(s) had errors. Use simpler inputs." };

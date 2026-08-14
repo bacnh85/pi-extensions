@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.6.0 (2026-08-14)
+
+### Architecture — hook-based tool interception (sandbox-safe)
+
+- **The built-in tools are no longer re-registered.** The extension dropped the
+  `wrapToolDefinition` layer that registered read/write/edit/grep/find/ls/bash
+  via `pi.registerTool()`. The host resolves duplicate tool names by
+  **first-registration-per-name** with no conflict error (`_refreshToolRegistry`),
+  so the old wrapper silently clobbered any other extension that owned those
+  tools (e.g. a sandbox's VM-wrapped tools) — and which extension won depended on
+  load order. All interception now runs through the SDK's documented `tool_call` /
+  `tool_result` hooks ("mutate `event.input` in place to patch tool arguments
+  before execution"), which compose with whichever extension registered the tool
+  and are load-order independent. The extension's only registration is the
+  `apply_patch` tool and the `/model-tools-status` command.
+- **Edit repair moved from the execute wrapper into the hooks.** Contamination
+  stripping + indentation-drift pre-flight now run in the `tool_call` hook
+  (before the sandboxed edit executes, rewriting `event.input.edits` in place);
+  the nearest-region error enrichment runs in the new `tool_result` hook. No
+  more catch-and-rethrow — the tool executes once. This also makes edit repair
+  work for extensions that own the edit tool.
+- **Read defaults / `__mtReadNote` dropped.** The base `read` tool already
+  applies `offset=1`/`limit=2000` semantics and emits its own continuation
+  notices, so the wrapper's additive defaults and appended note were redundant.
+- **Generic sandbox detection + apply_patch gate.** A session is sandboxed when
+  `PI_TOOLS_ARE_SANDBOXED` is declared (`1`/`true`/`yes`/`on`; `0`/`false`/`no`/
+  `off` overrides) or auto-detected: any of `read`/`write`/`edit`/`bash` is owned
+  by an extension (`sourceInfo.source` != `builtin`), captured at `session_start`.
+  Our `apply_patch` (raw `node:fs` writes) is hard-blocked at runtime in the
+  `tool_call` hook when sandboxed — detection is per-session, not at load, so
+  the gate is load-order independent. A sandbox-owned `apply_patch` is allowed
+  and still steered. Registration can be skipped entirely with
+  `PI_MODEL_TOOLS_APPLY_PATCH=0`. apply_patch steering is suppressed while ours
+  is blocked; error hints steer sandboxed `ENOENT` (permission denials are
+  masked as not-found) to `request_access` when that tool is registered, else to
+  generic access-granting recovery instead of "find first". Sandboxing
+  extensions set `PI_TOOLS_ARE_SANDBOXED` in their module top-level (extension
+  modules load before `session_start`, so it is visible to all handlers
+  regardless of load order).
+
+### Fixes
+
+- **Dangerous-command guard and read-on-guessed-path blocking now run for all
+  families** (previously gated behind the DeepSeek/GLM early return). This
+  matches the documented behavior — the safety guard and correctness block are
+  family-independent and now also fire on undetected models.
+- **`categorizeToolError` accepts a `sandboxed` option** (see above) for the
+  ENOENT-vs-denied distinction.
+
+### Internal
+
+- New `index.test.ts` harness drives the extension through a stub
+  `ExtensionAPI`: asserts the 7 built-in tools are NOT re-registered, apply_patch
+  env gating, per-session sandbox detection + runtime block, load-order
+  independence, in-place `event.input` mutation (pre-flight + argument repair),
+  the dangerous-command guard, and tool_result enrichment.
+- `computePreflightEdits` / `editErrorEnrichment` added to `lib/edit-repair.ts`
+  (pure, unit-tested); `applyPatchEnabled` added to `lib/model-detection.ts`.
+
 ## 0.5.5 (2026-08-05)
 
 ### Improvements

@@ -8,6 +8,8 @@ import {
   parseFailedEditIndex,
   isEditMismatchError,
   computeRetryEdit,
+  computePreflightEdits,
+  editErrorEnrichment,
   stripBom,
   normalizeToLF,
 } from "../../lib/edit-repair.ts";
@@ -193,5 +195,91 @@ describe("computeRetryEdit", () => {
     const r = computeRetryEdit(fileContent, [{ oldText: "a\nb\n", newText: "A\nB\n" }], 0);
     assert.ok(r);
     assert.equal(r!.fixedEdits[0].oldText, "a\nb");
+  });
+});
+
+describe("computePreflightEdits", () => {
+  it("rewrites indentation-drifted oldText to the file's real bytes when exactly one trim match exists", () => {
+    const fileContent = "  a\n    b\n  c";
+    const edits = [{ oldText: "a\nb", newText: "A\nB" }];
+    const r = computePreflightEdits(fileContent, edits);
+    assert.ok(r, "expected a pre-flight result");
+    assert.equal(r!.fixedEdits[0].oldText, "  a\n    b");
+    assert.equal(r!.fixedEdits[0].newText, "A\nB");
+  });
+
+  it("returns null when nothing needs fixing (exact match)", () => {
+    const r = computePreflightEdits("  a\n  b", [{ oldText: "  a", newText: "A" }]);
+    assert.equal(r, null);
+  });
+
+  it("returns null when the trim match is ambiguous (count > 1)", () => {
+    const r = computePreflightEdits("x\nx\nx", [{ oldText: "x", newText: "y" }]);
+    assert.equal(r, null);
+  });
+
+  it("returns null when there is no trim match (count 0)", () => {
+    const r = computePreflightEdits("a\nb", [{ oldText: "zzz", newText: "y" }]);
+    assert.equal(r, null);
+  });
+
+  it("returns null when oldText is missing/empty", () => {
+    const r = computePreflightEdits("a\nb", [{ oldText: "", newText: "y" }]);
+    assert.equal(r, null);
+  });
+
+  it("only rewrites the edits that drifted, leaving exact edits untouched", () => {
+    const fileContent = "one\n  two\nthree";
+    const edits = [
+      { oldText: "one", newText: "ONE" },
+      { oldText: "two", newText: "TWO" }, // indentation drifted vs file's "  two"
+    ];
+    const r = computePreflightEdits(fileContent, edits);
+    assert.ok(r);
+    assert.equal(r!.fixedEdits[0].oldText, "one");      // untouched
+    assert.equal(r!.fixedEdits[1].oldText, "  two");    // rebuilt
+    assert.equal(r!.fixedEdits[1].newText, "TWO");
+  });
+});
+
+describe("editErrorEnrichment", () => {
+  const content = "alpha\nbeta\ngamma\ndelta";
+
+  it("returns undefined for non-mismatch errors", () => {
+    assert.equal(editErrorEnrichment(content, "Operation aborted", [{ oldText: "beta", newText: "B" }]), undefined);
+  });
+
+  it("returns undefined for empty edits array", () => {
+    assert.equal(editErrorEnrichment(content, "Could not find the exact text in x.", []), undefined);
+  });
+
+  it("returns undefined when the failing edit has no oldText", () => {
+    const r = editErrorEnrichment(content, "Could not find the exact text in x.", [{ oldText: "", newText: "B" }]);
+    assert.equal(r, undefined);
+  });
+
+  it("appends the nearest numbered region to a mismatch error", () => {
+    const enriched = editErrorEnrichment(content, "Could not find the exact text in x.", [{ oldText: "beta\ngamma", newText: "B\nG" }]);
+    assert.ok(enriched);
+    assert.match(enriched!, /Could not find the exact text/);
+    assert.match(enriched!, /Nearest matching region/);
+    assert.match(enriched!, /\| beta/);
+  });
+
+  it("uses the edits[N] index from the error for multi-edit arrays", () => {
+    const edits = [
+      { oldText: "alpha", newText: "A" },
+      { oldText: "gamma", newText: "G" },
+    ];
+    const enriched = editErrorEnrichment(content, "Could not find edits[1] in x.", edits);
+    assert.ok(enriched);
+    assert.match(enriched!, /\| gamma/);
+  });
+
+  it("clamps an out-of-range index to the last edit", () => {
+    const edits = [{ oldText: "beta", newText: "B" }];
+    const enriched = editErrorEnrichment(content, "Could not find edits[9] in x.", edits);
+    assert.ok(enriched);
+    assert.match(enriched!, /\| beta/);
   });
 });

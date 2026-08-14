@@ -1,13 +1,17 @@
 # @bacnh85/pi-model-tools
 
-**Unified model-family support for Pi** — tool-wrapping, argument repair,
+**Unified model-family support for Pi** — tool interception, argument repair,
 reasoning management, defensive leak-cleaning, DeepSeek V4 selection guidance,
 and Super Power Mode, all in one extension. Currently supports **DeepSeek V4**
 and **GLM** (GLM-4.5 through GLM-5.2) from any provider.
 
-This is the **single source of tool-wrapping** for these families. It registers
-the 7 built-in Pi tools (read, write, edit, grep, find, ls, bash) exactly once
-and routes behavior by detected model family.
+This is the **single source of tool handling** for these families. It does NOT
+re-register the built-in tools (read, write, edit, grep, find, ls, bash) —
+`pi.registerTool` resolves name collisions by last-wins, so re-registering
+would silently clobber other extensions that own those tools. Instead it
+intercepts through the SDK's `tool_call`/`tool_result` hooks (in-place
+`event.input` mutation), which compose with whichever extension registered the
+tool, and routes behavior by detected model family.
 
 > **Merged package (v0.2.0).** This package now absorbs the former
 > `pi-deepseek-tools` and `pi-glm` extensions. Those packages are deprecated;
@@ -18,11 +22,16 @@ and routes behavior by detected model family.
 ## Why one package
 
 Pi's `ExtensionAPI` cannot conditionally register tools — `registerTool()`
-runs at load time, conflicts are detected post-load (uncatchable), and there is
-no `unregisterTool()`. The previous three-package split (pi-model-tools for
-tool-wrapping + pi-deepseek-tools + pi-glm for hooks) duplicated substantial
-code across packages. Merging into one extension eliminates the duplication and
-the "load three packages" ceremony while keeping every behavior.
+runs at load time, name collisions resolve by last-wins (no conflict error), and
+there is no `unregisterTool()`. Re-registering the built-in tools from an
+extension therefore silently clobbers any other extension that also owns them.
+Intercepting via the `tool_call`/`tool_result` hooks (documented: "mutate
+`event.input` in place to patch tool arguments before execution") achieves the
+same behavior without touching the registry, and is load-order independent.
+The previous three-package split (pi-model-tools for tool-wrapping +
+pi-deepseek-tools + pi-glm for hooks) duplicated substantial code across
+packages. Merging into one extension eliminates the duplication and the "load
+three packages" ceremony while keeping every behavior.
 
 ## Model family detection
 
@@ -54,8 +63,8 @@ a family is detected; everything degrades gracefully to a no-op otherwise.
 | **Read-on-guessed-path blocking** | Blocks `read` on a non-existent code-file path, suggests `find` first |
 | **Prompt-aware first-tool hints** | Forces the correct first tool: `bash`-first for RUN/BUILD/EXECUTE tasks, `bash` git-clone-first for analyze-a-repo-URL tasks, and `find`-first for bare-filename reads. Targeted (only fires on matching intent) and applied to all detected families. Injected into the current user message, not the system prompt, to keep the prefix-cache head byte-stable for both DeepSeek (exact-prefix cache) and GLM (Z.ai automatic content-similarity cache) (measured on DeepSeek: 99% hit retained vs 16% when hints lived in the system prompt). |
 | **Error categorization** | Classifies tool errors and injects recovery hints on the next turn. Also detects provider 400s caused by accumulated `reasoning_content` (long-session reasoning-accumulation) and injects an actionable hint — `PI_MODEL_TOOLS_STRIP_REASONING=1` — so the rare trigger is self-documenting. |
-| **Edit mismatch repair** | Strips `read`-tool truncation notices (`[Showing lines … Use offset=N to continue.]`, etc.) that models copy into `edit` oldText — the documented root cause of "Could not find the exact text" failures. On a match failure, retries once with whitespace-tolerant matching (copying the file's real indentation); on unresolvable matches, enriches the error with the nearest numbered region. Always on. |
-| **`apply_patch` tool** | A Codex-style V4D diff/patch tool: emit only `@@` context + `-`/`+` change lines instead of large verbatim oldText blocks. Robust for multi-line/multi-file edits across all models. DeepSeek/GLM get steering to prefer it for non-trivial edits. |
+| **Edit mismatch repair** | Strips `read`-tool truncation notices (`[Showing lines … Use offset=N to continue.]`, etc.) that models copy into `edit` oldText — the documented root cause of "Could not find the exact text" failures. Before the edit executes, oldText is pre-flighted against a whitespace-tolerant match and rewritten to the file's real indentation when the match is unique; unresolvable mismatches get their error enriched with the nearest numbered region. Always on. |
+| **`apply_patch` tool** | A Codex-style V4D diff/patch tool: emit only `@@` context + `-`/`+` change lines instead of large verbatim oldText blocks. Robust for multi-line/multi-file edits across all models. DeepSeek/GLM get steering to prefer it for non-trivial edits. Writes directly to the host filesystem, so it is hard-blocked at runtime in sandboxed sessions; registration can be skipped entirely via `PI_MODEL_TOOLS_APPLY_PATCH=0`. |
 
 ### Prompt caching
 
@@ -97,6 +106,44 @@ family is active.
 | **Strict Serena mode** | Optionally hard-blocks simple `bash` substitutes (`ls`, `grep`, `cat`, `find`, `head`, `tail`) for dedicated tools |
 | **Super Power Mode** | Prepends an unrestricted capability prompt each DeepSeek session (see below) |
 
+## Sandbox compatibility
+
+`pi-model-tools` interoperates with sandboxing extensions — such as
+**pi-tg-gondolin** (a VM sandbox that re-registers the built-in tools inside a
+virtual machine) — by intercepting via
+the `tool_call` hook instead of re-registering anything. The host resolves a
+tool name registered by multiple extensions by **first-registration-per-name**,
+so both extensions coexist regardless of load order.
+
+A session is treated as **sandboxed** when either:
+
+- `PI_TOOLS_ARE_SANDBOXED` is set to `1`/`true`/`yes`/`on` — the shared
+  convention flag. A sandboxing extension sets it in its module top-level (all
+  extension modules load before `session_start`, so it is visible to every
+  extension regardless of load order); launchers can also set it. Set it to
+  `0`/`false`/`no`/`off` to override auto-detection.
+- otherwise, auto-detected: any of the host file tools (`read`/`write`/`edit`/`bash`)
+  is owned by an extension rather than the host (its `sourceInfo` is not
+  `builtin`).
+
+When sandboxed:
+
+- **`apply_patch` is hard-blocked at runtime** only when the *live* `apply_patch`
+  is ours — the raw `node:fs` version that would bypass the sandbox VM. If the
+  sandbox owns `apply_patch` (VM-routed), it is allowed and still suggested.
+  The block fires in the `tool_call` hook before any owner executes it, so it is
+  load-order independent. Set `PI_MODEL_TOOLS_APPLY_PATCH=0` to skip registration
+  entirely.
+- **Edit repair composes with the VM-wrapped edit.** Pre-flight rewriting and
+  `tool_result` error enrichment run in the hooks, so they work whether the
+  host's or the sandbox's `edit` executes.
+- **Permission denials read correctly.** Sandboxed paths denied to the agent
+  surface as `ENOENT`; error hints steer to `request_access` when that tool is
+  present, otherwise to generic access-granting recovery, instead of the usual
+  "find first".
+- **`apply_patch` steering is suppressed** when ours is blocked, so the model
+  isn't nudged into a call that would be rejected.
+
 ## Installation
 
 ```bash
@@ -135,26 +182,32 @@ Rules:
   Unicode-normalize), so minor whitespace/Unicode differences still apply.
 
 DeepSeek and GLM are steered to prefer `apply_patch` for multi-line/multi-hunk
-edits; Claude/OpenAI keep using `edit` (they're already reliable with it).
+edits; Claude/OpenAI keep using `edit` (they're already reliable with it). In
+sandboxed sessions the hint is suppressed while our raw-fs `apply_patch` is
+blocked (see [Sandbox compatibility](#sandbox-compatibility)).
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `/model-tools-status` | Shows detected family, repair counts, error history, prompt-cache stats (input/cached/written tokens + hit rate), and DeepSeek Super Power Mode + turn count |
+| `/model-tools-status` | Shows detected family, sandbox state (`yes (declared)` / `yes (auto-detected)` / `no`), repair counts, error history, prompt-cache stats (input/cached/written tokens + hit rate), and DeepSeek Super Power Mode + turn count |
 
 ## Configuration
 
-All toggles live under the `PI_MODEL_TOOLS_*` namespace.
+All toggles live under the `PI_MODEL_TOOLS_*` namespace, with one exception:
+`PI_TOOLS_ARE_SANDBOXED` is the cross-extension sandbox convention (see
+[Sandbox compatibility](#sandbox-compatibility)).
 
 ### Shared
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
+| `PI_TOOLS_ARE_SANDBOXED` | unset | Declare the session sandboxed (`1`/`true`/`yes`/`on`) or override auto-detection (`0`/`false`/`no`/`off`). Shared with sandboxing extensions. |
 | `PI_MODEL_TOOLS_REPAIR_ENABLED` | 1 | Tool argument repair (`0`/`off`/`false` to disable) |
 | `PI_MODEL_TOOLS_STRIP_REASONING` | 0 | Strip accumulated reasoning from prior turns |
 | `PI_MODEL_TOOLS_REASONING_MAX_CHARS` | unlimited | Truncate long reasoning fields to N characters |
 | `PI_MODEL_TOOLS_BLOCK_DANGEROUS_COMMANDS` | 1 | Safety guard (on by default) |
+| `PI_MODEL_TOOLS_APPLY_PATCH` | 1 | Register the `apply_patch` tool (`0`/`off`/`false` to skip registration) |
 | `PI_MODEL_TOOLS_AUTO_BLOCK_AFTER_REMINDERS` | 0 | Auto-block tool-selection misses after N reminders |
 | `PI_MODEL_TOOLS_MAX_ERROR_HISTORY` | 100 | Maximum tracked tool errors |
 | `PI_MODEL_TOOLS_DEBUG` | 0 | stderr diagnostic logging |
@@ -176,11 +229,12 @@ All toggles live under the `PI_MODEL_TOOLS_*` namespace.
 
 ## Super Power Mode
 
-Enabled by default for DeepSeek V4 sessions. It prepends an unrestricted
-capability prompt at the top of the system prompt (before the selection
-guidance and the base prompt), removes content filters, and engages maximum
-reasoning effort. A light reinforcement is appended every 10 turns.
-
+Off by default for DeepSeek V4 sessions (the global AGENTS.md already enforces
+the same behavior, and the persona prompt adds permanent prefix-cache cost).
+When enabled, it prepends an unrestricted capability prompt at the top of the
+system prompt (before the selection guidance and the base prompt), removes
+content filters, and engages maximum reasoning effort. A light reinforcement
+is appended every 10 turns.
 ```bash
 # Enable (off by default)
 export PI_MODEL_TOOLS_SUPERPOWER_MODE=1
@@ -211,6 +265,8 @@ npm pack --dry-run
 | `/model-tools-status` not found | Extension not loaded | Check settings and run `/reload` |
 | Super Power prompt not injecting | `PI_MODEL_TOOLS_SUPERPOWER_MODE` not `1`/`on`/`true`, or model is not DeepSeek V4 | Set `=1` and verify the model id contains `deepseek` and `v4` |
 | Custom Super Power prompt not loading | `PI_MODEL_TOOLS_CUSTOM_SUPERPOWER_PROMPT` unset | Set the env var to your prompt text |
+| `apply_patch` blocked in sandboxed sessions | A sandboxing extension is active (auto-detected or `PI_TOOLS_ARE_SANDBOXED=1`) | Intentional: our `apply_patch` writes raw `node:fs` and would bypass the sandbox. Use `edit`; set `PI_MODEL_TOOLS_APPLY_PATCH=0` to skip registration, or `PI_TOOLS_ARE_SANDBOXED=0` to override detection |
+| `apply_patch` missing from the tool list | `PI_MODEL_TOOLS_APPLY_PATCH=0` | Unset the env var to register it |
 | Old config ignored | Still using `PI_DEEPSEEK_TOOLS_*` / `PI_GLM_*` names | Rename to `PI_MODEL_TOOLS_*` (see tables above) |
 
 ## Changelog
