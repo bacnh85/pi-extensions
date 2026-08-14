@@ -158,6 +158,39 @@ describe("client", () => {
     assert.deepEqual(result.input, ["text"]);
   });
 
+  it("mapModel overrides contextWindow for GLM-5.3 (same 1M window as 5.2)", async () => {
+    const { mapModel } = await import("../lib/client.js");
+
+    // 9router reports 200k default floor; GLM-5.3 is 1M like glm-5.2.
+    const raw = {
+      id: "glm/glm-5.3",
+      object: "model",
+      owned_by: "glm",
+      capabilities: { vision: false, contextWindow: 200_000, maxOutput: 128_000 },
+    };
+    const result = mapModel(raw, false);
+
+    assert.equal(result.contextWindow, 1_000_000);
+    assert.equal(result.maxTokens, 131_072);
+    assert.deepEqual(result.input, ["text"]);
+  });
+
+  it("mapModel does NOT override future glm-5.4+ (profile unverified)", async () => {
+    const { mapModel } = await import("../lib/client.js");
+
+    // /glm-5\.[23](?!\d)/ must not match glm-5.4 — it keeps 9router's value.
+    const raw = {
+      id: "glm/glm-5.4",
+      object: "model",
+      owned_by: "glm",
+      capabilities: { vision: false, contextWindow: 200_000, maxOutput: 128_000 },
+    };
+    const result = mapModel(raw, false);
+
+    assert.equal(result.contextWindow, 200_000);
+    assert.equal(result.maxTokens, 128_000);
+  });
+
   it("mapModel falls back to 9router value when no override matches", async () => {
     const { mapModel } = await import("../lib/client.js");
 

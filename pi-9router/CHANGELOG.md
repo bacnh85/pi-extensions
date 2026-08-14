@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8 (2026-08-14)
+
+### Fixes
+
+- **GLM-5.3 context override.** Widened the `CONTEXT_OVERRIDES` pattern from `/glm-5\.2/` to `/glm-5\.[23](?!\d)/` so GLM-5.3 reports its 1M context window instead of falling to 9router's 200K default floor. GLM-5.3 is text-only, 1M context, 128K output — same profile as GLM-5.2. The negative lookahead keeps future GLM-5.4+ (unverified profile) off the override.
+
 ## 0.1.7 (2026-08-05)
 
 ### Improvements

@@ -3,7 +3,7 @@
 **Unified model-family support for Pi** — tool-wrapping, argument repair,
 reasoning management, defensive leak-cleaning, DeepSeek V4 selection guidance,
 and Super Power Mode, all in one extension. Currently supports **DeepSeek V4**
-and **GLM** (GLM-4.5 through GLM-5.2) from any provider.
+and **GLM** (GLM-4.5 through GLM-5.3) from any provider.
 
 This is the **single source of tool-wrapping** for these families. It registers
 the 7 built-in Pi tools (read, write, edit, grep, find, ls, bash) exactly once
@@ -65,7 +65,7 @@ core's zai compat leaves it off). The cache is keyed on the byte-stable
 **system prompt + conversation history**:
 
 - **DeepSeek V4** — exact prefix cache.
-- **GLM** (GLM-4.5–5.2) — Z.ai automatic content-similarity cache
+- **GLM** (GLM-4.5–5.3) — Z.ai automatic content-similarity cache
   ([docs](https://docs.z.ai/guides/capabilities/cache)); reported via
   `usage.prompt_tokens_details.cached_tokens`, which Pi core maps to
   `usage.cacheRead`.

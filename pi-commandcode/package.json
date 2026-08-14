@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-commandcode",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Pi extension that connects to Command Code's OpenAI-compatible Provider API.",
   "type": "module",
   "license": "MIT",

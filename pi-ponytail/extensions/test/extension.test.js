@@ -141,6 +141,10 @@ test("skill alias commands delegate to Pi skill commands", async () => {
     "/skill:ponytail-gain",
     "/skill:ponytail-help",
   ]);
+  // Since pi 0.84.2, sendUserMessage must opt in to skill/command expansion.
+  for (const entry of sentUserMessages) {
+    assert.deepEqual(entry.options, { expandPromptTemplates: true });
+  }
 });
 
 test("normal mode disables persistent instructions", async () => withTempConfig(async () => {

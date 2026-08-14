@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-9router",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Pi extension that connects to a 9router AI routing proxy instance via its OpenAI-compatible API.",
   "type": "module",
   "license": "MIT",
