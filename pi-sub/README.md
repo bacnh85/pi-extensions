@@ -75,7 +75,17 @@ monthly allowance in USD). The `/sub` detail view also shows a
 
 `pi-sub` tracks each response's tokens-per-second (tok/s) speed by measuring the time from provider request to message completion against the response's output token count. The last response's speed is shown in the footer next to usage data. The `/sub` detail view shows both the last response speed and the session-wide average.
 
-When the current model provider is not supported, `pi-sub` clears its subscription line and does not refresh subscription data.
+The tok/s speed line is shown for **all** providers — including ones without a
+subscription adapter, such as `ollama` and other OpenAI-compatible local
+providers. For those, the footer shows only the speed:
+
+```text
+145 tok/s
+```
+
+and `/sub` reports the provider/model and speed instead of usage windows.
+`pi-sub` still does not refresh subscription data for unsupported providers
+(there is nothing to fetch).
 
 ## Commands
 

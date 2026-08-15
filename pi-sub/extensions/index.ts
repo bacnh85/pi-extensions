@@ -733,11 +733,12 @@ function windowSegments(account: SubscriptionAccountSnapshot | undefined): strin
 }
 
 function renderSubscriptionLine(ctx: ExtensionContext, state: State): void {
+  const theme = ctx.ui.theme;
   if (!state.adapter) {
-    ctx.ui.setStatus(STATUS_KEY, undefined);
+    // Unsupported provider (e.g. Ollama): still show the last response speed.
+    ctx.ui.setStatus(STATUS_KEY, state.lastTokPerSec !== undefined ? theme.fg("dim", `${state.lastTokPerSec} tok/s`) : undefined);
     return;
   }
-  const theme = ctx.ui.theme;
   const snapshot = state.snapshot;
   let line: string;
   let color: "dim" | "warning" | "error" = "dim";
@@ -844,7 +845,15 @@ function pad(value: string, width: number): string {
 }
 
 function buildDetails(snapshot: SubscriptionUsageSnapshot | undefined, state: State): string {
-  if (!state.adapter) return `Subscription tracking inactive for current model provider (${state.model?.provider ?? "unknown"}).`;
+  if (!state.adapter) {
+    const header = `Provider: ${state.model?.provider ?? "unknown"}${state.model?.id ? ` · Model: ${state.model.id}` : ""}`;
+    if (state.lastTokPerSec === undefined) return `${header}\nSubscription tracking inactive for this provider.`;
+    const tokPerSecLine = `Last response: ${state.lastTokPerSec} tok/s` +
+      (state.cumulativeDurationMs > 0
+        ? ` · Session avg: ${Math.round(state.cumulativeOutput / (state.cumulativeDurationMs / 1000))} tok/s`
+        : "");
+    return `${header}\n${tokPerSecLine}`;
+  }
   if (!snapshot) return "Subscription usage has not been loaded yet.";
   if (snapshot.error) return `${snapshot.providerDisplayName}: ${snapshot.error}`;
   if (snapshot.accounts.length === 0) {
@@ -928,7 +937,7 @@ export default function (pi: ExtensionAPI) {
           state.cumulativeDurationMs += elapsed;
         }
       }
-      if (state.adapter) renderSubscriptionLine(ctx, state);
+      renderSubscriptionLine(ctx, state);
     }
   });
 
