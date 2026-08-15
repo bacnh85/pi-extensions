@@ -39,6 +39,7 @@ import {
   type Task,
 } from "./protocol";
 import type { A2AConfig } from "./config";
+import { setGatewayPeers } from "./config";
 import {
   AntiLoop,
   audit,
@@ -190,6 +191,7 @@ export class A2AServer {
   private mdnsBroadcast: MdnsHandle | null = null;
   private mdnsDiscovery: MdnsHandle | null = null;
   private mdnsPeers: MdnsPeer[] = [];
+  private gatewayUpstream: import("./gateway.js").GatewayUpstream | null = null;
   private pid = process.pid;
   private api: { getActiveTools?: () => string[] } | undefined;
   /** Host-TUI activity hook (0.3.0) — fired on task lifecycle events. */
@@ -359,6 +361,50 @@ export class A2AServer {
     }
   }
 
+  /** Register this session to the upstream agent-gateway (discovery.gateway config). */
+  private async startGatewayUpstream(): Promise<void> {
+    const gw = this.cfg.discovery.gateway;
+    if (!gw) return;
+    const { GatewayUpstream } = await import("./gateway.js");
+    // Unique name per session (name-port) unless explicitly pinned — sessions
+    // on the same machine share config, and one gateway entry per live session
+    // beats last-registration-wins.
+    const base = gw.name || this.cfg.server.agentName || hostname() || "pi";
+    const name = gw.name ? gw.name : `${base}-${this.boundPort}`;
+    this.gatewayUpstream = new GatewayUpstream(
+      {
+        ...gw,
+        name,
+        // The gateway directory copies capabilities/skills from the registered
+        // card — send the real Agent Card, not the local-registry descriptor.
+        callTimeoutMs: this.cfg.timeouts.send,
+        // Exact-match self-filter for the default auto-name — passed even
+        // when the user pinned a name, so a stale auto-named entry from a
+        // previous run is still filtered.
+        autoName: `${base}-${this.boundPort}`,
+      } as import("./gateway.js").GatewayConfig,
+      () => this.buildCard() as unknown as Record<string, unknown>,
+      console.error,
+      // Peer-directory overlay: refreshed after each heartbeat, cleared on stop.
+      setGatewayPeers,
+    );
+    const ok = await this.gatewayUpstream.start(this.publicUrl());
+    if (ok) {
+      const state = this.gatewayUpstream.lastState;
+      const pending = state === "pending";
+      console.log(
+        `[a2a] registered to agent-gateway at ${gw.url} as ${name}` +
+          (pending ? " (pending admin acceptance — not yet listed for peers)" : ""),
+      );
+    }
+  }
+
+  private async stopGatewayUpstream(): Promise<void> {
+    if (!this.gatewayUpstream) return;
+    await this.gatewayUpstream.stop();
+    this.gatewayUpstream = null;
+  }
+
   /** Stop local-registry declaration + mDNS. */
   private async stopDiscovery(): Promise<void> {
     if (this.heartbeatTimer) {
@@ -408,6 +454,7 @@ export class A2AServer {
         this.http = srv;
         this.boundPort = (srv.address() as { port: number })?.port ?? port;
         await this.startDiscovery();
+        await this.startGatewayUpstream();
         return { host, port: this.boundPort, url: this.publicUrl() };
       } catch (e: any) {
         lastErr = e;
@@ -450,6 +497,7 @@ export class A2AServer {
     });
     this.http = null;
     this.boundPort = null;
+    await this.stopGatewayUpstream();
     await this.stopDiscovery();
   }
 

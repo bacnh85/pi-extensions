@@ -22,6 +22,7 @@ import {
 } from "./protocol";
 import {
   authHeaders,
+  getGatewayPeers,
   normUrl,
   type A2AConfig,
   type Peer,
@@ -108,6 +109,32 @@ function assertSafeUrl(rawUrl: string): void {
   }
 }
 
+/** Operator-configured gateway URL (discovery.gateway.url) or "". */
+function gatewayUrlOf(cfg: A2AConfig): string | undefined {
+  return cfg.discovery.gateway?.url || undefined;
+}
+
+/** assertSafeUrl for gateway-proxy peers: the private-range block would reject
+ *  LAN-hosted agent-gateways (the primary self-hosted topology). Overlay URLs
+ *  are same-origin-pinned to the operator-configured gateway URL by
+ *  mergeGatewayPeers, so only that origin is permitted — never anything else. */
+function assertGatewayUrl(rawUrl: string, gatewayUrl: string): void {
+  let u: URL;
+  let gw: URL;
+  try {
+    u = new URL(rawUrl);
+    gw = new URL(gatewayUrl);
+  } catch {
+    throw new Error(`invalid URL: ${rawUrl}`);
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    throw new Error(`unsupported protocol: ${u.protocol} (only http/https)`);
+  }
+  if (u.origin !== gw.origin) {
+    throw new Error(`refused SSRF: ${rawUrl} is outside the gateway origin`);
+  }
+}
+
 export async function fetchCard(
   baseUrl: string,
   headers: Record<string, string>,
@@ -150,8 +177,10 @@ async function postJsonRpc(
   body: JsonRpcRequest,
   headers: Record<string, string>,
   timeoutMs: number,
+  gatewayUrl?: string,
 ): Promise<any> {
-  assertSafeUrl(url);
+  if (gatewayUrl) assertGatewayUrl(url, gatewayUrl);
+  else assertSafeUrl(url);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -296,11 +325,15 @@ async function sendTask(opts: {
   const timeout = peer.timeout || cfg.timeouts.send;
 
   // Best-effort card fetch (to learn the rpc URL); non-fatal on failure.
+  // Gateway peers are exempt: a proxied card advertises the peer's DIRECT
+  // url, which would bypass the gateway — pin the RPC to the proxy URL.
   let card: AgentCard | null = null;
-  try {
-    card = await fetchCard(peer.url, headers, Math.min(timeout, 30000));
-  } catch {
-    /* tolerate */
+  if (!peer.viaGateway) {
+    try {
+      card = await fetchCard(peer.url, headers, Math.min(timeout, 30000));
+    } catch {
+      /* tolerate */
+    }
   }
 
   const ctx = opts.contextId || newContextId();
@@ -318,7 +351,8 @@ async function sendTask(opts: {
   metrics.outboundTotal += 1;
 
   const started = Date.now();
-  const resp = await postJsonRpc(rpcUrl(peer.url, card), rpcBody, headers, timeout);
+  const gwUrl = peer.viaGateway ? gatewayUrlOf(cfg) : undefined;
+  const resp = await postJsonRpc(rpcUrl(peer.url, card), rpcBody, headers, timeout, gwUrl);
   metrics.recordLatency(Date.now() - started);
   if (resp.error) {
     const msg = resp.error.message || JSON.stringify(resp.error);
@@ -474,6 +508,18 @@ export function a2aList(opts: {
     }
   } else {
     lines.push("No peers configured. Add them under 'a2a.peers' in settings.json.");
+  }
+
+  // Gateway overlay (read-only, in-memory — refreshed after each gateway
+  // heartbeat; never written to settings.json).
+  const gateway = Object.entries(getGatewayPeers());
+  if (gateway.length > 0) {
+    lines.push("");
+    lines.push(`Gateway peers (${gateway.length}) — call by name, routed via the agent-gateway proxy:`);
+    for (const [name, p] of gateway) {
+      const capStr = p.capabilities.length ? ` caps: ${p.capabilities.join(", ")}` : "";
+      lines.push(`  - ${name}: ${p.url} (auth: ${p.auth.type})${capStr}`);
+    }
   }
 
   // Discovered peers (0.2.0) — exclude any already listed as configured (by URL).

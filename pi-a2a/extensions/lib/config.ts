@@ -29,6 +29,10 @@ export interface Peer {
   timeout: number;
   capabilities: string[];
   description?: string;
+  /** True for agent-gateway proxy peers (`gw/<name>`): the card fetch is
+   *  skipped (a proxied card may advertise the peer's DIRECT url, which would
+   *  bypass the gateway) and JSON-RPC is pinned to the proxy URL. */
+  viaGateway?: boolean;
 }
 
 export interface A2AConfig {
@@ -66,6 +70,14 @@ export interface A2AConfig {
   discovery: {
     local: { enabled: boolean; heartbeatSec: number; ttlSec: number };
     mdns: { enabled: boolean; serviceType: string };
+    /** Upstream agent-gateway registration (annex: gateway layer). */
+    gateway?: {
+      url: string;
+      token: string;
+      name?: string;
+      upstreamToken?: string;
+      heartbeatSec?: number;
+    };
     enrichCard: boolean;
   };
   /** Host-TUI presentation (0.3.0). */
@@ -103,6 +115,7 @@ const DEFAULTS: A2AConfig = {
   discovery: {
     local: { enabled: true, heartbeatSec: 15, ttlSec: 60 },
     mdns: { enabled: false, serviceType: "a2a" },
+    gateway: undefined,
     enrichCard: true,
   },
   ui: { transcript: true },
@@ -300,6 +313,20 @@ export function loadConfig(opts: {
   cfg.discovery.mdns.serviceType = String(dm.serviceType ?? env.A2A_MDNS_TYPE ?? DEFAULTS.discovery.mdns.serviceType);
   cfg.discovery.enrichCard = bool(d.enrichCard ?? env.A2A_ENRICH_CARD, DEFAULTS.discovery.enrichCard);
 
+  // Upstream agent-gateway registration — active only when url+token are set.
+  const dg = (d.gateway && typeof d.gateway === "object" ? d.gateway : {}) as Record<string, any>;
+  const gwUrl = String(dg.url ?? env.A2A_GATEWAY_URL ?? "");
+  const gwToken = String(dg.token ?? env.A2A_GATEWAY_TOKEN ?? "");
+  if (gwUrl && gwToken) {
+    cfg.discovery.gateway = {
+      url: gwUrl,
+      token: gwToken,
+      name: dg.name ? String(dg.name) : undefined,
+      upstreamToken: dg.upstreamToken ? String(dg.upstreamToken) : undefined,
+      heartbeatSec: num(dg.heartbeatSec, 60),
+    };
+  }
+
   // Outbound caller identity (0.2.0): the name THIS session presents. Must
   // match an entry in server.peerTokens so the receiver attributes the call
   // here. Empty → fall back to the shared token (anonymous caller).
@@ -443,7 +470,26 @@ export function resolvePeer(
     }
     return { url, auth, timeout: cfg.timeouts.send, capabilities: [] };
   }
-  return cfg.peers[a] ?? null;
+  // Gateway overlay sits BEHIND static config: a configured peer with the
+  // same name always wins (overlay is read-only, never overrides settings).
+  return cfg.peers[a] ?? gatewayPeers[a] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Gateway peer overlay (read-only, in-memory — never persisted to settings.json)
+// ---------------------------------------------------------------------------
+
+let gatewayPeers: Record<string, Peer> = {};
+
+/** Replace the gateway peer overlay. Keys are the callable names (`gw/<name>`),
+ *  values are ready-to-route peers (proxy URL + gateway bearer token). */
+export function setGatewayPeers(peers: Record<string, Peer>): void {
+  gatewayPeers = peers;
+}
+
+/** Current gateway peer overlay (snapshot for listing/dedup). */
+export function getGatewayPeers(): Record<string, Peer> {
+  return gatewayPeers;
 }
 
 /** Pick the token to present outbound: prefer this session's own peer token

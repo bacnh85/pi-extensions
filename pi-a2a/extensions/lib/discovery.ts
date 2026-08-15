@@ -9,11 +9,11 @@
  * model/user can pick the right peer (by cwd/model fit) before a2a_call.
  */
 
-import type { A2AConfig } from "./config";
+import type { A2AConfig, Peer } from "./config";
 import { list as listRegistry, type SessionDescriptor } from "./registry";
 import type { MdnsPeer } from "./mdns";
 
-export type PeerSource = "local" | "mdns" | "config";
+export type PeerSource = "local" | "mdns" | "config" | "gateway";
 
 export interface DiscoveredPeer {
   name: string;
@@ -30,15 +30,18 @@ function normUrl(u: string): string {
   return String(u || "").trim().replace(/\/+$/, "").toLowerCase();
 }
 
-/** Merge local-registry, mDNS, and configured peers; dedupe by URL.
- *  `selfUrl` (if provided) excludes the caller's own entry so a session
- *  doesn't see itself as a delegation target. */
+/** Merge local-registry, mDNS, configured, and gateway-proxy peers; dedupe
+ *  by URL. `selfUrl` (if provided) excludes the caller's own entry so a session
+ *  doesn't see itself as a delegation target. Gateway peers are a read-only
+ *  overlay (`gw/<name>` keys, refreshed after each gateway heartbeat). */
 export function listPeers(opts: {
   cfg: A2AConfig;
   piDir: string;
   mdnsPeers?: MdnsPeer[];
   /** Skip this URL (the caller's own inbound URL) from the result. */
   selfUrl?: string;
+  /** Gateway proxy overlay (`gw/<name>` → peer) — appended last, never overrides. */
+  gatewayPeers?: Record<string, Peer>;
 }): DiscoveredPeer[] {
   const byUrl = new Map<string, DiscoveredPeer>();
   const selfKey = opts.selfUrl ? normUrl(opts.selfUrl) : "";
@@ -85,6 +88,19 @@ export function listPeers(opts: {
       name,
       url: peer.url,
       source: "config",
+      alive: true,
+    });
+  }
+
+  // 4. Gateway proxy peers (read-only overlay; last so it never shadows
+  //    same-URL local/config entries).
+  for (const [name, peer] of Object.entries(opts.gatewayPeers ?? {})) {
+    const key = normUrl(peer.url);
+    if (!key || key === selfKey || byUrl.has(key)) continue;
+    byUrl.set(key, {
+      name,
+      url: peer.url,
+      source: "gateway",
       alive: true,
     });
   }

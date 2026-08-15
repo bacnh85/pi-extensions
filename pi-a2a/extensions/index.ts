@@ -17,7 +17,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { loadConfig, resolvePeer, setConfigOverrides, writeSettingsA2A, type A2AConfig } from "./lib/config";
+import { getGatewayPeers, loadConfig, resolvePeer, setConfigOverrides, writeSettingsA2A, type A2AConfig } from "./lib/config";
 import {
   a2aCall,
   a2aDiscover,
@@ -403,7 +403,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     parameters: Type.Object({}),
     execute: async (_id, _args, _signal, _onUpdate, ctx) => {
       const cfg = cfgFor(ctx);
-      const peers = listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "" });
+      const peers = listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "", gatewayPeers: getGatewayPeers() });
       return { content: [{ type: "text" as const, text: formatPeers(peers) }], details: {} };
     },
   });
@@ -583,15 +583,23 @@ export default function a2aExtension(pi: ExtensionAPI): void {
           peerChanges = peerChanges || beforePeers !== afterPeers;
 
           // Persist to settings.json (a2a key, preserving other keys).
+          // The gateway block carries secrets (token/upstreamToken) often
+          // sourced from env — the panel has no gateway editor, so never
+          // write it back with a discovery edit.
+          const discoveryPersist = JSON.stringify(workingCfg.discovery) !== JSON.stringify(cfg.discovery)
+            ? (() => {
+                const d = { ...workingCfg.discovery } as Record<string, unknown>;
+                delete d.gateway;
+                return { discovery: d };
+              })()
+            : {};
           const written = writeSettingsA2A({
             cwd: ectx.cwd,
             patch: (a2a: any) => ({
               ...a2a,
               ...(changedServerKeys ? { server: workingCfg.server } : {}),
               ...(peerChanges ? { peers: workingCfg.peers } : {}),
-              ...(JSON.stringify(workingCfg.discovery) !== JSON.stringify(cfg.discovery)
-                ? { discovery: workingCfg.discovery }
-                : {}),
+              ...discoveryPersist,
               ...(workingCfg.selfIdentity !== cfg.selfIdentity
                 ? { selfIdentity: workingCfg.selfIdentity }
                 : {}),
@@ -697,10 +705,10 @@ export default function a2aExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("a2a-peers", {
-    description: "List discoverable A2A peers (local registry + mDNS + configured)",
+    description: "List discoverable A2A peers (local registry + mDNS + configured + gateway)",
     handler: async (_args, ctx) => {
       const cfg = cfgFor(ctx as unknown as ExtensionContext);
-      const peers = listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "" });
+      const peers = listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "", gatewayPeers: getGatewayPeers() });
       ctx.ui.notify(formatPeers(peers), "info");
     },
   });
