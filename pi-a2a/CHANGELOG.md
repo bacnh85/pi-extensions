@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.5.0 — 2026-08-15
+
+Gateway configuration in /a2a-config + explicit enable/disable.
+
+### Added
+
+- **`discovery.gateway.enabled` flag:** the upstream agent-gateway registration
+  is now explicitly toggleable. Defaults to `true` when `url`+`token` are both
+  set and no explicit value exists (backward compatible with the implicit
+  activation); explicit `enabled: false` disables registration entirely. New
+  env var `A2A_GATEWAY_ENABLED`.
+- **Gateway editor in /a2a-config:** a new Gateway panel group exposes the full
+  settings.json block — registration toggle, URL, API token, peer name,
+  upstream token, heartbeat (s), and reverse-channel toggle. Tokens render
+  masked (`••••`) in the panel and inline-edit hints.
+- **Persist gateway on edit:** the panel now writes `discovery.gateway` back to
+  settings.json when a gateway field changed (env-sourced secrets are not
+  copied on unrelated discovery edits).
+- `/a2a-config show` now prints a gateway line (enabled/url/token-set).
+
+### Fixed
+
+- Live config overrides now merge `discovery.gateway` (previously dropped, so
+  panel gateway edits could not apply without /reload).
+- Server skips `startGatewayUpstream` when `enabled: false`.
+- The reverse-channel "channel open" line now surfaces in the host transcript
+  (`[a2a] gateway channel open (firewall-safe receive)`) like the registration
+  message instead of raw console output in the chat window.
+- **Reviewer fixes (persistence safety):** an existing `discovery.gateway`
+  block in settings.json (enabled OR disabled) now survives unrelated panel
+  edits byte-for-byte (discovery is merged, not replaced); a discovery-only
+  edit no longer writes the full `server` block (env-sourced
+  sharedToken/peerTokens stay out of settings.json); env-sourced gateway
+  secrets are copied to disk only when the user edits that exact row; an
+  empty submit on a masked secret row keeps the existing value instead of
+  wiping it. Persistence logic extracted to `buildA2ASettingsPatch` and
+  unit-tested.
+
+## 0.4.0 — 2026-08-15
+
+Discovery completeness + untruncated conversation view + gateway registration visibility.
+
+- **Peer discovery shows ALL exposed tools:** `a2a_peers` / `/a2a-peers` previously capped the
+  tool list at 8; now every advertised tool is listed (wrapped at 10 per line, matching the
+  Agent Card metadata.tools). `a2a_discover` now also renders the full `Tools (N)` list from the
+  card metadata (pi-session extension) instead of skills-only. Gateway peers surface their
+  `caps=` tags.
+- **Inbound messages are no longer truncated:** transcript lines carry the full task text and
+  full assistant reply (previously capped at ~100-120 chars with a trailing …). Multiline text
+  is preserved like a normal conversation turn; toasts stay short.
+- **Gateway registration is visible in the transcript:** a successful agent-gateway registration
+  now emits a `[A2A gateway] registered to … as …` line (plus toast) rendered like the
+  `[A2A inbound]` activity lines, instead of being lost in console output.
+
 ## 0.3.1 — 2026-08-14
 
 mDNS broadcast hostname-claim fix.

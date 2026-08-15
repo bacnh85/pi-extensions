@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.2 - 2026-08-15
+
+Stale-extension-ctx crash fix (same root cause as pi-notify 0.1.1).
+
+### Fixed
+
+- `--yolo`/`--auto` flags captured once at extension load instead of being read
+  from the extension API inside the `tool_call` handler. After a session
+  replacement or reload the old runner is invalidated and `pi.getFlag` throws;
+  a handler firing during teardown crashed the extension. Flags are immutable
+  after CLI parse, so the load-time capture is equivalent.
+
 ## 0.1.1
 
 - **Fixed: settings.json config now actually works.** The SDK's ExtensionAPI has

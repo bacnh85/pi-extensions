@@ -199,6 +199,9 @@ export class GatewayUpstream {
     private readonly log: (...args: unknown[]) => void = console.error,
     /** Receives each refreshed `gw/<name>` → Peer overlay ({} clears it). */
     private readonly onPeers: (peers: Record<string, Peer>) => void = () => {},
+    /** Host-TUI status line (transcript) for lifecycle events like the
+     *  reverse channel opening — surfaced like the registration message. */
+    private readonly onStatus: ((msg: string) => void) | undefined = undefined,
   ) {}
 
   private url(path: string): string {
@@ -302,6 +305,7 @@ export class GatewayUpstream {
         this.cfg.localBase ?? url,
         this.log,
         this.epochRef,
+        this.onStatus,
       );
       void this.channel.start();
     }
@@ -383,7 +387,25 @@ export class ChannelClient {
     private readonly log: (...args: unknown[]) => void = console.error,
     /** Bumped by GatewayUpstream.stop() to stop reconnect loops. */
     private readonly sharedEpoch: { value: number },
+    /** Host-TUI status line (transcript) for lifecycle events — the channel
+     *  opening is surfaced like the registration message instead of raw
+     *  console output. Falls back to `log` when absent. */
+    private readonly onStatus: ((msg: string) => void) | undefined = undefined,
   ) {}
+
+  /** Route a lifecycle line to the transcript (onStatus) when available,
+   *  else to the diagnostic log. Never throws. */
+  private status(msg: string): void {
+    if (this.onStatus) {
+      try {
+        this.onStatus(msg);
+        return;
+      } catch {
+        /* fall back to log */
+      }
+    }
+    this.log(msg);
+  }
 
   private url(path: string): string {
     return this.cfg.url.replace(/\/+$/, "") + path;
@@ -406,7 +428,7 @@ export class ChannelClient {
     })
       .then((res) => {
         if (!res.ok || !res.body) throw new Error(`channel open failed: HTTP ${res.status}`);
-        if (attempt === 0) this.log(`[a2a-gateway] channel open (firewall-safe receive)`);
+        if (attempt === 0) this.status(`[a2a] gateway channel open (firewall-safe receive)`);
         const connected = attempt === 0;
         // readStream never resolves while healthy — keep it detached.
         void this.readStream(res.body!)

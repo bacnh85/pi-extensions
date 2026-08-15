@@ -34,6 +34,8 @@ export interface PanelRow {
   label: string;
   kind: PanelRowKind;
   value: unknown;
+  /** Mask the value in render + inline-edit hint (for secrets/tokens). */
+  mask?: boolean;
   set(v: unknown): void;
 }
 
@@ -118,6 +120,36 @@ export function buildRows(
     }),
   ];
 
+  // Gateway group — reads use a non-mutating default view; setters materialize
+  // `discovery.gateway` on first edit so toggling enabled (or entering a URL)
+  // creates the block in the working config without clobbering an env-sourced
+  // gateway on unrelated panel edits.
+  const gwView = cfg.discovery.gateway ?? { enabled: false, url: "", token: "" };
+  const gw = () => (cfg.discovery.gateway ??= { enabled: false, url: "", token: "" });
+  const gateway: PanelRow[] = [
+    row("gateway.enabled", "Gateway registration", "toggle", gwView.enabled, (v) => {
+      gw().enabled = Boolean(v);
+    }),
+    row("gateway.url", "Gateway URL", "string", gwView.url, (v) => {
+      gw().url = String(v ?? "");
+    }),
+    row("gateway.token", "API token", "string", gwView.token, (v) => {
+      gw().token = String(v ?? "");
+    }, { mask: true }),
+    row("gateway.name", "Peer name", "string", gwView.name ?? "", (v) => {
+      gw().name = v ? String(v) : undefined;
+    }),
+    row("gateway.upstreamToken", "Upstream token", "string", gwView.upstreamToken ?? "", (v) => {
+      gw().upstreamToken = v ? String(v) : undefined;
+    }, { mask: true }),
+    row("gateway.heartbeatSec", "Heartbeat (s)", "number", gwView.heartbeatSec ?? 60, (v) => {
+      gw().heartbeatSec = toInt(v, gw().heartbeatSec ?? 60);
+    }),
+    row("gateway.channel", "Reverse channel", "toggle", gwView.channel ?? true, (v) => {
+      gw().channel = Boolean(v);
+    }),
+  ];
+
   const identity: PanelRow[] = [
     row("selfIdentity", "Caller identity", "string", cfg.selfIdentity, (v) => {
       cfg.selfIdentity = String(v ?? "");
@@ -148,13 +180,14 @@ export function buildRows(
   return [
     { key: "server", label: "Server", rows: server },
     { key: "discovery", label: "Discovery", rows: discovery },
+    { key: "gateway", label: "Gateway", rows: gateway },
     { key: "identity", label: "Identity", rows: identity },
     { key: "peers", label: "Peers", rows: peers },
     { key: "ui", label: "UI", rows: ui },
   ];
 }
 
-function row(key: string, label: string, kind: PanelRowKind, value: unknown, set: (v: unknown) => void): PanelRow {
+function row(key: string, label: string, kind: PanelRowKind, value: unknown, set: (v: unknown) => void, opts: { mask?: boolean } = {}): PanelRow {
   // The setter updates BOTH the backing config and row.value so the render
   // reflects the change immediately (a stale value made toggles appear dead).
   const r: PanelRow = {
@@ -162,6 +195,7 @@ function row(key: string, label: string, kind: PanelRowKind, value: unknown, set
     label,
     kind,
     value,
+    mask: opts.mask,
     set(v: unknown) {
       set(v);
       r.value = kind === "number" ? toInt(v, Number(r.value)) : v;
@@ -193,7 +227,9 @@ export interface ConfigPanelOpts {
   ctx: ExtensionContext;
   cfg: A2AConfig;
   actions?: Record<string, PanelAction>;
-  onSave?: (saved: boolean) => void;
+  /** Called when the panel saves (Esc with dirty). Second arg: row keys the
+   *  user actually edited (for secret-persistence decisions). */
+  onSave?: (saved: boolean, editedKeys?: Set<string>) => void;
 }
 
 /**
@@ -213,7 +249,7 @@ export function openConfigPanel(opts: ConfigPanelOpts): Promise<void> {
     model.onRequestRender = () => tui.requestRender();
     model.onSave = () => {
       try {
-        onSave?.(true);
+        onSave?.(true, model.editedKeys);
       } catch (e: any) {
         ctx.ui.notify(`Save failed: ${e?.message || e}`, "error");
         return;
@@ -283,6 +319,8 @@ export class ConfigPanelModel implements Component {
 
   dirty = false;
   width = 80; // overlay width hint
+  /** Keys of rows the user actually edited (for secret-persistence decisions). */
+  editedKeys = new Set<string>();
   private groups: PanelGroup[];
   private theme: PanelTheme | null;
   private flat: PanelRow[] = [];
@@ -389,11 +427,12 @@ export class ConfigPanelModel implements Component {
 
   private renderRow(r: PanelRow, selected: boolean, width: number): string {
     const mark = selected ? this.color("accent", "›") : " ";
+    const masked = r.mask && String(r.value ?? "") !== "";
     if (this.editing === r) {
       // Inline input row — show the input's own render (single line) plus the
       // current value as a hint (the input starts empty so typing replaces).
       const inputLines = this.input ? this.input.render(width - 4) : ["…"];
-      const hint = this.color("dim", ` (was: ${String(r.value ?? "")})`);
+      const hint = this.color("dim", masked ? " (was: ••••)" : ` (was: ${String(r.value ?? "")})`);
       return `${mark} ${r.label}: ${inputLines[0] ?? ""}${hint}`;
     }
     let valueText: string;
@@ -401,6 +440,8 @@ export class ConfigPanelModel implements Component {
       valueText = r.value ? this.color("success", "on") : this.color("dim", "off");
     } else if (r.kind === "action") {
       valueText = this.color("accent", "press Enter");
+    } else if (masked) {
+      valueText = this.color("dim", "••••");
     } else {
       valueText = String(r.value ?? "");
     }
@@ -444,6 +485,7 @@ export class ConfigPanelModel implements Component {
     } else if (row.kind === "toggle") {
       row.set(!row.value);
       this.dirty = true;
+      this.editedKeys.add(row.key);
       this.onChanged?.();
       this.requestRender();
     } else {
@@ -480,10 +522,20 @@ export class ConfigPanelModel implements Component {
     this.editing = row;
     this.input = new Input();
     this.input.onSubmit = (raw: string) => {
+      // Empty submit on a masked (secret) row = keep the existing value.
+      // The old secret is invisible (rendered as ••••), so a blank enter
+      // must never wipe it.
+      if (row.mask && raw === "") {
+        this.editing = null;
+        this.input = null;
+        this.requestRender();
+        return;
+      }
       const next = kindValue(row.kind, raw);
       if (String(next) !== String(row.value)) {
         row.set(next);
         this.dirty = true;
+        this.editedKeys.add(row.key);
         this.onChanged?.();
       }
       this.editing = null;

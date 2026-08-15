@@ -1,9 +1,13 @@
 /**
  * A2A config + peer registry.
  *
- * Config precedence (highest first): tool/command params → env (A2A_*) →
- * settings.json `a2a` key → cwd `.env.local` walk → defaults.
+ * Config precedence (highest first): tool/command params → settings.json
+ * `a2a` key → env (A2A_*) → cwd `.env.local` walk → defaults.
  * Mirrors the pi-munin/pi-evolve pattern.
+ *
+ * NOTE: an explicit `discovery.gateway.enabled` in settings.json overrides
+ * `A2A_GATEWAY_ENABLED` (the env var only feeds the fallback when the
+ * settings field is absent).
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -72,6 +76,9 @@ export interface A2AConfig {
     mdns: { enabled: boolean; serviceType: string };
     /** Upstream agent-gateway registration (annex: gateway layer). */
     gateway?: {
+      /** Explicit on/off. Defaults to true when url+token are both set and no
+       *  explicit value is given (backward compat); explicit false disables. */
+      enabled: boolean;
       url: string;
       token: string;
       name?: string;
@@ -315,12 +322,24 @@ export function loadConfig(opts: {
   cfg.discovery.mdns.serviceType = String(dm.serviceType ?? env.A2A_MDNS_TYPE ?? DEFAULTS.discovery.mdns.serviceType);
   cfg.discovery.enrichCard = bool(d.enrichCard ?? env.A2A_ENRICH_CARD, DEFAULTS.discovery.enrichCard);
 
-  // Upstream agent-gateway registration — active only when url+token are set.
+  // Upstream agent-gateway registration. The block is materialized whenever
+  // ANY gateway config exists (settings `dg` has fields, or url/token from
+  // env) so the panel can display/edit it — including explicitly-disabled
+  // gateways (enabled:false), which must stay visible or unrelated discovery
+  // edits would erase them. Registration only happens when enabled AND
+  // url+token are set. `enabled` defaults to true when url+token exist and
+  // no explicit value (backward compat with the pre-0.5.0 implicit activation).
   const dg = (d.gateway && typeof d.gateway === "object" ? d.gateway : {}) as Record<string, any>;
   const gwUrl = String(dg.url ?? env.A2A_GATEWAY_URL ?? "");
   const gwToken = String(dg.token ?? env.A2A_GATEWAY_TOKEN ?? "");
-  if (gwUrl && gwToken) {
+  const hasSettingsGateway = Object.keys(dg).length > 0;
+  const gwEnabled =
+    dg.enabled !== undefined
+      ? bool(dg.enabled, true)
+      : bool(env.A2A_GATEWAY_ENABLED, Boolean(gwUrl && gwToken));
+  if (hasSettingsGateway || gwUrl || gwToken) {
     cfg.discovery.gateway = {
+      enabled: gwEnabled,
       url: gwUrl,
       token: gwToken,
       name: dg.name ? String(dg.name) : undefined,
@@ -370,6 +389,8 @@ function applyOverrides(cfg: A2AConfig, patch: Partial<A2AConfig>): void {
     if (patch.discovery.local) Object.assign(cfg.discovery.local, patch.discovery.local);
     if (patch.discovery.mdns) Object.assign(cfg.discovery.mdns, patch.discovery.mdns);
     if (patch.discovery.enrichCard !== undefined) cfg.discovery.enrichCard = patch.discovery.enrichCard;
+    // Gateway block — undefined (not set) leaves it alone; set replaces.
+    if (patch.discovery.gateway !== undefined) cfg.discovery.gateway = patch.discovery.gateway;
   }
   if (patch.ui) Object.assign(cfg.ui, patch.ui);
 }
@@ -377,6 +398,79 @@ function applyOverrides(cfg: A2AConfig, patch: Partial<A2AConfig>): void {
 // ---------------------------------------------------------------------------
 // Settings.json writer (0.3.0) — the /a2a-config panel persists edits here
 // ---------------------------------------------------------------------------
+
+/**
+ * Build the settings.json patch for the /a2a-config panel (pure, testable).
+ *
+ * Rules:
+ * - server persisted ONLY when a server field changed (env-sourced secrets
+ *   like sharedToken/peerTokens must never be copied to disk by a
+ *   discovery-only edit).
+ * - discovery is MERGED over the existing `a2a.discovery` (a gateway block
+ *   already in settings.json survives unrelated discovery edits
+ *   byte-for-byte); the gateway sub-block is written only when the user
+ *   actually edited a gateway field, so env-sourced secrets are not copied.
+ * - When the gateway block is written, unedited secret rows (token /
+ *   upstreamToken) keep the value from the EXISTING settings file (not the
+ *   env-sourced working value) — a heartbeat-only edit must not copy an env
+ *   token to disk. `editedGatewayKeys` carries the row keys the user touched
+ *   (gateway.token / gateway.upstreamToken).
+ * - peers/selfIdentity/ui persisted only when changed.
+ */
+export function buildA2ASettingsPatch(opts: {
+  cfg: A2AConfig;
+  working: A2AConfig;
+  peerChanges: boolean;
+  gatewayChanged: boolean;
+  /** Row keys the user edited (gateway.*). */
+  editedGatewayKeys?: Set<string>;
+}): (a2a: any) => any {
+  const { cfg, working, peerChanges, gatewayChanged, editedGatewayKeys } = opts;
+  const serverChanged = JSON.stringify(working.server) !== JSON.stringify(cfg.server);
+  const discoveryChanged = JSON.stringify(working.discovery) !== JSON.stringify(cfg.discovery);
+  const workingDiscovery = { ...working.discovery } as Record<string, unknown>;
+  if (!gatewayChanged) delete workingDiscovery.gateway;
+  return (a2a: any) => {
+    // The server block is persisted wholesale ONLY when a server field
+    // changed — but the panel never exposes sharedToken/peerTokens/workspace/
+    // publicUrl/skills, so those keep the value from the EXISTING settings
+    // file (never copy env-sourced secrets to disk on a port/host edit).
+    let serverPatch: Record<string, unknown> | undefined;
+    if (serverChanged) {
+      serverPatch = { ...working.server } as Record<string, unknown>;
+      const ex = (a2a.server ?? {}) as Record<string, unknown>;
+      serverPatch.sharedToken = ex.sharedToken ?? "";
+      serverPatch.peerTokens = ex.peerTokens ?? {};
+      serverPatch.workspace = ex.workspace ?? "";
+      serverPatch.publicUrl = ex.publicUrl ?? "";
+      serverPatch.skills = ex.skills ?? [];
+    }
+    // Merge discovery over the existing settings block; the gateway sub-block
+    // (when written) keeps unedited secret fields from the file.
+    const mergedDiscovery = { ...(a2a.discovery ?? {}) } as Record<string, unknown>;
+    // ALWAYS merge the non-gateway working discovery (local/mdns/enrichCard)
+    // over the file block — a combined gateway + discovery edit must keep
+    // both. Only the gateway sub-block gets the special unedited-secret
+    // handling below.
+    const { gateway: _gw, ...workingRest } = workingDiscovery;
+    Object.assign(mergedDiscovery, workingRest);
+    if (gatewayChanged && workingDiscovery.gateway && typeof workingDiscovery.gateway === "object") {
+      const g = { ...(workingDiscovery.gateway as Record<string, unknown>) };
+      const existing = (mergedDiscovery.gateway ?? {}) as Record<string, unknown>;
+      if (!editedGatewayKeys?.has("gateway.token")) g.token = existing.token ?? "";
+      if (!editedGatewayKeys?.has("gateway.upstreamToken")) g.upstreamToken = existing.upstreamToken;
+      mergedDiscovery.gateway = g;
+    }
+    return {
+      ...a2a,
+      ...(serverPatch ? { server: serverPatch } : {}),
+      ...(peerChanges ? { peers: working.peers } : {}),
+      ...(discoveryChanged ? { discovery: mergedDiscovery } : {}),
+      ...(working.selfIdentity !== cfg.selfIdentity ? { selfIdentity: working.selfIdentity } : {}),
+      ...(JSON.stringify(working.ui) !== JSON.stringify(cfg.ui) ? { ui: working.ui } : {}),
+    };
+  };
+}
 
 /**
  * Read-modify-write the `a2a` key in settings.json, preserving all other keys.

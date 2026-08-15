@@ -164,6 +164,19 @@ export default function permissionExtension(pi) {
     type: "boolean",
   });
 
+  // CLI flags are immutable after parse; capture once at load so event
+  // handlers never touch the captured pi API (stale after session
+  // replacement/reload — getFlag throws there).
+  let yolo = false;
+  let auto = false;
+  try {
+    yolo = Boolean(pi.getFlag("yolo"));
+    auto = Boolean(pi.getFlag("auto"));
+  } catch {
+    yolo = false;
+    auto = false;
+  }
+
   // doom-loop state: ring of recent (tool, inputKey) signatures
   const recent = [];
   const DOOM_THRESHOLD = 3;
@@ -176,7 +189,6 @@ export default function permissionExtension(pi) {
       pi.config?.permission;
     if (!rules) return undefined; // not configured → no opinion
 
-    const yolo = pi.getFlag("yolo") || pi.getFlag("auto");
     const { toolName, input } = event;
     const home = ctx.home || process.env.HOME || "";
 
@@ -250,7 +262,7 @@ export default function permissionExtension(pi) {
     }
 
     // ── "ask" ───────────────────────────────────────────────────────────
-    if (yolo) return undefined; // auto-approve
+    if (yolo || auto) return undefined; // auto-approve (--yolo or --auto)
 
     if (!ctx.hasUI) {
       // Non-interactive: can't ask → block by default (fail closed).

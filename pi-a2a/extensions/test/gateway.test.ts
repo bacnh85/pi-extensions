@@ -428,6 +428,37 @@ describe("reverse channel client", () => {
     assert.equal(opens, after); // no reconnection attempts after stop
     gw.close();
   });
+
+  it("routes the channel-open lifecycle line to onStatus (not raw log)", async () => {
+    const gw = http.createServer((rq, rs) => {
+      if (rq.url!.split("?")[0] === "/channel") {
+        rs.writeHead(200, { "content-type": "text/event-stream" });
+        rs.flushHeaders(); // send headers now; hold the stream open
+        return; // hold the stream open
+      }
+      rs.writeHead(404); rs.end();
+    });
+    await new Promise<void>((r) => gw.listen(0, "127.0.0.1", r));
+    const gwPort = (gw.address() as any).port;
+    const epoch = { value: 0 };
+    const statuses: string[] = [];
+    const logs: string[] = [];
+    const cc = new ChannelClient(
+      { url: `http://127.0.0.1:${gwPort}`, token: TOKEN },
+      "http://127.0.0.1:1",
+      (m) => logs.push(String(m)),
+      epoch,
+      (m) => statuses.push(String(m)),
+    );
+    await cc.start();
+    await new Promise((r) => setTimeout(r, 150));
+    cc.stop();
+    assert.equal(statuses.length, 1, "channel open surfaced as status");
+    assert.match(statuses[0]!, /channel open \(firewall-safe receive\)/);
+    assert.ok(!logs.some((l) => l.includes("channel open")), "not duplicated in raw log");
+    gw.closeAllConnections?.();
+    gw.close();
+  });
 });
 
 describe("reverse channel hardening", () => {

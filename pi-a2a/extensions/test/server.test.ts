@@ -667,4 +667,55 @@ describe("server", () => {
       assert.isNull(server.port, "stopped server port is null");
     });
   });
+
+  describe("gateway registration gating (0.5.0)", () => {
+    let realFetch: typeof fetch;
+    let calls: Array<{ url: string; init?: RequestInit }>;
+
+    beforeEach(() => {
+      realFetch = globalThis.fetch;
+      calls = [];
+      // Stub fetch: record every request; the gateway is never reachable.
+      // Any /register or /channel attempt therefore fails (network error →
+      // register() returns false silently), but we can OBSERVE the attempt.
+      (globalThis as any).fetch = async (url: any, init?: RequestInit) => {
+        calls.push({ url: String(url), init });
+        throw new Error("gateway unreachable (stubbed)");
+      };
+    });
+
+    afterEach(() => {
+      (globalThis as any).fetch = realFetch;
+    });
+
+    it("does not register when gateway.enabled is false (no fetch attempt)", async () => {
+      const cfg = DEFAULTS();
+      cfg.discovery.gateway = { enabled: false, url: "http://127.0.0.1:9920", token: "x" };
+      const port = await freePort();
+      cfg.server = { ...cfg.server, port };
+      const server = new A2AServer({ cfg, cwd: tmpDir(), piDir: tmpDir(), runner: stubRunner("ok") });
+      await server.start();
+      await server.stop();
+      // The gate must short-circuit BEFORE any network call: no register,
+      // no channel, no directory fetch.
+      assert.equal(calls.length, 0, "disabled gateway must make zero fetch calls");
+    });
+
+    it("attempts registration when gateway.enabled is true", async () => {
+      const cfg = DEFAULTS();
+      cfg.discovery.gateway = { enabled: true, url: "http://127.0.0.1:9920", token: "x" };
+      const port = await freePort();
+      cfg.server = { ...cfg.server, port };
+      const server = new A2AServer({ cfg, cwd: tmpDir(), piDir: tmpDir(), runner: stubRunner("ok") });
+      await server.start();
+      await server.stop();
+      // Registration is attempted (POST /register) even though the gateway is
+      // unreachable. The reverse channel only opens AFTER a successful
+      // register, so with a failing stub there is no /channel call yet — the
+      // enabled:false test above proves the gate itself is what suppresses
+      // every call.
+      const urls = calls.map((c) => c.url);
+      assert.ok(urls.some((u) => u.includes("/register")), "register attempted: " + urls.join(", "));
+    });
+  });
 });

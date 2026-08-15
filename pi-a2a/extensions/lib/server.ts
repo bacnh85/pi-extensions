@@ -370,7 +370,7 @@ export class A2AServer {
   /** Register this session to the upstream agent-gateway (discovery.gateway config). */
   private async startGatewayUpstream(): Promise<void> {
     const gw = this.cfg.discovery.gateway;
-    if (!gw) return;
+    if (!gw || gw.enabled === false) return;
     const { GatewayUpstream } = await import("./gateway.js");
     // Unique name per session (name-port) unless explicitly pinned — sessions
     // on the same machine share config, and one gateway entry per live session
@@ -393,6 +393,19 @@ export class A2AServer {
       console.error,
       // Peer-directory overlay: refreshed after each heartbeat, cleared on stop.
       setGatewayPeers,
+      // Lifecycle status (channel open, …) → host transcript like the
+      // registration message, not raw console output.
+      (msg) => {
+        if (this.onStatus) {
+          try {
+            this.onStatus(msg);
+          } catch {
+            console.error(msg);
+          }
+        } else {
+          console.error(msg);
+        }
+      },
     );
     const ok = await this.gatewayUpstream.start(this.publicUrl());
     if (ok) {

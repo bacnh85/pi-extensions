@@ -90,6 +90,7 @@ Edit `~/.pi/agent/settings.json` under the `a2a` key. Key reference:
 | `verifySsl` | `true` | Verify TLS on outbound calls |
 | `discovery.local` | `{enabled:true, heartbeatSec:15, ttlSec:60}` | Local file registry |
 | `discovery.mdns` | `{enabled:false, serviceType:"a2a"}` | mDNS broadcast + discovery |
+| `discovery.gateway` | _(unset)_ | Upstream agent-gateway registration (`enabled`, `url`, `token`, `name`, `upstreamToken`, `heartbeatSec`, `channel`) — see [Agent gateway](#agent-gateway) |
 | `discovery.enrichCard` | `true` | Publish session metadata into the Agent Card |
 | `ui.transcript` | `true` | Show inbound activity as transcript messages |
 
@@ -172,6 +173,9 @@ OS-assigned on conflict".
 | `A2A_DISCOVERY_LOCAL` | `true` | Enable the local file registry |
 | `A2A_DISCOVERY_MDNS` | `false` | Enable mDNS broadcast + discovery |
 | `A2A_MDNS_TYPE` | `a2a` | mDNS service type (advertised as `_<type>._tcp`) |
+| `A2A_GATEWAY_URL` | _(unset)_ | Agent-gateway base URL (with `A2A_GATEWAY_TOKEN`) |
+| `A2A_GATEWAY_TOKEN` | _(unset)_ | Agent-gateway API/bearer token |
+| `A2A_GATEWAY_ENABLED` | _(see gateway)_ | Explicit on/off for gateway registration; defaults to true when url+token are set |
 | `A2A_HEARTBEAT_SEC` | `15` | Registry heartbeat interval (seconds) |
 | `A2A_TTL_SEC` | `60` | Registry entry TTL before stale-sweep (seconds) |
 | `A2A_ENRICH_CARD` | `true` | Publish session metadata into the Agent Card |
@@ -212,6 +216,38 @@ Configure under `a2a.discovery` in `settings.json`:
 List discovered peers with the `a2a_peers` tool or `/a2a-peers` command — they
 show each peer's name, url, source (`local`/`mdns`/`config`), cwd, model, and
 tools so you (or the model) pick the right one before `a2a_call`.
+
+### Agent gateway
+
+Register this session with a self-hosted [agent-gateway](https://github.com/agentgateway)
+so other accepted peers discover and call it through the gateway's proxy
+(gateway peers appear as `gw/<name>` and carry the gateway bearer token).
+Configure under `a2a.discovery.gateway` in `settings.json` (or the `/a2a-config`
+panel → Gateway group):
+
+```jsonc
+"a2a": {
+  "discovery": {
+    "gateway": {
+      "enabled": true,              // explicit on/off; defaults true when url+token set
+      "url": "http://127.0.0.1:9920",
+      "token": "<gateway-api-token>",
+      "name": "pi-s2-9913",          // optional; default <agentName>-<port>
+      "upstreamToken": "...",         // optional: token the gateway presents when proxying TO us
+      "heartbeatSec": 60,             // re-register interval
+      "channel": true                 // reverse channel so firewalled peers can call us
+    }
+  }
+}
+```
+
+- Registration is a **per-session** upstream: each inbound server registers
+  itself, re-registers on heartbeat, and deregisters on graceful stop.
+- `enabled: false` (or `A2A_GATEWAY_ENABLED=false`) disables registration
+  entirely while keeping the url/token for later.
+- The panel renders tokens masked (`••••`); the token is stored in settings.json
+  in plaintext (same as `server.sharedToken`) — use env `A2A_GATEWAY_TOKEN` if
+  you'd rather keep secrets out of files.
 
 ### Per-session identity (unique caller attribution)
 

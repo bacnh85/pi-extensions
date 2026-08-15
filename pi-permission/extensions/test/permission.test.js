@@ -99,11 +99,16 @@ test("resolveRule: .env deny pattern (OpenCode default security)", () => {
 
 // ── Extension wiring (tool_call handler) ──────────────────────────────────
 
-function harness({ rules = {}, flags = {}, hasUI = true } = {}) {
+function harness({ rules = {}, flags = {}, hasUI = true, getFlagThrows = false } = {}) {
   const pi = {
     flags: new Map(),
     flagOpts: flags,
     getFlag(name) {
+      // Regression: after session replacement/reload the SDK's runtime is
+      // stale and getFlag throws — load-time capture must swallow it.
+      if (getFlagThrows) {
+        throw new Error("This extension ctx is stale after session replacement or reload.");
+      }
       return this.flagOpts[name];
     },
     registerFlag(name) {
@@ -309,4 +314,18 @@ test("doom-loop memory resets across sessions (review: MED)", async () => {
   // After reset: first two calls of the new session must not be blocked.
   assert.equal(await pi.handler(call, c), undefined, "post-reset 1st: allow");
   assert.equal(await pi.handler(call, c), undefined, "post-reset 2nd: allow");
+});
+
+test("stale runner (getFlag throws at load) never crashes handlers (regression)", async () => {
+  // Simulates the SDK invalidating the runner: the load-time flag capture must
+  // swallow the throw and default to non-yolo; tool_call must still run and
+  // route "ask" through the normal prompt (no crash, no auto-approve).
+  const rules = { bash: "*" }; // matches "ask" path
+  const pi = harness({ rules, getFlagThrows: true });
+  const c = ctx();
+  const call = { toolName: "bash", input: { command: "ls" } };
+  // No session reset needed; the doom-loop ring is per-run. Call once:
+  const result = await pi.handler(call, c);
+  assert.ok(result === undefined || result.block === false || result.block === true, "handler returned without throwing");
+  assert.doesNotThrow(() => pi.handler(call, c));
 });

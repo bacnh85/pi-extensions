@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import notifyExtension, { resolveConfig, notify, playSound } from "../index.js";
 
@@ -43,20 +46,22 @@ test("playSound clamps volume to [0,1]", () => {
 
 // ── Extension wiring ──────────────────────────────────────────────────────
 
-function harness({ flagValue = false, setting } = {}) {
-  const fired = [];
+function harness({ flagValue = false, getFlagThrows = false, notifySpy = () => {}, soundSpy = () => {} } = {}) {
   const pi = {
     on(evt, handler) { this.handlers = this.handlers || {}; this.handlers[evt] = handler; },
     registerFlag() {},
-    getFlag() { return flagValue; },
-    getSetting(name) { return name === "notify" ? setting : undefined; },
-    config: {},
-    fired,
+    getFlag() {
+      // Regression: after session replacement/reload the SDK's runtime is
+      // stale and getFlag throws. Handlers must never touch it at event time.
+      if (getFlagThrows) {
+        throw new Error("This extension ctx is stale after session replacement or reload.");
+      }
+      return flagValue;
+    },
   };
-  // Patch notify/playSound at module level is awkward; instead verify the
-  // extension's gating logic by spying on handlers and checking it does not
-  // throw, plus that --no-notify short-circuits.
-  notifyExtension(pi);
+  // Default to no-op spies so unit tests never spawn real notifications or
+  // sounds; effect-asserting tests pass their own recording spies.
+  notifyExtension(pi, { notify: notifySpy, playSound: soundSpy });
   return pi;
 }
 
@@ -87,10 +92,43 @@ test("tool_result fires error only once per turn (dedupe)", () => {
   assert.doesNotThrow(() => pi.handlers.tool_result({ isError: true }, {}));
 });
 
-test("onError config=false suppresses error notification (no throw)", () => {
-  const pi = harness({ setting: { onError: false } });
+test("onError config=false suppresses error notification (observable effect)", () => {
+  // Settings now come from settings.json on disk (the SDK has no getSetting
+  // API) — write one into a temp cwd and refresh via session_start. Assert on
+  // the EFFECT: with onError:false, no notification fires; with defaults, it does.
+  const dir = mkdtempSync(join(tmpdir(), "pi-notify-"));
+  mkdirSync(join(dir, ".pi"), { recursive: true });
+  writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ notify: { onError: false } }));
+  const notifyCalls = [];
+  const pi = harness({ notifySpy: (...a) => notifyCalls.push(a) });
+  pi.handlers.session_start({}, { cwd: dir });
   pi.handlers.turn_start({}, {});
+  pi.handlers.tool_result({ isError: true }, {});
+  assert.equal(notifyCalls.length, 0, "onError:false must suppress the notification");
+});
+
+test("default settings fire a notification (observable effect)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-notify-"));
+  mkdirSync(join(dir, ".pi"), { recursive: true });
+  writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ notify: { sound: false } }));
+  const notifyCalls = [];
+  const soundCalls = [];
+  const pi = harness({ notifySpy: (...a) => notifyCalls.push(a), soundSpy: (...a) => soundCalls.push(a) });
+  pi.handlers.session_start({}, { cwd: dir });
+  pi.handlers.turn_start({}, {});
+  pi.handlers.tool_result({ isError: true }, {});
+  assert.equal(notifyCalls.length, 1, "error notification fires by default");
+  assert.equal(soundCalls.length, 0, "sound:false suppresses the sound");
+});
+
+test("stale runner (getFlag throws) never crashes handlers (regression)", () => {
+  // Simulates the SDK invalidating the runner after newSession/fork/reload:
+  // the old runner's handlers still fire (agent_settled teardown), and must
+  // not throw even though the captured pi API is stale.
+  const pi = harness({ getFlagThrows: true });
+  assert.doesNotThrow(() => pi.handlers.agent_settled({}, {}));
   assert.doesNotThrow(() => pi.handlers.tool_result({ isError: true }, {}));
+  assert.doesNotThrow(() => pi.handlers.turn_start({}, {}));
 });
 
 // ── Review-fix regression tests ────────────────────────────────────────────

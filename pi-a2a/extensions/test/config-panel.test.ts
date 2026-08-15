@@ -5,16 +5,26 @@ import { DEFAULTS } from "./helpers";
 import { applyRows, buildRows, ConfigPanelModel, kindValue } from "../lib/config-panel";
 
 describe("config-panel", () => {
-  it("buildRows covers server, discovery, identity, peers, ui groups", () => {
+  it("buildRows covers server, discovery, gateway, identity, peers, ui groups", () => {
     const cfg = DEFAULTS();
     cfg.peers = { hermes: { url: "http://localhost:9900", auth: { type: "none" }, timeout: 120000, capabilities: [] } };
     const groups = buildRows(cfg);
     const keys = groups.map((g) => g.key);
-    assert.deepEqual(keys, ["server", "discovery", "identity", "peers", "ui"]);
+    assert.deepEqual(keys, ["server", "discovery", "gateway", "identity", "peers", "ui"]);
     const serverRows = groups[0]!.rows.map((r) => r.key);
     assert.include(serverRows, "server.enabled");
     assert.include(serverRows, "server.port");
-    const peerRows = groups[3]!.rows.map((r) => r.key);
+    const gatewayRows = groups[2]!.rows.map((r) => r.key);
+    assert.deepEqual(gatewayRows, [
+      "gateway.enabled",
+      "gateway.url",
+      "gateway.token",
+      "gateway.name",
+      "gateway.upstreamToken",
+      "gateway.heartbeatSec",
+      "gateway.channel",
+    ]);
+    const peerRows = groups[4]!.rows.map((r) => r.key);
     assert.deepEqual(peerRows, ["peer.hermes.url"]);
   });
 
@@ -53,7 +63,9 @@ describe("config-panel", () => {
   it("string row set updates the config", () => {
     const cfg = DEFAULTS();
     const groups = buildRows(cfg);
-    const row = groups[2]!.rows.find((r) => r.key === "selfIdentity")!;
+    // Gateway group added between discovery and identity (0.5.0):
+    // server(10) + discovery(6) + gateway(7) = index 23.
+    const row = groups[3]!.rows.find((r) => r.key === "selfIdentity")!;
     row.set("session-a");
     assert.equal(cfg.selfIdentity, "session-a");
   });
@@ -64,11 +76,49 @@ describe("config-panel", () => {
     // Mutate some row values.
     groups[0]!.rows.find((r) => r.key === "server.enabled")!.value = true;
     groups[0]!.rows.find((r) => r.key === "server.port")!.value = 9944;
-    groups[2]!.rows.find((r) => r.key === "selfIdentity")!.value = "session-b";
+    groups[3]!.rows.find((r) => r.key === "selfIdentity")!.value = "session-b";
     applyRows(cfg, groups);
     assert.equal(cfg.server.enabled, true);
     assert.equal(cfg.server.port, 9944);
     assert.equal(cfg.selfIdentity, "session-b");
+  });
+
+  it("gateway rows materialize discovery.gateway on edit (enabled toggle)", () => {
+    const cfg = DEFAULTS();
+    assert.isUndefined(cfg.discovery.gateway);
+    const groups = buildRows(cfg);
+    const row = groups[2]!.rows.find((r) => r.key === "gateway.enabled")!;
+    assert.equal(row.value, false, "default view: disabled");
+    row.set(true);
+    assert.isDefined(cfg.discovery.gateway, "setter materializes the block");
+    assert.equal((cfg.discovery.gateway as { enabled: boolean }).enabled, true);
+  });
+
+  it("masked rows render no raw secret (display only)", () => {
+    const cfg = DEFAULTS();
+    cfg.discovery.gateway = { enabled: true, url: "http://g", token: "supersecret" };
+    const model = new ConfigPanelModel(buildRows(cfg), null);
+    // Navigate to gateway.token (server 10 + discovery 6 + gateway 2 = index 18).
+    for (let i = 0; i < 18; i++) model.handleInput("\u001b[B");
+    const out = model.render(80).join("\n");
+    assert.ok(!out.includes("supersecret"), "raw token must not appear");
+    assert.match(out, /••••/);
+    // row.value still carries the real secret for persistence
+    const tokenRow = buildRows(cfg)[2]!.rows.find((r) => r.key === "gateway.token")!;
+    assert.equal(tokenRow.value, "supersecret");
+  });
+
+  it("empty submit on a masked row keeps the existing secret (no wipe)", () => {
+    const cfg = DEFAULTS();
+    cfg.discovery.gateway = { enabled: true, url: "http://g", token: "supersecret" };
+    const model = new ConfigPanelModel(buildRows(cfg), null);
+    model.onChanged = () => { model.dirty = true; };
+    // Navigate to gateway.token (server 10 + discovery 6 + gateway 2 = index 18).
+    for (let i = 0; i < 18; i++) model.handleInput("\u001b[B");
+    model.handleInput("\r"); // start edit
+    model.handleInput("\r"); // submit EMPTY → must keep the secret
+    assert.equal(cfg.discovery.gateway!.token, "supersecret", "empty submit keeps the token");
+    assert.isFalse(model.dirty, "no change recorded");
   });
 
   it("action rows run the provided action", async () => {
@@ -77,7 +127,7 @@ describe("config-panel", () => {
     const groups = buildRows(cfg, {
       addPeer: { label: "Add peer", run: () => { ran++; } },
     });
-    const actionRow = groups[3]!.rows.find((r) => r.key === "action.addPeer")!;
+    const actionRow = groups[4]!.rows.find((r) => r.key === "action.addPeer")!;
     assert.equal(actionRow.kind, "action");
     await actionRow.set(undefined);
     assert.equal(ran, 1);
@@ -105,8 +155,8 @@ describe("config-panel", () => {
       });
       model.requestRender();
     };
-    // Navigate to the add-peer action row: server(10) + discovery(6) + identity(1) + peers(0) = index 17.
-    for (let i = 0; i < 17; i++) model.handleInput("\u001b[B");
+    // Navigate to the add-peer action row: server(10) + discovery(6) + gateway(7) + identity(1) + peers(0) = index 24.
+    for (let i = 0; i < 24; i++) model.handleInput("\u001b[B");
     model.handleInput("\r"); // activate → prompt opens
     for (const ch of "newpeer") model.handleInput(ch);
     model.handleInput("\r"); // confirm
@@ -128,7 +178,7 @@ describe("config-panel", () => {
       });
       model.requestRender();
     };
-    for (let i = 0; i < 17; i++) model.handleInput("\u001b[B");
+    for (let i = 0; i < 24; i++) model.handleInput("\u001b[B");
     model.handleInput("\r");
     for (const ch of "cancelled") model.handleInput(ch);
     model.handleInput("\u001b"); // cancel
@@ -154,8 +204,8 @@ describe("config-panel", () => {
       const cfg = DEFAULTS();
       const model = new ConfigPanelModel(buildRows(cfg), null);
       model.onChanged = () => { model.dirty = true; };
-      // Navigate to identity.selfIdentity (index: server 10 + discovery 6 = 16).
-      for (let i = 0; i < 16; i++) model.handleInput("\u001b[B");
+      // Navigate to identity.selfIdentity (index: server 10 + discovery 6 + gateway 7 = 23).
+      for (let i = 0; i < 23; i++) model.handleInput("\u001b[B");
       model.handleInput("\r"); // start inline edit
       // The panel now routes keys to the embedded Input: type + submit.
       for (const ch of "session-b") model.handleInput(ch);
@@ -167,7 +217,7 @@ describe("config-panel", () => {
     it("Esc during inline edit cancels without changing the value", () => {
       const cfg = DEFAULTS();
       const model = new ConfigPanelModel(buildRows(cfg), null);
-      for (let i = 0; i < 16; i++) model.handleInput("\u001b[B");
+      for (let i = 0; i < 23; i++) model.handleInput("\u001b[B");
       model.handleInput("\r"); // start edit
       for (const ch of "changed") model.handleInput(ch);
       model.handleInput("\u001b"); // cancel edit
@@ -226,8 +276,8 @@ describe("config-panel", () => {
         },
       };
       const model = new ConfigPanelModel(buildRows(cfg), null);
-      // Navigate to the peer URL row (server 10 + discovery 6 + identity 1 = 17).
-      for (let i = 0; i < 17; i++) model.handleInput("\u001b[B");
+      // Navigate to the peer URL row (server 10 + discovery 6 + gateway 7 + identity 1 = 24).
+      for (let i = 0; i < 24; i++) model.handleInput("\u001b[B");
       model.handleInput("\r"); // start edit
       const width = 60;
       for (const line of model.render(width)) {

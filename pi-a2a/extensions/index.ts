@@ -17,7 +17,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { getGatewayPeers, loadConfig, resolvePeer, setConfigOverrides, writeSettingsA2A, type A2AConfig } from "./lib/config";
+import { buildA2ASettingsPatch, getGatewayPeers, loadConfig, setConfigOverrides, writeSettingsA2A, type A2AConfig } from "./lib/config";
 import {
   a2aCall,
   a2aDiscover,
@@ -523,6 +523,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
             `  server.port: ${cfg.server.port}`,
             `  server.host: ${cfg.server.host}`,
             `  discovery: local=${cfg.discovery.local.enabled} mdns=${cfg.discovery.mdns.enabled} enrichCard=${cfg.discovery.enrichCard}`,
+            `  gateway: ${cfg.discovery.gateway ? `${cfg.discovery.gateway.enabled ? "enabled" : "disabled"} ${cfg.discovery.gateway.url || "(no url)"}${cfg.discovery.gateway.token ? " · token (set)" : ""}` : "not configured"}`,
             `  ui.transcript: ${cfg.ui.transcript}`,
             `  peers: ${Object.keys(cfg.peers).join(", ") || "(none)"}`,
             "",
@@ -537,10 +538,9 @@ export default function a2aExtension(pi: ExtensionAPI): void {
       // TUI mode: open the interactive panel. Save persists to settings.json,
       // applies live via overrides, and restarts the server when needed.
       const workingCfg = structuredClone(cfg);
-      const serverKeys = new Set(["server", "discovery"]);
-      let changedServerKeys = false;
       let peerChanges = false;
       const beforePeers = JSON.stringify(workingCfg.peers);
+      const beforeGateway = JSON.stringify(workingCfg.discovery.gateway ?? null);
 
       const actions: Record<string, PanelAction> = {
         addPeer: {
@@ -592,36 +592,28 @@ export default function a2aExtension(pi: ExtensionAPI): void {
         ctx: ectx,
         cfg: workingCfg,
         actions,
-        onSave: (saved) => {
+        onSave: (saved, editedKeys) => {
           if (!saved) return;
           const afterPeers = JSON.stringify(workingCfg.peers);
-          changedServerKeys = [...serverKeys].some(
-            (k) => JSON.stringify((workingCfg as any)[k]) !== JSON.stringify((cfg as any)[k]),
-          );
+          const gatewayChanged = JSON.stringify(workingCfg.discovery.gateway ?? null) !== beforeGateway;
+          const restartChanged =
+            JSON.stringify(workingCfg.server) !== JSON.stringify(cfg.server) ||
+            JSON.stringify(workingCfg.discovery) !== JSON.stringify(cfg.discovery);
           peerChanges = peerChanges || beforePeers !== afterPeers;
 
-          // Persist to settings.json (a2a key, preserving other keys).
-          // The gateway block carries secrets (token/upstreamToken) often
-          // sourced from env — the panel has no gateway editor, so never
-          // write it back with a discovery edit.
-          const discoveryPersist = JSON.stringify(workingCfg.discovery) !== JSON.stringify(cfg.discovery)
-            ? (() => {
-                const d = { ...workingCfg.discovery } as Record<string, unknown>;
-                delete d.gateway;
-                return { discovery: d };
-              })()
-            : {};
+          // Persist to settings.json (a2a key, preserving other keys) via the
+          // pure patch builder (unit-tested in config.test.ts). Key invariants:
+          // a gateway block already in settings.json survives unrelated
+          // discovery edits; env-sourced secrets are never copied to disk
+          // unless the user edited that exact row.
           const written = writeSettingsA2A({
             cwd: ectx.cwd,
-            patch: (a2a: any) => ({
-              ...a2a,
-              ...(changedServerKeys ? { server: workingCfg.server } : {}),
-              ...(peerChanges ? { peers: workingCfg.peers } : {}),
-              ...discoveryPersist,
-              ...(workingCfg.selfIdentity !== cfg.selfIdentity
-                ? { selfIdentity: workingCfg.selfIdentity }
-                : {}),
-              ...(JSON.stringify(workingCfg.ui) !== JSON.stringify(cfg.ui) ? { ui: workingCfg.ui } : {}),
+            patch: buildA2ASettingsPatch({
+              cfg,
+              working: workingCfg,
+              peerChanges,
+              gatewayChanged,
+              editedGatewayKeys: editedKeys,
             }),
           });
 
@@ -637,7 +629,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
           ctx.ui.notify(`A2A config saved → ${written}`, "info");
 
           // Restart the running server if server/discovery settings changed.
-          if (changedServerKeys && server) {
+          if (restartChanged && server) {
             void (async () => {
               ctx.ui.notify("A2A config changed — restarting inbound server…", "info");
               try {

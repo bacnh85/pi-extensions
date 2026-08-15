@@ -1,5 +1,5 @@
 import { assert } from "chai";
-import { loadConfig, resolvePeer, authHeaders, normUrl, setConfigOverrides, writeSettingsA2A } from "../lib/config";
+import { buildA2ASettingsPatch, loadConfig, resolvePeer, authHeaders, normUrl, setConfigOverrides, writeSettingsA2A } from "../lib/config";
 import { DEFAULTS } from "./helpers";
 import * as path from "node:path";
 import * as fs from "node:fs";
@@ -153,6 +153,297 @@ describe("config", () => {
         assert.isFalse(cfg.ui.transcript);
         // untouched keys keep defaults
         assert.equal(cfg.server.port, 9910);
+      });
+    });
+  });
+
+  describe("discovery.gateway", () => {
+    it("activates when enabled + url + token are set", () => {
+      withIsolatedPiDir((dir) => {
+        fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, ".pi", "settings.json"),
+          JSON.stringify({ a2a: { discovery: { gateway: { enabled: true, url: "http://127.0.0.1:9920", token: "tok" } } } }),
+        );
+        const cfg = loadConfig({ cwd: dir });
+        assert.equal(cfg.discovery.gateway?.enabled, true);
+        assert.equal(cfg.discovery.gateway?.url, "http://127.0.0.1:9920");
+        assert.equal(cfg.discovery.gateway?.token, "tok");
+      });
+    });
+
+    it("explicit enabled:false disables even with url+token", () => {
+      withIsolatedPiDir((dir) => {
+        fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, ".pi", "settings.json"),
+          JSON.stringify({ a2a: { discovery: { gateway: { enabled: false, url: "http://127.0.0.1:9920", token: "tok" } } } }),
+        );
+        const g = loadConfig({ cwd: dir }).discovery.gateway;
+        // The block is materialized (so the panel can display/preserve it) but
+        // registration is off: enabled stays false.
+        assert.isDefined(g);
+        assert.equal(g!.enabled, false);
+      });
+    });
+
+    it("backward compat: url+token with no enabled field stays active", () => {
+      withIsolatedPiDir((dir) => {
+        fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, ".pi", "settings.json"),
+          JSON.stringify({ a2a: { discovery: { gateway: { url: "http://127.0.0.1:9920", token: "tok" } } } }),
+        );
+        const cfg = loadConfig({ cwd: dir });
+        assert.equal(cfg.discovery.gateway?.enabled, true);
+      });
+    });
+
+    it("env A2A_GATEWAY_ENABLED=false overrides the implicit default", () => {
+      withIsolatedPiDir((dir) => {
+        fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, ".pi", "settings.json"),
+          JSON.stringify({ a2a: { discovery: { gateway: { url: "http://127.0.0.1:9920", token: "tok" } } } }),
+        );
+        const old = process.env.A2A_GATEWAY_ENABLED;
+        process.env.A2A_GATEWAY_ENABLED = "false";
+        try {
+          const g = loadConfig({ cwd: dir }).discovery.gateway;
+          assert.isDefined(g, "block stays visible for the panel");
+          assert.equal(g!.enabled, false, "env flag forces registration off");
+        } finally {
+          if (old === undefined) delete process.env.A2A_GATEWAY_ENABLED;
+          else process.env.A2A_GATEWAY_ENABLED = old;
+        }
+      });
+    });
+
+    it("applyOverrides merges the gateway block (panel live apply)", () => {
+      withIsolatedPiDir((dir) => {
+        setConfigOverrides({
+          discovery: {
+            gateway: { enabled: true, url: "http://127.0.0.1:9921", token: "override-tok" },
+          },
+        } as any);
+        const cfg = loadConfig({ cwd: dir });
+        assert.equal(cfg.discovery.gateway?.enabled, true);
+        assert.equal(cfg.discovery.gateway?.url, "http://127.0.0.1:9921");
+      });
+    });
+  });
+
+  describe("buildA2ASettingsPatch (panel persistence)", () => {
+    afterEach(() => setConfigOverrides(null));
+
+    /** Load a config from an isolated dir with the given settings.json a2a block. */
+    function cfgWith(settings: any, dir: string): any {
+      fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+      fs.writeFileSync(path.join(dir, ".pi", "settings.json"), JSON.stringify({ a2a: settings }));
+      return loadConfig({ cwd: dir });
+    }
+
+    it("settings gateway survives an unrelated discovery edit (enabled:true)", () => {
+      withIsolatedPiDir((dir) => {
+        const cfg = cfgWith(
+          { discovery: { gateway: { enabled: true, url: "http://gw", token: "tok" }, local: { enabled: true, heartbeatSec: 15, ttlSec: 60 } } },
+          dir,
+        );
+        const working = structuredClone(cfg);
+        working.discovery.local.heartbeatSec = 30; // unrelated edit
+        const patch = buildA2ASettingsPatch({ cfg, working, peerChanges: false, gatewayChanged: false });
+        const a2a = patch({ discovery: { gateway: { enabled: true, url: "http://gw", token: "tok" } } });
+        assert.deepEqual(a2a.discovery.gateway, { enabled: true, url: "http://gw", token: "tok" }, "gateway block preserved byte-for-byte");
+        assert.equal(a2a.discovery.local.heartbeatSec, 30);
+      });
+    });
+
+    it("disabled settings gateway survives an unrelated discovery edit", () => {
+      withIsolatedPiDir((dir) => {
+        const cfg = cfgWith(
+          { discovery: { gateway: { enabled: false, url: "http://gw", token: "tok" } } },
+          dir,
+        );
+        const working = structuredClone(cfg);
+        working.discovery.local.heartbeatSec = 30;
+        const patch = buildA2ASettingsPatch({ cfg, working, peerChanges: false, gatewayChanged: false });
+        const a2a = patch({ discovery: { gateway: { enabled: false, url: "http://gw", token: "tok" } } });
+        assert.deepEqual(a2a.discovery.gateway, { enabled: false, url: "http://gw", token: "tok" }, "disabled gateway preserved");
+      });
+    });
+
+    it("env-sourced gateway is NOT copied to settings.json on a discovery edit", () => {
+      withIsolatedPiDir((dir) => {
+        fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+        fs.writeFileSync(path.join(dir, ".pi", "settings.json"), JSON.stringify({ a2a: { discovery: { local: { enabled: true, heartbeatSec: 15, ttlSec: 60 } } } }));
+        const oldUrl = process.env.A2A_GATEWAY_URL;
+        const oldTok = process.env.A2A_GATEWAY_TOKEN;
+        process.env.A2A_GATEWAY_URL = "http://env-gw";
+        process.env.A2A_GATEWAY_TOKEN = "env-tok";
+        try {
+          const cfg = loadConfig({ cwd: dir });
+          assert.equal(cfg.discovery.gateway?.url, "http://env-gw", "env gateway visible in live config");
+          const working = structuredClone(cfg);
+          working.discovery.local.heartbeatSec = 30;
+          const patch = buildA2ASettingsPatch({ cfg, working, peerChanges: false, gatewayChanged: false });
+          const a2a = patch({ discovery: { local: { enabled: true, heartbeatSec: 15, ttlSec: 60 } } });
+          assert.isUndefined(a2a.discovery.gateway, "env-sourced gateway must not be written to settings.json");
+          assert.equal(a2a.discovery.local.heartbeatSec, 30);
+        } finally {
+          if (oldUrl === undefined) delete process.env.A2A_GATEWAY_URL;
+          else process.env.A2A_GATEWAY_URL = oldUrl;
+          if (oldTok === undefined) delete process.env.A2A_GATEWAY_TOKEN;
+          else process.env.A2A_GATEWAY_TOKEN = oldTok;
+        }
+      });
+    });
+
+    it("gateway edit persists the new url/token", () => {
+      withIsolatedPiDir((dir) => {
+        const cfg = cfgWith(
+          { discovery: { gateway: { enabled: true, url: "http://old", token: "old" } } },
+          dir,
+        );
+        const working = structuredClone(cfg);
+        working.discovery.gateway!.url = "http://new";
+        working.discovery.gateway!.token = "new-tok";
+        const patch = buildA2ASettingsPatch({
+          cfg,
+          working,
+          peerChanges: false,
+          gatewayChanged: true,
+          editedGatewayKeys: new Set(["gateway.url", "gateway.token"]),
+        });
+        const a2a = patch({ discovery: { gateway: { enabled: true, url: "http://old", token: "old" } } });
+        assert.equal(a2a.discovery.gateway.url, "http://new");
+        assert.equal(a2a.discovery.gateway.token, "new-tok");
+      });
+    });
+
+    it("heartbeat-only gateway edit does NOT copy an env token to settings.json", () => {
+      withIsolatedPiDir((dir) => {
+        fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+        // No gateway in settings.json — the token below is env-sourced.
+        fs.writeFileSync(path.join(dir, ".pi", "settings.json"), JSON.stringify({ a2a: { discovery: { local: { enabled: true, heartbeatSec: 15, ttlSec: 60 } } } }));
+        const oldUrl = process.env.A2A_GATEWAY_URL;
+        const oldTok = process.env.A2A_GATEWAY_TOKEN;
+        process.env.A2A_GATEWAY_URL = "http://env-gw";
+        process.env.A2A_GATEWAY_TOKEN = "env-tok";
+        try {
+          const cfg = loadConfig({ cwd: dir });
+          const working = structuredClone(cfg);
+          // User edits only the heartbeat (gatewayChanged=true, but the token
+          // row was NOT touched).
+          working.discovery.gateway!.heartbeatSec = 90;
+          const patch = buildA2ASettingsPatch({
+            cfg,
+            working,
+            peerChanges: false,
+            gatewayChanged: true,
+            editedGatewayKeys: new Set(["gateway.heartbeatSec"]),
+          });
+          const a2a = patch({ discovery: { local: { enabled: true, heartbeatSec: 15, ttlSec: 60 } } });
+          assert.equal(a2a.discovery.gateway.heartbeatSec, 90);
+          assert.equal(a2a.discovery.gateway.token, "", "env token must not be copied");
+        } finally {
+          if (oldUrl === undefined) delete process.env.A2A_GATEWAY_URL;
+          else process.env.A2A_GATEWAY_URL = oldUrl;
+          if (oldTok === undefined) delete process.env.A2A_GATEWAY_TOKEN;
+          else process.env.A2A_GATEWAY_TOKEN = oldTok;
+        }
+      });
+    });
+
+    it("explicitly-edited token row IS persisted", () => {
+      withIsolatedPiDir((dir) => {
+        const cfg = cfgWith(
+          { discovery: { gateway: { enabled: true, url: "http://old", token: "old" } } },
+          dir,
+        );
+        const working = structuredClone(cfg);
+        working.discovery.gateway!.token = "typed-new";
+        const patch = buildA2ASettingsPatch({
+          cfg,
+          working,
+          peerChanges: false,
+          gatewayChanged: true,
+          editedGatewayKeys: new Set(["gateway.token"]),
+        });
+        const a2a = patch({ discovery: { gateway: { enabled: true, url: "http://old", token: "old" } } });
+        assert.equal(a2a.discovery.gateway.token, "typed-new");
+      });
+    });
+
+    it("combined gateway + non-gateway discovery edits both persist (regression)", () => {
+      withIsolatedPiDir((dir) => {
+        const cfg = cfgWith(
+          {
+            discovery: {
+              local: { enabled: true, heartbeatSec: 15, ttlSec: 60 },
+              mdns: { enabled: false, serviceType: "a2a" },
+              gateway: { enabled: true, url: "http://gw", token: "tok" },
+            },
+          },
+          dir,
+        );
+        const working = structuredClone(cfg);
+        working.discovery.mdns.enabled = true; // non-gateway edit
+        working.discovery.gateway!.url = "http://new"; // gateway edit
+        const patch = buildA2ASettingsPatch({
+          cfg,
+          working,
+          peerChanges: false,
+          gatewayChanged: true,
+          editedGatewayKeys: new Set(["gateway.url"]),
+        });
+        const a2a = patch({
+          discovery: {
+            local: { enabled: true, heartbeatSec: 15, ttlSec: 60 },
+            mdns: { enabled: false, serviceType: "a2a" },
+            gateway: { enabled: true, url: "http://gw", token: "tok" },
+          },
+        });
+        assert.equal(a2a.discovery.mdns.enabled, true, "mdns edit must survive");
+        assert.equal(a2a.discovery.gateway.url, "http://new", "gateway url edit must survive");
+        assert.equal(a2a.discovery.gateway.token, "tok", "unedited token kept from file");
+      });
+    });
+
+    it("server edit does NOT copy env-sourced secrets to settings.json (regression)", () => {
+      withIsolatedPiDir((dir) => {
+        fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+        fs.writeFileSync(path.join(dir, ".pi", "settings.json"), JSON.stringify({ a2a: {} }));
+        const oldTok = process.env.A2A_BEARER_TOKEN;
+        process.env.A2A_BEARER_TOKEN = "env-shared-tok";
+        try {
+          const cfg = loadConfig({ cwd: dir });
+          assert.equal(cfg.server.sharedToken, "env-shared-tok", "env token visible in live config");
+          const working = structuredClone(cfg);
+          working.server.port = 7777; // the only deliberate edit
+          const patch = buildA2ASettingsPatch({ cfg, working, peerChanges: false, gatewayChanged: false });
+          const a2a = patch({}); // settings.json has no server block
+          assert.equal(a2a.server.port, 7777, "port edit persists");
+          assert.equal(a2a.server.sharedToken, "", "env sharedToken must NOT be copied");
+          assert.deepEqual(a2a.server.peerTokens, {}, "env peerTokens must NOT be copied");
+        } finally {
+          if (oldTok === undefined) delete process.env.A2A_BEARER_TOKEN;
+          else process.env.A2A_BEARER_TOKEN = oldTok;
+        }
+      });
+    });
+
+    it("discovery-only edit does NOT persist the server block (env secrets)", () => {
+      withIsolatedPiDir((dir) => {
+        const cfg = cfgWith({ discovery: { local: { enabled: true, heartbeatSec: 15, ttlSec: 60 } } }, dir);
+        // Simulate env-sourced server secrets present in the live config.
+        (cfg as any).server.sharedToken = "env-shared";
+        (cfg as any).server.peerTokens = { a: "env-a" };
+        const working = structuredClone(cfg);
+        working.discovery.local.heartbeatSec = 30;
+        const patch = buildA2ASettingsPatch({ cfg, working, peerChanges: false, gatewayChanged: false });
+        const a2a = patch({ discovery: { local: { enabled: true, heartbeatSec: 15, ttlSec: 60 } } });
+        assert.isUndefined(a2a.server, "server block not written on discovery-only edit");
+        assert.equal(a2a.discovery.local.heartbeatSec, 30);
       });
     });
   });
