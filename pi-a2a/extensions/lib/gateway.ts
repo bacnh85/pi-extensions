@@ -348,6 +348,9 @@ interface ChannelEnvelope {
   query?: string | null;
   headers: Record<string, string>;
   body_b64: string;
+  /** Per-connection secret from the gateway `hello` event — echoed in the
+   *  response so a shared-token peer can't answer foreign requests. */
+  chan_secret?: string;
 }
 
 interface ChannelRespEnvelope {
@@ -355,7 +358,12 @@ interface ChannelRespEnvelope {
   status: number;
   headers: Record<string, string>;
   body_b64: string;
+  chan_secret?: string;
 }
+
+/** Max channel body (matches gateway MAX_CHANNEL_BODY — 4 MiB). */
+const MAX_CHANNEL_BODY = 4 * 1024 * 1024;
+const MAX_B64 = Math.floor((MAX_CHANNEL_BODY * 4) / 3) + 4;
 
 /** Opens GET /channel and dispatches each `request` event to the local A2A
  *  server, posting the answer to /channel/response/{id}. Reconnects with
@@ -364,6 +372,10 @@ export class ChannelClient {
   private controller: AbortController | null = null;
   private stopped = false;
   private epoch = 0;
+  /** Per-connection secret from the gateway hello event. */
+  private chanSecret = "";
+  /** In-flight dispatches — stop() waits for them (bounded). */
+  private inflight = new Set<Promise<void>>();
 
   constructor(
     private readonly cfg: GatewayConfig,
@@ -418,7 +430,8 @@ export class ChannelClient {
     return this.connect(attempt + 1);
   }
 
-  /** Minimal SSE reader: buffers bytes, splits on \\n\\n, parses event/data. */
+  /** Minimal SSE reader: CRLF/LF-tolerant, ignores comments, captures the
+   *  `hello` secret, dispatches `request` envelopes with a size guard. */
   private async readStream(body: ReadableStream<Uint8Array>): Promise<void> {
     const reader = body.getReader();
     const dec = new TextDecoder();
@@ -427,6 +440,8 @@ export class ChannelClient {
       const { done, value } = await reader.read();
       if (done) return;
       buf += dec.decode(value, { stream: true });
+      // Normalize CRLF → LF so \n\n framing works for both line endings.
+      buf = buf.replace(/\r\n/g, "\n");
       let idx: number;
       while ((idx = buf.indexOf("\n\n")) >= 0) {
         const frame = buf.slice(0, idx);
@@ -440,21 +455,40 @@ export class ChannelClient {
     let event = "message";
     const dataLines: string[] = [];
     for (const line of frame.split("\n")) {
-      if (line.startsWith("event:")) event = line.slice(6).trim();
-      else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+      const l = line.replace(/\r$/, "");
+      if (!l || l.startsWith(":")) continue; // blank + comments
+      if (l.startsWith("event:")) event = l.slice(6).trim();
+      else if (l.startsWith("data:")) dataLines.push(l.slice(5).trimStart());
     }
-    if (event !== "request") return; // hello/ping ignored
+    const data = dataLines.join("\n");
+    if (event === "hello") {
+      this.chanSecret = data.trim();
+      return;
+    }
+    if (event !== "request") return; // ping/lagged ignored
     let env: ChannelEnvelope;
     try {
-      env = JSON.parse(dataLines.join("\n"));
+      env = JSON.parse(data);
     } catch {
       return; // malformed envelope — drop
     }
-    void this.dispatch(env);
+    // Oversized envelope guard BEFORE decode (OOM protection).
+    if (env.body_b64.length > MAX_B64) {
+      this.log(`[a2a-gateway] dropped oversized envelope (${env.body_b64.length} b64 chars)`);
+      return;
+    }
+    const p = this.dispatch(env);
+    this.inflight.add(p);
+    void p.finally(() => this.inflight.delete(p));
   }
 
   /** Forward one envelope to the local server and post the answer back. */
   private async dispatch(env: ChannelEnvelope): Promise<void> {
+    // Path must stay inside the local origin — reject traversal outright.
+    if (!env.path.startsWith("/") || env.path.includes("..")) {
+      this.log(`[a2a-gateway] dropped envelope with unsafe path: ${env.path}`);
+      return;
+    }
     const binary = Uint8Array.from(atob(env.body_b64), (c) => c.charCodeAt(0));
     const qs = env.query ? `?${env.query}` : "";
     const headers: Record<string, string> = { ...env.headers };
@@ -466,6 +500,10 @@ export class ChannelClient {
         body: ["GET", "HEAD"].includes(env.method) ? undefined : binary,
       });
       const buf = new Uint8Array(await res.arrayBuffer());
+      if (buf.length > MAX_CHANNEL_BODY) {
+        this.log(`[a2a-gateway] local reply too large (${buf.length}B) — not posted`);
+        return;
+      }
       let b64 = "";
       for (let i = 0; i < buf.length; i += 0x8000) {
         b64 += String.fromCharCode(...buf.subarray(i, i + 0x8000));
@@ -479,6 +517,7 @@ export class ChannelClient {
         status: res.status,
         headers: outHeaders,
         body_b64: btoa(b64),
+        chan_secret: this.chanSecret,
       });
     } catch (e) {
       this.log(`[a2a-gateway] channel dispatch failed: ${String(e)}`);
@@ -506,5 +545,12 @@ export class ChannelClient {
     this.epoch += 1; // kill in-flight connect/reconnect
     this.controller?.abort();
     this.controller = null;
+    // Wait (bounded) for in-flight dispatches so no response is posted
+    // after the session shut down.
+    const pending = [...this.inflight];
+    void Promise.allSettled(pending).then(() => {
+      const t = setTimeout(() => undefined, 5000);
+      t.unref?.();
+    });
   }
 }

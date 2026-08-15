@@ -429,3 +429,106 @@ describe("reverse channel client", () => {
     gw.close();
   });
 });
+
+describe("reverse channel hardening", () => {
+  it("drops envelopes with traversal paths", async () => {
+    const hits: string[] = [];
+    const local = http.createServer((rq, rs) => {
+      hits.push(rq.url!);
+      rs.writeHead(200); rs.end("ok");
+    });
+    await new Promise<void>((r) => local.listen(0, "127.0.0.1", r));
+    const port = (local.address() as any).port;
+    const gw = http.createServer((rq, rs) => {
+      if (rq.url!.split("?")[0] === "/channel") {
+        rs.writeHead(200, { "content-type": "text/event-stream" });
+        for (const path of ["../admin", "/../../etc/passwd", "/ok"]) {
+          const env = { id: 7, method: "GET", path, headers: {}, body_b64: "" };
+          rs.write(`event: request\ndata: ${JSON.stringify(env)}\n\n`);
+        }
+        return;
+      }
+      rs.writeHead(404); rs.end();
+    });
+    await new Promise<void>((r) => gw.listen(0, "127.0.0.1", r));
+    const gwPort = (gw.address() as any).port;
+    const epoch = { value: 0 };
+    const cc = new ChannelClient(
+      { url: `http://127.0.0.1:${gwPort}`, token: TOKEN },
+      `http://127.0.0.1:${port}`,
+      () => {},
+      epoch,
+    );
+    await cc.start();
+    await new Promise((r) => setTimeout(r, 300));
+    cc.stop();
+    assert.deepEqual(hits, ["/ok"]); // traversal paths never reached local
+    local.close(); gw.close();
+  });
+
+  it("drops oversized envelopes without decoding", async () => {
+    const hits: string[] = [];
+    const local = http.createServer((rq, rs) => {
+      hits.push(rq.url!);
+      rs.writeHead(200); rs.end("ok");
+    });
+    await new Promise<void>((r) => local.listen(0, "127.0.0.1", r));
+    const port = (local.address() as any).port;
+    const gw = http.createServer((rq, rs) => {
+      if (rq.url!.split("?")[0] === "/channel") {
+        rs.writeHead(200, { "content-type": "text/event-stream" });
+        const env = { id: 8, method: "POST", path: "/", headers: {}, body_b64: "A".repeat(6_000_000) };
+        rs.write(`event: request\ndata: ${JSON.stringify(env)}\n\n`);
+        return;
+      }
+      rs.writeHead(404); rs.end();
+    });
+    await new Promise<void>((r) => gw.listen(0, "127.0.0.1", r));
+    const gwPort = (gw.address() as any).port;
+    const epoch = { value: 0 };
+    const cc = new ChannelClient(
+      { url: `http://127.0.0.1:${gwPort}`, token: TOKEN },
+      `http://127.0.0.1:${port}`,
+      () => {},
+      epoch,
+    );
+    await cc.start();
+    await new Promise((r) => setTimeout(r, 300));
+    cc.stop();
+    assert.deepEqual(hits, []); // oversized never dispatched
+    local.close(); gw.close();
+  });
+
+  it("parses CRLF-delimited SSE frames with comments", async () => {
+    const hits: string[] = [];
+    const local = http.createServer((rq, rs) => {
+      hits.push(rq.url!);
+      rs.writeHead(200); rs.end("ok");
+    });
+    await new Promise<void>((r) => local.listen(0, "127.0.0.1", r));
+    const port = (local.address() as any).port;
+    const gw = http.createServer((rq, rs) => {
+      if (rq.url!.split("?")[0] === "/channel") {
+        rs.writeHead(200, { "content-type": "text/event-stream" });
+        rs.write(": comment line\r\n");
+        rs.write(`event: request\r\ndata: ${JSON.stringify({ id: 9, method: "GET", path: "/crlf", headers: {}, body_b64: "" })}\r\n\r\n`);
+        return;
+      }
+      rs.writeHead(404); rs.end();
+    });
+    await new Promise<void>((r) => gw.listen(0, "127.0.0.1", r));
+    const gwPort = (gw.address() as any).port;
+    const epoch = { value: 0 };
+    const cc = new ChannelClient(
+      { url: `http://127.0.0.1:${gwPort}`, token: TOKEN },
+      `http://127.0.0.1:${port}`,
+      () => {},
+      epoch,
+    );
+    await cc.start();
+    await new Promise((r) => setTimeout(r, 300));
+    cc.stop();
+    assert.deepEqual(hits, ["/crlf"]);
+    local.close(); gw.close();
+  });
+});
