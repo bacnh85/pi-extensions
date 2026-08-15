@@ -61,8 +61,8 @@ describe("activity", () => {
 
   describe("activityToText", () => {
     it("formats arrived", () => {
-      const a: InboundActivity = { type: "arrived", taskId: "t1", identity: "hermes", preview: "find TODOs", contextId: "c1" };
-      assert.equal(activityToText(a), "[A2A inbound] task from hermes: find TODOs");
+      const a: InboundActivity = { type: "arrived", taskId: "t1", identity: "hermes", text: "find TODOs", contextId: "c1" };
+      assert.equal(activityToText(a), "[A2A inbound] task from hermes:\nfind TODOs");
     });
     it("formats completed with elapsed", () => {
       const a: InboundActivity = { type: "completed", taskId: "t1", state: "completed", replyPreview: "done", elapsedMs: 2500 };

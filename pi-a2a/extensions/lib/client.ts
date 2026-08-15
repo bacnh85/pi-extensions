@@ -415,6 +415,16 @@ export async function a2aDiscover(opts: {
   for (const s of skills.slice(0, 20)) {
     lines.push(`  - ${s.name || s.id}: ${s.description ?? ""}`);
   }
+  // Full session-metadata tool list from the pi-session extension (matches
+  // the card's metadata.tools — never truncated).
+  const meta = (card as any).metadata ?? {};
+  const tools = Array.isArray(meta.tools) ? meta.tools.map(String) : [];
+  if (tools.length) {
+    lines.push(`Tools (${tools.length}):`);
+    for (let i = 0; i < tools.length; i += 10) {
+      lines.push(`  ${tools.slice(i, i + 10).join(", ")}`);
+    }
+  }
   return lines.join("\n");
 }
 

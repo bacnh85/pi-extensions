@@ -28,7 +28,7 @@ import {
 } from "./lib/client";
 import { A2AServer, type SessionRunner } from "./lib/server";
 import { formatPeers, listPeers } from "./lib/discovery";
-import { activityLine, activityStatusLine, activityToText, type InboundActivity } from "./lib/activity";
+import { activityLine, activityStatusLine, activityToText, preview, type InboundActivity } from "./lib/activity";
 import { openConfigPanel, type PanelAction } from "./lib/config-panel";
 
 import { Container, Text } from "@earendil-works/pi-tui";
@@ -168,7 +168,8 @@ function broadcastActivity(
   switch (a.type) {
     case "arrived":
       activeInboundTasks.set(a.taskId, { identity: a.identity, last: a });
-      ctx.ui.notify(`A2A task from ${a.identity}: ${a.preview}`, "info");
+      // Toast stays short (it would flood the TUI); the transcript carries full text.
+      ctx.ui.notify(`A2A task from ${a.identity}: ${preview(a.text, 160)}`, "info");
       break;
     case "progress":
       activeInboundTasks.set(a.taskId, { identity: activeInboundTasks.get(a.taskId)?.identity ?? "peer", last: a });
@@ -192,6 +193,23 @@ function broadcastActivity(
   } catch {
     /* best-effort */
   }
+}
+
+/** Status lines (gateway registration, …) → transcript + toast, rendered like
+ *  the [A2A inbound] activity lines instead of vanishing in the console. */
+function statusSink(pi: ExtensionAPI, ctx: ExtensionContext | undefined): (m: string) => void {
+  return (m) => {
+    try {
+      pi.sendMessage({ customType: "a2a-inbound", content: m, display: true });
+    } catch {
+      /* session may be mid-replace; ignore */
+    }
+    try {
+      ctx?.ui.notify(m, "info");
+    } catch {
+      /* best-effort */
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -636,6 +654,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
                 runner: makeSessionRunner(ectx),
                 api: pi,
                 onActivity: (a) => broadcastActivity(pi, ectx, fresh, a),
+                onStatus: statusSink(pi, ectx),
               });
               try {
                 const info = await server.start();
@@ -671,6 +690,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
             runner: makeSessionRunner(ectx),
             api: pi,
             onActivity: (a) => broadcastActivity(pi, ectx, cfg, a),
+            onStatus: statusSink(pi, ectx),
           });
           const info = await server.start();
           const defaultNote =
@@ -756,6 +776,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
         runner: makeSessionRunner(ctx),
         api: pi,
         onActivity: (a) => broadcastActivity(pi, ctx, cfg, a),
+        onStatus: statusSink(pi, ctx),
       });
       const info = await server.start();
       const defaultNote =

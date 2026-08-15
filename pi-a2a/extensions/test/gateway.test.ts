@@ -321,3 +321,111 @@ describe("gateway peer discovery", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Reverse channel client
+// ---------------------------------------------------------------------------
+
+import { ChannelClient } from "../lib/gateway";
+import * as http from "node:http";
+
+describe("reverse channel client", () => {
+  it("dispatches request envelopes to the local server and posts the response", async () => {
+    // local A2A "server" (dispatch target)
+    const localHits: Array<{ method: string; path: string; body?: string }> = [];
+    const local = http.createServer((rq, rs) => {
+      let body = "";
+      rq.on("data", (c) => (body += c));
+      rq.on("end", () => {
+        localHits.push({ method: rq.method!, path: rq.url!, body });
+        rs.writeHead(200, { "content-type": "application/json" });
+        rs.end(JSON.stringify({ echoed: true }));
+      });
+    });
+    await new Promise<void>((r) => local.listen(0, "127.0.0.1", r));
+    const localPort = (local.address() as any).port;
+
+    // fake gateway: /channel SSE that pushes one request, /channel/response records
+    const posted: any[] = [];
+    const gw = http.createServer((rq, rs) => {
+      if (rq.url!.split("?")[0] === "/channel") {
+        rs.writeHead(200, { "content-type": "text/event-stream" });
+        const env = {
+          id: 42,
+          method: "POST",
+          path: "/",
+          headers: { "content-type": "application/json" },
+          body_b64: Buffer.from('{"ping":1}').toString("base64"),
+        };
+        rs.write(`event: request\ndata: ${JSON.stringify(env)}\n\n`);
+        return;
+      }
+      if (rq.url!.split("?")[0].startsWith("/channel/response/")) {
+        let body = "";
+        rq.on("data", (c) => (body += c));
+        rq.on("end", () => {
+          posted.push(JSON.parse(body));
+          rs.writeHead(200); rs.end("ok");
+        });
+        return;
+      }
+      rs.writeHead(404); rs.end();
+    });
+    await new Promise<void>((r) => gw.listen(0, "127.0.0.1", r));
+    const gwPort = (gw.address() as any).port;
+
+    const epoch = { value: 0 };
+    const cc = new ChannelClient(
+      { url: `http://127.0.0.1:${gwPort}`, token: TOKEN },
+      `http://127.0.0.1:${localPort}`,
+      () => {},
+      epoch,
+    );
+    await cc.start();
+    // give dispatch a beat
+    await new Promise((r) => setTimeout(r, 300));
+    cc.stop();
+
+    assert.equal(localHits.length, 1);
+    assert.equal(localHits[0]!.method, "POST");
+    assert.equal(localHits[0]!.body, '{"ping":1}');
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0]!.id, 42);
+    assert.equal(posted[0]!.status, 200);
+    assert.deepEqual(JSON.parse(Buffer.from(posted[0]!.body_b64, "base64").toString()), { echoed: true });
+
+    local.close(); gw.close();
+  });
+
+  it("stop() prevents reconnect resurrection (epoch guard)", async () => {
+    // gateway that accepts /channel then immediately closes the stream
+    const gw = http.createServer((rq, rs) => {
+      if (rq.url!.split("?")[0] === "/channel") {
+        rs.writeHead(200, { "content-type": "text/event-stream" });
+        rs.end(); // immediate close → client would reconnect
+        return;
+      }
+      rs.writeHead(404); rs.end();
+    });
+    await new Promise<void>((r) => gw.listen(0, "127.0.0.1", r));
+    const port = (gw.address() as any).port;
+    let opens = 0;
+    gw.on("request", () => { if (opens >= 0) opens += 1; });
+
+    const epoch = { value: 0 };
+    const cc = new ChannelClient(
+      { url: `http://127.0.0.1:${port}`, token: TOKEN },
+      "http://127.0.0.1:1",
+      () => {},
+      epoch,
+    );
+    const p = cc.start();
+    await new Promise((r) => setTimeout(r, 150));
+    cc.stop();
+    await p;
+    const after = opens;
+    await new Promise((r) => setTimeout(r, 1200));
+    assert.equal(opens, after); // no reconnection attempts after stop
+    gw.close();
+  });
+});

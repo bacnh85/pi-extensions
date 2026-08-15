@@ -22,6 +22,8 @@ export interface DiscoveredPeer {
   cwd?: string;
   model?: { provider: string; id: string; name?: string } | null;
   tools?: string[];
+  /** Advertised capability tags (gateway peers). */
+  capabilities?: string[];
   /** True for local + config peers; mDNS peers are live but unverified at list time. */
   alive: boolean;
 }
@@ -101,6 +103,7 @@ export function listPeers(opts: {
       name,
       url: peer.url,
       source: "gateway",
+      capabilities: peer.capabilities,
       alive: true,
     });
   }
@@ -126,8 +129,14 @@ export function formatPeers(peers: DiscoveredPeer[]): string {
     const parts = [`  - ${clean(p.name)}`, clean(p.url), `[${p.source}]`];
     if (p.cwd) parts.push(`cwd=${clean(p.cwd)}`);
     if (p.model) parts.push(`model=${clean(p.model.provider)}/${clean(p.model.id)}`);
-    if (p.tools && p.tools.length) parts.push(`tools=${p.tools.slice(0, 8).map(clean).join(",")}`);
+    if (p.capabilities?.length) parts.push(`caps=${p.capabilities.slice(0, 8).map(clean).join(",")}`);
     lines.push(parts.join("  "));
+    // Full tool list (wrapped, never truncated) — matches the Agent Card.
+    // ponytail: no cap — cards are trusted-ish local data; the wrap keeps lines sane.
+    const tools = (p.tools ?? []).map(clean).filter(Boolean);
+    for (let i = 0; i < tools.length; i += 10) {
+      lines.push(`      tools: ${tools.slice(i, i + 10).join(", ")}`);
+    }
   }
   return lines.join("\n");
 }

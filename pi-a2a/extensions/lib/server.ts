@@ -196,6 +196,8 @@ export class A2AServer {
   private api: { getActiveTools?: () => string[] } | undefined;
   /** Host-TUI activity hook (0.3.0) — fired on task lifecycle events. */
   private onActivity: ((a: InboundActivity) => void) | undefined;
+  /** Host-TUI status hook — gateway registration result (replaces console.log). */
+  private onStatus: ((msg: string) => void) | undefined;
 
   constructor(opts: {
     cfg: A2AConfig;
@@ -205,11 +207,15 @@ export class A2AServer {
     runner?: SessionRunner;
     api?: { getActiveTools?: () => string[] };
     onActivity?: (a: InboundActivity) => void;
+    /** Called with human-readable status lines (gateway registration) so the
+     * host can surface them as a TUI toast instead of console.log. */
+    onStatus?: (msg: string) => void;
   }) {
     this.cfg = opts.cfg;
     this.ctx = opts.ctx;
     this.api = opts.api;
     this.onActivity = opts.onActivity;
+    this.onStatus = opts.onStatus;
     this.cwd = opts.cwd;
     this.piDir = opts.piDir;
     this.runner = opts.runner;
@@ -392,10 +398,18 @@ export class A2AServer {
     if (ok) {
       const state = this.gatewayUpstream.lastState;
       const pending = state === "pending";
-      console.log(
+      const msg =
         `[a2a] registered to agent-gateway at ${gw.url} as ${name}` +
-          (pending ? " (pending admin acceptance — not yet listed for peers)" : ""),
-      );
+        (pending ? " (pending admin acceptance — not yet listed for peers)" : "");
+      if (this.onStatus) {
+        try {
+          this.onStatus(msg);
+          return;
+        } catch {
+          /* fall back to console */
+        }
+      }
+      console.log(msg);
     }
   }
 
@@ -650,7 +664,7 @@ export class A2AServer {
     const st: StoredTask = { task, controller, done: false, subscribeWatchers: [] };
     this.store.add(taskId, st);
     audit({ piDir: this.piDir, direction: "inbound", identity, taskId, text: inboundText });
-    this.onActivity?.({ type: "arrived", taskId, identity, preview: preview(inboundText), contextId });
+    this.onActivity?.({ type: "arrived", taskId, identity, text: inboundText, contextId });
 
     // If an external abort fires (client disconnect on streams, or tasks/cancel
     // on a streaming task), propagate it to the runner's controller.

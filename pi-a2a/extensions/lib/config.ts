@@ -77,6 +77,8 @@ export interface A2AConfig {
       name?: string;
       upstreamToken?: string;
       heartbeatSec?: number;
+      /** Open a reverse channel so firewalled peers receive traffic (default true). */
+      channel?: boolean;
     };
     enrichCard: boolean;
   };
@@ -324,6 +326,7 @@ export function loadConfig(opts: {
       name: dg.name ? String(dg.name) : undefined,
       upstreamToken: dg.upstreamToken ? String(dg.upstreamToken) : undefined,
       heartbeatSec: num(dg.heartbeatSec, 60),
+      channel: dg.channel === undefined ? undefined : bool(dg.channel, true),
     };
   }
 

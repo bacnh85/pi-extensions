@@ -31,6 +31,16 @@ export interface GatewayConfig {
    *  decoupled from heartbeatSec: long agent tasks must not be truncated by
    *  the directory-refresh cadence. */
   callTimeoutMs?: number;
+  /** Open a reverse channel (SSE) so firewalled peers still receive proxied
+   *  requests — all connections stay peer-initiated. Default true. */
+  channel?: boolean;
+  /** Local server base URL the channel dispatcher forwards envelopes to.
+   *  Default: the URL passed to start(). */
+  localBase?: string;
+  /** Token the LOCAL inbound server accepts (server.sharedToken or the
+   *  upstreamToken registered with the gateway). Injected on dispatch —
+   *  the gateway strips caller auth, so the local server needs its own. */
+  localToken?: string;
 }
 
 const DEREG_TIMEOUT_MS = 3000;
@@ -178,6 +188,9 @@ export class GatewayUpstream {
    *  and bail instead of resurrecting the registration/overlay. */
   private epoch = 0;
   private lastUrl = "";
+  /** Shared epoch holder the ChannelClient also watches (stop() kills both). */
+  private epochRef = { value: 0 };
+  private channel: ChannelClient | null = null;
 
   constructor(
     private readonly cfg: GatewayConfig,
@@ -281,6 +294,17 @@ export class GatewayUpstream {
     this.onPeers({});
     const ok = await this.register(url);
     if (!ok) return false;
+    // Reverse channel (default on): firewalled peers still receive proxied
+    // requests — everything rides connections WE initiated.
+    if (this.cfg.channel !== false) {
+      this.channel = new ChannelClient(
+        { ...this.cfg, localToken: this.cfg.localToken ?? this.cfg.upstreamToken },
+        this.cfg.localBase ?? url,
+        this.log,
+        this.epochRef,
+      );
+      void this.channel.start();
+    }
     const intervalMs = Math.max(15, this.cfg.heartbeatSec ?? 60) * 1000;
     this.timer = setInterval(() => {
       if (this.stopped) return;
@@ -294,6 +318,9 @@ export class GatewayUpstream {
   async stop(): Promise<void> {
     this.stopped = true;
     this.epoch += 1; // in-flight register()/refreshPeers() must not resurrect us
+    this.epochRef.value = this.epoch; // channel reconnect loops die too
+    this.channel?.stop();
+    this.channel = null;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     try {
@@ -306,5 +333,178 @@ export class GatewayUpstream {
       /* best-effort — stale entry decays via gateway health probing */
     }
     this.onPeers({});
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reverse channel client — receive proxied requests over our own SSE stream
+// ---------------------------------------------------------------------------
+
+/** One request envelope pushed down /channel (mirrors gateway Envelope). */
+interface ChannelEnvelope {
+  id: number;
+  method: string;
+  path: string;
+  query?: string | null;
+  headers: Record<string, string>;
+  body_b64: string;
+}
+
+interface ChannelRespEnvelope {
+  id: number;
+  status: number;
+  headers: Record<string, string>;
+  body_b64: string;
+}
+
+/** Opens GET /channel and dispatches each `request` event to the local A2A
+ *  server, posting the answer to /channel/response/{id}. Reconnects with
+ *  capped backoff; aborts cleanly on stop() (epoch-guarded like register). */
+export class ChannelClient {
+  private controller: AbortController | null = null;
+  private stopped = false;
+  private epoch = 0;
+
+  constructor(
+    private readonly cfg: GatewayConfig,
+    private readonly localBase: string,
+    private readonly log: (...args: unknown[]) => void = console.error,
+    /** Bumped by GatewayUpstream.stop() to stop reconnect loops. */
+    private readonly sharedEpoch: { value: number },
+  ) {}
+
+  private url(path: string): string {
+    return this.cfg.url.replace(/\/+$/, "") + path;
+  }
+
+  /** Open the stream; resolves true once connected (reading continues in
+   *  the background until stop()). Never throws. */
+  async start(): Promise<boolean> {
+    this.stopped = false;
+    return this.connect(0);
+  }
+
+  private connect(attempt: number): Promise<boolean> {
+    if (this.stopped || this.sharedEpoch.value !== this.epoch) return Promise.resolve(false);
+    const ctrl = new AbortController();
+    this.controller = ctrl;
+    return fetch(this.url(`/channel?name=${encodeURIComponent(this.cfg.name || "pi")}`), {
+      headers: { authorization: `Bearer ${this.cfg.token}` },
+      signal: ctrl.signal,
+    })
+      .then((res) => {
+        if (!res.ok || !res.body) throw new Error(`channel open failed: HTTP ${res.status}`);
+        if (attempt === 0) this.log(`[a2a-gateway] channel open (firewall-safe receive)`);
+        const connected = attempt === 0;
+        // readStream never resolves while healthy — keep it detached.
+        void this.readStream(res.body!)
+          .then(() => this.reconnect(attempt))
+          .catch((e: unknown) => {
+            if (!ctrl.signal.aborted) void this.reconnect(attempt, e);
+          });
+        return connected;
+      })
+      .catch((e: unknown) => {
+        if (ctrl.signal.aborted) return false; // stop()
+        return this.reconnect(attempt, e);
+      });
+  }
+
+  private async reconnect(attempt: number, why?: unknown): Promise<boolean> {
+    if (this.stopped || this.sharedEpoch.value !== this.epoch) return false;
+    const delay = Math.min(30_000, 1000 * 2 ** Math.min(attempt, 5));
+    if (attempt === 0 && why) this.log(`[a2a-gateway] channel dropped, reconnecting: ${String(why)}`);
+    await new Promise((r) => setTimeout(r, delay));
+    return this.connect(attempt + 1);
+  }
+
+  /** Minimal SSE reader: buffers bytes, splits on \\n\\n, parses event/data. */
+  private async readStream(body: ReadableStream<Uint8Array>): Promise<void> {
+    const reader = body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      buf += dec.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        this.handleFrame(frame);
+      }
+    }
+  }
+
+  private handleFrame(frame: string): void {
+    let event = "message";
+    const dataLines: string[] = [];
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+    }
+    if (event !== "request") return; // hello/ping ignored
+    let env: ChannelEnvelope;
+    try {
+      env = JSON.parse(dataLines.join("\n"));
+    } catch {
+      return; // malformed envelope — drop
+    }
+    void this.dispatch(env);
+  }
+
+  /** Forward one envelope to the local server and post the answer back. */
+  private async dispatch(env: ChannelEnvelope): Promise<void> {
+    const binary = Uint8Array.from(atob(env.body_b64), (c) => c.charCodeAt(0));
+    const qs = env.query ? `?${env.query}` : "";
+    const headers: Record<string, string> = { ...env.headers };
+    if (this.cfg.localToken) headers.authorization = `Bearer ${this.cfg.localToken}`;
+    try {
+      const res = await fetch(this.localBase.replace(/\/+$/, "") + env.path + qs, {
+        method: env.method,
+        headers,
+        body: ["GET", "HEAD"].includes(env.method) ? undefined : binary,
+      });
+      const buf = new Uint8Array(await res.arrayBuffer());
+      let b64 = "";
+      for (let i = 0; i < buf.length; i += 0x8000) {
+        b64 += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+      }
+      const outHeaders: Record<string, string> = {};
+      res.headers.forEach((v, k) => {
+        if (!["transfer-encoding", "content-length", "connection"].includes(k.toLowerCase())) outHeaders[k] = v;
+      });
+      await this.postResponse({
+        id: env.id,
+        status: res.status,
+        headers: outHeaders,
+        body_b64: btoa(b64),
+      });
+    } catch (e) {
+      this.log(`[a2a-gateway] channel dispatch failed: ${String(e)}`);
+    }
+  }
+
+  private async postResponse(resp: ChannelRespEnvelope): Promise<void> {
+    try {
+      await fetch(this.url(`/channel/response/${resp.id}?name=${encodeURIComponent(this.cfg.name || "pi")}`), {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${this.cfg.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(resp),
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch {
+      /* id may already be expired — nothing to do */
+    }
+  }
+
+  stop(): void {
+    this.stopped = true;
+    this.epoch += 1; // kill in-flight connect/reconnect
+    this.controller?.abort();
+    this.controller = null;
   }
 }

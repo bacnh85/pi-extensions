@@ -17,7 +17,9 @@ export type InboundActivity =
       type: "arrived";
       taskId: string;
       identity: string;
-      preview: string;
+      /** Full task text — shown untruncated in the transcript (like a normal
+       * conversation turn); the toast still uses a short preview(). */
+      text: string;
       contextId: string;
     }
   | { type: "progress"; taskId: string; line: string }
@@ -74,8 +76,9 @@ export function activityLine(event: {
         .join("")
         .trim();
       if (!text) return null;
-      const line = preview(text, 100);
-      return line ? `✎ ${line}` : null;
+      // Full reply text — no preview cap (the transcript shows the whole line
+      // like a normal conversation turn).
+      return `✎ ${text}`;
     }
     case "agent_end": {
       if (event.willRetry) return null; // a retry isn't meaningful activity
@@ -111,7 +114,7 @@ function argsPreview(args: unknown): string {
 export function activityToText(a: InboundActivity): string {
   switch (a.type) {
     case "arrived":
-      return `[A2A inbound] task from ${a.identity}: ${a.preview || "(empty)"}`;
+      return `[A2A inbound] task from ${a.identity}:\n${a.text || "(empty)"}`;
     case "progress":
       return `[A2A inbound] ${a.line}`;
     case "completed":

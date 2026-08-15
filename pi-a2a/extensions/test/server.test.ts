@@ -299,7 +299,7 @@ describe("server", () => {
         const types = events.map((e) => e.type);
         assert.deepEqual(types, ["arrived", "progress", "completed"]);
         assert.equal(events[0]!.identity, "ip:127.0.0.1"); // localhost-only mode
-        assert.match(events[0]!.preview, /run tests/);
+        assert.match(events[0]!.text, /run tests/);
         assert.match(events[1]!.line, /npm test/);
         assert.match(events[2]!.replyPreview, /all good/);
         assert.equal(events[2]!.state, STATE_COMPLETED);
