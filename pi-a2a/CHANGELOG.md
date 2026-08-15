@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Gateway diagnostics no longer interleave with lifecycle lines:**
+  `[a2a-gateway] register failed …`, `channel dropped`, `dispatch failed`
+  and other upstream/channel diagnostics used to print via raw
+  `console.error`, rendering unstyled in the middle of the transcript right
+  next to the `[a2a] registered…` / `[a2a] gateway channel open…` status
+  lines. They now route to a dedicated error sink — a TUI error toast (a
+  separate surface from the transcript status lines), falling back to stderr
+  when headless. New optional `onError` hook on `A2AServer` wires it up.
+
+### Added
+
+- **Caller attribution to the gateway:** outbound calls routed through an
+  agent-gateway (`peer.viaGateway`) now send `X-Gateway-Caller: <selfIdentity
+  or gateway peer name>` so the gateway's dashboard/live log shows which peer
+  made the call. Advisory display name only — the gateway strips it before
+  forwarding and it is not an auth mechanism.
+- **Per-peer caller tokens:** the gateway now issues a unique `caller_token`
+  at `/register`; the overlay peers (`gw/<name>`) present it (instead of the
+  shared token) for outbound `/peer/*` calls, so the gateway attributes them
+  to this peer's name even without the header.
+
 ## 0.5.0 — 2026-08-15
 
 Gateway configuration in /a2a-config + explicit enable/disable.

@@ -66,7 +66,11 @@ describe("config", () => {
 
   it("reads A2A_* env vars", () => {
     withIsolatedPiDir((dir) => {
-      const old = { ...process.env };
+      // Mutate + restore individual keys — NEVER reassign `process.env = old`
+      // (that replaces the live env object and detaches os.homedir()'s
+      // env bridge for every later test in the process).
+      const keys = ["A2A_PORT", "A2A_HOST", "A2A_BEARER_TOKEN"] as const;
+      const saved = keys.map((k) => [k, process.env[k]] as const);
       process.env.A2A_PORT = "7777";
       process.env.A2A_HOST = "0.0.0.0";
       process.env.A2A_BEARER_TOKEN = "envtok";
@@ -76,7 +80,10 @@ describe("config", () => {
         assert.equal(cfg.server.host, "0.0.0.0");
         assert.equal(cfg.server.sharedToken, "envtok");
       } finally {
-        process.env = old;
+        for (const [k, v] of saved) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
       }
     });
   });
@@ -409,6 +416,52 @@ describe("config", () => {
       });
     });
 
+    it("runtime-resolved gateway name is never persisted unless the name row was edited", () => {
+      withIsolatedPiDir((dir) => {
+        // settings.json has a gateway WITHOUT a name — the runtime auto-name
+        // (e.g. from the server's startGatewayUpstream) must NOT be pinned by
+        // an unrelated gateway edit (e.g. heartbeat-only).
+        const cfg = cfgWith(
+          { discovery: { gateway: { enabled: true, url: "http://gw", token: "tok" } } },
+          dir,
+        );
+        const working = structuredClone(cfg);
+        working.discovery.gateway!.name = "pi-9910"; // runtime-resolved name in working config
+        working.discovery.gateway!.heartbeatSec = 90; // the actual user edit
+        const patch = buildA2ASettingsPatch({
+          cfg,
+          working,
+          peerChanges: false,
+          gatewayChanged: true,
+          editedGatewayKeys: new Set(["gateway.heartbeatSec"]),
+        });
+        const a2a = patch({ discovery: { gateway: { enabled: true, url: "http://gw", token: "tok" } } });
+        assert.equal(a2a.discovery.gateway.heartbeatSec, 90, "heartbeat edit persists");
+        assert.notEqual(a2a.discovery.gateway.name, "pi-9910", "ephemeral auto-name must not be pinned");
+        assert.equal(a2a.discovery.gateway.name, "", "name kept from (absent) settings value");
+      });
+    });
+
+    it("explicitly-edited name row IS persisted", () => {
+      withIsolatedPiDir((dir) => {
+        const cfg = cfgWith(
+          { discovery: { gateway: { enabled: true, url: "http://gw", token: "tok" } } },
+          dir,
+        );
+        const working = structuredClone(cfg);
+        working.discovery.gateway!.name = "my-peer";
+        const patch = buildA2ASettingsPatch({
+          cfg,
+          working,
+          peerChanges: false,
+          gatewayChanged: true,
+          editedGatewayKeys: new Set(["gateway.name"]),
+        });
+        const a2a = patch({ discovery: { gateway: { enabled: true, url: "http://gw", token: "tok" } } });
+        assert.equal(a2a.discovery.gateway.name, "my-peer");
+      });
+    });
+
     it("server edit does NOT copy env-sourced secrets to settings.json (regression)", () => {
       withIsolatedPiDir((dir) => {
         fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
@@ -499,6 +552,49 @@ describe("config", () => {
         const parsed = JSON.parse(fs.readFileSync(path.join(dir, ".pi", "settings.json"), "utf-8"));
         assert.equal(parsed.a2a.selfIdentity, "proj2");
       });
+    });
+
+    it("writes a fresh a2a key to ~/.pi/agent/settings.json, never the orphan ~/.pi/agents path", function () {
+      // os.homedir() ignores HOME on Windows (uses USERPROFILE) — the test
+      // would target the developer's REAL settings file there. Skip win32;
+      // POSIX behavior is what the fallback relies on.
+      if (process.platform === "win32") this.skip();
+      const home = tmpDir();
+      fs.mkdirSync(path.join(home, ".pi", "agent"), { recursive: true });
+      fs.writeFileSync(path.join(home, ".pi", "agent", "settings.json"), JSON.stringify({ theme: "dark", other: 1 }));
+      const oldHome = process.env.HOME;
+      const oldUserProfile = process.env.USERPROFILE;
+      const oldHomeDrive = process.env.HOMEDRIVE;
+      const oldHomePath = process.env.HOMEPATH;
+      const oldPiDir = process.env.PI_CODING_AGENT_DIR;
+      process.env.HOME = home;
+      delete process.env.USERPROFILE;
+      delete process.env.HOMEDRIVE;
+      delete process.env.HOMEPATH;
+      delete process.env.PI_CODING_AGENT_DIR;
+      try {
+        const written = writeSettingsA2A({ cwd: tmpDir(), patch: (a2a: any) => ({ ...a2a, selfIdentity: "me" }) });
+        assert.equal(written, path.join(home, ".pi", "agent", "settings.json"));
+        assert.isFalse(
+          fs.existsSync(path.join(home, ".pi", "agents", "settings.json")),
+          "must never create the orphan ~/.pi/agents file",
+        );
+        const parsed = JSON.parse(fs.readFileSync(path.join(home, ".pi", "agent", "settings.json"), "utf-8"));
+        assert.equal(parsed.theme, "dark"); // unrelated keys preserved
+        assert.equal(parsed.other, 1);
+        assert.equal(parsed.a2a.selfIdentity, "me");
+      } finally {
+        if (oldHome === undefined) delete process.env.HOME;
+        else process.env.HOME = oldHome;
+        if (oldUserProfile === undefined) delete process.env.USERPROFILE;
+        else process.env.USERPROFILE = oldUserProfile;
+        if (oldHomeDrive === undefined) delete process.env.HOMEDRIVE;
+        else process.env.HOMEDRIVE = oldHomeDrive;
+        if (oldHomePath === undefined) delete process.env.HOMEPATH;
+        else process.env.HOMEPATH = oldHomePath;
+        if (oldPiDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+        else process.env.PI_CODING_AGENT_DIR = oldPiDir;
+      }
     });
   });
 

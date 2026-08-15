@@ -196,7 +196,7 @@ export class GatewayUpstream {
     private readonly cfg: GatewayConfig,
     /** Builds the agent-card JSON body; called on each heartbeat so the card stays fresh. */
     private readonly buildCard: () => Record<string, unknown>,
-    private readonly log: (...args: unknown[]) => void = console.error,
+    private readonly log: (msg: string) => void = console.error,
     /** Receives each refreshed `gw/<name>` → Peer overlay ({} clears it). */
     private readonly onPeers: (peers: Record<string, Peer>) => void = () => {},
     /** Host-TUI status line (transcript) for lifecycle events like the
@@ -220,6 +220,11 @@ export class GatewayUpstream {
 
   /** Admission state of the last registration ("pending" | "accepted" | …). */
   lastState = "";
+
+  /** Per-peer caller token issued by the gateway at registration. Used as the
+   *  caller identity for outbound `/peer/*` calls so the gateway's dashboard
+   *  shows THIS peer's name (not a shared-token fingerprint). */
+  private callerToken: string | null = null;
 
   private async post(path: string, body: unknown): Promise<Response | null> {
     try {
@@ -252,6 +257,9 @@ export class GatewayUpstream {
     try {
       const j = (await res.clone?.().json?.().catch?.(() => null)) ?? (await res.json().catch(() => null));
       this.lastState = String(j?.state ?? "");
+      if (typeof j?.caller_token === "string" && j.caller_token) {
+        this.callerToken = j.caller_token;
+      }
     } catch {
       this.lastState = "";
     }
@@ -277,7 +285,7 @@ export class GatewayUpstream {
       this.onPeers(
         mergeGatewayPeers({
           gatewayUrl: this.cfg.url,
-          token: this.cfg.token,
+          token: this.callerToken ?? this.cfg.token,
           selfName: this.name,
           selfUrl: this.lastUrl,
           selfAutoName: this.autoName,
@@ -384,7 +392,7 @@ export class ChannelClient {
   constructor(
     private readonly cfg: GatewayConfig,
     private readonly localBase: string,
-    private readonly log: (...args: unknown[]) => void = console.error,
+    private readonly log: (msg: string) => void = console.error,
     /** Bumped by GatewayUpstream.stop() to stop reconnect loops. */
     private readonly sharedEpoch: { value: number },
     /** Host-TUI status line (transcript) for lifecycle events — the channel

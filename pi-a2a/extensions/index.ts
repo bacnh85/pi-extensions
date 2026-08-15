@@ -195,8 +195,9 @@ function broadcastActivity(
   }
 }
 
-/** Status lines (gateway registration, …) → transcript + toast, rendered like
- *  the [A2A inbound] activity lines instead of vanishing in the console. */
+/** Status lines (gateway registration, channel open, …) → transcript + toast,
+ *  rendered like the [A2A inbound] activity lines instead of vanishing in the
+ *  console. */
 function statusSink(pi: ExtensionAPI, ctx: ExtensionContext | undefined): (m: string) => void {
   return (m) => {
     try {
@@ -209,6 +210,24 @@ function statusSink(pi: ExtensionAPI, ctx: ExtensionContext | undefined): (m: st
     } catch {
       /* best-effort */
     }
+  };
+}
+
+/** Gateway diagnostic/error lines → error toast only — a SEPARATE surface
+ *  from the [a2a] status lines above, so failures don't render interleaved
+ *  with lifecycle output in the transcript. Headless falls back to stderr. */
+function errorSink(ctx: ExtensionContext | undefined): (m: string) => void {
+  return (m) => {
+    const ui = ctx && ctx.hasUI ? ctx.ui : undefined;
+    if (ui) {
+      try {
+        ui.notify(m, "error");
+        return;
+      } catch {
+        /* fall through */
+      }
+    }
+    console.error(m);
   };
 }
 
@@ -647,6 +666,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
                 api: pi,
                 onActivity: (a) => broadcastActivity(pi, ectx, fresh, a),
                 onStatus: statusSink(pi, ectx),
+                onError: errorSink(ectx),
               });
               try {
                 const info = await server.start();
@@ -683,6 +703,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
             api: pi,
             onActivity: (a) => broadcastActivity(pi, ectx, cfg, a),
             onStatus: statusSink(pi, ectx),
+            onError: errorSink(ectx),
           });
           const info = await server.start();
           const defaultNote =
@@ -769,6 +790,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
         api: pi,
         onActivity: (a) => broadcastActivity(pi, ctx, cfg, a),
         onStatus: statusSink(pi, ctx),
+        onError: errorSink(ctx),
       });
       const info = await server.start();
       const defaultNote =

@@ -167,7 +167,7 @@ describe("gateway peer discovery", () => {
           auth: init?.headers?.authorization,
         });
         const u = String(url);
-        if (u.endsWith("/register")) return makeResp({ status: "updated" }, 200);
+        if (u.endsWith("/register")) return makeResp({ status: "updated", caller_token: "agw_peer_ct_1" }, 200);
         if (u.endsWith("/.well-known/agent.json")) {
           return makeResp(
             {
@@ -186,6 +186,59 @@ describe("gateway peer discovery", () => {
     afterEach(() => {
       globalThis.fetch = originalFetch as any;
       setGatewayPeers({});
+    });
+
+    it("uses the per-peer caller token for gw/ overlay auth", async () => {
+      const gw = new GatewayUpstream(
+        { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60 },
+        () => ({}),
+        () => {},
+        (peers) => (overlay = peers),
+      );
+      const ok = await gw.start("http://127.0.0.1:9911");
+      assert.isTrue(ok);
+      const snapshot = { ...overlay };
+      await gw.stop();
+      const dir = calls.find((c) => c.url.endsWith("/.well-known/agent.json"))!;
+      // Directory fetch still uses the SHARED token (read-only endpoint).
+      assert.equal(dir.auth, `Bearer ${TOKEN}`);
+      // But the overlay peer presents the per-peer CALLER token, so the
+      // gateway attributes calls to this peer's name.
+      assert.equal(snapshot["gw/pi-s2-9912"]!.auth.token, "agw_peer_ct_1");
+    });
+
+    it("falls back to the shared token when /register omits caller_token", async () => {
+      // Older agent-gateways don't issue a caller_token — the overlay must
+      // keep working with the shared token (a regression here would 401
+      // every gw/* outbound call).
+      const original = globalThis.fetch;
+      globalThis.fetch = (async (url: any, init?: any) => {
+        const u = String(url);
+        if (u.endsWith("/register")) return makeResp({ status: "updated" }, 200); // no caller_token
+        if (u.endsWith("/.well-known/agent.json")) {
+          return makeResp(
+            { peers: [{ name: "pi-s2-9912", url: "/peer/pi-s2-9912/", healthy: true }] },
+            200,
+          );
+        }
+        return makeResp({}, 404);
+      }) as any;
+      try {
+        let fallbackOverlay: Record<string, import("../lib/config").Peer> = {};
+        const gw = new GatewayUpstream(
+          { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60 },
+          () => ({}),
+          () => {},
+          (peers) => (fallbackOverlay = peers),
+        );
+        const ok = await gw.start("http://127.0.0.1:9911");
+        assert.isTrue(ok);
+        const snapshot = { ...fallbackOverlay };
+        await gw.stop();
+        assert.equal(snapshot["gw/pi-s2-9912"]!.auth.token, TOKEN);
+      } finally {
+        globalThis.fetch = original as any;
+      }
     });
 
     it("fetches the directory after registering and emits the merged overlay", async () => {
@@ -561,5 +614,23 @@ describe("reverse channel hardening", () => {
     cc.stop();
     assert.deepEqual(hits, ["/crlf"]);
     local.close(); gw.close();
+  });
+});
+
+describe("gateway diagnostics routing", () => {
+  it("register failure goes to the error log, never the status surface", async () => {
+    const statuses: string[] = [];
+    const errors: string[] = [];
+    const gw = new GatewayUpstream(
+      { url: "http://127.0.0.1:1", token: TOKEN, name: "self-1" }, // port 1: connection refused
+      () => ({}),
+      (m) => errors.push(String(m)),
+      () => {},
+      (m) => statuses.push(String(m)),
+    );
+    assert.isFalse(await gw.start("http://127.0.0.1:9911"));
+    assert.ok(errors.some((e) => e.includes("register failed")), "failure surfaced as error");
+    assert.equal(statuses.length, 0, "no status line for a failed registration");
+    await gw.stop();
   });
 });

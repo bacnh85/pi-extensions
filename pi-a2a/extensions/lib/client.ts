@@ -23,6 +23,7 @@ import {
 import {
   authHeaders,
   getGatewayPeers,
+  getGatewayRegistrationName,
   normUrl,
   type A2AConfig,
   type Peer,
@@ -322,6 +323,17 @@ async function sendTask(opts: {
 }): Promise<SendResult> {
   const { cfg, piDir, peer, agentLabel, message } = opts;
   const headers = authHeaders(peer);
+  // Advisory caller attribution for the gateway's routing log/dashboard.
+  // Self-declared display name — stripped by the gateway before forwarding.
+  if (peer.viaGateway) {
+    // Prefer the operator-pinned identity; fall back to the runtime-resolved
+    // gateway registration name (set by the server's upstream at start) or
+    // the base agent name so the dashboard shows a real caller name, not a
+    // fingerprint. The registration name is session-scoped and never persisted.
+    const caller =
+      cfg.selfIdentity || getGatewayRegistrationName() || cfg.server.agentName || "";
+    if (caller) headers["X-Gateway-Caller"] = caller;
+  }
   const timeout = peer.timeout || cfg.timeouts.send;
 
   // Best-effort card fetch (to learn the rpc URL); non-fatal on failure.

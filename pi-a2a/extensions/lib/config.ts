@@ -410,11 +410,12 @@ function applyOverrides(cfg: A2AConfig, patch: Partial<A2AConfig>): void {
  *   already in settings.json survives unrelated discovery edits
  *   byte-for-byte); the gateway sub-block is written only when the user
  *   actually edited a gateway field, so env-sourced secrets are not copied.
- * - When the gateway block is written, unedited secret rows (token /
- *   upstreamToken) keep the value from the EXISTING settings file (not the
+ * - When the gateway block is written, unedited rows (token / upstreamToken
+ *   / name) keep the value from the EXISTING settings file (not the
  *   env-sourced working value) — a heartbeat-only edit must not copy an env
- *   token to disk. `editedGatewayKeys` carries the row keys the user touched
- *   (gateway.token / gateway.upstreamToken).
+ *   token to disk, and the runtime-resolved registration name must never be
+ *   pinned. `editedGatewayKeys` carries the row keys the user touched
+ *   (gateway.token / gateway.upstreamToken / gateway.name).
  * - peers/selfIdentity/ui persisted only when changed.
  */
 export function buildA2ASettingsPatch(opts: {
@@ -459,6 +460,9 @@ export function buildA2ASettingsPatch(opts: {
       const existing = (mergedDiscovery.gateway ?? {}) as Record<string, unknown>;
       if (!editedGatewayKeys?.has("gateway.token")) g.token = existing.token ?? "";
       if (!editedGatewayKeys?.has("gateway.upstreamToken")) g.upstreamToken = existing.upstreamToken;
+      // The registration name is runtime-resolved (server auto-name) unless
+      // the user typed it — never persist an ephemeral per-session name.
+      if (!editedGatewayKeys?.has("gateway.name")) g.name = existing.name ?? "";
       mergedDiscovery.gateway = g;
     }
     return {
@@ -477,7 +481,7 @@ export function buildA2ASettingsPatch(opts: {
  *
  * Target resolution mirrors readSettingsA2A: the first existing file that has
  * an `a2a` key, else the global settings path (PI_CODING_AGENT_DIR, then
- * ~/.pi/agent, then ~/.pi/agents).
+ * ~/.pi/agent — the canonical Pi agent dir; never ~/.pi/agents).
  *
  * ponytail: no file lock (SDK uses proper-lockfile internally, but that's a
  * dependency we don't need) — settings edits are rare human actions, and the
@@ -512,7 +516,13 @@ export function writeSettingsA2A(opts: {
       /* unreadable — try next */
     }
   }
-  target ??= candidates[candidates.length - 1]!; // fall back to the last (global)
+  // Fall back to the canonical global settings file (Pi's getAgentDir()),
+  // NOT the last candidate — in the non-explicit branch that is the legacy
+  // ~/.pi/agents path, which Pi never reads; a fresh save there would render
+  // an orphan a2a block invisible to the real settings.
+  target ??= explicit
+    ? candidates[candidates.length - 1]!
+    : join(homedir(), ".pi", "agent", "settings.json");
 
   const dir = dirname(target);
   mkdirSync(dir, { recursive: true });
@@ -587,6 +597,26 @@ export function setGatewayPeers(peers: Record<string, Peer>): void {
 /** Current gateway peer overlay (snapshot for listing/dedup). */
 export function getGatewayPeers(): Record<string, Peer> {
   return gatewayPeers;
+}
+
+// ---------------------------------------------------------------------------
+// Gateway registration name (read-only, in-memory — never persisted)
+// ---------------------------------------------------------------------------
+
+let gatewayRegistrationName: string | null = null;
+
+/** Publish the name this session registered under on the upstream gateway
+ *  (set by the server at start). Session-scoped, in-memory only — NEVER
+ *  persisted to settings.json. Client.ts reads it for X-Gateway-Caller so
+ *  the header matches the registered name even without an operator-pinned
+ *  identity. Cleared (null) when the upstream stops. */
+export function setGatewayRegistrationName(name: string | null): void {
+  gatewayRegistrationName = name;
+}
+
+/** Current gateway registration name, or null when not registered. */
+export function getGatewayRegistrationName(): string | null {
+  return gatewayRegistrationName;
 }
 
 /** Pick the token to present outbound: prefer this session's own peer token

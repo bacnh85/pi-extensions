@@ -39,7 +39,7 @@ import {
   type Task,
 } from "./protocol";
 import type { A2AConfig } from "./config";
-import { setGatewayPeers } from "./config";
+import { setGatewayPeers, setGatewayRegistrationName } from "./config";
 import {
   AntiLoop,
   audit,
@@ -198,6 +198,8 @@ export class A2AServer {
   private onActivity: ((a: InboundActivity) => void) | undefined;
   /** Host-TUI status hook — gateway registration result (replaces console.log). */
   private onStatus: ((msg: string) => void) | undefined;
+  /** Gateway diagnostic hook — upstream/channel failures (replaces console.error). */
+  private onError: ((msg: string) => void) | undefined;
 
   constructor(opts: {
     cfg: A2AConfig;
@@ -210,12 +212,16 @@ export class A2AServer {
     /** Called with human-readable status lines (gateway registration) so the
      * host can surface them as a TUI toast instead of console.log. */
     onStatus?: (msg: string) => void;
+    /** Gateway diagnostic lines (register failed, channel dropped, …) — kept
+     * OFF the status surface so they never interleave with lifecycle lines. */
+    onError?: (msg: string) => void;
   }) {
     this.cfg = opts.cfg;
     this.ctx = opts.ctx;
     this.api = opts.api;
     this.onActivity = opts.onActivity;
     this.onStatus = opts.onStatus;
+    this.onError = opts.onError ?? console.error;
     this.cwd = opts.cwd;
     this.piDir = opts.piDir;
     this.runner = opts.runner;
@@ -377,6 +383,11 @@ export class A2AServer {
     // beats last-registration-wins.
     const base = gw.name || this.cfg.server.agentName || hostname() || "pi";
     const name = gw.name ? gw.name : `${base}-${this.boundPort}`;
+    // Expose the resolved registration name to outbound callers (client.ts)
+    // so X-Gateway-Caller matches the name registered on the gateway.
+    // In-memory only — NEVER through setConfigOverrides, which loadConfig
+    // applies and the /a2a-config panel would persist to settings.json.
+    setGatewayRegistrationName(name);
     this.gatewayUpstream = new GatewayUpstream(
       {
         ...gw,
@@ -390,7 +401,7 @@ export class A2AServer {
         autoName: `${base}-${this.boundPort}`,
       } as import("./gateway.js").GatewayConfig,
       () => this.buildCard() as unknown as Record<string, unknown>,
-      console.error,
+      this.onError,
       // Peer-directory overlay: refreshed after each heartbeat, cleared on stop.
       setGatewayPeers,
       // Lifecycle status (channel open, …) → host transcript like the
@@ -430,6 +441,9 @@ export class A2AServer {
     if (!this.gatewayUpstream) return;
     await this.gatewayUpstream.stop();
     this.gatewayUpstream = null;
+    // The resolved registration name is session-scoped — stop presenting it
+    // (and never persist it) once the upstream is gone.
+    setGatewayRegistrationName(null);
   }
 
   /** Stop local-registry declaration + mDNS. */

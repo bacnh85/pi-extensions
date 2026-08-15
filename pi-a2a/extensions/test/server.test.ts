@@ -9,6 +9,7 @@ import { A2AServer, type SessionRunner } from "../lib/server";
 import { STATE_CANCELED, STATE_COMPLETED, STATE_FAILED, STATE_INPUT_REQUIRED, STATE_REJECTED } from "../lib/protocol";
 import { metrics } from "../lib/client";
 import { list as listRegistry } from "../lib/registry";
+import { setGatewayRegistrationName, getGatewayRegistrationName } from "../lib/config";
 
 // ---------------------------------------------------------------------------
 // Stub session runner — returns a canned reply without spawning a real agent.
@@ -686,6 +687,7 @@ describe("server", () => {
 
     afterEach(() => {
       (globalThis as any).fetch = realFetch;
+      setGatewayRegistrationName(null);
     });
 
     it("does not register when gateway.enabled is false (no fetch attempt)", async () => {
@@ -708,7 +710,13 @@ describe("server", () => {
       cfg.server = { ...cfg.server, port };
       const server = new A2AServer({ cfg, cwd: tmpDir(), piDir: tmpDir(), runner: stubRunner("ok") });
       await server.start();
+      // The resolved registration name is published while the upstream is
+      // active (producer side of X-Gateway-Caller) — even though this stub
+      // gateway is unreachable, startGatewayUpstream sets it before the
+      // failed register attempt.
+      assert.isNotNull(getGatewayRegistrationName(), "registration name published while upstream active");
       await server.stop();
+      assert.isNull(getGatewayRegistrationName(), "registration name cleared on stop");
       // Registration is attempted (POST /register) even though the gateway is
       // unreachable. The reverse channel only opens AFTER a successful
       // register, so with a failing stub there is no /channel call yet — the
