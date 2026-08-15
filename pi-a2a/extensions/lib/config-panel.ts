@@ -306,8 +306,11 @@ interface PanelTheme {
   bold?(text: string): string;
 }
 
-/** How many rows fit on screen before the list scrolls. */
-const MAX_VISIBLE_ROWS = 14;
+/** How many rows fit on screen before the list scrolls. 18 shows the two
+ *  largest groups (SERVER 11 + DISCOVERY 7) together on the first screen;
+ *  the next screen fits all remaining groups (GATEWAY+IDENTITY+PEERS+UI).
+ *  Whole groups only — a group is never split across screens. */
+const MAX_VISIBLE_ROWS = 18;
 
 export class ConfigPanelModel implements Component {
   onRequestRender: (() => void) | null = null;
@@ -382,37 +385,67 @@ export class ConfigPanelModel implements Component {
       return lines.map((l) => truncateToWidth(l, w));
     }
 
-    // Render only the visible window of rows (scrolls when the panel is tall).
+    // Group-based windowing: render WHOLE groups (header + all its rows) so
+    // categories stay coherent like the settings.json layout — never split a
+    // group mid-way with its header floating above unrelated rows. Scrolling
+    // slides the window one group at a time so the selected group is always
+    // visible and navigation stays continuous.
     const flat = this.flat;
     const total = flat.length;
-    if (this.selected < this.scroll) this.scroll = this.selected;
-    if (this.selected >= this.scroll + MAX_VISIBLE_ROWS) this.scroll = this.selected - MAX_VISIBLE_ROWS + 1;
-    const visible = flat.slice(this.scroll, this.scroll + MAX_VISIBLE_ROWS);
+    const budget = MAX_VISIBLE_ROWS; // rows budget; each header costs 1
 
-    // Track group headers as we walk the visible window.
-    let idx = this.scroll;
-    let groupIdx = 0;
+    // Cumulative absolute row index where each group starts.
+    const groupStarts: number[] = [];
+    let acc = 0;
     for (const g of this.groups) {
-      const start = idx;
-      const end = start + g.rows.length;
-      const visibleRows = visible.filter((_r, i) => {
-        const abs = this.scroll + i;
-        return abs >= start && abs < end;
-      });
-      if (visibleRows.length > 0) {
-        lines.push(this.color("muted", g.label.toUpperCase()));
-        for (const r of visibleRows) {
-          const abs = this.scroll + visible.indexOf(r);
-          const selected = abs === this.selected;
-          lines.push(this.renderRow(r, selected, w));
-        }
-      }
-      groupIdx++;
-      idx = end;
+      groupStarts.push(acc);
+      acc += g.rows.length;
     }
 
-    if (total > MAX_VISIBLE_ROWS) {
-      lines.push(this.color("dim", `… ${this.scroll + 1}-${Math.min(this.scroll + MAX_VISIBLE_ROWS, total)} of ${total}`));
+    // Group containing the current selection.
+    let selGroup = 0;
+    for (let i = 0; i < this.groups.length; i++) {
+      if (this.selected < groupStarts[i]! + this.groups[i]!.rows.length) {
+        selGroup = i;
+        break;
+      }
+    }
+
+    // Fit as many whole groups as the budget allows, sliding `first` forward
+    // (one group at a time) until the selected group is visible.
+    let first = 0;
+    let last = -1; // last group index that fits
+    for (;;) {
+      let used = 0;
+      let fit = first - 1;
+      for (let i = first; i < this.groups.length; i++) {
+        const cost = 1 + this.groups[i]!.rows.length;
+        if (used + cost > budget) break;
+        used += cost;
+        fit = i;
+      }
+      last = fit;
+      if (selGroup <= last || first >= selGroup) break;
+      first++;
+    }
+
+    const visibleStart = groupStarts[first]!;
+    const visibleEnd = groupStarts[last + 1] ?? total;
+    this.scroll = visibleStart;
+
+    // Render the visible groups with correct absolute indices.
+    for (let i = first; i <= last && i < this.groups.length; i++) {
+      const g = this.groups[i]!;
+      lines.push(this.color("muted", g.label.toUpperCase()));
+      for (let j = 0; j < g.rows.length; j++) {
+        const absIdx = groupStarts[i]! + j;
+        const selected = absIdx === this.selected;
+        lines.push(this.renderRow(g.rows[j]!, selected, w));
+      }
+    }
+
+    if (total > visibleEnd - visibleStart) {
+      lines.push(this.color("dim", `… ${visibleStart + 1}-${visibleEnd} of ${total}`));
     }
     lines.push("");
     if (this.dirty) {

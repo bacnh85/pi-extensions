@@ -286,6 +286,58 @@ describe("config-panel", () => {
     });
   });
 
+  describe("group-coherent windowing (0.5.1)", () => {
+    it("renders whole groups — a header never appears without its full rows", () => {
+      const cfg = DEFAULTS();
+      cfg.peers = { hermes: { url: "http://localhost:9900", auth: { type: "none" }, timeout: 120000, capabilities: [] } };
+      const model = new ConfigPanelModel(buildRows(cfg), null);
+      const headerRe = /^[A-Z][A-Z ]*$/;
+      // Render every scroll position; at each one, every group header that
+      // appears must be followed by ALL of its rows before the next header
+      // or the footer — i.e. no split group with a detached header.
+      const expected: Record<string, number> = {
+        SERVER: 10, DISCOVERY: 6, GATEWAY: 7, IDENTITY: 1, PEERS: 1, UI: 1,
+      };
+      const steps = 8; // render + scroll several times to hit every window
+      for (let step = 0; step < steps; step++) {
+        const lines = model.render(80);
+        const body = lines.slice(3, lines.indexOf("… ") === -1 ? lines.length - 3 : lines.indexOf("… "));
+        let i = 0;
+        while (i < body.length) {
+          const line = body[i]!;
+          if (headerRe.test(line.trim()) && expected[line.trim()] !== undefined) {
+            const name = line.trim();
+            const count = expected[name]!;
+            // The next `count` lines must be the group's rows (no header in between).
+            for (let j = 1; j <= count; j++) {
+              const row = body[i + j];
+              assert.isDefined(row, `group ${name} row ${j} missing at step ${step}`);
+              assert.ok(
+                !headerRe.test(row.trim()) || expected[row.trim()] === undefined,
+                `group ${name} split: header '${row}' inside its rows at step ${step}`,
+              );
+            }
+          }
+          i++;
+        }
+        // Scroll down one group's worth and re-render.
+        for (let k = 0; k < 3; k++) model.handleInput("\u001b[B");
+      }
+    });
+
+    it("initial view shows SERVER + DISCOVERY together (no split)", () => {
+      const cfg = DEFAULTS();
+      const model = new ConfigPanelModel(buildRows(cfg), null);
+      const out = model.render(80).join("\n");
+      assert.ok(out.includes("SERVER"), "SERVER header present");
+      assert.ok(out.includes("DISCOVERY"), "DISCOVERY header present on first screen");
+      // Every discovery row is on screen (group not truncated mid-way).
+      for (const label of ["Local registry", "Heartbeat (s)", "Registry TTL (s)", "mDNS broadcast", "mDNS service type", "Enrich Agent Card"]) {
+        assert.ok(out.includes(label), `DISCOVERY row '${label}' visible on first screen`);
+      }
+    });
+  });
+
   describe("kindValue", () => {
     it("parses numbers", () => {
       assert.equal(kindValue("number", "123"), 123);

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.1 — 2026-08-15
+
+### Fixed
+
+- **Group-coherent config panel windowing:** the `/a2a-config` panel used to
+  cut a category mid-way when the list scrolled (a group header could render
+  with only some of its rows, looking detached). It now renders whole groups
+  only — header + all its rows — and the window slides one group at a time.
+  The first screen shows SERVER + DISCOVERY together, the next all remaining
+  groups, so categories display like the settings.json structure.
+
 ## Unreleased
 
 ### Fixed
