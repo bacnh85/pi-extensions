@@ -151,6 +151,28 @@ function parseDotEnv(text: string): Record<string, string> {
   return out;
 }
 
+/**
+ * Security-relevant A2A_* env keys. These may come from process env or the
+ * operator's global Pi dir `.env.local`, but NEVER from a repo-controlled
+ * cwd→root `.env.local` walk: a coding agent opens attacker-controlled repos,
+ * so repo files must not be able to enable the server, widen the bind,
+ * install tokens, or redirect the gateway (see loadEnv).
+ */
+const SECURITY_ENV_KEYS: ReadonlySet<string> = new Set([
+  "A2A_SERVER_ENABLED",
+  "A2A_HOST",
+  "A2A_BEARER_TOKEN",
+  "A2A_PEER_TOKENS",
+  "A2A_TRUSTED_PEERS",
+  "A2A_ALLOW_ALL_USERS",
+  "A2A_MAX_PINGPONG_TURNS",
+  "A2A_RATE_LIMIT",
+  "A2A_GATEWAY_URL",
+  "A2A_GATEWAY_TOKEN",
+  "A2A_GATEWAY_ENABLED",
+  "A2A_PUBLIC_URL",
+]);
+
 function envCandidates(cwd: string): string[] {
   const dirs: string[] = [];
   let dir = resolve(cwd);
@@ -181,11 +203,16 @@ export function loadEnv(cwd: string): Record<string, string> {
       /* ignore */
     }
   }
-  // Walk from filesystem root up to cwd so cwd wins.
+  // Walk from filesystem root up to cwd so cwd wins — but NEVER let a
+  // repo-controlled .env.local set security-relevant keys (a coding agent
+  // opens attacker-controlled repos; those files must not be able to enable
+  // the server, widen the bind, install tokens, or redirect the gateway).
   const paths = envCandidates(cwd).reverse();
   for (const p of paths) {
     try {
-      Object.assign(env, parseDotEnv(readFileSync(p, "utf-8")));
+      const parsed = parseDotEnv(readFileSync(p, "utf-8"));
+      for (const k of SECURITY_ENV_KEYS) delete parsed[k];
+      Object.assign(env, parsed);
     } catch {
       /* ignore */
     }

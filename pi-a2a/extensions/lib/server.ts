@@ -47,6 +47,7 @@ import {
   isTrustedPeer,
   localhostOnly,
   maxPingpongTurns,
+  redactOutbound,
   resolveBindHost,
   wrapInbound,
 } from "./security";
@@ -563,11 +564,51 @@ export class A2AServer {
   // HTTP handling
   // -------------------------------------------------------------------------
 
+  private isLoopbackHost(host: string | undefined): boolean {
+    if (!host) return false;
+    // Strip port and IPv6 brackets: "127.0.0.1:9910" / "[::1]:9910" / "localhost"
+    const h = host.split(":")[0].replace(/^\[|\]$/g, "").toLowerCase();
+    return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "0:0:0:0:0:0:0:1";
+  }
+
+  private isLoopbackOrigin(origin: string | undefined): boolean {
+    if (!origin) return true; // no Origin (non-browser client) — fine
+    try {
+      return this.isLoopbackHost(new URL(origin).hostname);
+    } catch {
+      return false; // unparsable Origin — reject (defensive)
+    }
+  }
+
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
+      // DNS-rebinding / CSRF guard (see security review 2026-08-16):
+      // - In localhost-only mode the Host header must be loopback, or an
+      //   attacker domain resolving to 127.0.0.1 still gets rejected.
+      // - A non-loopback Origin means a browser page is driving us — reject
+      //   (browser cross-origin requests can't set custom headers without a
+      //   preflight, so this blocks the drive-by CSRF path).
+      if (localhostOnly(this.cfg) && !this.isLoopbackHost(req.headers.host)) {
+        return this.send(res, 403, { error: "forbidden host" });
+      }
+      if (!this.isLoopbackOrigin(req.headers.origin)) {
+        return this.send(res, 403, { error: "forbidden origin" });
+      }
       const url = (req.url || "/").split("?")[0]!.replace(/\/+$/, "") || "/";
       if (req.method === "GET") return this.handleGet(url, req, res);
-      if (req.method === "POST") return this.handlePost(req, res);
+      if (req.method === "POST") {
+        // Require a JSON-ish content-type: browser "simple requests" can only
+        // send text/plain, form-urlencoded or multipart without preflight —
+        // rejecting those closes the CSRF body-injection vector. Missing
+        // content-type is tolerated (curl -d without -H sends
+        // application/x-www-form-urlencoded, which we DO reject; a truly bare
+        // POST is parsed and JSON.parse fails harmlessly).
+        const ct = String(req.headers["content-type"] || "").toLowerCase();
+        if (ct && !ct.includes("json")) {
+          return this.send(res, 415, { error: "content-type must be application/json" });
+        }
+        return this.handlePost(req, res);
+      }
       return this.send(res, 405, { error: "method not allowed" });
     } catch (e: any) {
       return this.send(res, 500, { error: "internal", message: e?.message });
@@ -716,13 +757,17 @@ export class A2AServer {
       });
       clearTimeout(timer);
       const finalState = out.inputRequired ? STATE_INPUT_REQUIRED : STATE_COMPLETED;
+      // Outbound redaction: replies cross the trust boundary back to a peer,
+      // so scrub credential-shaped substrings (sk-*, ghp_*, bearer …, emails,
+      // JWTs) before they are stored as artifacts or returned to the caller.
+      const reply = redactOutbound(out.reply ?? "");
       this.store.update(taskId, (t) => {
         t.status.state = finalState;
         t.artifacts = [
           {
             artifactId: "reply",
             name: "reply",
-            parts: [{ text: out.reply, mediaType: "text/plain" }],
+            parts: [{ text: reply, mediaType: "text/plain" }],
           },
         ];
       });
@@ -732,7 +777,7 @@ export class A2AServer {
         type: "completed",
         taskId,
         state: finalState,
-        replyPreview: preview(out.reply),
+        replyPreview: preview(reply),
         elapsedMs: Date.now() - startedAt,
       });
       return st.task; // bare Task as the JSON-RPC result (legacy-compatible)

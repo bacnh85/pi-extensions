@@ -1,6 +1,6 @@
 import { assert } from "chai";
 import * as fs from "node:fs";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -210,6 +210,121 @@ describe("server", () => {
         );
         assert.isUndefined(r.error);
         assert.equal(r.result.status.state, STATE_COMPLETED);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("rejects a non-loopback Host in localhost-only mode (DNS-rebinding guard)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
+      try {
+        // Node's fetch() forbids the Host header, so use raw http.request —
+        // this is exactly how a DNS-rebinding attack presents itself.
+        const status = await new Promise<number>((resolve, reject) => {
+          const req = httpRequest(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Host: "evil.example.com", // attacker domain resolving to 127.0.0.1
+            },
+          }, (res) => {
+            res.resume();
+            resolve(res.statusCode ?? 0);
+          });
+          req.on("error", reject);
+          req.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "SendMessage",
+            params: { message: { role: "ROLE_USER", parts: [{ text: "hi" }] } },
+          }));
+        });
+        assert.equal(status, 403, "non-loopback Host must be rejected");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("rejects a non-loopback Origin (CSRF guard)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
+      try {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Origin: "https://evil.example.com",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "SendMessage",
+            params: { message: { role: "ROLE_USER", parts: [{ text: "hi" }] } },
+          }),
+        });
+        assert.equal(resp.status, 403, "non-loopback Origin must be rejected");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("rejects browser simple-request content-types (text/plain CSRF body)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
+      try {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=UTF-8" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "SendMessage",
+            params: { message: { role: "ROLE_USER", parts: [{ text: "hi" }] } },
+          }),
+        });
+        assert.equal(resp.status, 415, "text/plain must be rejected");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("keeps working with application/json + loopback Host/Origin (no regression)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        assert.isUndefined(r.error, "loopback request must still pass");
+        assert.equal(r.result.status.state, STATE_COMPLETED);
+      } finally {
+        await stop();
+      }
+    });
+  });
+
+  describe("outbound reply redaction", () => {
+    it("redacts credential-shaped strings from the reply artifact", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("key is sk-test-abcdEFGH01234567JKLM and ghp_ABCDEFGHIJKLMNOPQRST and mytest@example.com") });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "show secrets" }] },
+        });
+        const text = r.result.artifacts?.[0]?.parts?.[0]?.text ?? "";
+        assert.notInclude(text, "sk-test-abcdEFGH01234567JKLM", "sk-* must be redacted");
+        assert.notInclude(text, "ghp_ABCDEFGHIJKLMNOPQRST", "ghp_* must be redacted");
+        assert.notInclude(text, "mytest@example.com", "email must be redacted");
+        assert.include(text, "[redacted]", "redaction placeholder present");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("leaves plain replies unchanged (no over-redaction)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("hello world") });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        const text = r.result.artifacts?.[0]?.parts?.[0]?.text ?? "";
+        assert.equal(text, "hello world");
       } finally {
         await stop();
       }
