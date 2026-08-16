@@ -147,10 +147,14 @@ OS-assigned port), so they start cleanly instead of failing. Each session's
 Agent Card advertises the port it actually bound, so peers can always call it
 back.
 
-To avoid surprise ports, prefer setting `a2a.server.enabled` in a **project-local**
-`.pi/settings.json` (one project = one inbound server on the fixed port) rather
-than globally. `portFallback: 0` means "configured port only, straight to
-OS-assigned on conflict".
+To avoid surprise ports, prefer enabling the server **per project** — via env
+(`A2A_SERVER_ENABLED=true` from your shell or the global `~/.pi/agent/.env.local`)
+or the global `~/.pi/agent/settings.json` keyed per project. Note: a
+**project-local `.pi/settings.json` can no longer enable the server** —
+security-relevant keys (`server.enabled`, tokens, host, gateway, …) are ignored
+from repo-controlled files, because a checked-out repo must not be able to turn
+on an inbound agent server on whoever opens it. (`portFallback: 0` means
+"configured port only, straight to OS-assigned on conflict".)
 
 ### Environment variables
 

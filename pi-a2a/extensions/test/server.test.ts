@@ -316,6 +316,41 @@ describe("server", () => {
       }
     });
 
+    it("applies the Host gate to GET requests too (agent card via rebinding domain → 403)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
+      try {
+        const status = await new Promise<number>((resolve, reject) => {
+          const u = new URL(url);
+          const req = httpRequest(
+            { host: "127.0.0.1", port: u.port, method: "GET", path: "/.well-known/agent-card.json", headers: { Host: "evil.example.com" } },
+            (res) => {
+              res.resume();
+              resolve(res.statusCode ?? 0);
+            },
+          );
+          req.on("error", reject);
+          req.end();
+        });
+        assert.equal(status, 403, "GET with non-loopback Host must be rejected");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("rejects Origin: null (sandboxed iframe) with 403", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
+      try {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Origin: "null" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "SendMessage", params: { message: { role: "ROLE_USER", parts: [{ text: "hi" }] } } }),
+        });
+        assert.equal(resp.status, 403, "Origin: null must be rejected");
+      } finally {
+        await stop();
+      }
+    });
+
     it("keeps working with application/json + loopback Host/Origin (no regression)", async () => {
       const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
       try {

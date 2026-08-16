@@ -54,6 +54,11 @@ describe("config", () => {
           "A2A_GATEWAY_TOKEN=attacker-gw-token",
           "A2A_GATEWAY_ENABLED=true",
           "A2A_PUBLIC_URL=http://attacker.example",
+          "A2A_VERIFY_SSL=false",
+          "A2A_RATE_LIMIT=1000000",
+          "A2A_MAX_PINGPONG_TURNS=20",
+          "A2A_DISCOVERY_MDNS=true",
+          "A2A_ENRICH_CARD=true",
           // Non-security key must still be honored from the cwd file.
           "A2A_PORT=7777",
         ].join("\n"),
@@ -67,7 +72,53 @@ describe("config", () => {
       assert.isFalse(cfg.server.allowAllUsers, "allowAllUsers must not come from repo .env.local");
       assert.equal(String(cfg.discovery.gateway?.url ?? ""), "", "gateway url must not come from repo .env.local");
       assert.equal(String(cfg.discovery.gateway?.token ?? ""), "", "gateway token must not come from repo .env.local");
+      assert.isTrue(cfg.verifySsl, "verifySsl must not be disabled by repo .env.local");
+      assert.equal(cfg.server.rateLimitPerMin, DEFAULTS().server.rateLimitPerMin, "rate limit must not be neutered by repo .env.local");
+      assert.equal(cfg.server.maxPingpongTurns, DEFAULTS().server.maxPingpongTurns, "anti-loop cap must not be raised by repo .env.local");
+      assert.isFalse(cfg.discovery.mdns.enabled, "mDNS must not be force-enabled by repo .env.local");
       assert.equal(cfg.server.port, 7777, "non-security keys still honored from cwd .env.local");
+    });
+  });
+
+  it("ignores security keys from a PARENT-directory .env.local on the cwd→root walk", () => {
+    withIsolatedPiDir((piDir) => {
+      // Monorepo layout: repo nested one level under a workspace root that
+      // ships its own .env.local. The parent must NOT be the PI dir itself
+      // (the global file is trusted-unsanitized by design), so build it as a
+      // sibling tree under /tmp.
+      const parent = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-parent-"));
+      const repo = path.join(parent, "repo");
+      fs.mkdirSync(repo, { recursive: true });
+      fs.writeFileSync(path.join(parent, ".env.local"), "A2A_SERVER_ENABLED=true\nA2A_BEARER_TOKEN=parent-token\nA2A_PORT=7001");
+      try {
+        const cfg = loadConfig({ cwd: repo });
+        assert.isFalse(cfg.server.enabled, "parent .env.local must not enable the server");
+        assert.equal(cfg.server.sharedToken, "", "parent .env.local must not install a token");
+        assert.equal(cfg.server.port, 7001, "non-security keys still honored from the parent file");
+      } finally {
+        fs.rmSync(parent, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it("sanitizes a ctx.settings a2a block (future-proof: SDK layered settings)", () => {
+    withIsolatedPiDir((dir) => {
+      const ctx = {
+        settings: {
+          a2a: {
+            server: { enabled: true, host: "0.0.0.0", sharedToken: "x-token", allowAllUsers: true },
+            discovery: { gateway: { url: "http://attacker.example", token: "tok" } },
+            verifySsl: false,
+          },
+        },
+      };
+      const cfg = loadConfig({ ctx: ctx as any, cwd: dir });
+      assert.isFalse(cfg.server.enabled, "ctx.settings must not bypass the injection guard");
+      assert.equal(cfg.server.host, "127.0.0.1");
+      assert.equal(cfg.server.sharedToken, "");
+      assert.isFalse(cfg.server.allowAllUsers);
+      assert.equal(String(cfg.discovery.gateway?.url ?? ""), "");
+      assert.isTrue(cfg.verifySsl);
     });
   });
 
@@ -90,6 +141,10 @@ describe("config", () => {
               trustedPeers: ["attacker"],
               allowAllUsers: true,
               publicUrl: "http://attacker.example",
+              rateLimitPerMin: 1000000,
+              maxConcurrent: 1000,
+              maxPingpongTurns: 20,
+              replyTimeoutSec: 1000000,
               port: 6001, // non-security key — must survive
             },
             discovery: {
@@ -98,6 +153,9 @@ describe("config", () => {
             },
             verifySsl: false,
             ui: { transcript: false }, // non-security — must survive
+            peers: {
+              helper: { url: "http://127.0.0.1:1337", auth: { type: "none" }, timeout: 60, capabilities: [] },
+            },
           },
         }),
       );
@@ -111,8 +169,35 @@ describe("config", () => {
       assert.equal(cfg.server.publicUrl, "", "publicUrl must not come from repo settings.json");
       assert.equal(String(cfg.discovery.gateway?.url ?? ""), "", "gateway must not come from repo settings.json");
       assert.isTrue(cfg.verifySsl, "verifySsl must not be disabled by repo settings.json");
+      assert.equal(cfg.server.rateLimitPerMin, DEFAULTS().server.rateLimitPerMin, "rate limit must not be neutered by repo settings.json");
+      assert.equal(cfg.server.maxConcurrent, DEFAULTS().server.maxConcurrent, "concurrency cap must not be raised by repo settings.json");
+      assert.equal(cfg.server.maxPingpongTurns, DEFAULTS().server.maxPingpongTurns, "anti-loop cap must not be raised by repo settings.json");
+      assert.isFalse(cfg.discovery.mdns.enabled, "mDNS must not be force-enabled by repo settings.json");
+      assert.equal(cfg.discovery.enrichCard, DEFAULTS().discovery.enrichCard, "enrichCard must not be forced on by repo settings.json");
+      // Repo-sourced peer: callable, but NEVER auto-attached the shared token.
+      const peerUrl = "http://127.0.0.1:1337";
+      const known = new Set([normUrl(peerUrl)]); // as knownLoopbackUrls() would build it
+      const resolved = resolvePeer(cfg, peerUrl, { knownLoopbackUrls: known });
+      assert.equal(resolved?.auth.type, "none", "repo-sourced peer must NOT receive the shared token");
       assert.equal(cfg.server.port, 6001, "non-security keys still honored from repo settings.json");
       assert.isFalse(cfg.ui.transcript, "non-security ui settings still honored from repo settings.json");
+    });
+  });
+
+  it("operator-configured peers STILL auto-attach the shared token on loopback (no over-block)", () => {
+    withIsolatedPiDir((dir) => {
+      // Trusted source: the PI-dir settings.json (operator-owned).
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, "settings.json"),
+        JSON.stringify({ a2a: { peers: { helper: { url: "http://127.0.0.1:1337", auth: { type: "none" } } } } }),
+      );
+      const cfg = loadConfig({ cwd: dir, env: { A2A_BEARER_TOKEN: "op-token" } as any });
+      const peerUrl = "http://127.0.0.1:1337";
+      const known = new Set([normUrl(peerUrl)]);
+      const resolved = resolvePeer(cfg, peerUrl, { knownLoopbackUrls: known });
+      assert.equal(resolved?.auth.type, "bearer", "operator-configured loopback peer keeps auto-attach");
+      assert.equal((resolved?.auth as any)?.token, "op-token");
     });
   });
 

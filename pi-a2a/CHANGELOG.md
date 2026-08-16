@@ -15,6 +15,29 @@
 
 ### Fixed
 
+- **Reviewer follow-up (PR#12 round 2):** closed 7 review findings on the
+  security fixes themselves:
+  - `ctx.settings` a2a blocks are now sanitized too (the top-precedence
+    branch bypassed the repo-file guard; dead code today — the SDK's
+    ExtensionContext has no `settings` — but defended against future
+    layered-settings SDKs).
+  - Abuse-control keys (`server.rateLimitPerMin`, `maxConcurrent`,
+    `maxPingpongTurns`, `replyTimeoutSec`) now stripped from repo settings,
+    matching the env blocklist — a repo can no longer neuter rate limiting
+    or the concurrency ceiling.
+  - Repo-sourced peers never auto-attach the operator's shared token
+    (the "known loopback peer" trust now requires an operator-configured
+    source; prompt-injected `a2a_call(agent="helper")` to a repo-chosen
+    loopback listener gets `auth: none`).
+  - mDNS force-enable and card enrichment (`A2A_DISCOVERY_MDNS`,
+    `A2A_ENRICH_CARD`, `discovery.mdns.enabled`, `discovery.enrichCard`)
+    blocklisted from repo files (LAN/cwd/model disclosure).
+  - README no longer recommends enabling the server via project-local
+    `.pi/settings.json` (that path is now ignored for security keys).
+  - Tests: ctx.settings injection, parent-dir `.env.local`, missing env
+    blocklist keys, abuse-control strips, repo-peer no-auto-attach (plus
+    operator-peer keeps-auto-attach regression), GET Host gate, `Origin: null`.
+
 - **Repo-controlled `.pi/settings.json` is now sanitized (HIGH, completes #6):**
   the earlier fix only stripped security keys from repo `.env.local`; a
   malicious repo could still ship `.pi/settings.json` with
