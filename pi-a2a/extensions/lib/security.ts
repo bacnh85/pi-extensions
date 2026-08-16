@@ -96,6 +96,7 @@ export function authenticate(opts: {
 // ---------------------------------------------------------------------------
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"]);
+export { LOOPBACK };
 
 export function localhostOnly(cfg: A2AConfig): boolean {
   return !cfg.server.sharedToken && Object.keys(cfg.server.peerTokens).length === 0;

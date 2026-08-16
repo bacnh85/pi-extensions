@@ -205,6 +205,31 @@ function parseDotEnv(text: string): Record<string, string> {
   return out;
 }
 
+/**
+ * Security-relevant A2A_* env keys. These may come from process env or the
+ * operator's global Pi dir `.env.local`, but NEVER from a repo-controlled
+ * cwd→root `.env.local` walk: a coding agent opens attacker-controlled repos,
+ * so repo files must not be able to enable the server, widen the bind,
+ * install tokens, or redirect the gateway (see loadEnv).
+ */
+const SECURITY_ENV_KEYS: ReadonlySet<string> = new Set([
+  "A2A_SERVER_ENABLED",
+  "A2A_HOST",
+  "A2A_BEARER_TOKEN",
+  "A2A_PEER_TOKENS",
+  "A2A_TRUSTED_PEERS",
+  "A2A_ALLOW_ALL_USERS",
+  "A2A_MAX_PINGPONG_TURNS",
+  "A2A_RATE_LIMIT",
+  "A2A_VERIFY_SSL",
+  "A2A_DISCOVERY_MDNS",
+  "A2A_ENRICH_CARD",
+  "A2A_GATEWAY_URL",
+  "A2A_GATEWAY_TOKEN",
+  "A2A_GATEWAY_ENABLED",
+  "A2A_PUBLIC_URL",
+]);
+
 function envCandidates(cwd: string): string[] {
   const dirs: string[] = [];
   let dir = resolve(cwd);
@@ -235,11 +260,20 @@ export function loadEnv(cwd: string): Record<string, string> {
       /* ignore */
     }
   }
-  // Walk from filesystem root up to cwd so cwd wins.
+  // Walk from filesystem root up to cwd so cwd wins — but NEVER let a
+  // repo-controlled .env.local set security-relevant keys (a coding agent
+  // opens attacker-controlled repos; those files must not be able to enable
+  // the server, widen the bind, install tokens, or redirect the gateway).
+  // NOTE: the walk list includes the global path again (see envCandidates);
+  // that re-parse is deliberately NOT skipped — its security keys were already
+  // merged above and delete-from-copy here cannot remove them. Keep the global
+  // read FIRST: it is the only place repo keys could ever be overridden back.
   const paths = envCandidates(cwd).reverse();
   for (const p of paths) {
     try {
-      Object.assign(env, parseDotEnv(readFileSync(p, "utf-8")));
+      const parsed = parseDotEnv(readFileSync(p, "utf-8"));
+      for (const k of SECURITY_ENV_KEYS) delete parsed[k];
+      Object.assign(env, parsed);
     } catch {
       /* ignore */
     }
@@ -251,10 +285,59 @@ export function loadEnv(cwd: string): Record<string, string> {
 // Settings.json `a2a` key reader
 // ---------------------------------------------------------------------------
 
-function readSettingsA2A(ctx: ExtensionContext | undefined, cwd: string): any {
+/** Security-relevant a2a settings paths stripped from a REPO-CONTROLLED
+ * `.pi/settings.json` (same threat model as SECURITY_ENV_KEYS: a repo the
+ * agent opens must not enable the server, widen the bind, install tokens,
+ * redirect the gateway, or disable TLS verification). */
+function sanitizeRepoA2ASettings(s: any): any {
+  if (!s || typeof s !== "object") return s;
+  const c = { ...s };
+  if (c.server && typeof c.server === "object") {
+    const srv = { ...c.server };
+    for (const k of [
+      "enabled",
+      "host",
+      "sharedToken",
+      "peerTokens",
+      "trustedPeers",
+      "allowAllUsers",
+      "publicUrl",
+      // Abuse-control parity with SECURITY_ENV_KEYS (A2A_RATE_LIMIT,
+      // A2A_MAX_PINGPONG_TURNS) — a repo must not be able to neuter rate
+      // limiting, the anti-loop cap, or the concurrency ceiling.
+      "rateLimitPerMin",
+      "maxPingpongTurns",
+      "maxConcurrent",
+      "replyTimeoutSec",
+    ])
+      delete srv[k];
+    c.server = srv;
+  }
+  if (c.discovery && typeof c.discovery === "object") {
+    const d = { ...c.discovery };
+    delete d.gateway; // url + token
+    delete d.gateways; // multi-gateway map (tokens)
+    // Disclosure-flipping flags: repo files must not be able to force mDNS
+    // LAN broadcast (TXT leaks cwd + model) or card enrichment (cwd/pid/
+    // model/tools in the public agent card).
+    if (d.mdns && typeof d.mdns === "object") delete d.mdns.enabled;
+    delete d.enrichCard;
+    c.discovery = d;
+  }
+  delete c.verifySsl;
+  return c;
+}
+
+function readSettingsA2A(ctx: ExtensionContext | undefined, cwd: string): { s: any; fromRepo: boolean } {
   // Try the SDK settings infra first (object form), then on-disk settings.json.
+  // The ctx form is sanitized defensively (and flagged repo-scope): the current
+  // SDK's ExtensionContext has no `settings` property (dead code today), but a
+  // future layered-settings SDK could merge project scope in — sanitize, and
+  // if a key is stripped that only existed there, the operator's own on-disk
+  // files below still supply it. (Security review follow-up.)
   const fromCtx = (ctx as any)?.settings?.a2a;
-  if (fromCtx && typeof fromCtx === "object" && !Array.isArray(fromCtx)) return fromCtx;
+  if (fromCtx && typeof fromCtx === "object" && !Array.isArray(fromCtx))
+    return { s: sanitizeRepoA2ASettings(fromCtx), fromRepo: true };
   // When PI_CODING_AGENT_DIR is set (tests use this for isolation), do NOT fall
   // back to the operator's hardcoded ~/.pi/agent path — only cwd + that dir.
   const explicit = process.env.PI_CODING_AGENT_DIR;
@@ -265,16 +348,18 @@ function readSettingsA2A(ctx: ExtensionContext | undefined, cwd: string): any {
         join(homedir(), ".pi", "agent", "settings.json"),
         join(homedir(), ".pi", "agents", "settings.json"),
       ];
+  const repoSettings = join(cwd, ".pi", "settings.json");
   for (const p of candidates) {
     if (!existsSync(p)) continue;
     try {
       const j = JSON.parse(readFileSync(p, "utf-8"));
-      if (j?.a2a && typeof j.a2a === "object") return j.a2a;
+      if (j?.a2a && typeof j.a2a === "object")
+        return { s: p === repoSettings ? sanitizeRepoA2ASettings(j.a2a) : j.a2a, fromRepo: p === repoSettings };
     } catch {
       /* ignore */
     }
   }
-  return {};
+  return { s: {}, fromRepo: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +384,7 @@ export function loadConfig(opts: {
 }): A2AConfig {
   const { ctx, cwd } = opts;
   const env = opts.env ?? loadEnv(cwd);
-  const s = readSettingsA2A(ctx, cwd);
+  const { s, fromRepo: settingsFromRepo } = readSettingsA2A(ctx, cwd);
 
   const cfg: A2AConfig = {
     peers: {},
@@ -317,7 +402,10 @@ export function loadConfig(opts: {
   };
 
   // Peers from settings.json `a2a.peers`
-  const peers = (s.peers && typeof s.peers === "object" ? s.peers : {}) as Record<string, any>;  for (const [name, entry] of Object.entries(peers)) {
+  const peers = (s.peers && typeof s.peers === "object" ? s.peers : {}) as Record<string, any>;
+  // Reset per load: only peers from a REPO-SCOPE settings file get flagged.
+  repoPeerUrls = new Set();
+  for (const [name, entry] of Object.entries(peers)) {
     if (!entry || typeof entry !== "object") continue;
     cfg.peers[name] = {
       url: String(entry.url || ""),
@@ -329,6 +417,7 @@ export function loadConfig(opts: {
       capabilities: Array.isArray(entry.capabilities) ? entry.capabilities.map(String) : [],
       description: entry.description ? String(entry.description) : undefined,
     };
+    if (settingsFromRepo && cfg.peers[name]!.url) repoPeerUrls.add(normUrl(cfg.peers[name]!.url));
   }
 
   // Server settings
@@ -611,9 +700,15 @@ export function writeSettingsA2A(opts: {
         join(homedir(), ".pi", "agents", "settings.json"),
       ];
 
-  // Prefer the first file that already has an `a2a` key.
+  // Prefer the first file that already has an `a2a` key — but NEVER the
+  // repo-controlled cwd file: the operator's tokens (peer tokens, gateway
+  // token) saved from the config panel must not land in a file a repo ships
+  // or an attacker pre-seeds. (That file is also never re-read unsanitized —
+  // readSettingsA2A strips security keys from it.)
   let target: string | undefined;
+  const repoSettings = join(cwd, ".pi", "settings.json");
   for (const p of candidates) {
+    if (p === repoSettings) continue;
     if (!existsSync(p)) continue;
     try {
       const j = JSON.parse(readFileSync(p, "utf-8"));
@@ -655,6 +750,16 @@ export function writeSettingsA2A(opts: {
 // Peer registry
 // ---------------------------------------------------------------------------
 
+/** Loopback peer URLs that came from a REPO-CONTROLLED settings file. They
+ * may be CALLED (repo's own choice of endpoint) but never auto-attach the
+ * operator's shared token — the "known loopback peer" trust assumption
+ * (same machine, same user, operator-configured) does not hold for them. */
+let repoPeerUrls = new Set<string>();
+
+export function repoControlledPeerUrls(): ReadonlySet<string> {
+  return repoPeerUrls;
+}
+
 /** Normalize a URL for dedupe/comparison (lowercase, trailing slashes stripped). */
 export function normUrl(u: string): string {
   return String(u || "").trim().replace(/\/+$/, "").toLowerCase();
@@ -680,7 +785,13 @@ export function resolvePeer(
   if (/^https?:\/\//i.test(a)) {
     const url = a;
     let auth: PeerAuth = { type: "none" };
-    if (isLoopbackHost(url) && opts?.knownLoopbackUrls?.has(normUrl(url))) {
+    if (
+      isLoopbackHost(url) &&
+      opts?.knownLoopbackUrls?.has(normUrl(url)) &&
+      // Repo-sourced peer entries never qualify for auto-attach: the operator
+      // never vouched for that endpoint, so it must not receive any credential.
+      !repoPeerUrls.has(normUrl(url))
+    ) {
       const token = outboundToken(cfg);
       if (token) auth = { type: "bearer", token };
     }
