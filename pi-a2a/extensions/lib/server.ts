@@ -45,6 +45,7 @@ import {
   audit,
   authenticate,
   isTrustedPeer,
+  LOOPBACK,
   localhostOnly,
   maxPingpongTurns,
   redactOutbound,
@@ -566,9 +567,20 @@ export class A2AServer {
 
   private isLoopbackHost(host: string | undefined): boolean {
     if (!host) return false;
-    // Strip port and IPv6 brackets: "127.0.0.1:9910" / "[::1]:9910" / "localhost"
-    const h = host.split(":")[0].replace(/^\[|\]$/g, "").toLowerCase();
-    return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "0:0:0:0:0:0:0:1";
+    // Strip port and IPv6 brackets: "127.0.0.1:9910" / "[::1]:9910" / "localhost" / "::1".
+    // Bracketed IPv6 must be split on "]" BEFORE any ":" split — "[::1]:9910".split(":")[0]
+    // would yield "[".
+    let h = host.trim().toLowerCase();
+    if (h.startsWith("[")) {
+      const end = h.indexOf("]");
+      if (end === -1) return false; // malformed bracketed host
+      h = h.slice(1, end);
+    } else if ((h.match(/:/g) || []).length > 1) {
+      // Bare IPv6 (unbracketed, portless) — compare whole host below.
+    } else {
+      h = h.split(":")[0]!; // host:port
+    }
+    return LOOPBACK.has(h);
   }
 
   private isLoopbackOrigin(origin: string | undefined): boolean {
@@ -791,7 +803,10 @@ export class A2AServer {
         if (state !== STATE_CANCELED) {
           t.status.message = {
             role: "ROLE_AGENT",
-            parts: [{ text: e?.message || String(e), mediaType: "text/plain" }],
+            // Redacted: error messages can embed reply text (parse failures,
+            // tool errors quoting the payload) — same outbound trust boundary
+            // as the reply artifact.
+            parts: [{ text: redactOutbound(e?.message || String(e)), mediaType: "text/plain" }],
             messageId: newContextId(),
           };
         }

@@ -15,6 +15,24 @@
 
 ### Fixed
 
+- **Repo-controlled `.pi/settings.json` is now sanitized (HIGH, completes #6):**
+  the earlier fix only stripped security keys from repo `.env.local`; a
+  malicious repo could still ship `.pi/settings.json` with
+  `a2a.server.{enabled,host,sharedToken,peerTokens,trustedPeers,allowAllUsers,
+  publicUrl}`, `a2a.discovery.{gateway,gateways}` (attacker gateway redirect),
+  or `a2a.verifySsl:false`. Those paths are now stripped at read time from the
+  repo-scope file only; operator-owned global settings and process env are
+  unaffected. The config panel also no longer persists tokens into the
+  repo-scope file (writes target operator-owned settings instead). Added
+  `A2A_VERIFY_SSL` to the repo `.env.local` blocklist.
+- **IPv6 loopback Host parsing (#7 follow-up):** `[::1]:9910` Host headers
+  were mis-parsed to `"["` by `split(":")[0]` and falsely rejected with 403.
+  Bracketed IPv6 is now split on `]` first; bare IPv6 compared whole.
+- **Failure messages are redacted (#8 follow-up):** the FAILED task's
+  `status.message` (error text can embed reply content) now passes through
+  `redactOutbound()` like the reply artifact, before tasks/get or SSE
+  returns it to a peer.
+
 - **Inbound sessions now load host extension packages.** The task session
   runner created its `DefaultResourceLoader` with an in-memory
   `SettingsManager` that had no `packages` — the child session therefore ran

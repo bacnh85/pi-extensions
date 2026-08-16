@@ -167,6 +167,7 @@ const SECURITY_ENV_KEYS: ReadonlySet<string> = new Set([
   "A2A_ALLOW_ALL_USERS",
   "A2A_MAX_PINGPONG_TURNS",
   "A2A_RATE_LIMIT",
+  "A2A_VERIFY_SSL",
   "A2A_GATEWAY_URL",
   "A2A_GATEWAY_TOKEN",
   "A2A_GATEWAY_ENABLED",
@@ -224,6 +225,37 @@ export function loadEnv(cwd: string): Record<string, string> {
 // Settings.json `a2a` key reader
 // ---------------------------------------------------------------------------
 
+/** Security-relevant a2a settings paths stripped from a REPO-CONTROLLED
+ * `.pi/settings.json` (same threat model as SECURITY_ENV_KEYS: a repo the
+ * agent opens must not enable the server, widen the bind, install tokens,
+ * redirect the gateway, or disable TLS verification). */
+function sanitizeRepoA2ASettings(s: any): any {
+  if (!s || typeof s !== "object") return s;
+  const c = { ...s };
+  if (c.server && typeof c.server === "object") {
+    const srv = { ...c.server };
+    for (const k of [
+      "enabled",
+      "host",
+      "sharedToken",
+      "peerTokens",
+      "trustedPeers",
+      "allowAllUsers",
+      "publicUrl",
+    ])
+      delete srv[k];
+    c.server = srv;
+  }
+  if (c.discovery && typeof c.discovery === "object") {
+    const d = { ...c.discovery };
+    delete d.gateway; // url + token
+    delete d.gateways; // multi-gateway map (tokens)
+    c.discovery = d;
+  }
+  delete c.verifySsl;
+  return c;
+}
+
 function readSettingsA2A(ctx: ExtensionContext | undefined, cwd: string): any {
   // Try the SDK settings infra first (object form), then on-disk settings.json.
   const fromCtx = (ctx as any)?.settings?.a2a;
@@ -238,11 +270,13 @@ function readSettingsA2A(ctx: ExtensionContext | undefined, cwd: string): any {
         join(homedir(), ".pi", "agent", "settings.json"),
         join(homedir(), ".pi", "agents", "settings.json"),
       ];
+  const repoSettings = join(cwd, ".pi", "settings.json");
   for (const p of candidates) {
     if (!existsSync(p)) continue;
     try {
       const j = JSON.parse(readFileSync(p, "utf-8"));
-      if (j?.a2a && typeof j.a2a === "object") return j.a2a;
+      if (j?.a2a && typeof j.a2a === "object")
+        return p === repoSettings ? sanitizeRepoA2ASettings(j.a2a) : j.a2a;
     } catch {
       /* ignore */
     }
@@ -529,9 +563,15 @@ export function writeSettingsA2A(opts: {
         join(homedir(), ".pi", "agents", "settings.json"),
       ];
 
-  // Prefer the first file that already has an `a2a` key.
+  // Prefer the first file that already has an `a2a` key — but NEVER the
+  // repo-controlled cwd file: the operator's tokens (peer tokens, gateway
+  // token) saved from the config panel must not land in a file a repo ships
+  // or an attacker pre-seeds. (That file is also never re-read unsanitized —
+  // readSettingsA2A strips security keys from it.)
   let target: string | undefined;
+  const repoSettings = join(cwd, ".pi", "settings.json");
   for (const p of candidates) {
+    if (p === repoSettings) continue;
     if (!existsSync(p)) continue;
     try {
       const j = JSON.parse(readFileSync(p, "utf-8"));

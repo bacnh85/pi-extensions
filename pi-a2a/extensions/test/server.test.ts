@@ -286,6 +286,36 @@ describe("server", () => {
       }
     });
 
+    it("accepts a bracketed IPv6 loopback Host [::1] (no false-positive 403)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
+      try {
+        // Server binds 127.0.0.1; we send a bracketed-IPv6 Host header over that
+        // connection — this exercises the header parser, exactly where the old
+        // split(":")[0] bug lived ([::1]:port → "[" → false 403).
+        const status = await new Promise<number>((resolve, reject) => {
+          const u = new URL(url);
+          const req = httpRequest(
+            {
+              host: "127.0.0.1",
+              port: u.port,
+              method: "POST",
+              path: "/",
+              headers: { "Content-Type": "application/json", Host: `[::1]:${u.port}` },
+            },
+            (res) => {
+              res.resume();
+              resolve(res.statusCode ?? 0);
+            },
+          );
+          req.on("error", reject);
+          req.end(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "SendMessage", params: { message: { role: "ROLE_USER", parts: [{ text: "hi" }] } } }));
+        });
+        assert.equal(status, 200, "[::1]:port Host must be recognized as loopback, not 403");
+      } finally {
+        await stop();
+      }
+    });
+
     it("keeps working with application/json + loopback Host/Origin (no regression)", async () => {
       const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
       try {
@@ -325,6 +355,27 @@ describe("server", () => {
         });
         const text = r.result.artifacts?.[0]?.parts?.[0]?.text ?? "";
         assert.equal(text, "hello world");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("redacts the failure message too (error text can embed reply content)", async () => {
+      // Runner throws an error whose message embeds a credential-shaped string —
+      // the FAILED task's status.message must be scrubbed before tasks/get or
+      // SSE returns it to a peer.
+      const runner: SessionRunner = async () => {
+        throw new Error("tool failed: token sk-abcdEFGHIJKL0123456789 leaked in payload");
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        assert.equal(r.result.status.state, STATE_FAILED);
+        const msg = r.result.status.message?.parts?.[0]?.text ?? "";
+        assert.notInclude(msg, "sk-abcdEFGHIJKL0123456789", "failure message must be redacted");
+        assert.include(msg, "[redacted]", "redaction placeholder present");
       } finally {
         await stop();
       }
