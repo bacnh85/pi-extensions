@@ -565,6 +565,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
             `  server.host: ${cfg.server.host}`,
             `  discovery: local=${cfg.discovery.local.enabled} mdns=${cfg.discovery.mdns.enabled} enrichCard=${cfg.discovery.enrichCard}`,
             `  gateway: ${cfg.discovery.gateway ? `${cfg.discovery.gateway.enabled ? "enabled" : "disabled"} ${cfg.discovery.gateway.url || "(no url)"}${cfg.discovery.gateway.token ? " · token (set)" : ""}` : "not configured"}`,
+            `  gateways: ${Object.keys(cfg.discovery.gateways ?? {}).join(", ") || "(none)"}`,
             `  ui.transcript: ${cfg.ui.transcript}`,
             `  peers: ${Object.keys(cfg.peers).join(", ") || "(none)"}`,
             "",
@@ -582,6 +583,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
       let peerChanges = false;
       const beforePeers = JSON.stringify(workingCfg.peers);
       const beforeGateway = JSON.stringify(workingCfg.discovery.gateway ?? null);
+      const beforeGateways = JSON.stringify(workingCfg.discovery.gateways ?? null);
 
       const actions: Record<string, PanelAction> = {
         addPeer: {
@@ -627,6 +629,53 @@ export default function a2aExtension(pi: ExtensionAPI): void {
             });
           },
         },
+        addGateway: {
+          label: "Add gateway",
+          run: (prompt) => {
+            return new Promise<void>((resolve) => {
+              prompt("Gateway key (e.g. work, lab — [A-Za-z0-9._-])", (key) => {
+                if (!key) return resolve();
+                if (!/^[A-Za-z0-9._-]{1,64}$/.test(key)) {
+                  ctx.ui.notify("Invalid gateway key — use letters, digits, . _ -", "warning");
+                  return resolve();
+                }
+                if (workingCfg.discovery.gateways?.[key]) {
+                  ctx.ui.notify(`Gateway '${key}' already exists — edit its rows instead.`, "warning");
+                  return resolve();
+                }
+                prompt(`Gateway URL for '${key}'`, (url) => {
+                  if (!url) return resolve();
+                  prompt(`API token for '${key}'`, (token) => {
+                    workingCfg.discovery.gateways ??= {};
+                    workingCfg.discovery.gateways[key] = {
+                      enabled: true,
+                      url: String(url),
+                      token: String(token ?? ""),
+                    };
+                    resolve();
+                  });
+                });
+              });
+            });
+          },
+        },
+        removeGateway: {
+          label: "Remove gateway",
+          run: (prompt) => {
+            return new Promise<void>((resolve) => {
+              const names = Object.keys(workingCfg.discovery.gateways ?? {});
+              if (names.length === 0) {
+                ctx.ui.notify("No gateways configured to remove.", "warning");
+                return resolve();
+              }
+              prompt(`Remove gateway (${names.join(", ")})`, (pick) => {
+                if (!pick || !workingCfg.discovery.gateways?.[pick]) return resolve();
+                delete workingCfg.discovery.gateways[pick];
+                resolve();
+              });
+            });
+          },
+        },
       };
 
       await openConfigPanel({
@@ -636,7 +685,9 @@ export default function a2aExtension(pi: ExtensionAPI): void {
         onSave: (saved, editedKeys) => {
           if (!saved) return;
           const afterPeers = JSON.stringify(workingCfg.peers);
-          const gatewayChanged = JSON.stringify(workingCfg.discovery.gateway ?? null) !== beforeGateway;
+          const gatewayChanged =
+            JSON.stringify(workingCfg.discovery.gateway ?? null) !== beforeGateway ||
+            JSON.stringify(workingCfg.discovery.gateways ?? null) !== beforeGateways;
           const restartChanged =
             JSON.stringify(workingCfg.server) !== JSON.stringify(cfg.server) ||
             JSON.stringify(workingCfg.discovery) !== JSON.stringify(cfg.discovery);

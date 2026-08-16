@@ -90,7 +90,8 @@ Edit `~/.pi/agent/settings.json` under the `a2a` key. Key reference:
 | `verifySsl` | `true` | Verify TLS on outbound calls |
 | `discovery.local` | `{enabled:true, heartbeatSec:15, ttlSec:60}` | Local file registry |
 | `discovery.mdns` | `{enabled:false, serviceType:"a2a"}` | mDNS broadcast + discovery |
-| `discovery.gateway` | _(unset)_ | Upstream agent-gateway registration (`enabled`, `url`, `token`, `name`, `upstreamToken`, `heartbeatSec`, `channel`) — see [Agent gateway](#agent-gateway) |
+| `discovery.gateway` | _(unset)_ | Legacy single upstream a2a-switchboard registration (`enabled`, `url`, `token`, `name`, `upstreamToken`, `heartbeatSec`, `channel`) — see [a2a-switchboard gateway](#a2a-switchboard-gateway) |
+| `discovery.gateways` | _(unset)_ | **Multiple** upstream a2a-switchboard gateways (0.6.0): a keyed map `{ <key>: {enabled, url, token, ...} }` — each gateway registers + heartbeats independently; peers appear as `gw/<key>/<name>` |
 | `discovery.enrichCard` | `true` | Publish session metadata into the Agent Card |
 | `ui.transcript` | `true` | Show inbound activity as transcript messages |
 
@@ -221,13 +222,14 @@ List discovered peers with the `a2a_peers` tool or `/a2a-peers` command — they
 show each peer's name, url, source (`local`/`mdns`/`config`), cwd, model, and
 tools so you (or the model) pick the right one before `a2a_call`.
 
-### Agent gateway
+### a2a-switchboard gateway
 
-Register this session with a self-hosted [agent-gateway](https://github.com/agentgateway)
+Register this session with a self-hosted [a2a-switchboard](https://github.com/bacnh85/a2a-switchboard)
 so other accepted peers discover and call it through the gateway's proxy
-(gateway peers appear as `gw/<name>` and carry the gateway bearer token).
-Configure under `a2a.discovery.gateway` in `settings.json` (or the `/a2a-config`
-panel → Gateway group):
+(gateway peers appear as `gw/<key>/<name>` and carry the gateway bearer token).
+Configure under `a2a.discovery.gateway` (single) or `a2a.discovery.gateways`
+(multiple) in `settings.json` (or the `/a2a-config` panel → Gateway / Gateways
+groups):
 
 ```jsonc
 "a2a": {
@@ -240,18 +242,29 @@ panel → Gateway group):
       "upstreamToken": "...",         // optional: token the gateway presents when proxying TO us
       "heartbeatSec": 60,             // re-register interval
       "channel": true                 // reverse channel so firewalled peers can call us
+    },
+    "gateways": {                     // 0.6.0: multiple gateways
+      "work": { "enabled": true, "url": "http://10.0.0.5:9920", "token": "..." },
+      "lab":  { "enabled": true, "url": "http://127.0.0.1:9921", "token": "...", "channel": false }
     }
   }
 }
 ```
 
-- Registration is a **per-session** upstream: each inbound server registers
-  itself, re-registers on heartbeat, and deregisters on graceful stop.
+- Registration is a **per-session** upstream per gateway: each configured
+  gateway registers itself, re-registers on heartbeat, and deregisters on
+  graceful stop — independently of the others.
 - `enabled: false` (or `A2A_GATEWAY_ENABLED=false`) disables registration
   entirely while keeping the url/token for later.
+- **Peer naming (0.6.0, breaking):** gateway-proxy peers are ALWAYS prefixed
+  with the gateway key — `gw/<key>/<name>`. The single legacy `gateway` block
+  uses a key derived from its URL host-port (e.g. `gw/127.0.0.1-9920/<name>`),
+  so the old `gw/<name>` names no longer resolve. Use the `gateways` map with a
+  stable key if you want predictable names. Add/remove gateways from the
+  `/a2a-config` panel (Gateways group).
 - The panel renders tokens masked (`••••`); the token is stored in settings.json
   in plaintext (same as `server.sharedToken`) — use env `A2A_GATEWAY_TOKEN` if
-  you'd rather keep secrets out of files.
+  you'd rather keep secrets out of files (env feeds the single `gateway` block).
 
 ### Per-session identity (unique caller attribution)
 

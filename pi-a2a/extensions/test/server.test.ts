@@ -9,7 +9,7 @@ import { A2AServer, type SessionRunner } from "../lib/server";
 import { STATE_CANCELED, STATE_COMPLETED, STATE_FAILED, STATE_INPUT_REQUIRED, STATE_REJECTED } from "../lib/protocol";
 import { metrics } from "../lib/client";
 import { list as listRegistry } from "../lib/registry";
-import { setGatewayRegistrationName, getGatewayRegistrationName } from "../lib/config";
+import { setGatewayRegistrationName, getGatewayCallerName, gatewayKeyFromUrl } from "../lib/config";
 
 // ---------------------------------------------------------------------------
 // Stub session runner — returns a canned reply without spawning a real agent.
@@ -911,13 +911,12 @@ describe("server", () => {
       cfg.server = { ...cfg.server, port };
       const server = new A2AServer({ cfg, cwd: tmpDir(), piDir: tmpDir(), runner: stubRunner("ok") });
       await server.start();
-      // The resolved registration name is published while the upstream is
-      // active (producer side of X-Gateway-Caller) — even though this stub
-      // gateway is unreachable, startGatewayUpstream sets it before the
-      // failed register attempt.
-      assert.isNotNull(getGatewayRegistrationName(), "registration name published while upstream active");
+      // The resolved registration name is NOT published when the gateway is
+      // unreachable — a caller name must not be advertised before a
+      // successful register (X-Gateway-Caller producer side).
+      const key = gatewayKeyFromUrl("http://127.0.0.1:9920");
+      assert.isNull(getGatewayCallerName(key), "no registration name while registration failed");
       await server.stop();
-      assert.isNull(getGatewayRegistrationName(), "registration name cleared on stop");
       // Registration is attempted (POST /register) even though the gateway is
       // unreachable. The reverse channel only opens AFTER a successful
       // register, so with a failing stub there is no /channel call yet — the
@@ -925,6 +924,28 @@ describe("server", () => {
       // every call.
       const urls = calls.map((c) => c.url);
       assert.ok(urls.some((u) => u.includes("/register")), "register attempted: " + urls.join(", "));
+    });
+
+    it("registers to EACH enabled gateway in the gateways map (0.6.0)", async () => {
+      const cfg = DEFAULTS();
+      cfg.discovery.gateways = {
+        work: { enabled: true, url: "http://127.0.0.1:9920", token: "x" },
+        lab: { enabled: true, url: "http://127.0.0.1:9921", token: "y" },
+        off: { enabled: false, url: "http://127.0.0.1:9922", token: "z" },
+      };
+      const port = await freePort();
+      cfg.server = { ...cfg.server, port };
+      const server = new A2AServer({ cfg, cwd: tmpDir(), piDir: tmpDir(), runner: stubRunner("ok") });
+      await server.start();
+      await server.stop();
+      const urls = calls.map((c) => c.url);
+      // 2 enabled gateways → 2 POST /register attempts (the DELETE-on-stop
+      // calls carry ?name= and must not count); disabled one skipped.
+      const posts = urls.filter((u) => u.includes("/register") && !u.includes("?name="));
+      assert.equal(posts.length, 2, urls.join(", "));
+      assert.ok(posts.some((u) => u.includes("9920")), "work gateway registered");
+      assert.ok(posts.some((u) => u.includes("9921")), "lab gateway registered");
+      assert.ok(!urls.some((u) => u.includes("9922")), "disabled gateway must not be touched");
     });
   });
 });

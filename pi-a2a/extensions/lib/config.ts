@@ -8,6 +8,13 @@
  * NOTE: an explicit `discovery.gateway.enabled` in settings.json overrides
  * `A2A_GATEWAY_ENABLED` (the env var only feeds the fallback when the
  * settings field is absent).
+ *
+ * Multiple gateways (0.6.0): the legacy single `discovery.gateway` block
+ * (settings or env) coexists with the new `discovery.gateways` map. The
+ * canonical runtime view is `gatewayEntries(cfg)` — legacy yields the
+ * derived key `host-port` (fallback `default`), named entries yield their
+ * own keys. Every consumer (server lifecycle, overlay, panel, persistence)
+ * iterates that list only.
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -33,10 +40,65 @@ export interface Peer {
   timeout: number;
   capabilities: string[];
   description?: string;
-  /** True for agent-gateway proxy peers (`gw/<name>`): the card fetch is
+  /** True for a2a-switchboard proxy peers (`gw/<key>/<name>`): the card fetch is
    *  skipped (a proxied card may advertise the peer's DIRECT url, which would
    *  bypass the gateway) and JSON-RPC is pinned to the proxy URL. */
   viaGateway?: boolean;
+  /** Gateway origin that published this proxied peer (set by mergeGatewayPeers).
+   *  Lets the client SSRF-pin the proxy URL to the peer's own gateway even
+   *  when the live config has no gateway block (overlay-first routing). */
+  gatewayUrl?: string;
+}
+
+/** One upstream a2a-switchboard registration entry. */
+export interface GatewayEntry {
+  /** Explicit on/off. Defaults to true when url+token are both set and no
+   *  explicit value is given (backward compat); explicit false disables. */
+  enabled: boolean;
+  url: string;
+  token: string;
+  name?: string;
+  upstreamToken?: string;
+  heartbeatSec?: number;
+  /** Open a reverse channel so firewalled peers receive traffic (default true). */
+  channel?: boolean;
+}
+
+/** Gateway map keys must match the peer-name charset — they land in
+ *  `gw/<key>/<name>` peer keys. */
+export const GATEWAY_KEY_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
+/** Derive a stable gateway key from a gateway URL (host:port). */
+export function gatewayKeyFromUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/[^A-Za-z0-9._-]/g, "-");
+    const port = u.port ? `-${u.port}` : "";
+    const key = `${host}${port}`;
+    return GATEWAY_KEY_RE.test(key) ? key : "default";
+  } catch {
+    return "default";
+  }
+}
+
+/** Canonical runtime view: every configured gateway as `{ key, entry }`.
+ *  Legacy `discovery.gateway` (settings/env) maps to the derived key; the
+ *  `discovery.gateways` map contributes its own keys (invalid keys skipped).
+ *  A map entry whose key equals the legacy derived key wins — the legacy
+ *  block is skipped so each key maps to exactly one upstream. */
+export function gatewayEntries(cfg: A2AConfig): Array<{ key: string; entry: GatewayEntry }> {
+  const out: Array<{ key: string; entry: GatewayEntry }> = [];
+  const legacyKey = cfg.discovery.gateway ? gatewayKeyFromUrl(cfg.discovery.gateway.url) : null;
+  const mapKeys = new Set<string>();
+  for (const [key, entry] of Object.entries(cfg.discovery.gateways ?? {})) {
+    if (!GATEWAY_KEY_RE.test(key)) continue;
+    mapKeys.add(key);
+    out.push({ key, entry });
+  }
+  if (cfg.discovery.gateway && (!legacyKey || !mapKeys.has(legacyKey))) {
+    out.unshift({ key: legacyKey!, entry: cfg.discovery.gateway });
+  }
+  return out;
 }
 
 export interface A2AConfig {
@@ -74,19 +136,11 @@ export interface A2AConfig {
   discovery: {
     local: { enabled: boolean; heartbeatSec: number; ttlSec: number };
     mdns: { enabled: boolean; serviceType: string };
-    /** Upstream agent-gateway registration (annex: gateway layer). */
-    gateway?: {
-      /** Explicit on/off. Defaults to true when url+token are both set and no
-       *  explicit value is given (backward compat); explicit false disables. */
-      enabled: boolean;
-      url: string;
-      token: string;
-      name?: string;
-      upstreamToken?: string;
-      heartbeatSec?: number;
-      /** Open a reverse channel so firewalled peers receive traffic (default true). */
-      channel?: boolean;
-    };
+    /** Upstream a2a-switchboard registration (annex: gateway layer). */
+    gateway?: GatewayEntry;
+    /** Multiple upstream a2a-switchboard gateways (0.6.0) — keyed map; keys must match
+     *  `[A-Za-z0-9._-]{1,64}` (they land in `gw/<key>/<name>` peer keys). */
+    gateways?: Record<string, GatewayEntry>;
     enrichCard: boolean;
   };
   /** Host-TUI presentation (0.3.0). */
@@ -411,7 +465,7 @@ export function loadConfig(opts: {
   cfg.discovery.mdns.serviceType = String(dm.serviceType ?? env.A2A_MDNS_TYPE ?? DEFAULTS.discovery.mdns.serviceType);
   cfg.discovery.enrichCard = bool(d.enrichCard ?? env.A2A_ENRICH_CARD, DEFAULTS.discovery.enrichCard);
 
-  // Upstream agent-gateway registration. The block is materialized whenever
+  // Upstream a2a-switchboard registration. The block is materialized whenever
   // ANY gateway config exists (settings `dg` has fields, or url/token from
   // env) so the panel can display/edit it — including explicitly-disabled
   // gateways (enabled:false), which must stay visible or unrelated discovery
@@ -437,6 +491,30 @@ export function loadConfig(opts: {
       channel: dg.channel === undefined ? undefined : bool(dg.channel, true),
     };
   }
+
+  // Multiple gateways (0.6.0): the `discovery.gateways` map. Same per-entry
+  // materialization as the legacy block; invalid keys are skipped (they would
+  // pollute the `gw/<key>/` peer namespace).
+  const dgs = (d.gateways && typeof d.gateways === "object" ? d.gateways : {}) as Record<string, any>;
+  const gateways: Record<string, GatewayEntry> = {};
+  for (const [key, raw] of Object.entries(dgs)) {
+    if (!GATEWAY_KEY_RE.test(key)) continue;
+    if (!raw || typeof raw !== "object") continue;
+    const g = raw as Record<string, any>;
+    const u = String(g.url ?? "");
+    const t = String(g.token ?? "");
+    const enabled = g.enabled !== undefined ? bool(g.enabled, true) : Boolean(u && t);
+    gateways[key] = {
+      enabled,
+      url: u,
+      token: t,
+      name: g.name ? String(g.name) : undefined,
+      upstreamToken: g.upstreamToken ? String(g.upstreamToken) : undefined,
+      heartbeatSec: num(g.heartbeatSec, 60),
+      channel: g.channel === undefined ? undefined : bool(g.channel, true),
+    };
+  }
+  if (Object.keys(gateways).length > 0) cfg.discovery.gateways = gateways;
 
   // Outbound caller identity (0.2.0): the name THIS session presents. Must
   // match an entry in server.peerTokens so the receiver attributes the call
@@ -478,8 +556,9 @@ function applyOverrides(cfg: A2AConfig, patch: Partial<A2AConfig>): void {
     if (patch.discovery.local) Object.assign(cfg.discovery.local, patch.discovery.local);
     if (patch.discovery.mdns) Object.assign(cfg.discovery.mdns, patch.discovery.mdns);
     if (patch.discovery.enrichCard !== undefined) cfg.discovery.enrichCard = patch.discovery.enrichCard;
-    // Gateway block — undefined (not set) leaves it alone; set replaces.
+    // Gateway block(s) — undefined (not set) leaves them alone; set replaces.
     if (patch.discovery.gateway !== undefined) cfg.discovery.gateway = patch.discovery.gateway;
+    if (patch.discovery.gateways !== undefined) cfg.discovery.gateways = patch.discovery.gateways;
   }
   if (patch.ui) Object.assign(cfg.ui, patch.ui);
 }
@@ -505,6 +584,10 @@ function applyOverrides(cfg: A2AConfig, patch: Partial<A2AConfig>): void {
  *   token to disk, and the runtime-resolved registration name must never be
  *   pinned. `editedGatewayKeys` carries the row keys the user touched
  *   (gateway.token / gateway.upstreamToken / gateway.name).
+ * - The same per-entry rules apply to the `discovery.gateways` map (0.6.0):
+ *   entries keep unedited secret fields from the file; env-sourced entries
+ *   (not in settings.json) are not written unless their key was edited;
+ *   row keys are `gw.<key>.token` etc.
  * - peers/selfIdentity/ui persisted only when changed.
  */
 export function buildA2ASettingsPatch(opts: {
@@ -512,7 +595,7 @@ export function buildA2ASettingsPatch(opts: {
   working: A2AConfig;
   peerChanges: boolean;
   gatewayChanged: boolean;
-  /** Row keys the user edited (gateway.*). */
+  /** Row keys the user edited (gateway.* / gw.<key>.*). */
   editedGatewayKeys?: Set<string>;
 }): (a2a: any) => any {
   const { cfg, working, peerChanges, gatewayChanged, editedGatewayKeys } = opts;
@@ -520,6 +603,7 @@ export function buildA2ASettingsPatch(opts: {
   const discoveryChanged = JSON.stringify(working.discovery) !== JSON.stringify(cfg.discovery);
   const workingDiscovery = { ...working.discovery } as Record<string, unknown>;
   if (!gatewayChanged) delete workingDiscovery.gateway;
+  if (!gatewayChanged) delete workingDiscovery.gateways;
   return (a2a: any) => {
     // The server block is persisted wholesale ONLY when a server field
     // changed — but the panel never exposes sharedToken/peerTokens/workspace/
@@ -540,9 +624,9 @@ export function buildA2ASettingsPatch(opts: {
     const mergedDiscovery = { ...(a2a.discovery ?? {}) } as Record<string, unknown>;
     // ALWAYS merge the non-gateway working discovery (local/mdns/enrichCard)
     // over the file block — a combined gateway + discovery edit must keep
-    // both. Only the gateway sub-block gets the special unedited-secret
+    // both. Only the gateway sub-blocks get the special unedited-secret
     // handling below.
-    const { gateway: _gw, ...workingRest } = workingDiscovery;
+    const { gateway: _gw, gateways: _gws, ...workingRest } = workingDiscovery;
     Object.assign(mergedDiscovery, workingRest);
     if (gatewayChanged && workingDiscovery.gateway && typeof workingDiscovery.gateway === "object") {
       const g = { ...(workingDiscovery.gateway as Record<string, unknown>) };
@@ -553,6 +637,31 @@ export function buildA2ASettingsPatch(opts: {
       // the user typed it — never persist an ephemeral per-session name.
       if (!editedGatewayKeys?.has("gateway.name")) g.name = existing.name ?? "";
       mergedDiscovery.gateway = g;
+    }
+    // Same rules for the `gateways` map: merge per-entry over the file's
+    // entries, keeping unedited secrets from the file; drop entries the user
+    // removed (present in file but not in working).
+    if (gatewayChanged && workingDiscovery.gateways && typeof workingDiscovery.gateways === "object") {
+      const wg = workingDiscovery.gateways as Record<string, Record<string, unknown>>;
+      const existing = (mergedDiscovery.gateways ?? {}) as Record<string, Record<string, unknown>>;
+      const out: Record<string, Record<string, unknown>> = {};
+      for (const [key, entry] of Object.entries(wg)) {
+        const e = { ...entry };
+        const ex = existing[key];
+        if (ex) {
+          // Entry already in settings.json: keep unedited secret fields from
+          // the file (a heartbeat-only edit must not copy an env token, and
+          // the runtime-resolved registration name must never be pinned).
+          if (!editedGatewayKeys?.has(`gw.${key}.token`)) e.token = ex.token ?? "";
+          if (!editedGatewayKeys?.has(`gw.${key}.upstreamToken`)) e.upstreamToken = ex.upstreamToken;
+          if (!editedGatewayKeys?.has(`gw.${key}.name`)) e.name = ex.name ?? "";
+        }
+        // Entry absent from the file → NEW (panel-added or override-typed,
+        // since discovery.gateways has no env source): persist verbatim so a
+        // token typed in the add-flow is not wiped. Fall through.
+        out[key] = e;
+      }
+      mergedDiscovery.gateways = out;
     }
     return {
       ...a2a,
@@ -690,44 +799,63 @@ export function resolvePeer(
   }
   // Gateway overlay sits BEHIND static config: a configured peer with the
   // same name always wins (overlay is read-only, never overrides settings).
-  return cfg.peers[a] ?? gatewayPeers[a] ?? null;
+  return cfg.peers[a] ?? getGatewayPeers()[a] ?? null;
 }
 
 // ---------------------------------------------------------------------------
 // Gateway peer overlay (read-only, in-memory — never persisted to settings.json)
 // ---------------------------------------------------------------------------
 
-let gatewayPeers: Record<string, Peer> = {};
+/** Per-gateway overlay slices, keyed by gateway key. Each GatewayUpstream
+ *  instance refreshes its own slice; getGatewayPeers() flattens them. */
+const gatewayOverlays: Record<string, Record<string, Peer>> = {};
 
-/** Replace the gateway peer overlay. Keys are the callable names (`gw/<name>`),
- *  values are ready-to-route peers (proxy URL + gateway bearer token). */
+/** Replace ONE gateway's overlay slice (`{}` clears just that gateway — the
+ *  other gateways' peers stay visible). Keys are the callable names
+ *  (`gw/<key>/<name>`), values are ready-to-route peers. */
+export function updateGatewayPeers(key: string, peers: Record<string, Peer>): void {
+  gatewayOverlays[key] = peers;
+}
+
+/** Alias kept for backward compat with existing tests/callers: updates the
+ *  overlay slice for the legacy `default` gateway. */
 export function setGatewayPeers(peers: Record<string, Peer>): void {
-  gatewayPeers = peers;
+  gatewayOverlays.default = peers;
 }
 
-/** Current gateway peer overlay (snapshot for listing/dedup). */
+/** Current flattened gateway peer overlay (snapshot for listing/dedup). */
 export function getGatewayPeers(): Record<string, Peer> {
-  return gatewayPeers;
+  const out: Record<string, Peer> = {};
+  for (const slice of Object.values(gatewayOverlays)) {
+    Object.assign(out, slice);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
-// Gateway registration name (read-only, in-memory — never persisted)
+// Gateway registration names (read-only, in-memory — never persisted)
 // ---------------------------------------------------------------------------
 
-let gatewayRegistrationName: string | null = null;
+/** Per-gateway registration names, keyed by gateway key. Set by the server at
+ *  start; cleared (deleted) when that gateway's upstream stops. */
+const gatewayRegistrationNames: Record<string, string> = {};
 
-/** Publish the name this session registered under on the upstream gateway
+/** Publish the name this session registered under on ONE upstream gateway
  *  (set by the server at start). Session-scoped, in-memory only — NEVER
- *  persisted to settings.json. Client.ts reads it for X-Gateway-Caller so
- *  the header matches the registered name even without an operator-pinned
- *  identity. Cleared (null) when the upstream stops. */
-export function setGatewayRegistrationName(name: string | null): void {
-  gatewayRegistrationName = name;
+ *  persisted to settings.json. */
+export function setGatewayRegistrationName(name: string | null, key = "default"): void {
+  if (name === null) delete gatewayRegistrationNames[key];
+  else gatewayRegistrationNames[key] = name;
 }
 
-/** Current gateway registration name, or null when not registered. */
+/** The name registered under the given gateway key, or null. */
+export function getGatewayCallerName(key: string): string | null {
+  return gatewayRegistrationNames[key] ?? null;
+}
+
+/** Legacy single-gateway accessor: the default key's registration name. */
 export function getGatewayRegistrationName(): string | null {
-  return gatewayRegistrationName;
+  return gatewayRegistrationNames.default ?? null;
 }
 
 /** Pick the token to present outbound: prefer this session's own peer token

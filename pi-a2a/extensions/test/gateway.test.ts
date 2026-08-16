@@ -1,7 +1,7 @@
 /**
  * Gateway peer discovery — merge, self-filter, overlay routing.
  *
- * Directory shape (agent-gateway GET /.well-known/agent.json, authed):
+ * Directory shape (a2a-switchboard GET /.well-known/agent.json, authed):
  *   { peers: [{ name, url: "/peer/<name>/", healthy, capabilities, skills }] }
  */
 
@@ -12,7 +12,7 @@ import * as path from "node:path";
 
 import { DEFAULTS } from "./helpers";
 import { GatewayUpstream, isSelfEntry, mergeGatewayPeers } from "../lib/gateway";
-import { resolvePeer, setGatewayPeers, type Peer } from "../lib/config";
+import { resolvePeer, setGatewayPeers, getGatewayPeers, updateGatewayPeers, type Peer } from "../lib/config";
 import { a2aCall, metrics } from "../lib/client";
 
 const GW = "http://127.0.0.1:9920";
@@ -21,6 +21,7 @@ const TOKEN = "gw-secret-token";
 function merge(
   entries: unknown[],
   self: { name: string; url: string; autoName?: string } = { name: "pi-s2-9910", url: "http://127.0.0.1:9910" },
+  key = "k1",
 ) {
   return mergeGatewayPeers({
     gatewayUrl: GW,
@@ -30,6 +31,7 @@ function merge(
     selfAutoName: self.autoName,
     entries,
     timeoutMs: 120_000,
+    key,
   });
 }
 
@@ -44,16 +46,28 @@ function makeResp(body: any, status: number): any {
 
 describe("gateway peer discovery", () => {
   describe("mergeGatewayPeers", () => {
-    it("merges peers as gw/<name> with proxy URL and gateway bearer auth", () => {
+    it("merges peers as gw/<key>/<name> with proxy URL and gateway bearer auth", () => {
       const out = merge([
         { name: "pi-s2-9912", url: "/peer/pi-s2-9912/", healthy: true, capabilities: ["web_search"] },
       ]);
-      assert.deepEqual(Object.keys(out), ["gw/pi-s2-9912"]);
-      const p = out["gw/pi-s2-9912"]!;
+      assert.deepEqual(Object.keys(out), ["gw/k1/pi-s2-9912"]);
+      const p = out["gw/k1/pi-s2-9912"]!;
       assert.equal(p.url, "http://127.0.0.1:9920/peer/pi-s2-9912/");
       assert.deepEqual(p.auth, { type: "bearer", token: TOKEN });
       assert.deepEqual(p.capabilities, ["web_search"]);
       assert.isTrue(p.viaGateway);
+    });
+
+    it("defaults the key to 'default' when not provided", () => {
+      const out = mergeGatewayPeers({
+        gatewayUrl: GW,
+        token: TOKEN,
+        selfName: "s",
+        selfUrl: "http://127.0.0.1:9910",
+        entries: [{ name: "p", url: "/peer/p/", healthy: true }],
+        timeoutMs: 120_000,
+      });
+      assert.deepEqual(Object.keys(out), ["gw/default/p"]);
     });
 
     it("skips self by registered name", () => {
@@ -61,7 +75,7 @@ describe("gateway peer discovery", () => {
         { name: "pi-s2-9910", url: "/peer/pi-s2-9910/", healthy: true }, // self
         { name: "pi-s2-9912", url: "/peer/pi-s2-9912/", healthy: true },
       ]);
-      assert.deepEqual(Object.keys(out), ["gw/pi-s2-9912"]);
+      assert.deepEqual(Object.keys(out), ["gw/k1/pi-s2-9912"]);
     });
 
     it("skips self by publicUrl port suffix (renamed session, stale auto-named entry)", () => {
@@ -73,7 +87,7 @@ describe("gateway peer discovery", () => {
         ],
         { name: "pi-main", url: "http://127.0.0.1:9910", autoName: "pi-s2-9910" },
       );
-      assert.deepEqual(Object.keys(out), ["gw/pi-s2-9912"]);
+      assert.deepEqual(Object.keys(out), ["gw/k1/pi-s2-9912"]);
     });
 
     it("isSelfEntry also matches an absolute publicUrl", () => {
@@ -97,7 +111,7 @@ describe("gateway peer discovery", () => {
         { name: "unknown", url: "/peer/unknown/", healthy: null },
         { name: "alive", url: "/peer/alive/" },
       ]);
-      assert.deepEqual(Object.keys(out).sort(), ["gw/alive", "gw/unknown"]);
+      assert.deepEqual(Object.keys(out).sort(), ["gw/k1/alive", "gw/k1/unknown"]);
     });
 
     it("drops absolute/cross-origin urls (bearer token must only reach the gateway)", () => {
@@ -105,7 +119,7 @@ describe("gateway peer discovery", () => {
         { name: "evil", url: "http://attacker.example/peer/evil/", healthy: true },
         { name: "ok", url: "/peer/ok/", healthy: true },
       ]);
-      assert.deepEqual(Object.keys(out), ["gw/ok"]);
+      assert.deepEqual(Object.keys(out), ["gw/k1/ok"]);
     });
 
     it("cross-host same-port peer is NOT filtered (regression: bare -port suffix rule)", () => {
@@ -113,7 +127,7 @@ describe("gateway peer discovery", () => {
         [{ name: "other-host-9910", url: "/peer/other-host-9910/", healthy: true }],
         { name: "pi-main", url: "http://10.0.0.2:9910", autoName: "pi-main-9910" },
       );
-      assert.deepEqual(Object.keys(out), ["gw/other-host-9910"]);
+      assert.deepEqual(Object.keys(out), ["gw/k1/other-host-9910"]);
     });
 
     it("own auto-name entry IS filtered by exact match", () => {
@@ -129,8 +143,8 @@ describe("gateway peer discovery", () => {
         { name: "a", url: "/peer/a/", healthy: true, capabilities: { streaming: true }, skills: [{ id: "coding", name: "coding" }] },
         { name: "b", url: "/peer/b/", healthy: true, skills: [{ id: "research" }] },
       ]);
-      assert.deepEqual(out["gw/a"]!.capabilities, ["coding"]);
-      assert.deepEqual(out["gw/b"]!.capabilities, ["research"]);
+      assert.deepEqual(out["gw/k1/a"]!.capabilities, ["coding"]);
+      assert.deepEqual(out["gw/k1/b"]!.capabilities, ["research"]);
     });
 
     it("gw-peer timeout comes from callTimeoutMs, not heartbeatSec (regression)", () => {
@@ -141,8 +155,9 @@ describe("gateway peer discovery", () => {
         selfUrl: "http://127.0.0.1:9910",
         entries: [{ name: "p", url: "/peer/p/", healthy: true }],
         timeoutMs: 120_000,
+        key: "k1",
       });
-      assert.equal(out["gw/p"]!.timeout, 120_000);
+      assert.equal(out["gw/k1/p"]!.timeout, 120_000);
     });
 
     it("drops malformed entries and tolerates a non-array peers field", () => {
@@ -190,7 +205,7 @@ describe("gateway peer discovery", () => {
 
     it("uses the per-peer caller token for gw/ overlay auth", async () => {
       const gw = new GatewayUpstream(
-        { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60 },
+        { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60, key: "k1" },
         () => ({}),
         () => {},
         (peers) => (overlay = peers),
@@ -204,11 +219,11 @@ describe("gateway peer discovery", () => {
       assert.equal(dir.auth, `Bearer ${TOKEN}`);
       // But the overlay peer presents the per-peer CALLER token, so the
       // gateway attributes calls to this peer's name.
-      assert.equal(snapshot["gw/pi-s2-9912"]!.auth.token, "agw_peer_ct_1");
+      assert.equal(snapshot["gw/k1/pi-s2-9912"]!.auth.token, "agw_peer_ct_1");
     });
 
     it("falls back to the shared token when /register omits caller_token", async () => {
-      // Older agent-gateways don't issue a caller_token — the overlay must
+      // Older a2a-switchboard gateways don't issue a caller_token — the overlay must
       // keep working with the shared token (a regression here would 401
       // every gw/* outbound call).
       const original = globalThis.fetch;
@@ -226,7 +241,7 @@ describe("gateway peer discovery", () => {
       try {
         let fallbackOverlay: Record<string, import("../lib/config").Peer> = {};
         const gw = new GatewayUpstream(
-          { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60 },
+          { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60, key: "k1" },
           () => ({}),
           () => {},
           (peers) => (fallbackOverlay = peers),
@@ -235,7 +250,7 @@ describe("gateway peer discovery", () => {
         assert.isTrue(ok);
         const snapshot = { ...fallbackOverlay };
         await gw.stop();
-        assert.equal(snapshot["gw/pi-s2-9912"]!.auth.token, TOKEN);
+        assert.equal(snapshot["gw/k1/pi-s2-9912"]!.auth.token, TOKEN);
       } finally {
         globalThis.fetch = original as any;
       }
@@ -243,7 +258,7 @@ describe("gateway peer discovery", () => {
 
     it("fetches the directory after registering and emits the merged overlay", async () => {
       const gw = new GatewayUpstream(
-        { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60 },
+        { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60, key: "k1" },
         () => ({}),
         () => {},
         (peers) => (overlay = peers),
@@ -256,8 +271,8 @@ describe("gateway peer discovery", () => {
       const dir = calls.find((c) => c.url.endsWith("/.well-known/agent.json"))!;
       assert.equal(dir.method, "GET");
       assert.equal(dir.auth, `Bearer ${TOKEN}`);
-      assert.deepEqual(Object.keys(snapshot), ["gw/pi-s2-9912"]); // self + dead filtered
-      assert.equal(snapshot["gw/pi-s2-9912"]!.url, "http://127.0.0.1:9920/peer/pi-s2-9912/");
+      assert.deepEqual(Object.keys(snapshot), ["gw/k1/pi-s2-9912"]); // self + dead filtered
+      assert.equal(snapshot["gw/k1/pi-s2-9912"]!.url, "http://127.0.0.1:9920/peer/pi-s2-9912/");
       assert.deepEqual(overlay, {}); // cleared on stop
     });
 
@@ -289,6 +304,7 @@ describe("gateway peer discovery", () => {
         selfUrl: "http://127.0.0.1:9910",
         entries: [{ name: "p", url: "/peer/p/", healthy: true }],
         timeoutMs: 120_000,
+        key: "k1",
       });
       setGatewayPeers(lanPeers);
       const of = globalThis.fetch;
@@ -301,7 +317,7 @@ describe("gateway peer discovery", () => {
         );
       }) as any;
       const piDir2 = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-lan-"));
-      const out = await a2aCall({ cfg: { ...DEFAULTS(), discovery: { ...(DEFAULTS() as any).discovery, gateway: { url: "http://192.168.1.50:9920", token: TOKEN } } } as any, piDir: piDir2, agent: "gw/p", message: "hi" });
+      const out = await a2aCall({ cfg: { ...DEFAULTS(), discovery: { ...(DEFAULTS() as any).discovery, gateway: { url: "http://192.168.1.50:9920", token: TOKEN } } } as any, piDir: piDir2, agent: "gw/k1/p", message: "hi" });
       globalThis.fetch = of as any;
       assert.include(out, "lan ok");
       assert.equal(seen.filter((u) => u.startsWith("http://192.168.1.50:9920/peer/p")).length, 1);
@@ -320,12 +336,23 @@ describe("gateway peer discovery", () => {
       setGatewayPeers({});
     });
 
-    it("resolvePeer routes gw/<name> via the overlay; static peers win on collision", () => {
+    it("overlay slices are independent per gateway key (stop one ≠ clear all)", () => {
+      updateGatewayPeers("work", { "gw/work/a": { url: "http://w/a", auth: { type: "none" }, timeout: 1000, capabilities: [] } });
+      updateGatewayPeers("lab", { "gw/lab/b": { url: "http://l/b", auth: { type: "none" }, timeout: 1000, capabilities: [] } });
+      assert.deepEqual(Object.keys(getGatewayPeers()).sort(), ["gw/lab/b", "gw/work/a"]);
+      // Clearing ONE gateway's slice must not touch the other's peers.
+      updateGatewayPeers("lab", {});
+      assert.deepEqual(Object.keys(getGatewayPeers()), ["gw/work/a"], "other gateway's overlay survives");
+      updateGatewayPeers("work", {});
+      assert.deepEqual(getGatewayPeers(), {}, "all cleared");
+    });
+
+    it("resolvePeer routes gw/<key>/<name> via the overlay; static peers win on collision", () => {
       setGatewayPeers(
         merge([{ name: "pi-s2-9912", url: "/peer/pi-s2-9912/", healthy: true }]),
       );
       const cfg = DEFAULTS();
-      const p = resolvePeer(cfg, "gw/pi-s2-9912");
+      const p = resolvePeer(cfg, "gw/k1/pi-s2-9912");
       assert.equal(p?.url, "http://127.0.0.1:9920/peer/pi-s2-9912/");
       assert.equal(p?.auth.type, "bearer");
       assert.equal(p?.auth.token, TOKEN);
@@ -361,7 +388,7 @@ describe("gateway peer discovery", () => {
         );
       }) as any;
 
-      const out = await a2aCall({ cfg: DEFAULTS(), piDir, agent: "gw/pi-s2-9912", message: "hi" });
+      const out = await a2aCall({ cfg: DEFAULTS(), piDir, agent: "gw/k1/pi-s2-9912", message: "hi" });
 
       // Exactly one request: the JSON-RPC POST pinned to the proxy URL — no
       // card GET (a proxied card would advertise the peer's direct URL and
@@ -507,7 +534,7 @@ describe("reverse channel client", () => {
     await new Promise((r) => setTimeout(r, 150));
     cc.stop();
     assert.equal(statuses.length, 1, "channel open surfaced as status");
-    assert.match(statuses[0]!, /channel open \(firewall-safe receive\)/);
+    assert.match(statuses[0]!, /channel open: \S+ \(firewall-safe receive\)/);
     assert.ok(!logs.some((l) => l.includes("channel open")), "not duplicated in raw log");
     gw.closeAllConnections?.();
     gw.close();
