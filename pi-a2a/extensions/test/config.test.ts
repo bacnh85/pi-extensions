@@ -431,9 +431,10 @@ describe("config", () => {
 
     it("gatewayEntries merges legacy gateway + named gateways map", () => {
       withIsolatedPiDir((dir) => {
-        fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+        // Trusted PI-dir file (NOT repo-scope .pi/ — the injection guard strips gateways there)
+        fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(
-          path.join(dir, ".pi", "settings.json"),
+          path.join(dir, "settings.json"),
           JSON.stringify({
             a2a: {
               discovery: {
@@ -467,9 +468,9 @@ describe("config", () => {
 
     it("gatewayEntries dedupes: a map entry whose key equals the legacy derived key wins", () => {
       withIsolatedPiDir((dir) => {
-        fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+        fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(
-          path.join(dir, ".pi", "settings.json"),
+          path.join(dir, "settings.json"),
           JSON.stringify({
             a2a: {
               discovery: {
