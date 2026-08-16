@@ -64,16 +64,26 @@ function makeSessionRunner(ctx: ExtensionContext): SessionRunner {
       compaction: { enabled: false },
       retry: { enabled: true, maxRetries: 1 },
     });
+    // The loader must NOT receive the inMemory settingsManager: it would then
+    // resolve zero extension packages and the child session would run without
+    // any host extensions (pi-model-tools' ds-anchor bootstrap included).
+    // Letting DefaultResourceLoader fall back to SettingsManager.create(cwd,
+    // agentDir) loads the real on-disk settings/packages — the same path
+    // pi-subagent's runner uses.
     const resourceLoader = new DefaultResourceLoader({
       cwd,
       agentDir: sdk.getAgentDir(),
-      settingsManager,
     });
-    await resourceLoader.reload();
+    await resourceLoader.reload({
+      // Forward the host's trust decision so project-local (.pi/) extensions
+      // load in child sessions when the user already trusted the project —
+      // same behavior as pi-subagent's runner; never prompt (no UI).
+      resolveProjectTrust: async () => (ctx as any).isProjectTrusted?.() ?? false,
+    });
     const created = await createAgentSession({
       cwd,
       model,
-      thinkingLevel: "medium",
+      thinkingLevel: ctx.thinkingLevel ?? "medium",
       resourceLoader,
       sessionManager: SessionManager.inMemory(cwd),
       settingsManager,
@@ -200,15 +210,27 @@ function broadcastActivity(
  *  console. */
 function statusSink(pi: ExtensionAPI, ctx: ExtensionContext | undefined): (m: string) => void {
   return (m) => {
-    try {
-      pi.sendMessage({ customType: "a2a-inbound", content: m, display: true });
-    } catch {
-      /* session may be mid-replace; ignore */
-    }
-    try {
-      ctx?.ui.notify(m, "info");
-    } catch {
-      /* best-effort */
+    // DELIBERATELY not pi.sendMessage: custom messages are converted to USER
+    // MESSAGES in the LLM context (buildSessionContext), so routing lifecycle
+    // lines through it polluted every model request with "[a2a] registered…"
+    // / "gateway channel open…" noise — enough to derail DeepSeek v4 Pro's
+    // minimal-mode bootstrap (request #1 must be a clean user message).
+    // TUI notification only: visible to the human, invisible to the model.
+    // Headless modes (json/print, hasUI=false) fall back to stderr so the
+    // lifecycle remains observable — same pattern as errorSink.
+    const ui = ctx && ctx.hasUI ? ctx.ui : undefined;
+    if (ui) {
+      try {
+        ui.notify(m, "info");
+      } catch {
+        /* best-effort */
+      }
+    } else {
+      try {
+        console.error(m);
+      } catch {
+        /* best-effort */
+      }
     }
   };
 }
@@ -778,6 +800,15 @@ export default function a2aExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    // Only HOST sessions serve inbound A2A. SDK-created child sessions (a2a
+    // inbound tasks via makeSessionRunner, pi-subagent children) have
+    // hasUI=false AND mode='print' — without this guard every child would
+    // auto-start its own A2AServer: same-pid registry overwrite, port climbing
+    // per task, and duplicate gateway registration. The host session is the
+    // single inbound server; children only run the task. json-mode hosts are
+    // long-lived headless HOSTS (mode='json'), not children — they keep the
+    // auto-start.
+    if (!ctx.hasUI && ctx.mode !== "json") return;
     const cfg = cfgFor(ctx);
     if (!cfg.server.enabled) return;
     try {

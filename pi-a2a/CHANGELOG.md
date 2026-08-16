@@ -15,6 +15,37 @@
 
 ### Fixed
 
+- **Inbound sessions now load host extension packages.** The task session
+  runner created its `DefaultResourceLoader` with an in-memory
+  `SettingsManager` that had no `packages` — the child session therefore ran
+  WITHOUT any of the host's extension packages (pi-model-tools, pi-serena,
+  …), silently disabling their hooks and tools. The loader now falls back to
+  `SettingsManager.create(cwd, agentDir)` (the same path pi-subagent's runner
+  uses), so inbound tasks behave like a real host session. This also fixes
+  pi-model-tools' ds-anchor bootstrap, which never engaged in gateway-spawned
+  sessions (observed: standard-like first thinking despite a pro model).
+- **Inbound sessions inherit the host thinking level** instead of hardcoding
+  `medium` (relevant for DeepSeek v4 Pro's minimal-mode recipe, which needs
+  max thinking).
+- **Gateway lifecycle lines no longer enter the LLM context.** `statusSink`
+  routed `[a2a] registered…` / `gateway channel open…` through
+  `pi.sendMessage`, and custom messages are converted to USER MESSAGES in the
+  model context (buildSessionContext) — so every request was polluted with
+  gateway noise, derailing DeepSeek v4 Pro's minimal-mode bootstrap (request
+  #1 must be a clean user message). They now go through `ctx.ui.notify` only:
+  still visible in the TUI as status lines, but never sent to the model.
+  Headless modes (hasUI=false) fall back to stderr so the lifecycle stays
+  observable (same pattern as `errorSink`).
+- **Child sessions no longer auto-start an inbound A2A server.** The
+  `session_start` auto-start is now guarded — SDK-created child sessions (a2a
+  inbound tasks, pi-subagent children; hasUI=false + mode='print') would each
+  construct their own A2AServer: same-pid registry overwrite, port climbing
+  per task, duplicate gateway registration. Only host sessions serve inbound
+  A2A (TUI/RPC via hasUI, and json-mode hosts via mode==='json').
+- **Child sessions forward the host's project-trust decision** so project-
+  local (`.pi/`) extensions load in inbound tasks when the user already
+  trusted the project (matching pi-subagent's runner; never prompts).
+
 - **Gateway diagnostics no longer interleave with lifecycle lines:**
   `[a2a-gateway] register failed …`, `channel dropped`, `dispatch failed`
   and other upstream/channel diagnostics used to print via raw
