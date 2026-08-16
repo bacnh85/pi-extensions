@@ -22,6 +22,8 @@ import {
 } from "./protocol";
 import {
   authHeaders,
+  gatewayEntries,
+  getGatewayCallerName,
   getGatewayPeers,
   getGatewayRegistrationName,
   normUrl,
@@ -110,29 +112,43 @@ function assertSafeUrl(rawUrl: string): void {
   }
 }
 
-/** Operator-configured gateway URL (discovery.gateway.url) or "". */
-function gatewayUrlOf(cfg: A2AConfig): string | undefined {
-  return cfg.discovery.gateway?.url || undefined;
+/** Operator-configured gateway origins (all entries) — used to pin
+ *  gateway-proxy peer URLs to a known gateway. */
+function gatewayOrigins(cfg: A2AConfig): Set<string> {
+  const out = new Set<string>();
+  for (const { entry } of gatewayEntries(cfg)) {
+    try {
+      out.add(new URL(entry.url).origin);
+    } catch {
+      /* skip malformed */
+    }
+  }
+  return out;
+}
+
+/** Gateway key from a `gw/<key>/<name>` peer label, or null. */
+function gatewayKeyOfPeer(agentLabel: string): string | null {
+  const m = /^gw\/([A-Za-z0-9._-]{1,64})\//.exec(agentLabel);
+  return m ? m[1]! : null;
 }
 
 /** assertSafeUrl for gateway-proxy peers: the private-range block would reject
- *  LAN-hosted agent-gateways (the primary self-hosted topology). Overlay URLs
- *  are same-origin-pinned to the operator-configured gateway URL by
- *  mergeGatewayPeers, so only that origin is permitted — never anything else. */
-function assertGatewayUrl(rawUrl: string, gatewayUrl: string): void {
+ *  LAN-hosted a2a-switchboard gateways (the primary self-hosted topology). Overlay URLs
+ *  are same-origin-pinned to an operator-configured gateway URL by
+ *  mergeGatewayPeers, so only those origins are permitted — never anything
+ *  else. */
+function assertGatewayUrl(rawUrl: string, origins: Set<string>): void {
   let u: URL;
-  let gw: URL;
   try {
     u = new URL(rawUrl);
-    gw = new URL(gatewayUrl);
   } catch {
     throw new Error(`invalid URL: ${rawUrl}`);
   }
   if (u.protocol !== "http:" && u.protocol !== "https:") {
     throw new Error(`unsupported protocol: ${u.protocol} (only http/https)`);
   }
-  if (u.origin !== gw.origin) {
-    throw new Error(`refused SSRF: ${rawUrl} is outside the gateway origin`);
+  if (!origins.has(u.origin)) {
+    throw new Error(`refused SSRF: ${rawUrl} is outside the configured gateway origins`);
   }
 }
 
@@ -178,9 +194,9 @@ async function postJsonRpc(
   body: JsonRpcRequest,
   headers: Record<string, string>,
   timeoutMs: number,
-  gatewayUrl?: string,
+  gatewayOrigins?: Set<string>,
 ): Promise<any> {
-  if (gatewayUrl) assertGatewayUrl(url, gatewayUrl);
+  if (gatewayOrigins) assertGatewayUrl(url, gatewayOrigins);
   else assertSafeUrl(url);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -327,11 +343,25 @@ async function sendTask(opts: {
   // Self-declared display name — stripped by the gateway before forwarding.
   if (peer.viaGateway) {
     // Prefer the operator-pinned identity; fall back to the runtime-resolved
-    // gateway registration name (set by the server's upstream at start) or
-    // the base agent name so the dashboard shows a real caller name, not a
-    // fingerprint. The registration name is session-scoped and never persisted.
+    // registration name of the gateway this peer came from (set by the
+    // server's upstream at start) or the base agent name so the dashboard
+    // shows a real caller name, not a fingerprint. The registration name is
+    // session-scoped and never persisted.
+    const key = gatewayKeyOfPeer(agentLabel);
+    // Manually-configured gateway peers (viaGateway without a `gw/<key>/`
+    // label) fall back to the SINGLE configured gateway's registration name
+    // (when exactly one gateway is configured) — otherwise there's no
+    // unambiguous gateway to attribute to.
+    let gwName: string | null = null;
+    if (key) {
+      gwName = getGatewayCallerName(key);
+    } else {
+      const entries = gatewayEntries(cfg);
+      if (entries.length === 1) gwName = getGatewayCallerName(entries[0]!.key);
+      else gwName = getGatewayRegistrationName();
+    }
     const caller =
-      cfg.selfIdentity || getGatewayRegistrationName() || cfg.server.agentName || "";
+      cfg.selfIdentity || gwName || cfg.server.agentName || "";
     if (caller) headers["X-Gateway-Caller"] = caller;
   }
   const timeout = peer.timeout || cfg.timeouts.send;
@@ -363,8 +393,25 @@ async function sendTask(opts: {
   metrics.outboundTotal += 1;
 
   const started = Date.now();
-  const gwUrl = peer.viaGateway ? gatewayUrlOf(cfg) : undefined;
-  const resp = await postJsonRpc(rpcUrl(peer.url, card), rpcBody, headers, timeout, gwUrl);
+  // SSRF pin: prefer the peer's own publishing gateway origin (overlay-first
+  // routing works even when the live config has no gateway block); fall back
+  // to the configured gateway origins; an empty set means the peer is not
+  // gateway-pinned → normal assertSafeUrl applies.
+  let gwOrigins: Set<string> | undefined;
+  if (peer.viaGateway) {
+    if (peer.gatewayUrl) {
+      try {
+        gwOrigins = new Set([new URL(peer.gatewayUrl).origin]);
+      } catch {
+        gwOrigins = undefined;
+      }
+    } else {
+      const origins = gatewayOrigins(cfg);
+      // Empty set = no gateway configured → normal assertSafeUrl applies.
+      gwOrigins = origins.size > 0 ? origins : undefined;
+    }
+  }
+  const resp = await postJsonRpc(rpcUrl(peer.url, card), rpcBody, headers, timeout, gwOrigins);
   metrics.recordLatency(Date.now() - started);
   if (resp.error) {
     const msg = resp.error.message || JSON.stringify(resp.error);
@@ -537,7 +584,7 @@ export function a2aList(opts: {
   const gateway = Object.entries(getGatewayPeers());
   if (gateway.length > 0) {
     lines.push("");
-    lines.push(`Gateway peers (${gateway.length}) — call by name, routed via the agent-gateway proxy:`);
+    lines.push(`Gateway peers (${gateway.length}) — call by name, routed via the a2a-switchboard proxy:`);
     for (const [name, p] of gateway) {
       const capStr = p.capabilities.length ? ` caps: ${p.capabilities.join(", ")}` : "";
       lines.push(`  - ${name}: ${p.url} (auth: ${p.auth.type})${capStr}`);

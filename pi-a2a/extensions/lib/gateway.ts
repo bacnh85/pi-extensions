@@ -1,7 +1,7 @@
 /**
  * Gateway upstream registration (discovery layer 2): announce this session to
- * a self-hosted agent-gateway (https://github.com/agentgateway style) so other
- * accepted peers can discover and call it via the gateway's proxy.
+ * a self-hosted a2a-switchboard gateway (https://github.com/bacnh85/a2a-switchboard)
+ * so other accepted peers can discover and call it via the gateway's proxy.
  *
  * Lifecycle: register on server start → re-register as heartbeat (also
  * refreshes URL if the port changed) → deregister on graceful stop. A crashed
@@ -10,8 +10,8 @@
  * name + token takes the entry over via re-registration).
  *
  * After each heartbeat the gateway peer directory (/.well-known/agent.json) is
- * fetched and merged into a read-only `gw/<name>` → Peer overlay handed to the
- * `onPeers` callback — never written to settings.json.
+ * fetched and merged into a read-only `gw/<key>/<name>` → Peer overlay handed to
+ * the `onPeers` callback — never written to settings.json.
  */
 
 import type { Peer } from "./config";
@@ -41,6 +41,9 @@ export interface GatewayConfig {
    *  upstreamToken registered with the gateway). Injected on dispatch —
    *  the gateway strips caller auth, so the local server needs its own. */
   localToken?: string;
+  /** Gateway key (0.6.0) — namespaces the peer overlay as `gw/<key>/<name>`.
+   *  Default "default". */
+  key?: string;
 }
 
 const DEREG_TIMEOUT_MS = 3000;
@@ -88,7 +91,7 @@ function sanitizeList(v: unknown): string[] {
 /** True when a directory entry is THIS session (never call yourself through
  *  the proxy): exact registered-name match, `-<port>` suffix match against the
  *  port we serve on (the default auto-name is `<base>-<port>`), or absolute-URL
- *  match against our publicUrl (defensive — agent-gateway only exposes proxy
+ *  match against our publicUrl (defensive — a2a-switchboard only exposes proxy
  *  URLs today). */
 export function isSelfEntry(
   entry: { name: string; url: string },
@@ -113,7 +116,7 @@ export function isSelfEntry(
  *  gateway bearer token, so a crafted absolute URL must never redirect a call
  *  to a third-party host. */
 function proxyUrl(gatewayUrl: string, rel: string): string {
-  if (!rel.startsWith("/")) return ""; // agent-gateway urls are always relative
+  if (!rel.startsWith("/")) return ""; // a2a-switchboard urls are always relative
   try {
     const resolved = new URL(rel, gatewayUrl);
     return resolved.origin === new URL(gatewayUrl).origin ? resolved.toString() : "";
@@ -122,9 +125,11 @@ function proxyUrl(gatewayUrl: string, rel: string): string {
   }
 }
 
-/** Merge the gateway peer directory into a `gw/<name>` → Peer overlay.
+/** Merge the gateway peer directory into a `gw/<key>/<name>` → Peer overlay.
  *  Auth is the gateway bearer token (the proxy swaps in the peer's own
- *  upstream token). Unhealthy peers and self are skipped. */
+ *  upstream token). Unhealthy peers and self are skipped. `key` (0.6.0)
+ *  namespaces the overlay per gateway — always prefixed, even for a single
+ *  gateway (uniform naming). */
 export function mergeGatewayPeers(opts: {
   gatewayUrl: string;
   token: string;
@@ -134,6 +139,8 @@ export function mergeGatewayPeers(opts: {
   selfAutoName?: string;
   entries: unknown;
   timeoutMs: number;
+  /** Gateway key — emitted as `gw/<key>/<name>`. Default "default". */
+  key?: string;
 }): Record<string, Peer> {
   let origin: URL;
   try {
@@ -142,6 +149,7 @@ export function mergeGatewayPeers(opts: {
     return {}; // malformed gateway url — nothing routable
   }
   const out: Record<string, Peer> = {};
+  const key = opts.key || "default";
   if (!Array.isArray(opts.entries)) return out;
   for (const raw of opts.entries) {
     if (!raw || typeof raw !== "object") continue;
@@ -165,13 +173,14 @@ export function mergeGatewayPeers(opts: {
     const caps = sanitizeList(e.capabilities).length
       ? sanitizeList(e.capabilities)
       : sanitizeList(Array.isArray(e.skills) ? e.skills.map((sk: any) => sk?.name ?? sk?.id) : []);
-    out[`gw/${name}`] = {
+    out[`gw/${key}/${name}`] = {
       url,
       auth: { type: "bearer", token: opts.token },
       timeout: opts.timeoutMs,
       capabilities: caps,
-      description: "via agent-gateway",
+      description: "via a2a-switchboard",
       viaGateway: true,
+      gatewayUrl: opts.gatewayUrl,
     };
   }
   return out;
@@ -210,6 +219,20 @@ export class GatewayUpstream {
 
   private get name(): string {
     return this.cfg.name || "pi";
+  }
+
+  /** Gateway key (default "default") — prefixes the `gw/<key>/<name>` overlay. */
+  private get key(): string {
+    return this.cfg.key || "default";
+  }
+
+  /** Human-readable gateway label for messages: `<key>@<host>` (no token, no path). */
+  private get label(): string {
+    try {
+      return `${this.key}@${new URL(this.cfg.url).host}`;
+    } catch {
+      return this.key;
+    }
   }
 
   /** The server's default per-session auto-name (`<base>-<port>`), only
@@ -251,7 +274,7 @@ export class GatewayUpstream {
     const res = await this.post("/register", body);
     if (at !== this.epoch) return false; // stop() raced us — registration is dead
     if (!res?.ok) {
-      this.log(`[a2a-gateway] register failed: ${res ? res.status : "network error"}`);
+      this.log(`[a2a-gateway:${this.label}] register failed: ${res ? res.status : "network error"}`);
       return false;
     }
     try {
@@ -291,6 +314,7 @@ export class GatewayUpstream {
           selfAutoName: this.autoName,
           entries: json?.peers,
           timeoutMs: this.cfg.callTimeoutMs ?? 120_000,
+          key: this.key,
         }),
       );
     } catch {
@@ -401,6 +425,15 @@ export class ChannelClient {
     private readonly onStatus: ((msg: string) => void) | undefined = undefined,
   ) {}
 
+  /** Human-readable gateway label for messages: `<key>@<host>`. */
+  private get label(): string {
+    try {
+      return `${this.cfg.key || "default"}@${new URL(this.cfg.url).host}`;
+    } catch {
+      return this.cfg.key || "default";
+    }
+  }
+
   /** Route a lifecycle line to the transcript (onStatus) when available,
    *  else to the diagnostic log. Never throws. */
   private status(msg: string): void {
@@ -436,7 +469,7 @@ export class ChannelClient {
     })
       .then((res) => {
         if (!res.ok || !res.body) throw new Error(`channel open failed: HTTP ${res.status}`);
-        if (attempt === 0) this.status(`[a2a] gateway channel open (firewall-safe receive)`);
+        if (attempt === 0) this.status(`[a2a] gateway channel open: ${this.label} (firewall-safe receive)`);
         const connected = attempt === 0;
         // readStream never resolves while healthy — keep it detached.
         void this.readStream(res.body!)
@@ -455,7 +488,7 @@ export class ChannelClient {
   private async reconnect(attempt: number, why?: unknown): Promise<boolean> {
     if (this.stopped || this.sharedEpoch.value !== this.epoch) return false;
     const delay = Math.min(30_000, 1000 * 2 ** Math.min(attempt, 5));
-    if (attempt === 0 && why) this.log(`[a2a-gateway] channel dropped, reconnecting: ${String(why)}`);
+    if (attempt === 0 && why) this.log(`[a2a-gateway:${this.label}] channel dropped, reconnecting: ${String(why)}`);
     await new Promise((r) => setTimeout(r, delay));
     return this.connect(attempt + 1);
   }
@@ -504,7 +537,7 @@ export class ChannelClient {
     }
     // Oversized envelope guard BEFORE decode (OOM protection).
     if (env.body_b64.length > MAX_B64) {
-      this.log(`[a2a-gateway] dropped oversized envelope (${env.body_b64.length} b64 chars)`);
+      this.log(`[a2a-gateway:${this.label}] dropped oversized envelope (${env.body_b64.length} b64 chars)`);
       return;
     }
     const p = this.dispatch(env);
@@ -516,7 +549,7 @@ export class ChannelClient {
   private async dispatch(env: ChannelEnvelope): Promise<void> {
     // Path must stay inside the local origin — reject traversal outright.
     if (!env.path.startsWith("/") || env.path.includes("..")) {
-      this.log(`[a2a-gateway] dropped envelope with unsafe path: ${env.path}`);
+      this.log(`[a2a-gateway:${this.label}] dropped envelope with unsafe path: ${env.path}`);
       return;
     }
     const binary = Uint8Array.from(atob(env.body_b64), (c) => c.charCodeAt(0));
@@ -531,7 +564,7 @@ export class ChannelClient {
       });
       const buf = new Uint8Array(await res.arrayBuffer());
       if (buf.length > MAX_CHANNEL_BODY) {
-        this.log(`[a2a-gateway] local reply too large (${buf.length}B) — not posted`);
+        this.log(`[a2a-gateway:${this.label}] local reply too large (${buf.length}B) — not posted`);
         return;
       }
       let b64 = "";
@@ -550,7 +583,7 @@ export class ChannelClient {
         chan_secret: this.chanSecret,
       });
     } catch (e) {
-      this.log(`[a2a-gateway] channel dispatch failed: ${String(e)}`);
+      this.log(`[a2a-gateway:${this.label}] channel dispatch failed: ${String(e)}`);
     }
   }
 

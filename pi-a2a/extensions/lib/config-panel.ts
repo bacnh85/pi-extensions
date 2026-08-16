@@ -156,6 +156,43 @@ export function buildRows(
     }),
   ];
 
+  // Multiple gateways (0.6.0) — one row block per `discovery.gateways` entry,
+  // keyed `gw.<key>.<field>`. Setters materialize the map entry on first edit.
+  const gateways: PanelRow[] = [];
+  for (const [key, entry] of Object.entries(cfg.discovery.gateways ?? {})) {
+    const view = entry ?? { enabled: false, url: "", token: "" };
+    const g = () => (cfg.discovery.gateways![key] ??= { enabled: false, url: "", token: "" });
+    gateways.push(
+      row(`gw.${key}.enabled`, `[${key}] Registration`, "toggle", view.enabled, (v) => {
+        g().enabled = Boolean(v);
+      }),
+      row(`gw.${key}.url`, `[${key}] URL`, "string", view.url, (v) => {
+        g().url = String(v ?? "");
+      }),
+      row(`gw.${key}.token`, `[${key}] API token`, "string", view.token, (v) => {
+        g().token = String(v ?? "");
+      }, { mask: true }),
+      row(`gw.${key}.name`, `[${key}] Peer name`, "string", view.name ?? "", (v) => {
+        g().name = v ? String(v) : undefined;
+      }),
+      row(`gw.${key}.upstreamToken`, `[${key}] Upstream token`, "string", view.upstreamToken ?? "", (v) => {
+        g().upstreamToken = v ? String(v) : undefined;
+      }, { mask: true }),
+      row(`gw.${key}.heartbeatSec`, `[${key}] Heartbeat (s)`, "number", view.heartbeatSec ?? 60, (v) => {
+        g().heartbeatSec = toInt(v, g().heartbeatSec ?? 60);
+      }),
+      row(`gw.${key}.channel`, `[${key}] Reverse channel`, "toggle", view.channel ?? true, (v) => {
+        g().channel = Boolean(v);
+      }),
+    );
+  }
+  if (actions.addGateway) {
+    gateways.push({ key: "action.addGateway", label: "+ Add gateway", kind: "action", value: undefined, set: (p) => actions.addGateway!.run(p as never) });
+  }
+  if (actions.removeGateway) {
+    gateways.push({ key: "action.removeGateway", label: "− Remove gateway", kind: "action", value: undefined, set: (p) => actions.removeGateway!.run(p as never) });
+  }
+
   const peers: PanelRow[] = [];
   for (const [name, p] of Object.entries(cfg.peers)) {
     peers.push(
@@ -181,6 +218,7 @@ export function buildRows(
     { key: "server", label: "Server", rows: server },
     { key: "discovery", label: "Discovery", rows: discovery },
     { key: "gateway", label: "Gateway", rows: gateway },
+    { key: "gateways", label: "Gateways", rows: gateways },
     { key: "identity", label: "Identity", rows: identity },
     { key: "peers", label: "Peers", rows: peers },
     { key: "ui", label: "UI", rows: ui },
@@ -232,6 +270,33 @@ export interface ConfigPanelOpts {
   onSave?: (saved: boolean, editedKeys?: Set<string>) => void;
 }
 
+/** Build the action-row handler for an open panel. Shared with tests so the
+ *  rebuild-after-action behavior (added/removed gateway rows re-render) is
+ *  guarded by the same code path production uses. `onError` reports action
+ *  failures (openConfigPanel routes to ctx.ui.notify). */
+export function makeOnAction(
+  model: ConfigPanelModel,
+  cfg: A2AConfig,
+  actions: Record<string, PanelAction>,
+  onError: (msg: string) => void,
+): (row: PanelRow) => Promise<void> {
+  return async (row) => {
+    try {
+      await row.set((label: string, onDone: (v: string | undefined) => void) => {
+        model.prompt(label, onDone);
+      });
+      // Actions mutate config (add/remove peer or gateway) — always mark
+      // dirty so Esc triggers save, and rebuild the rows so added entries
+      // appear / removed entries disappear instead of stale rows lingering.
+      model.dirty = true;
+      model.setGroups(buildRows(cfg, actions));
+      model.requestRender();
+    } catch (e: any) {
+      onError(`Action failed: ${e?.message || e}`);
+    }
+  };
+}
+
 /**
  * Open the interactive config panel via ctx.ui.custom.
  * Resolves when the panel closes (Esc — saves when dirty).
@@ -260,19 +325,7 @@ export function openConfigPanel(opts: ConfigPanelOpts): Promise<void> {
     // undefined). Actions must NOT use ctx.ui.input/select/confirm here —
     // those render under the overlay and break the panel. onAction is an
     // error-reporting hook (activate() drives the action itself).
-    model.onAction = async (row) => {
-      try {
-        await row.set((label: string, onDone: (v: string | undefined) => void) => {
-          model.prompt(label, onDone);
-        });
-        // Actions mutate config (add/remove peer) — always mark dirty so Esc
-        // triggers save.
-        model.dirty = true;
-        model.requestRender();
-      } catch (e: any) {
-        ctx.ui.notify(`Action failed: ${e?.message || e}`, "error");
-      }
-    };
+    model.onAction = makeOnAction(model, cfg, actions ?? {}, (msg) => ctx.ui.notify(msg, "error"));
     model.onClose = () => {
       // Save when dirty (no confirm dialog — Esc = save-and-close; Esc within
       // an inline input cancels the edit instead). Matches the llama
@@ -324,7 +377,11 @@ export class ConfigPanelModel implements Component {
   width = 80; // overlay width hint
   /** Keys of rows the user actually edited (for secret-persistence decisions). */
   editedKeys = new Set<string>();
-  private groups: PanelGroup[];
+  /** Current groups (exposed for tests/rebuild inspection). */
+  get groups(): PanelGroup[] {
+    return this._groups;
+  }
+  private _groups: PanelGroup[];
   private theme: PanelTheme | null;
   private flat: PanelRow[] = [];
   private selected = 0;
@@ -335,7 +392,7 @@ export class ConfigPanelModel implements Component {
   private _focused = false;
 
   constructor(groups: PanelGroup[], theme: PanelTheme | null) {
-    this.groups = groups;
+    this._groups = groups;
     this.theme = theme;
     this.rebuildFlat();
   }
@@ -361,6 +418,15 @@ export class ConfigPanelModel implements Component {
 
   invalidate(): void {
     this.rebuildFlat();
+  }
+
+  /** Replace the row model (after an action mutated the config, e.g. added a
+   *  gateway/peer) and rebuild the flat list, preserving selection. */
+  setGroups(groups: PanelGroup[]): void {
+    const prev = this.selected;
+    this._groups = groups;
+    this.rebuildFlat();
+    this.selected = Math.min(prev, Math.max(0, this.flat.length - 1));
   }
 
   private color(token: string, text: string): string {

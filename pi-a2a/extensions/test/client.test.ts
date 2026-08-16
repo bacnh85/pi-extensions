@@ -13,7 +13,7 @@ import {
   rpcUrl,
 } from "../lib/client";
 import { buildAgentCard, STATE_COMPLETED } from "../lib/protocol";
-import { setGatewayRegistrationName } from "../lib/config";
+import { setGatewayRegistrationName, gatewayKeyFromUrl } from "../lib/config";
 
 // ---------------------------------------------------------------------------
 // fetch mock helpers
@@ -178,13 +178,15 @@ describe("client", () => {
       cfg.selfIdentity = ""; // no operator-pinned identity
       cfg.discovery.gateway = { enabled: true, url: "http://127.0.0.1:9920", token: "gw-token" };
       cfg.peers.bob = { url: "http://127.0.0.1:9920/peer/bob/", auth: { type: "bearer", token: "gw-token" }, timeout: 5000, capabilities: [], viaGateway: true };
-      setGatewayRegistrationName("pi-9910");
+      // Single configured gateway → its registration name (derived key) is the
+      // fallback for unlabeled viaGateway peers.
+      setGatewayRegistrationName("pi-9910", gatewayKeyFromUrl("http://127.0.0.1:9920"));
       try {
         const out = await a2aCall({ cfg, piDir, agent: "bob", message: "hi" });
         assert.include(out, "ok");
         assert.equal(seenHeaders["X-Gateway-Caller"], "pi-9910");
       } finally {
-        setGatewayRegistrationName(null);
+        setGatewayRegistrationName(null, gatewayKeyFromUrl("http://127.0.0.1:9920"));
       }
     });
 

@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.6.0 — 2026-08-16
+
+### Added
+
+- **Multiple a2a-switchboard gateway upstreams.** New
+  `discovery.gateways` map (`{ <key>: {enabled,url,token,name?,upstreamToken?,heartbeatSec?,channel?} }`)
+  registers this session with N gateways at once — each registers, heartbeats,
+  opens its reverse channel, and refreshes its peer-directory overlay
+  independently. The legacy single `discovery.gateway` block (settings or env)
+  keeps working and coexists.
+- **`/a2a-config` Gateways group**: per-gateway rows (enabled/url/token/name/
+  upstreamToken/heartbeat/channel, tokens masked) plus `+ Add gateway` /
+  `− Remove gateway` actions (key must match `[A-Za-z0-9._-]{1,64}`).
+- Per-gateway registration names for `X-Gateway-Caller` attribution.
+
+### Changed (breaking)
+
+- **Gateway proxy peers are now ALWAYS namespaced by gateway key:**
+  `gw/<name>` → `gw/<key>/<name>`. The legacy `gateway` block uses a key
+  derived from its URL host-port (e.g. `gw/127.0.0.1-9920/<name>`); map keys
+  are used verbatim. Old `gw/<name>` call names no longer resolve — use the
+  `gateways` map with a stable key for predictable names.
+- **SSRF pinning for gateway peers is per-peer:** each overlay peer carries its
+  publishing gateway origin, so calls stay pinned even when the live config has
+  no gateway block.
+- **Gateway notifications are gateway-specific:** every status/diagnostic line
+  now names the gateway — `[a2a] registered to a2a-switchboard <key>@<host> as
+  <name>`, `[a2a] gateway channel open: <key>@<host> (firewall-safe receive)`,
+  and `[a2a-gateway:<key>@<host>] …` for failures — so multi-gateway sessions
+  are unambiguous.
+
+### Fixed
+
+- Stopping one gateway upstream no longer clears the other gateways' overlay
+  peers (per-gateway overlay slices).
+
 ## 0.5.1 — 2026-08-15
 
 ### Fixed
@@ -58,7 +94,7 @@
 ### Added
 
 - **Caller attribution to the gateway:** outbound calls routed through an
-  agent-gateway (`peer.viaGateway`) now send `X-Gateway-Caller: <selfIdentity
+  a2a-switchboard (`peer.viaGateway`) now send `X-Gateway-Caller: <selfIdentity
   or gateway peer name>` so the gateway's dashboard/live log shows which peer
   made the call. Advisory display name only — the gateway strips it before
   forwarding and it is not an auth mechanism.
@@ -73,7 +109,7 @@ Gateway configuration in /a2a-config + explicit enable/disable.
 
 ### Added
 
-- **`discovery.gateway.enabled` flag:** the upstream agent-gateway registration
+- **`discovery.gateway.enabled` flag:** the upstream a2a-switchboard registration
   is now explicitly toggleable. Defaults to `true` when `url`+`token` are both
   set and no explicit value exists (backward compatible with the implicit
   activation); explicit `enabled: false` disables registration entirely. New
@@ -117,7 +153,7 @@ Discovery completeness + untruncated conversation view + gateway registration vi
 - **Inbound messages are no longer truncated:** transcript lines carry the full task text and
   full assistant reply (previously capped at ~100-120 chars with a trailing …). Multiline text
   is preserved like a normal conversation turn; toasts stay short.
-- **Gateway registration is visible in the transcript:** a successful agent-gateway registration
+- **Gateway registration is visible in the transcript:** a successful a2a-switchboard registration
   now emits a `[A2A gateway] registered to … as …` line (plus toast) rendered like the
   `[A2A inbound]` activity lines, instead of being lost in console output.
 

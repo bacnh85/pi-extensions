@@ -39,7 +39,7 @@ import {
   type Task,
 } from "./protocol";
 import type { A2AConfig } from "./config";
-import { setGatewayPeers, setGatewayRegistrationName } from "./config";
+import { setGatewayRegistrationName, updateGatewayPeers } from "./config";
 import {
   AntiLoop,
   audit,
@@ -191,7 +191,8 @@ export class A2AServer {
   private mdnsBroadcast: MdnsHandle | null = null;
   private mdnsDiscovery: MdnsHandle | null = null;
   private mdnsPeers: MdnsPeer[] = [];
-  private gatewayUpstream: import("./gateway.js").GatewayUpstream | null = null;
+  /** One GatewayUpstream per configured gateway (0.6.0), keyed by gateway key. */
+  private gatewayUpstreams = new Map<string, import("./gateway.js").GatewayUpstream>();
   private pid = process.pid;
   private api: { getActiveTools?: () => string[] } | undefined;
   /** Host-TUI activity hook (0.3.0) — fired on task lifecycle events. */
@@ -373,77 +374,94 @@ export class A2AServer {
     }
   }
 
-  /** Register this session to the upstream agent-gateway (discovery.gateway config). */
+  /** Register this session to the upstream a2a-switchboard gateways (discovery.gateway
+   *  + discovery.gateways config). One upstream per enabled entry. */
   private async startGatewayUpstream(): Promise<void> {
-    const gw = this.cfg.discovery.gateway;
-    if (!gw || gw.enabled === false) return;
+    const { gatewayEntries } = await import("./config.js");
+    const entries = gatewayEntries(this.cfg).filter((e) => e.entry.enabled !== false);
+    if (entries.length === 0) return;
     const { GatewayUpstream } = await import("./gateway.js");
-    // Unique name per session (name-port) unless explicitly pinned — sessions
-    // on the same machine share config, and one gateway entry per live session
-    // beats last-registration-wins.
-    const base = gw.name || this.cfg.server.agentName || hostname() || "pi";
-    const name = gw.name ? gw.name : `${base}-${this.boundPort}`;
-    // Expose the resolved registration name to outbound callers (client.ts)
-    // so X-Gateway-Caller matches the name registered on the gateway.
-    // In-memory only — NEVER through setConfigOverrides, which loadConfig
-    // applies and the /a2a-config panel would persist to settings.json.
-    setGatewayRegistrationName(name);
-    this.gatewayUpstream = new GatewayUpstream(
-      {
-        ...gw,
-        name,
-        // The gateway directory copies capabilities/skills from the registered
-        // card — send the real Agent Card, not the local-registry descriptor.
-        callTimeoutMs: this.cfg.timeouts.send,
-        // Exact-match self-filter for the default auto-name — passed even
-        // when the user pinned a name, so a stale auto-named entry from a
-        // previous run is still filtered.
-        autoName: `${base}-${this.boundPort}`,
-      } as import("./gateway.js").GatewayConfig,
-      () => this.buildCard() as unknown as Record<string, unknown>,
-      this.onError,
-      // Peer-directory overlay: refreshed after each heartbeat, cleared on stop.
-      setGatewayPeers,
-      // Lifecycle status (channel open, …) → host transcript like the
-      // registration message, not raw console output.
-      (msg) => {
+    for (const { key, entry: gw } of entries) {
+      if (!gw.url || !gw.token) continue;
+      // Unique name per session (name-port) unless explicitly pinned — sessions
+      // on the same machine share config, and one gateway entry per live session
+      // beats last-registration-wins.
+      const base = gw.name || this.cfg.server.agentName || hostname() || "pi";
+      const name = gw.name ? gw.name : `${base}-${this.boundPort}`;
+      const upstream = new GatewayUpstream(
+        {
+          ...gw,
+          name,
+          key,
+          // The gateway directory copies capabilities/skills from the registered
+          // card — send the real Agent Card, not the local-registry descriptor.
+          callTimeoutMs: this.cfg.timeouts.send,
+          // Exact-match self-filter for the default auto-name — passed even
+          // when the user pinned a name, so a stale auto-named entry from a
+          // previous run is still filtered.
+          autoName: `${base}-${this.boundPort}`,
+        } as import("./gateway.js").GatewayConfig,
+        () => this.buildCard() as unknown as Record<string, unknown>,
+        this.onError,
+        // Peer-directory overlay: refreshed after each heartbeat, cleared on stop.
+        (peers) => updateGatewayPeers(key, peers),
+        // Lifecycle status (channel open, …) → host transcript like the
+        // registration message, not raw console output.
+        (msg) => {
+          if (this.onStatus) {
+            try {
+              this.onStatus(msg);
+            } catch {
+              console.error(msg);
+            }
+          } else {
+            console.error(msg);
+          }
+        },
+      );
+      this.gatewayUpstreams.set(key, upstream);
+      const ok = await upstream.start(this.publicUrl());
+      if (ok) {
+        // Publish the resolved registration name to outbound callers ONLY
+        // after a successful register — an unreachable/pending gateway must
+        // not advertise a caller name that isn't actually listed. In-memory
+        // only — NEVER through setConfigOverrides, which loadConfig applies
+        // and the /a2a-config panel would persist to settings.json.
+        setGatewayRegistrationName(name, key);
+        const state = upstream.lastState;
+        const pending = state === "pending";
+        let host = gw.url;
+        try {
+          host = new URL(gw.url).host;
+        } catch {
+          /* keep raw url */
+        }
+        const msg =
+          `[a2a] registered to a2a-switchboard ${key}@${host} as ${name}` +
+          (pending ? " (pending admin acceptance — not yet listed for peers)" : "");
         if (this.onStatus) {
           try {
             this.onStatus(msg);
+            continue;
           } catch {
-            console.error(msg);
+            /* fall back to console */
           }
-        } else {
-          console.error(msg);
         }
-      },
-    );
-    const ok = await this.gatewayUpstream.start(this.publicUrl());
-    if (ok) {
-      const state = this.gatewayUpstream.lastState;
-      const pending = state === "pending";
-      const msg =
-        `[a2a] registered to agent-gateway at ${gw.url} as ${name}` +
-        (pending ? " (pending admin acceptance — not yet listed for peers)" : "");
-      if (this.onStatus) {
-        try {
-          this.onStatus(msg);
-          return;
-        } catch {
-          /* fall back to console */
-        }
+        console.log(msg);
       }
-      console.log(msg);
     }
   }
 
   private async stopGatewayUpstream(): Promise<void> {
-    if (!this.gatewayUpstream) return;
-    await this.gatewayUpstream.stop();
-    this.gatewayUpstream = null;
-    // The resolved registration name is session-scoped — stop presenting it
-    // (and never persist it) once the upstream is gone.
-    setGatewayRegistrationName(null);
+    if (this.gatewayUpstreams.size === 0) return;
+    const upstreams = [...this.gatewayUpstreams.entries()];
+    this.gatewayUpstreams.clear();
+    for (const [key, upstream] of upstreams) {
+      await upstream.stop();
+      // The resolved registration name is session-scoped — stop presenting it
+      // (and never persist it) once the upstream is gone.
+      setGatewayRegistrationName(null, key);
+    }
   }
 
   /** Stop local-registry declaration + mDNS. */

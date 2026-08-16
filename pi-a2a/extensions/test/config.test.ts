@@ -1,5 +1,5 @@
 import { assert } from "chai";
-import { buildA2ASettingsPatch, loadConfig, resolvePeer, authHeaders, normUrl, setConfigOverrides, writeSettingsA2A } from "../lib/config";
+import { buildA2ASettingsPatch, loadConfig, resolvePeer, authHeaders, normUrl, setConfigOverrides, writeSettingsA2A, gatewayEntries, gatewayKeyFromUrl } from "../lib/config";
 import { DEFAULTS } from "./helpers";
 import * as path from "node:path";
 import * as fs from "node:fs";
@@ -165,6 +165,8 @@ describe("config", () => {
   });
 
   describe("discovery.gateway", () => {
+    afterEach(() => setConfigOverrides(null));
+
     it("activates when enabled + url + token are set", () => {
       withIsolatedPiDir((dir) => {
         fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
@@ -236,6 +238,68 @@ describe("config", () => {
         const cfg = loadConfig({ cwd: dir });
         assert.equal(cfg.discovery.gateway?.enabled, true);
         assert.equal(cfg.discovery.gateway?.url, "http://127.0.0.1:9921");
+      });
+    });
+
+    it("gatewayEntries merges legacy gateway + named gateways map", () => {
+      withIsolatedPiDir((dir) => {
+        fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, ".pi", "settings.json"),
+          JSON.stringify({
+            a2a: {
+              discovery: {
+                gateway: { enabled: true, url: "http://127.0.0.1:9920", token: "t0" },
+                gateways: {
+                  work: { enabled: true, url: "http://10.0.0.5:9920", token: "t1" },
+                  "bad key!": { enabled: true, url: "http://x", token: "t" },
+                  lab: { enabled: false, url: "http://127.0.0.1:9921", token: "t2" },
+                },
+              },
+            },
+          }),
+        );
+        const cfg = loadConfig({ cwd: dir });
+        const entries = gatewayEntries(cfg);
+        // Legacy → derived key from URL host-port; invalid map key skipped.
+        assert.deepEqual(entries.map((e) => e.key), ["127.0.0.1-9920", "work", "lab"]);
+        assert.equal(entries[0]!.entry.url, "http://127.0.0.1:9920");
+        assert.equal(entries[1]!.entry.token, "t1");
+        assert.equal(entries[2]!.entry.enabled, false);
+        assert.equal(cfg.discovery.gateways!.lab.enabled, false, "disabled entry stays visible");
+        assert.isUndefined(cfg.discovery.gateways!["bad key!"], "invalid key dropped at load");
+      });
+    });
+
+    it("gatewayKeyFromUrl derives a stable key from the URL", () => {
+      assert.equal(gatewayKeyFromUrl("http://127.0.0.1:9920"), "127.0.0.1-9920");
+      assert.equal(gatewayKeyFromUrl("https://gw.example.com"), "gw.example.com");
+      assert.equal(gatewayKeyFromUrl("not-a-url"), "default");
+    });
+
+    it("gatewayEntries dedupes: a map entry whose key equals the legacy derived key wins", () => {
+      withIsolatedPiDir((dir) => {
+        fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, ".pi", "settings.json"),
+          JSON.stringify({
+            a2a: {
+              discovery: {
+                gateway: { enabled: true, url: "http://127.0.0.1:9920", token: "t0" },
+                gateways: {
+                  "127.0.0.1-9920": { enabled: true, url: "http://127.0.0.1:9920", token: "t1" },
+                  work: { enabled: true, url: "http://10.0.0.5:9920", token: "t2" },
+                },
+              },
+            },
+          }),
+        );
+        const cfg = loadConfig({ cwd: dir });
+        const entries = gatewayEntries(cfg);
+        // Legacy derived key collides with a map key → map entry wins, legacy
+        // skipped → exactly one upstream for that key.
+        assert.deepEqual(entries.map((e) => e.key), ["127.0.0.1-9920", "work"]);
+        assert.equal(entries[0]!.entry.token, "t1", "map entry wins over legacy block");
       });
     });
   });
@@ -497,6 +561,178 @@ describe("config", () => {
         const a2a = patch({ discovery: { local: { enabled: true, heartbeatSec: 15, ttlSec: 60 } } });
         assert.isUndefined(a2a.server, "server block not written on discovery-only edit");
         assert.equal(a2a.discovery.local.heartbeatSec, 30);
+      });
+    });
+
+    it("gateways map survives an unrelated discovery edit (byte-for-byte)", () => {
+      withIsolatedPiDir((dir) => {
+        const cfg = cfgWith(
+          {
+            discovery: {
+              local: { enabled: true, heartbeatSec: 15, ttlSec: 60 },
+              gateways: {
+                work: { enabled: true, url: "http://gw1", token: "t1" },
+                lab: { enabled: false, url: "http://gw2", token: "t2" },
+              },
+            },
+          },
+          dir,
+        );
+        const working = structuredClone(cfg);
+        working.discovery.local.heartbeatSec = 30; // non-gateway edit
+        const patch = buildA2ASettingsPatch({ cfg, working, peerChanges: false, gatewayChanged: false });
+        const a2a = patch({
+          discovery: {
+            local: { enabled: true, heartbeatSec: 15, ttlSec: 60 },
+            gateways: {
+              work: { enabled: true, url: "http://gw1", token: "t1" },
+              lab: { enabled: false, url: "http://gw2", token: "t2" },
+            },
+          },
+        });
+        assert.deepEqual(a2a.discovery.gateways, {
+          work: { enabled: true, url: "http://gw1", token: "t1" },
+          lab: { enabled: false, url: "http://gw2", token: "t2" },
+        }, "gateways block preserved byte-for-byte (enabled + disabled)");
+      });
+    });
+
+    it("env-sourced gateways map is NOT copied to settings.json on a discovery edit", () => {
+      withIsolatedPiDir((dir) => {
+        const cfg = cfgWith({ discovery: { local: { enabled: true, heartbeatSec: 15, ttlSec: 60 } } }, dir);
+        // Simulate an env/override-sourced gateways map present in live config.
+        (cfg as any).discovery.gateways = {
+          work: { enabled: true, url: "http://env-gw", token: "env-tok" },
+        };
+        const working = structuredClone(cfg);
+        working.discovery.local.heartbeatSec = 30;
+        const patch = buildA2ASettingsPatch({ cfg, working, peerChanges: false, gatewayChanged: false });
+        const a2a = patch({ discovery: { local: { enabled: true, heartbeatSec: 15, ttlSec: 60 } } });
+        assert.isUndefined(a2a.discovery.gateways, "env-sourced gateways must not be written");
+      });
+    });
+
+    it("gateways edit persists; unedited secret rows keep file values per entry", () => {
+      withIsolatedPiDir((dir) => {
+        const cfg = cfgWith(
+          {
+            discovery: {
+              gateways: {
+                work: { enabled: true, url: "http://gw1", token: "t1" },
+                lab: { enabled: true, url: "http://gw2", token: "t2" },
+              },
+            },
+          },
+          dir,
+        );
+        const working = structuredClone(cfg);
+        working.discovery.gateways!.work.url = "http://new";
+        working.discovery.gateways!.lab.heartbeatSec = 120; // non-secret edit on lab
+        const patch = buildA2ASettingsPatch({
+          cfg,
+          working,
+          peerChanges: false,
+          gatewayChanged: true,
+          editedGatewayKeys: new Set(["gw.work.url", "gw.lab.heartbeatSec"]),
+        });
+        const a2a = patch({
+          discovery: {
+            gateways: {
+              work: { enabled: true, url: "http://gw1", token: "t1" },
+              lab: { enabled: true, url: "http://gw2", token: "t2" },
+            },
+          },
+        });
+        assert.equal(a2a.discovery.gateways.work.url, "http://new");
+        assert.equal(a2a.discovery.gateways.work.token, "t1", "unedited work token kept from file");
+        assert.equal(a2a.discovery.gateways.lab.heartbeatSec, 120, "lab heartbeat edit persists");
+        assert.equal(a2a.discovery.gateways.lab.token, "t2", "unedited lab token kept from file");
+      });
+    });
+
+    it("gateways edit with a NEW entry persists the typed token (panel-add flow)", () => {
+      withIsolatedPiDir((dir) => {
+        const cfg = cfgWith({ discovery: { local: { enabled: true, heartbeatSec: 15, ttlSec: 60 } } }, dir);
+        const working = structuredClone(cfg);
+        // Entry absent from the file = newly added via the panel (which has no
+        // env source) — its typed token must survive save, NOT be wiped.
+        working.discovery.gateways = {
+          work: { enabled: true, url: "http://gw1", token: "typed-token" },
+        };
+        const patch = buildA2ASettingsPatch({
+          cfg,
+          working,
+          peerChanges: false,
+          gatewayChanged: true,
+          editedGatewayKeys: new Set(), // prompt-driven add never reaches editedKeys
+        });
+        const a2a = patch({ discovery: { local: { enabled: true, heartbeatSec: 15, ttlSec: 60 } } });
+        assert.equal(a2a.discovery.gateways.work.url, "http://gw1");
+        assert.equal(a2a.discovery.gateways.work.token, "typed-token", "typed token must persist");
+      });
+    });
+
+    it("existing-file entry keeps unedited secret rows (env-leak guard preserved)", () => {
+      withIsolatedPiDir((dir) => {
+        const cfg = cfgWith(
+          {
+            discovery: {
+              gateways: {
+                work: { enabled: true, url: "http://gw1", token: "file-token" },
+              },
+            },
+          },
+          dir,
+        );
+        const working = structuredClone(cfg);
+        // The live working token differs (env/override-sourced) but the row was
+        // never edited — the FILE value must win.
+        working.discovery.gateways!.work.token = "env-tok";
+        working.discovery.gateways!.work.heartbeatSec = 90;
+        const patch = buildA2ASettingsPatch({
+          cfg,
+          working,
+          peerChanges: false,
+          gatewayChanged: true,
+          editedGatewayKeys: new Set(["gw.work.heartbeatSec"]),
+        });
+        const a2a = patch({
+          discovery: {
+            gateways: {
+              work: { enabled: true, url: "http://gw1", token: "file-token" },
+            },
+          },
+        });
+        assert.equal(a2a.discovery.gateways.work.heartbeatSec, 90);
+        assert.equal(a2a.discovery.gateways.work.token, "file-token", "unedited secret keeps file value");
+      });
+    });
+
+    it("gateways entry removed by the user is dropped from the file", () => {
+      withIsolatedPiDir((dir) => {
+        const cfg = cfgWith(
+          {
+            discovery: {
+              gateways: {
+                work: { enabled: true, url: "http://gw1", token: "t1" },
+                lab: { enabled: true, url: "http://gw2", token: "t2" },
+              },
+            },
+          },
+          dir,
+        );
+        const working = structuredClone(cfg);
+        delete working.discovery.gateways!.lab;
+        const patch = buildA2ASettingsPatch({ cfg, working, peerChanges: false, gatewayChanged: true });
+        const a2a = patch({
+          discovery: {
+            gateways: {
+              work: { enabled: true, url: "http://gw1", token: "t1" },
+              lab: { enabled: true, url: "http://gw2", token: "t2" },
+            },
+          },
+        });
+        assert.deepEqual(Object.keys(a2a.discovery.gateways), ["work"], "removed entry gone");
       });
     });
   });

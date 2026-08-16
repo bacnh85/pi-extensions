@@ -2,15 +2,15 @@ import { assert } from "chai";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 import { DEFAULTS } from "./helpers";
-import { applyRows, buildRows, ConfigPanelModel, kindValue } from "../lib/config-panel";
+import { applyRows, buildRows, ConfigPanelModel, kindValue, makeOnAction, type PanelAction } from "../lib/config-panel";
 
 describe("config-panel", () => {
-  it("buildRows covers server, discovery, gateway, identity, peers, ui groups", () => {
+  it("buildRows covers server, discovery, gateway, gateways, identity, peers, ui groups", () => {
     const cfg = DEFAULTS();
     cfg.peers = { hermes: { url: "http://localhost:9900", auth: { type: "none" }, timeout: 120000, capabilities: [] } };
     const groups = buildRows(cfg);
     const keys = groups.map((g) => g.key);
-    assert.deepEqual(keys, ["server", "discovery", "gateway", "identity", "peers", "ui"]);
+    assert.deepEqual(keys, ["server", "discovery", "gateway", "gateways", "identity", "peers", "ui"]);
     const serverRows = groups[0]!.rows.map((r) => r.key);
     assert.include(serverRows, "server.enabled");
     assert.include(serverRows, "server.port");
@@ -24,8 +24,46 @@ describe("config-panel", () => {
       "gateway.heartbeatSec",
       "gateway.channel",
     ]);
-    const peerRows = groups[4]!.rows.map((r) => r.key);
+    const peerRows = groups[5]!.rows.map((r) => r.key);
     assert.deepEqual(peerRows, ["peer.hermes.url"]);
+  });
+
+  it("gateways group renders per-entry rows + add/remove actions", () => {
+    const cfg = DEFAULTS();
+    cfg.discovery.gateways = {
+      work: { enabled: true, url: "http://10.0.0.5:9920", token: "t1" },
+    };
+    const groups = buildRows(cfg, {
+      addGateway: { label: "+ Add gateway", run: () => {} },
+      removeGateway: { label: "− Remove gateway", run: () => {} },
+    });
+    const gwRows = groups[3]!.rows.map((r) => r.key);
+    assert.deepEqual(gwRows, [
+      "gw.work.enabled",
+      "gw.work.url",
+      "gw.work.token",
+      "gw.work.name",
+      "gw.work.upstreamToken",
+      "gw.work.heartbeatSec",
+      "gw.work.channel",
+      "action.addGateway",
+      "action.removeGateway",
+    ]);
+    // Setters materialize on edit.
+    const row = groups[3]!.rows.find((r) => r.key === "gw.work.url")!;
+    row.set("http://new");
+    assert.equal(cfg.discovery.gateways!.work.url, "http://new");
+  });
+
+  it("gateways rows are masked for token fields", () => {
+    const cfg = DEFAULTS();
+    cfg.discovery.gateways = { lab: { enabled: true, url: "http://g", token: "labsecret" } };
+    const rows = buildRows(cfg)[3]!.rows;
+    const tokenRow = rows.find((r) => r.key === "gw.lab.token")!;
+    assert.equal(tokenRow.value, "labsecret");
+    assert.isTrue(tokenRow.mask, "gateway token row must be masked");
+    const upRow = rows.find((r) => r.key === "gw.lab.upstreamToken")!;
+    assert.isTrue(upRow.mask, "upstream token row must be masked");
   });
 
   it("toggle row set flips the underlying config value", () => {
@@ -63,9 +101,9 @@ describe("config-panel", () => {
   it("string row set updates the config", () => {
     const cfg = DEFAULTS();
     const groups = buildRows(cfg);
-    // Gateway group added between discovery and identity (0.5.0):
-    // server(10) + discovery(6) + gateway(7) = index 23.
-    const row = groups[3]!.rows.find((r) => r.key === "selfIdentity")!;
+    // Gateways group added between gateway and identity (0.6.0):
+    // server(10) + discovery(6) + gateway(7) + gateways(0) = index 23.
+    const row = groups[4]!.rows.find((r) => r.key === "selfIdentity")!;
     row.set("session-a");
     assert.equal(cfg.selfIdentity, "session-a");
   });
@@ -76,7 +114,7 @@ describe("config-panel", () => {
     // Mutate some row values.
     groups[0]!.rows.find((r) => r.key === "server.enabled")!.value = true;
     groups[0]!.rows.find((r) => r.key === "server.port")!.value = 9944;
-    groups[3]!.rows.find((r) => r.key === "selfIdentity")!.value = "session-b";
+    groups[4]!.rows.find((r) => r.key === "selfIdentity")!.value = "session-b";
     applyRows(cfg, groups);
     assert.equal(cfg.server.enabled, true);
     assert.equal(cfg.server.port, 9944);
@@ -127,10 +165,60 @@ describe("config-panel", () => {
     const groups = buildRows(cfg, {
       addPeer: { label: "Add peer", run: () => { ran++; } },
     });
-    const actionRow = groups[4]!.rows.find((r) => r.key === "action.addPeer")!;
+    const actionRow = groups[5]!.rows.find((r) => r.key === "action.addPeer")!;
     assert.equal(actionRow.kind, "action");
     await actionRow.set(undefined);
     assert.equal(ran, 1);
+  });
+
+  it("add-gateway action rebuilds rows through the production onAction wiring", async () => {
+    const cfg = DEFAULTS();
+    const actions: Record<string, PanelAction> = {
+      addGateway: {
+        label: "Add gateway",
+        // Mirrors index.ts: resolves only after the LAST prompt's onDone so
+        // the awaiting onAction rebuilds rows after the config is mutated.
+        run: (prompt) => {
+          return new Promise<void>((resolve) => {
+            prompt("Gateway key", (key) => {
+              if (!key) return resolve();
+              prompt(`Gateway URL for '${key}'`, (url) => {
+                if (!url) return resolve();
+                prompt(`API token for '${key}'`, (token) => {
+                  cfg.discovery.gateways ??= {};
+                  cfg.discovery.gateways[key] = { enabled: true, url, token: token ?? "" };
+                  resolve();
+                });
+              });
+            });
+          });
+        },
+      },
+    };
+    const model = new ConfigPanelModel(buildRows(cfg, actions), null);
+    // Use the SAME handler factory openConfigPanel uses — deleting the
+    // setGroups rebuild inside makeOnAction must fail this test.
+    model.onAction = makeOnAction(model, cfg, actions, () => {});
+    // No gateway rows yet.
+    assert.ok(!model.groups[3].rows.some((r) => r.key.startsWith("gw.")), "no gateway rows before add");
+    // Navigate to the add-gateway action row: server(10)+discovery(6)+gateway(7) = index 23.
+    for (let i = 0; i < 23; i++) model.handleInput("\u001b[B");
+    model.handleInput("\r"); // activate → prompt opens
+    for (const ch of "new1") model.handleInput(ch);
+    model.handleInput("\r"); // confirm key
+    for (const ch of "http://gw") model.handleInput(ch);
+    model.handleInput("\r"); // confirm url
+    for (const ch of "tok123") model.handleInput(ch);
+    model.handleInput("\r"); // confirm token
+    // The onAction continuation (setGroups rebuild) resolves on a microtask
+    // after the synchronous keystroke stream — flush it before asserting.
+    await new Promise((r) => setTimeout(r, 0));
+    // Rows were rebuilt via onAction → the new entry is editable now.
+    const gwKeys = model.groups[3].rows.map((r) => r.key);
+    assert.ok(gwKeys.includes("gw.new1.url"), "new gateway rows appear after rebuild: " + gwKeys.join(","));
+    assert.ok(gwKeys.includes("gw.new1.token"), "new gateway token row appears");
+    assert.equal(cfg.discovery.gateways!.new1.token, "tok123");
+    assert.isTrue(model.dirty, "action marks the panel dirty");
   });
 
   it("prompt flow: action receives the typed value via inline prompt", () => {
