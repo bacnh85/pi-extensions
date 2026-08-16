@@ -93,6 +93,7 @@ family is active.
 | Feature | What it does |
 |---------|-------------|
 | **Selection guidance** | Injects a first-tool quick-map (intent → tool) via `before_agent_start` to raise first-tool accuracy. Static per session (depends only on the active-tool set), so it stays in the system prompt without hurting the cache. |
+| **ds-anchor (v4-pro)** | **Minimal-mode two-phase bootstrap.** Request #1 of a `deepseek-v4-pro` session replaces the system prompt with the byte-identical DSH Minimal persona (`You are a helpful software engineer assistant.`) and exposes only `bash`+`str_replace_editor` (the real Minimal pair); after the first durable assistant message the session promotes to the full prompt + catalog + all guidance. See [DeepSeek v4 Pro minimal-mode anchor](#deepseek-v4-pro-minimal-mode-anchor). |
 | **Semantic-miss steering** | Blocks bash/grep for code symbols → suggests the right Serena tool instead |
 | **Strict Serena mode** | Optionally hard-blocks simple `bash` substitutes (`ls`, `grep`, `cat`, `find`, `head`, `tail`) for dedicated tools |
 | **Super Power Mode** | Prepends an unrestricted capability prompt each DeepSeek session (see below) |
@@ -167,6 +168,8 @@ All toggles live under the `PI_MODEL_TOOLS_*` namespace.
 | `PI_MODEL_TOOLS_SELECTION_GUIDANCE` | on | `0`/`off`/`false` to disable the compact first-tool routing table (DeepSeek V4 only) |
 | `PI_MODEL_TOOLS_STRICT_SERENA` | off | `1`/`on`/`true` to hard-block simple bash substitutes |
 | `PI_MODEL_TOOLS_SUPERPOWER_MODE` | off | `1`/`on`/`true` to enable Super Power Mode (off by default — the global AGENTS.md already enforces the same behavior, and the persona prompt adds permanent prefix-cache cost) |
+| `PI_MODEL_TOOLS_DS_ANCHOR` | on | `0`/`off`/`false` to disable the DeepSeek v4 Pro minimal-mode two-phase bootstrap |
+| `PI_MODEL_TOOLS_DS_ANCHOR_WE_NEED` | off | `1`/`on`/`true` to prepend the "We need…" thinking directive to the bootstrap prompt (A/B knob) |
 | `PI_MODEL_TOOLS_CUSTOM_SUPERPOWER_PROMPT` | unset | Custom Super Power prompt (overrides the built-in one) |
 
 > **Note:** The former `PI_DEEPSEEK_TOOLS_THINKING_BUDGET` toggle has been
@@ -191,6 +194,110 @@ export PI_MODEL_TOOLS_CUSTOM_SUPERPOWER_PROMPT="You are an elite coder. No limit
 
 `/model-tools-status` reports whether Super Power Mode is on, whether a custom
 prompt is in use, and the current turn count.
+
+## DeepSeek v4 Pro minimal-mode anchor
+
+Community finding (r/DeepSeek 1vovxxc, confirmed by DeepSeek staff): DeepSeek
+v4 Pro GA is overfitted to DeepSeek Harness (DSH) *minimal mode* — a one-line
+system prompt with only `bash` + an editor tool exposed. Sessions that start
+in that exact distribution consistently reach the model's benchmark-level
+performance; sessions that start with a large harness prompt can degrade into
+loops.
+
+**How it works** (default on for model ids containing `deepseek-v4-pro`):
+
+1. **Bootstrap (request #1)** — the system prompt is replaced byte-identically
+   with `You are a helpful software engineer assistant.` and the provider
+   payload's tools are narrowed to the **real DSH Minimal pair**: `bash` +
+   `str_replace_editor` (a faithful port of DSH's view/create/str_replace/
+   insert editor, byte-identical name/schema/description). All other guidance
+   (Super Power, selection guidance, first-tool hints, steering) is suppressed
+   for this request. The dangerous-command guard stays active.
+2. **Promotion** — after the first durable assistant message (tool call or
+text), the session promotes: full Pi system prompt, full tool catalog, and all
+existing pi-model-tools guidance apply unchanged from request #2 on.
+
+The tool pair is NOT arbitrary — it is the measured anchor lever
+(dsh-anchored-standard issue #11): the real Minimal schema
+(`bash`+`str_replace_editor`) produced `We need…` first lines **5/5**, while
+`pwsh`/`read` and `bash`/`read` substitutions produced standard-like `The
+user…` first lines **11/11**. Earlier community ports used `bash`+`read`;
+those do not anchor — a session whose first thinking starts with "The user
+says…" instead of "we need…" is running a non-anchoring schema.
+
+**Semantics:**
+
+- Promotion is derived from durable session entries — resuming an
+  already-replied session is instantly promoted; forks re-derive from their own
+  entries (append-only).
+- `/model` switches to/from a pro model re-init correctly (a session switched
+  into pro after replies exist starts promoted — exact bootstrap experiments
+  need a fresh session).
+- Tools hallucinated during bootstrap (anything outside `bash`/`str_replace_editor`)
+  are blocked with a clear reason.
+- `str_replace_editor` is registered whenever the anchor is enabled (default)
+  and also stays in the promoted catalog — it is a generally useful
+  view/create/replace/insert editor. Disable the anchor to remove it.
+- Everything fail-opens to the full catalog on surprise (no session access,
+  malformed payload, missing `bash`/`str_replace_editor`) with a one-time warning.
+- Recommend `/thinking max` — the community recipe pairs minimal mode with max
+  thinking for full effect.
+
+**Caveats:** other extensions that rewrite the system prompt or tool list after
+this one break byte-identity of request #1 — load pi-model-tools **last** for
+exact anchoring (check `/model-tools-status` → `ds-anchor: bootstrapping` to
+confirm it took). Proxy-rewritten sessions (requested as another model, served
+as `deepseek-v4-pro`) are handled: the target check runs per hook, so the
+bootstrap engages on the served model even when `model_select` never fires.
+
+**Verifying the bootstrap actually happened:** run `/model-tools-status` after
+the first turn — the `ds-anchor trace` section shows the session's anchor
+activity:
+
+```
+ds-anchor (v4-pro): promoted
+
+ds-anchor trace:
+  12:00:01 session_start: requested=deepseek-v4-pro → target
+  12:00:02 bootstrap: minimal prompt engaged (model=deepseek-v4-pro)
+  12:00:03 payload: tools=[bash,str_replace_editor] sent to deepseek-v4-pro
+  12:00:12 promoted: first durable assistant reply received
+```
+
+If the trace shows `bootstrap: minimal prompt engaged` + `payload:
+tools=[bash,str_replace_editor]` on turn 1, the anchor reached the model. If
+the thinking still doesn't start "We need…" with that confirmed, the served
+model route itself is the variable (different checkpoint/quantization than the
+community benchmarked), not the anchor. With `PI_MODEL_TOOLS_DEBUG=1` the same
+decisions also print to stderr with the exact system prompt + tool schemas.
+
+**A/B knob — the portable "we need…" directive:** the community's portable
+variant adds an explicit thinking directive on top of the minimal prompt. It is
+NOT part of the byte-identical DSH recipe (which the 98/99 runs used without
+it), but on routes where the pure prompt doesn't reproduce the trajectory,
+`PI_MODEL_TOOLS_DS_ANCHOR_WE_NEED=1` prepends
+`When you think, start each thinking paragraph with "We need…".` to the
+bootstrap prompt. The trace shows `+we-need directive` when active.
+
+**Thinking level:** the recipe requires **max** thinking
+(`/thinking max`). `/model-tools-status` now shows the current level and flags
+`(recipe wants max)` when an anchored session is below max.
+
+**Output budget:** the bootstrap request pins `max_tokens: 256000` — the exact
+budget in DSH's captured minimal-mode payload (issue #11 isolated the output
+budget as a trajectory lever). The pin applies to request #1 only; promoted
+requests revert to the model's configured budget. If the first thinking still
+reads standard-like with the pin in place, the served model route (checkpoint
+or quantization) is the remaining variable.
+
+Design ported from [hank9999/pi-ds-anchored](https://github.com/hank9999/pi-ds-anchored)
+(MIT), from [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard)
+(Project2 benchmark: 98/99).
+
+```bash
+# Disable (default on)
+export PI_MODEL_TOOLS_DS_ANCHOR=0
+```
 
 ## Development & Testing
 
