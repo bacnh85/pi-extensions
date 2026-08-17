@@ -248,6 +248,9 @@ export class GatewayUpstream {
   /** Sticky false after a 405 (old switchboard without PATCH) — POST-only for
    *  the rest of the session to avoid flapping. */
   private patchSupported = true;
+  /** Last directory-fetch status (0 = none yet). Only a CHANGED failing
+   *  status is logged — repeated identical failures stay quiet. */
+  private lastDirStatus = 0;
   /** `<piDir>/a2a_gateways/<key>.json` — null when cfg.piDir is unset. */
   private readonly stateFile: string | null;
   // ponytail: one state file per gateway key; concurrent same-machine sessions
@@ -288,8 +291,8 @@ export class GatewayUpstream {
   private persistToken(): void {
     if (!this.stateFile || !this.callerToken) return;
     try {
-      fs.mkdirSync(dirname(this.stateFile), { recursive: true });
-      fs.writeFileSync(this.stateFile, JSON.stringify({ name: this.name, callerToken: this.callerToken }));
+      fs.mkdirSync(dirname(this.stateFile), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(this.stateFile, JSON.stringify({ name: this.name, callerToken: this.callerToken }), { mode: 0o600 });
     } catch {
       /* state file is an optimization — heartbeat still works via fallback */
     }
@@ -334,8 +337,23 @@ export class GatewayUpstream {
         this.log(`[a2a-gateway:${this.label}] register failed: network error`);
         return false;
       }
-      if (res.status === 405) this.patchSupported = false; // old switchboard — POST-only this session
-      if (!res.ok) res = null; // 405/401/404 — fall through to POST
+      if (res.status === 405) {
+        this.patchSupported = false; // old switchboard — POST-only this session
+        res = null; // fall through to POST
+      } else if (!res.ok) {
+        // 401 (rejected caller_token) / 404 (entry deleted): the token is
+        // known-dead — clear it so the overlay falls back to the shared token
+        // until a POST re-mints (a POST response carrying no mint leaves it null).
+        if (res.status === 401 || res.status === 404) {
+          this.callerToken = null;
+          res = null; // fall through to POST
+        } else {
+          // 403 (revoked peer) / 409 etc.: a shared-token POST is not a valid
+          // rescue for this admission state — fail the beat.
+          this.log(`[a2a-gateway:${this.label}] register failed: ${res.status}`);
+          return false;
+        }
+      }
     }
     if (!res) res = await this.send("POST", "/register", this.cfg.token, body);
     if (at !== this.epoch) return false; // stop() raced us — registration is dead
@@ -369,7 +387,17 @@ export class GatewayUpstream {
         headers: { authorization: `Bearer ${this.cfg.token}` },
         signal: AbortSignal.timeout(10_000),
       });
-      if (!res?.ok) return;
+      if (!res?.ok) {
+        // Log only when the failing status CHANGES — a directory down for N
+        // beats shouldn't emit one log line per heartbeat.
+        const status = res?.status ?? 0;
+        if (status !== this.lastDirStatus) {
+          this.log(`[a2a-gateway:${this.label}] peer directory refresh failed: ${status}`);
+        }
+        this.lastDirStatus = status;
+        return;
+      }
+      this.lastDirStatus = res.status;
       const json = (await res.json()) as { peers?: unknown };
       if (at !== this.epoch) return; // stop() cleared the overlay — don't refill it
       this.onPeers(

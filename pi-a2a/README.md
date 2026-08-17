@@ -265,7 +265,8 @@ groups):
 - The panel renders tokens masked (`••••`); the token is stored in settings.json
   in plaintext (same as `server.sharedToken`) — use env `A2A_GATEWAY_TOKEN` if
   you'd rather keep secrets out of files (env feeds the single `gateway` block).
-- **Heartbeat method (PATCH /register):** the first registration is always a
+- **Heartbeat method (PATCH /register):** the first registration with no
+  known `caller_token` (first ever, or the state file was lost) is a
   `POST /register` with the shared token — the only path that mints the
   per-peer `caller_token`. Once known, every heartbeat switches to
   `PATCH /register` authenticated as that `caller_token` (full card refresh;

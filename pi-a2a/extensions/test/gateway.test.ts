@@ -262,8 +262,11 @@ describe("gateway peer discovery", () => {
       globalThis.fetch = (async (url: any, init?: any) => {
         const u = String(url);
         if (u.endsWith("/register")) {
-          seen.push({ method: init?.method || "GET", auth: init?.headers?.authorization });
-          return makeResp({ status: "updated", caller_token: "agw_peer_ct_1" }, 200);
+          const method = init?.method || "GET";
+          seen.push({ method, auth: init?.headers?.authorization });
+          // Method-aware: PATCH = heartbeat update (no mint), POST = mint.
+          if (method === "PATCH") return makeResp({ status: "updated", state: "accepted" }, 200);
+          return makeResp({ status: "updated", state: "accepted", caller_token: "agw_peer_ct_1" }, 200);
         }
         if (u.endsWith("/.well-known/agent.json"))
           return makeResp({ peers: [] }, 200);
@@ -283,6 +286,68 @@ describe("gateway peer discovery", () => {
         assert.equal(seen[0]!.auth, `Bearer ${TOKEN}`);
         assert.equal(seen[1]!.method, "PATCH");
         assert.equal(seen[1]!.auth, "Bearer agw_peer_ct_1");
+        assert.lengthOf(seen, 2); // no redundant POST after a successful PATCH
+      } finally {
+        globalThis.fetch = original as any;
+      }
+    });
+
+    it("PATCH 403 (revoked peer) does NOT fall back to POST", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-state-"));
+      fs.mkdirSync(path.join(dir, "a2a_gateways"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "a2a_gateways", "k1.json"), JSON.stringify({ name: "self-1", callerToken: "revoked-ct" }));
+      const original = globalThis.fetch;
+      const requests: Array<{ method: string; url: string }> = [];
+      globalThis.fetch = (async (url: any, init?: any) => {
+        requests.push({ method: init?.method || "GET", url: String(url).split("?")[0] });
+        if (String(url).endsWith("/register") && init?.method === "PATCH")
+          return makeResp({ error: "revoked" }, 403);
+        return makeResp({ status: "registered", caller_token: "minted-anyway" }, 200);
+      }) as any;
+      try {
+        const logs: string[] = [];
+        const gw = new GatewayUpstream(
+          { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60, key: "k1", channel: false, piDir: dir },
+          () => ({}),
+          (m) => logs.push(String(m)),
+          () => {},
+        );
+        const ok = await gw.register("http://127.0.0.1:9911");
+        assert.isFalse(ok);
+        // Exactly one request (the PATCH) — no POST fallback for a 403.
+        assert.lengthOf(requests, 1);
+        assert.equal(requests[0]!.method, "PATCH");
+        assert.ok(logs.some((l) => l.includes("register failed: 403")), "failure logged");
+        await gw.stop();
+      } finally {
+        globalThis.fetch = original as any;
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("logs directory failure only when the status changes (PATCH 200 + directory 401 × 2 cycles)", async () => {
+      const original = globalThis.fetch;
+      const logs: string[] = [];
+      globalThis.fetch = (async (url: any, init?: any) => {
+        const u = String(url);
+        if (u.endsWith("/register"))
+          return makeResp({ status: "updated", state: "accepted" }, 200);
+        if (u.endsWith("/.well-known/agent.json")) return makeResp({ error: "unauthorized" }, 401);
+        return makeResp({}, 404);
+      }) as any;
+      try {
+        const gw = new GatewayUpstream(
+          { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60, key: "k1", channel: false },
+          () => ({}),
+          (m) => logs.push(String(m)),
+          () => {},
+        );
+        assert.isTrue(await gw.register("http://127.0.0.1:9911")); // cycle 1: dir 401 → log
+        assert.isTrue(await gw.register("http://127.0.0.1:9911")); // cycle 2: dir 401 again → silent
+        const lines = logs.filter((l) => l.includes("peer directory refresh failed"));
+        assert.lengthOf(lines, 1); // exactly one line for a repeated identical failure
+        assert.match(lines[0]!, /peer directory refresh failed: 401/);
+        await gw.stop();
       } finally {
         globalThis.fetch = original as any;
       }
@@ -402,6 +467,127 @@ describe("gateway peer discovery", () => {
       } finally {
         globalThis.fetch = original as any;
         fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("rejected caller_token (401, no re-mint) is cleared — overlay falls back to shared token", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-state-"));
+      fs.mkdirSync(path.join(dir, "a2a_gateways"), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, "a2a_gateways", "k1.json"),
+        JSON.stringify({ name: "self-1", callerToken: "dead-ct" }),
+      );
+      const original = globalThis.fetch;
+      const seen: Array<{ method: string; auth?: string }> = [];
+      let overlay: Record<string, any> = {};
+      globalThis.fetch = (async (url: any, init?: any) => {
+        const u = String(url);
+        if (u.endsWith("/register")) {
+          seen.push({ method: init?.method || "GET", auth: init?.headers?.authorization });
+          if (init?.method === "PATCH") return makeResp({ error: "bad caller token" }, 401);
+          return makeResp({ status: "updated" }, 200); // old switchboard: no mint
+        }
+        if (u.endsWith("/.well-known/agent.json"))
+          return makeResp({ peers: [{ name: "pi-s2-9912", url: "/peer/pi-s2-9912/", healthy: true }] }, 200);
+        return makeResp({}, 404);
+      }) as any;
+      try {
+        const gw = new GatewayUpstream(
+          { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60, key: "k1", channel: false, piDir: dir },
+          () => ({}),
+          () => {},
+          (p) => (overlay = p),
+        );
+        assert.isTrue(await gw.start("http://127.0.0.1:9911")); // PATCH 401 → POST shared, no mint
+        assert.isTrue(await gw.register("http://127.0.0.1:9911")); // token still null → plain POST
+        // Dead token must not poison the overlay: gateway peers carry the shared token.
+        assert.equal(overlay["gw/k1/pi-s2-9912"]!.auth.token, TOKEN);
+        assert.deepEqual(
+          seen.map((c) => `${c.method}:${c.auth}`),
+          [
+            "PATCH:Bearer dead-ct",
+            "POST:Bearer " + TOKEN,
+            "POST:Bearer " + TOKEN, // no re-mint → stays POST
+          ],
+        );
+        await gw.stop();
+      } finally {
+        globalThis.fetch = original as any;
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("PATCH 404 (entry deleted) → POST fallback re-registers in the same beat", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-state-"));
+      fs.mkdirSync(path.join(dir, "a2a_gateways"), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, "a2a_gateways", "k1.json"),
+        JSON.stringify({ name: "self-1", callerToken: "old-ct" }),
+      );
+      const original = globalThis.fetch;
+      const seen: string[] = [];
+      globalThis.fetch = (async (url: any, init?: any) => {
+        const u = String(url);
+        if (u.endsWith("/register")) {
+          seen.push(init?.method || "GET");
+          if (init?.method === "PATCH") return makeResp({ error: "no such peer" }, 404);
+          return makeResp({ status: "registered", caller_token: "fresh-ct" }, 200);
+        }
+        if (u.endsWith("/.well-known/agent.json")) return makeResp({ peers: [] }, 200);
+        return makeResp({}, 404);
+      }) as any;
+      try {
+        const gw = new GatewayUpstream(
+          { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60, key: "k1", channel: false, piDir: dir },
+          () => ({}),
+          () => {},
+          () => {},
+        );
+        assert.isTrue(await gw.start("http://127.0.0.1:9911"));
+        assert.deepEqual(seen, ["PATCH", "POST"]); // 404 fell through, POST re-registered
+        // The a2a_gateways dir was auto-created and the re-minted token persisted.
+        assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "a2a_gateways", "k1.json"), "utf8")), {
+          name: "self-1",
+          callerToken: "fresh-ct",
+        });
+        await gw.stop();
+      } finally {
+        globalThis.fetch = original as any;
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("corrupt or foreign-name state file is ignored — POST mints from scratch", async () => {
+      for (const content of ["not-json{", JSON.stringify({ name: "other", callerToken: "x" })]) {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-state-"));
+        fs.mkdirSync(path.join(dir, "a2a_gateways"), { recursive: true });
+        fs.writeFileSync(path.join(dir, "a2a_gateways", "k1.json"), content);
+        const original = globalThis.fetch;
+        const seen: string[] = [];
+        globalThis.fetch = (async (url: any, init?: any) => {
+          const u = String(url);
+          if (u.endsWith("/register")) {
+            seen.push(`${init?.method || "GET"}:${init?.headers?.authorization}`);
+            return makeResp({ status: "registered", caller_token: "minted-ct" }, 200);
+          }
+          if (u.endsWith("/.well-known/agent.json")) return makeResp({ peers: [] }, 200);
+          return makeResp({}, 404);
+        }) as any;
+        try {
+          const gw = new GatewayUpstream(
+            { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60, key: "k1", channel: false, piDir: dir },
+            () => ({}),
+            () => {},
+            () => {},
+          );
+          assert.isTrue(await gw.start("http://127.0.0.1:9911"));
+          // Ignored state → bootstrap POST with the shared token.
+          assert.deepEqual(seen, [`POST:Bearer ${TOKEN}`]);
+          await gw.stop();
+        } finally {
+          globalThis.fetch = original as any;
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
       }
     });
 
