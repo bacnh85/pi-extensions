@@ -4,6 +4,7 @@ import {
   authenticate,
   constantTimeEqual,
   filterInbound,
+  getPushSecret,
   isTrustedPeer,
   localhostOnly,
   parsePeerTokens,
@@ -149,6 +150,17 @@ describe("security", () => {
       cfg.server.trustedPeers = ["alice"];
       cfg.server.allowAllUsers = true;
       assert.isTrue(isTrustedPeer("bob", cfg));
+    });
+  });
+
+  describe("push secret fails closed (#11)", () => {
+    it("returns null when no sharedToken is configured", () => {
+      assert.equal(getPushSecret(DEFAULTS()), null);
+    });
+    it("returns the shared token when configured", () => {
+      const cfg = DEFAULTS();
+      cfg.server.sharedToken = "tok-xyz";
+      assert.equal(getPushSecret(cfg), "tok-xyz");
     });
   });
 

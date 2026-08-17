@@ -70,6 +70,8 @@ interface StoredTask {
   done: boolean;
   /** Set by tasks/cancel so the catch path classifies it as CANCELED, not timeout-FAILED. */
   userCanceled?: boolean;
+  /** Owning authenticated identity (per-identity ownership, #10). */
+  identity: string;
   subscribeWatchers: Array<(t: Task) => void>;
 }
 
@@ -247,7 +249,7 @@ export class A2AServer {
     return `http://${host}:${port}/`;
   }
 
-  private buildCard(): AgentCard {
+  private buildCard(stripEnrichedMetadata = false): AgentCard {
     const url = this.publicUrl();
     const name = this.cfg.server.agentName || hostname() || "pi";
     return buildAgentCard({
@@ -260,7 +262,7 @@ export class A2AServer {
       streaming: true,
       pushNotifications: false,
       authRequired: !localhostOnly(this.cfg),
-      sessionMetadata: this.cfg.discovery.enrichCard && this.descriptor
+      sessionMetadata: !stripEnrichedMetadata && this.cfg.discovery.enrichCard && this.descriptor
         ? this.cardMetadata()
         : undefined,
     });
@@ -648,14 +650,31 @@ export class A2AServer {
     }
   }
 
-  private handleGet(url: string, _req: IncomingMessage, res: ServerResponse): void {
+  /** #9: GET endpoints must authenticate — the enriched card leaks pid/cwd/model
+   * and /metrics leaks operational data. authenticate() returns null only when
+   * a token is REQUIRED and not presented; the plain card still goes out
+   * anonymously so discovery keeps working. /metrics requires auth. */
+  private getIdentity(req: IncomingMessage): string | null {
+    return authenticate({
+      authHeader: req.headers["authorization"],
+      clientIp: (req.socket.remoteAddress || "").replace(/^::ffff:/, ""),
+      peerTokens: this.cfg.server.peerTokens,
+      sharedToken: this.cfg.server.sharedToken,
+    });
+  }
+
+  private handleGet(url: string, req: IncomingMessage, res: ServerResponse): void {
     if (url === "/.well-known/agent-card.json" || url === "/.well-known/agent.json") {
-      return this.send(res, 200, this.buildCard());
+      const identity = this.getIdentity(req);
+      return this.send(res, 200, this.buildCard(identity === null));
     }
     if (url === "/health" || url === "/") {
       return this.send(res, 200, { status: "ok", agent: this.cfg.server.agentName || hostname() });
     }
     if (url === "/metrics") {
+      if (this.getIdentity(req) === null) {
+        return this.send(res, 401, { error: "unauthorized" });
+      }
       return this.send(res, 200, metrics.snapshot());
     }
     return this.send(res, 404, { error: "not found" });
@@ -711,17 +730,22 @@ export class A2AServer {
       return this.messageStream(params, identity, res, id);
     }
     if (norm === "tasksget" || norm === "gettask") {
-      const t = this.store.get(String(params.id ?? ""))?.task;
-      if (!t) return this.send(res, 200, jsonrpcError(id, -32001, "task not found"));
-      return this.send(res, 200, jsonrpcResult(id, t));
+      const st = this.store.get(String(params.id ?? ""));
+      if (!st) return this.send(res, 200, jsonrpcError(id, -32001, "task not found"));
+      // Per-identity ownership (#10): a peer may only fetch its own tasks.
+      if (st.identity !== identity) return this.send(res, 200, jsonrpcError(id, -32001, "task not found"));
+      return this.send(res, 200, jsonrpcResult(id, st.task));
     }
     if (norm === "taskslist" || norm === "listtasks") {
-      const all = this.store.list().map((t) => ({ id: t.id, state: t.status.state }));
+      // Per-identity ownership (#10): only the caller's own tasks are listed.
+      const all = this.store.list().filter((t) => this.store.get(t.id)?.identity === identity).map((t) => ({ id: t.id, state: t.status.state }));
       return this.send(res, 200, jsonrpcResult(id, { tasks: all }));
     }
     if (norm === "taskscancel" || norm === "canceltask") {
       const st = this.store.get(String(params.id ?? ""));
       if (!st) return this.send(res, 200, jsonrpcError(id, -32001, "task not found"));
+      // Per-identity ownership (#10): a peer may only cancel its own tasks.
+      if (st.identity !== identity) return this.send(res, 200, jsonrpcError(id, -32001, "task not found"));
       if (st.done) return this.send(res, 200, jsonrpcError(id, -32002, "task not cancelable"));
       st.userCanceled = true; // so messageSend's catch classifies as CANCELED, not timeout-FAILED
       st.controller?.abort();
@@ -735,7 +759,7 @@ export class A2AServer {
     }
     if (norm === "taskssubscribe" || norm === "subscribetotask") {
       // Resubscribe via SSE — same shape as message/stream.
-      return this.taskSubscribe(params, res, id);
+      return this.taskSubscribe(params, identity, res, id);
     }
     return this.send(res, 200, jsonrpcError(id, -32601, `method not found: ${method}`));
   }
@@ -754,7 +778,7 @@ export class A2AServer {
     if (!this.antiLoop.record(contextId)) {
       metrics.antiLoopTriggers += 1;
       const t = buildTask({ id: taskId, contextId, state: STATE_REJECTED });
-      this.store.add(taskId, { task: t, done: true, subscribeWatchers: [] });
+      this.store.add(taskId, { task: t, done: true, identity, subscribeWatchers: [] });
       audit({ piDir: this.piDir, direction: "inbound", identity, taskId, text: "[anti-loop rejected]" });
       return t;
     }
@@ -762,7 +786,7 @@ export class A2AServer {
     // Create the task (SUBMITTED → WORKING).
     const task = buildTask({ id: taskId, contextId, state: STATE_WORKING });
     const controller = new AbortController();
-    const st: StoredTask = { task, controller, done: false, subscribeWatchers: [] };
+    const st: StoredTask = { task, controller, done: false, identity, subscribeWatchers: [] };
     this.store.add(taskId, st);
     audit({ piDir: this.piDir, direction: "inbound", identity, taskId, text: inboundText });
     this.onActivity?.({ type: "arrived", taskId, identity, text: inboundText, contextId });
@@ -923,9 +947,16 @@ export class A2AServer {
       });
   }
 
-  private taskSubscribe(params: any, res: ServerResponse, id: any): void {
+  private taskSubscribe(params: any, identity: string, res: ServerResponse, id: any): void {
     const taskId = String(params.id ?? "");
     const st = this.store.get(taskId);
+    // Ownership check (#10) BEFORE writing the SSE head, so a foreign peer gets
+    // a proper JSON-RPC error instead of a 200 event-stream that hangs.
+    if (!st || st.identity !== identity) {
+      this.send(res, 200, jsonrpcError(id, -32001, "task not found"));
+      res.end();
+      return;
+    }
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",

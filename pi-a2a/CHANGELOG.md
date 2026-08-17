@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.6.1 — 2026-08-17
+
+### Security
+
+- **Per-identity task ownership (#10).** Every inbound task is stamped with the
+  authenticated caller's identity at creation; `tasks/get`, `tasks/list`,
+  `tasks/cancel`, and `tasks/subscribe` now only see/act on the caller's own
+  tasks. A peer can no longer enumerate other peers' task ids, read their
+  artifacts/replies, or cancel their tasks in per-peer-token deployments.
+  Foreign tasks return the same `-32001 task not found` as missing ones (no
+  existence leak).
+- **GET endpoints authenticated (#9).** The enriched Agent Card (pid, cwd,
+  model, session metadata via `discovery.enrichCard`) is now served only to
+  authenticated callers; anonymous callers get the plain card so discovery
+  keeps working. `/metrics` requires authentication (401 otherwise).
+- **Push secret fails closed (#11).** `getPushSecret()` no longer falls back to
+  the hardcoded `"pi-a2a-push-default"` — without a configured `sharedToken`
+  there is no signing secret (`null`), so push-payload HMACs are no longer
+  forgeable by anyone. Push delivery is currently unwired, so no behavior
+  change beyond the removed landmine.
+
 ## 0.6.0 — 2026-08-16
 
 ### Added

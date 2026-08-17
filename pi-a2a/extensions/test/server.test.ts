@@ -97,6 +97,42 @@ describe("server", () => {
         await stop();
       }
     });
+
+    it("#9: strips enriched session metadata from the card for anonymous (unauthenticated) callers", async () => {
+      const cfg = DEFAULTS();
+      cfg.server.sharedToken = "test-shared-token";
+      const { url, stop } = await startServer({ cfg });
+      try {
+        // Anonymous (no Authorization header) → plain card, no metadata.
+        const anon = await (await fetch(url + ".well-known/agent-card.json")).json();
+        assert.equal(anon.metadata, undefined);
+        assert.equal(anon.capabilities.extensions, undefined);
+        // Authenticated → enriched card with pi-session metadata.
+        const auth = await (await fetch(url + ".well-known/agent-card.json", {
+          headers: { Authorization: "Bearer test-shared-token" },
+        })).json();
+        assert.notEqual(auth.metadata, undefined);
+        assert.equal(auth.metadata.extension, "https://bacnh85.dev/a2a/extensions/pi-session/v1");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("#9: /metrics requires authentication", async () => {
+      const cfg = DEFAULTS();
+      cfg.server.sharedToken = "test-shared-token";
+      const { url, stop } = await startServer({ cfg });
+      try {
+        const anon = await fetch(url + "metrics");
+        assert.equal(anon.status, 401);
+        const auth = await fetch(url + "metrics", {
+          headers: { Authorization: "Bearer test-shared-token" },
+        });
+        assert.equal(auth.status, 200);
+      } finally {
+        await stop();
+      }
+    });
   });
 
   describe("session discovery (0.2.0)", () => {
@@ -639,6 +675,34 @@ describe("server", () => {
         const tid = send.result.id;
         const cancel = await jsonRpc(url, "tasks/cancel", { id: tid });
         assert.equal(cancel.error?.code, -32002);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("#10: tasks are per-identity — another peer cannot get/list/cancel them", async () => {
+      const cfg = DEFAULTS();
+      cfg.server.peerTokens = { alice: "tok-alice", bob: "tok-bob" };
+      const { url, stop } = await startServer({ cfg, runner: stubRunner("secret result") });
+      const aliceH = { Authorization: "Bearer tok-alice" };
+      const bobH = { Authorization: "Bearer tok-bob" };
+      try {
+        const send = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "alice task" }] },
+        }, aliceH);
+        const tid = send.result.id;
+        // Bob cannot fetch Alice's task or see it in his list.
+        const foreignGet = await jsonRpc(url, "tasks/get", { id: tid }, bobH);
+        assert.equal(foreignGet.error?.code, -32001, "foreign tasks/get must fail");
+        const bobList = await jsonRpc(url, "tasks/list", {}, bobH);
+        assert.equal(bobList.result.tasks.length, 0, "tasks/list must only show own tasks");
+        const foreignCancel = await jsonRpc(url, "tasks/cancel", { id: tid }, bobH);
+        assert.equal(foreignCancel.error?.code, -32001, "foreign tasks/cancel must fail");
+        // Alice still can.
+        const ownGet = await jsonRpc(url, "tasks/get", { id: tid }, aliceH);
+        assert.equal(ownGet.result.id, tid);
+        const aliceList = await jsonRpc(url, "tasks/list", {}, aliceH);
+        assert.equal(aliceList.result.tasks.length, 1);
       } finally {
         await stop();
       }
