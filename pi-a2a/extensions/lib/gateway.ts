@@ -3,8 +3,9 @@
  * a self-hosted a2a-switchboard gateway (https://github.com/bacnh85/a2a-switchboard)
  * so other accepted peers can discover and call it via the gateway's proxy.
  *
- * Lifecycle: register on server start → re-register as heartbeat (also
- * refreshes URL if the port changed) → deregister on graceful stop. A crashed
+ * Lifecycle: register (POST) on server start → PATCH /register heartbeats
+ * once the per-peer caller_token is known (POST mints it; the token is
+ * persisted so restarts skip the mint) → deregister on graceful stop. A crashed
  * session leaves a stale entry; the gateway's health prober marks it
  * unreachable, and the admin can delete it (or the next session with the same
  * name + token takes the entry over via re-registration).
@@ -15,6 +16,8 @@
  */
 
 import type { Peer } from "./config";
+import * as fs from "node:fs";
+import { dirname, join } from "node:path";
 
 export interface GatewayConfig {
   /** Gateway base URL, e.g. http://127.0.0.1:9920 */
@@ -44,6 +47,10 @@ export interface GatewayConfig {
   /** Gateway key (0.6.0) — namespaces the peer overlay as `gw/<key>/<name>`.
    *  Default "default". */
   key?: string;
+  /** Directory for persisted gateway state (the minted caller_token — the
+   *  gateway only discloses it at mint, so it must survive restarts).
+   *  Injected by the server; unset = stateless. */
+  piDir?: string;
 }
 
 const DEREG_TIMEOUT_MS = 3000;
@@ -201,18 +208,6 @@ export class GatewayUpstream {
   private epochRef = { value: 0 };
   private channel: ChannelClient | null = null;
 
-  constructor(
-    private readonly cfg: GatewayConfig,
-    /** Builds the agent-card JSON body; called on each heartbeat so the card stays fresh. */
-    private readonly buildCard: () => Record<string, unknown>,
-    private readonly log: (msg: string) => void = console.error,
-    /** Receives each refreshed `gw/<name>` → Peer overlay ({} clears it). */
-    private readonly onPeers: (peers: Record<string, Peer>) => void = () => {},
-    /** Host-TUI status line (transcript) for lifecycle events like the
-     *  reverse channel opening — surfaced like the registration message. */
-    private readonly onStatus: ((msg: string) => void) | undefined = undefined,
-  ) {}
-
   private url(path: string): string {
     return this.cfg.url.replace(/\/+$/, "") + path;
   }
@@ -246,15 +241,71 @@ export class GatewayUpstream {
 
   /** Per-peer caller token issued by the gateway at registration. Used as the
    *  caller identity for outbound `/peer/*` calls so the gateway's dashboard
-   *  shows THIS peer's name (not a shared-token fingerprint). */
-  private callerToken: string | null = null;
+   *  shows THIS peer's name (not a shared-token fingerprint), and as the
+   *  auth for PATCH /register heartbeats. Loaded from disk at construction,
+   *  re-persisted on every mint. */
+  private callerToken: string | null;
+  /** Sticky false after a 405 (old switchboard without PATCH) — POST-only for
+   *  the rest of the session to avoid flapping. */
+  private patchSupported = true;
+  /** `<piDir>/a2a_gateways/<key>.json` — null when cfg.piDir is unset. */
+  private readonly stateFile: string | null;
+  // ponytail: one state file per gateway key; concurrent same-machine sessions
+  // sharing a key overwrite each other (name-guarded at load) — per-name files if that ever matters.
 
-  private async post(path: string, body: unknown): Promise<Response | null> {
+  constructor(
+    private readonly cfg: GatewayConfig,
+    /** Builds the agent-card JSON body; called on each heartbeat so the card stays fresh. */
+    private readonly buildCard: () => Record<string, unknown>,
+    private readonly log: (msg: string) => void = console.error,
+    /** Receives each refreshed `gw/<name>` → Peer overlay ({} clears it). */
+    private readonly onPeers: (peers: Record<string, Peer>) => void = () => {},
+    /** Host-TUI status line (transcript) for lifecycle events like the
+     *  reverse channel opening — surfaced like the registration message. */
+    private readonly onStatus: ((msg: string) => void) | undefined = undefined,
+  ) {
+    this.stateFile = cfg.piDir
+      ? join(cfg.piDir, "a2a_gateways", `${this.key.replace(/[^A-Za-z0-9._-]/g, "_")}.json`)
+      : null;
+    this.callerToken = this.loadPersistedToken();
+  }
+
+  /** Load the persisted caller_token. A foreign entry name (concurrent
+   *  session under the same key) is ignored — the gateway binds the token to
+   * the peer name, another name's token would only 401. */
+  private loadPersistedToken(): string | null {
+    if (!this.stateFile) return null;
+    try {
+      const j = JSON.parse(fs.readFileSync(this.stateFile, "utf8"));
+      return j?.name === this.name && typeof j.callerToken === "string" && j.callerToken
+        ? j.callerToken
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private persistToken(): void {
+    if (!this.stateFile || !this.callerToken) return;
+    try {
+      fs.mkdirSync(dirname(this.stateFile), { recursive: true });
+      fs.writeFileSync(this.stateFile, JSON.stringify({ name: this.name, callerToken: this.callerToken }));
+    } catch {
+      /* state file is an optimization — heartbeat still works via fallback */
+    }
+  }
+
+  private async send(
+    method: "POST" | "PATCH",
+    path: string,
+    token: string,
+    body: unknown,
+  ): Promise<Response | null> {
     try {
       return await fetch(this.url(path), {
-        method: "POST",
+        method,
         headers: {
-          authorization: `Bearer ${this.cfg.token}`,
+          authorization: `Bearer ${token}`,
           "content-type": "application/json",
         },
         body: JSON.stringify(body),
@@ -271,7 +322,22 @@ export class GatewayUpstream {
     const at = this.epoch;
     const body: Record<string, unknown> = { name: this.name, url, card: this.buildCard() };
     if (this.cfg.upstreamToken) body.upstream_token = this.cfg.upstreamToken;
-    const res = await this.post("/register", body);
+    // Steady-state heartbeats PATCH with the per-peer caller_token (full card
+    // refresh; url re-send covers IP changes). POST is the mint path and the
+    // fallback when PATCH can't work (405 old gateway, 401 stale token,
+    // 404 deleted entry).
+    let res: Response | null = null;
+    if (this.callerToken && this.patchSupported) {
+      res = await this.send("PATCH", "/register", this.callerToken, body);
+      if (at !== this.epoch) return false; // stop() raced us — registration is dead
+      if (!res) {
+        this.log(`[a2a-gateway:${this.label}] register failed: network error`);
+        return false;
+      }
+      if (res.status === 405) this.patchSupported = false; // old switchboard — POST-only this session
+      if (!res.ok) res = null; // 405/401/404 — fall through to POST
+    }
+    if (!res) res = await this.send("POST", "/register", this.cfg.token, body);
     if (at !== this.epoch) return false; // stop() raced us — registration is dead
     if (!res?.ok) {
       this.log(`[a2a-gateway:${this.label}] register failed: ${res ? res.status : "network error"}`);
@@ -282,6 +348,7 @@ export class GatewayUpstream {
       this.lastState = String(j?.state ?? "");
       if (typeof j?.caller_token === "string" && j.caller_token) {
         this.callerToken = j.caller_token;
+        this.persistToken();
       }
     } catch {
       this.lastState = "";

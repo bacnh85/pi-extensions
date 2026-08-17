@@ -395,6 +395,9 @@ export class A2AServer {
           ...gw,
           name,
           key,
+          // Persists the minted caller_token (<piDir>/a2a_gateways/<key>.json)
+          // so restarts heartbeat with PATCH instead of re-minting.
+          piDir: this.piDir,
           // The gateway directory copies capabilities/skills from the registered
           // card — send the real Agent Card, not the local-registry descriptor.
           callTimeoutMs: this.cfg.timeouts.send,

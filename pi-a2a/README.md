@@ -265,6 +265,27 @@ groups):
 - The panel renders tokens masked (`••••`); the token is stored in settings.json
   in plaintext (same as `server.sharedToken`) — use env `A2A_GATEWAY_TOKEN` if
   you'd rather keep secrets out of files (env feeds the single `gateway` block).
+- **Heartbeat method (PATCH /register):** the first registration is always a
+  `POST /register` with the shared token — the only path that mints the
+  per-peer `caller_token`. Once known, every heartbeat switches to
+  `PATCH /register` authenticated as that `caller_token` (full card refresh;
+  re-sending the URL covers IP changes). On `405` (old switchboard) or `401`
+  (stale token) the heartbeat falls back to POST and the fallback re-mints
+  when the response carries a new `caller_token`.
+
+  | Situation | Method | Auth |
+  |---|---|---|
+  | First register / unknown peer | `POST /register` | shared token |
+  | Steady-state heartbeat (`caller_token` known) | `PATCH /register` | `caller_token` |
+  | PATCH unsupported (`405`) or rejected (`401`) | `POST /register` | shared token |
+
+  The `caller_token` is disclosed by the gateway **only at mint**, so it is
+  persisted per gateway key at `~/.pi/agent/a2a_gateways/<key>.json`
+  (`{name, callerToken}`) — after a restart, heartbeats PATCH immediately
+  instead of re-minting. Lose the file (or the entry) and the only recovery is
+  POST re-registration, which re-mints.
+- The directory fetch (`GET /.well-known/agent.json`) always uses the shared
+  token — unchanged by PATCH heartbeats.
 
 ### Per-session identity (unique caller attribution)
 
