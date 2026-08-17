@@ -275,7 +275,7 @@ describe("agent discovery", () => {
     const agents = discoverAgents(root, "project", path.resolve(import.meta.dirname, "../../agents")).agents;
     const planner = agents.find((agent) => agent.name === "planner")!;
     const tester = agents.find((agent) => agent.name === "tester")!;
-    assert.deepEqual(getModelCandidates(planner), ["zai-coding-cn/glm-5.2", "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", "opencode-go/deepseek-v4-pro"]);
+    assert.deepEqual(getModelCandidates(planner), ["zai-coding-cn/glm-5.3", "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", "opencode-go/deepseek-v4-pro"]);
     assert.equal(planner.thinking, "high");
     assert.equal(planner.sandbox, "read-only");
     assert.deepEqual(planner.tools, ["read", "grep", "find", "ls"]);

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.3 (2026-08-17)
+
+### Improvements
+
+- Dangerous-command confirmation is now a single select — **Allow once / Allow for this session / Deny** — instead of a yes/no confirm repeated per command. Long commands are clipped to 120 chars.
+- Session-allow keys are hardened: interpreter/wrapper executables (powershell, pwsh, cmd, wsl, node, …, or any `*.exe`) are keyed by the **full command** — one approval cannot silence the danger-classification gate for a different payload behind the same interpreter. Ordinary executables stay keyed by first token.
+
 ## 0.5.2 (2026-08-05)
 
 ### Improvements

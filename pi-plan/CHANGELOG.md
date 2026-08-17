@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.5 (2026-08-17)
+
+### Improvements
+
+- Plan-mode approval prompts (unknown bash executables, non-read tools, mutating subagents) now use a single select — **Allow once / Allow for this session / Deny** — instead of repeating a yes/no confirm on every call. "Allow for this session" remembers per tool (custom tools) or per executable (bash first token) until plan mode toggles. Long commands are clipped to 120 chars in the prompt body. Dismissed dialogs fail closed.
+- Session allows are cleared on `session_start` (session replacement reuses the extension process), not only on plan-mode toggle.
+- Session-allow keys are hardened: interpreter executables (node, npx, python, bash, …) are keyed by the **full command** (one approval must not blanket-allow any later script), and `subagent` approvals are keyed by the **requested agent set** (approving one mutating agent doesn't whitelist others).
+
 ## 0.10.4 (2026-08-11)
 
 ### Improvements

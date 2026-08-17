@@ -34,7 +34,7 @@ Add a `permission` object to `.pi/settings.json` (project) or `~/.pi/agent/setti
 | Action | Behavior |
 |--------|----------|
 | `allow` | Runs silently, no prompt |
-| `ask` | Prompts via the Pi UI (Allow once / Allow always this session / Deny) |
+| `ask` | Prompts via the Pi UI (**Allow once / Allow for this session / Add to permanent allowlist / Deny**). "Allow for this session" skips prompts for the exact same call subject until the session ends; "Add to permanent allowlist" writes the `allow` rule into settings.json. Tools without a command/path subject get only Allow once/Deny. Dismissing the dialog blocks. Session promotions never override an explicit `deny`. |
 | `deny` | Blocks immediately |
 
 ### Patterns

@@ -69,9 +69,9 @@ Fresh-session replacement is intentionally initiated by `/plan-approve`: extensi
 | `write_plan`, `ask_user_question` | Always available |
 | `bash` (write commands: redirects, heredocs, `sed -i`, `tee`, `cp`/`mv`/`rm`, `touch`, `mkdir`) | Hard-blocked — no filesystem mutations via bash in plan mode |
 | `bash` (strict single read commands: `ls`, `grep`, `find`, `git status`, `cat`) | Auto-allowed without prompt |
-| `bash` (unknown executables, including test/build/package scripts) | Requires `confirm` dialog warning about possible side effects; denied without UI |
-| Baseline custom tools not on the known-read list | Requires `confirm` dialog |
-| Unknown tools (not in original baseline) | Requires `confirm` dialog |
+| `bash` (unknown executables, including test/build/package scripts) | Requires approval (**Allow once / Allow for this session / Deny**) warning about possible side effects; denied without UI. "Allow for this session" remembers the executable (first token) until plan mode toggles |
+| Baseline custom tools not on the known-read list | Requires approval (same options; "Allow for this session" remembers the tool) |
+| Unknown tools (not in original baseline) | Requires approval (same options) |
 | Direct source mutators (`edit`, `write`, Serena/Munin mutations) | Hard-blocked with error message |
 | `multi_tool_use.parallel` | Each nested call independently gated |
 

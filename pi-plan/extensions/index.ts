@@ -191,6 +191,31 @@ function relativeToCwd(cwd: string, absolutePath: string): string {
   return path.relative(cwd, absolutePath).split(path.sep).join("/");
 }
 
+/**
+ * Shared approval gate for plan mode. The old yes/no `ctx.ui.confirm` asked
+ * the same question on every call; this select offers the standard dispositions
+ * and short-circuits the rest of the session for "this session" answers.
+ * Returns undefined (allow) or a block reason string.
+ */
+async function planApprovalPrompt(
+  ctx: { hasUI?: boolean; ui?: { select: (t: string, o: string[]) => Promise<string | undefined> } },
+  title: string,
+  detail: string,
+  remember: (key: string) => void,
+  rememberKey: string,
+): Promise<string | undefined> {
+  const choice = await ctx.ui!.select(
+    `${title}\n\n${detail}`,
+    ["Allow once", "Allow for this session", "Deny"],
+  );
+  if (choice === "Allow for this session") {
+    remember(rememberKey);
+    return undefined;
+  }
+  if (choice === undefined || choice === "Deny") return `${title.replace(/ in plan mode\?$/, "")} rejected by user.`;
+  return undefined; // Allow once
+}
+
 export { snapshotUntrackedFiles } from "./lib/lifecycle";
 
 function formatShortContextUsage(ctx: ExtensionContext): string {
@@ -444,6 +469,12 @@ function checkpointFromEntry(entry: any): RewindCheckpoint | undefined {
 
 export default function piPlanExtension(pi: ExtensionAPI): void {
   let planModeEnabled = false;
+  // Session-scoped allows chosen in the plan-mode approval prompt. Keyed by
+  // tool name (custom tools) or "bash:<first token of command>" — cleared when
+  // plan mode toggles, since the approval was scoped to this plan session.
+  const planSessionAllows = new Set<string>();
+  const rememberPlanAllow = (key: string) => planSessionAllows.add(key);
+  const clearPlanSessionAllows = () => planSessionAllows.clear();
   let toolsBeforePlan: string[] | undefined;
   let planThinking: ThinkingLevel = "high";
   let normalThinking: ThinkingLevel = "medium";
@@ -698,6 +729,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
   async function enterPlanMode(ctx: ExtensionContext): Promise<void> {
     planModeEnabled = true;
+    clearPlanSessionAllows();
     // ponytail: after approval, start fresh plan path
     if (lastPlanStatus === "approved" || lastPlanStatus === "executing") {
       flow = undefined;
@@ -722,6 +754,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     restoreThinking = true,
   ): Promise<void> {
     planModeEnabled = false;
+    clearPlanSessionAllows();
     planReadyForReview = false;
     restoreTools();
     await applyModeModel(ctx);
@@ -1694,6 +1727,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   // ── Events ──────────────────────────────────────────────────
 
   pi.on("session_start", async (event, ctx) => {
+    // Session approvals don't survive session replacement (pi reuses the
+    // extension process) — same clearing discipline as the sibling packages.
+    clearPlanSessionAllows();
     lastCtx = ctx;
     preferences = await loadPreferences();
     const cfg = await loadUtilityConfig(ctx);
@@ -1936,7 +1972,25 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
         };
       }
       if (!ctx.hasUI) return { block: true, reason: `pi-plan: this command requires confirmation but UI is not available.\nCommand: ${event.input.command}` };
-      if (!await ctx.ui.confirm("Allow command with possible side effects?", `This command may execute repository-controlled code or modify files.\n\nCommand: ${event.input.command}`)) {
+      const clip = (s: string) => s.replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
+      const rawCommand = (event.input.command || "").trim();
+      const firstToken = rawCommand.split(/\s+/)[0] || "bash";
+      // Interpreters/wrappers run arbitrary payloads — a first-token key would
+      // blanket-allow ANY later script, so those key on the full command.
+      const INTERPRETER_TOKENS = new Set(["node", "npx", "python", "python3", "bash", "sh", "zsh", "deno", "bun", "make", "cargo", "go", "ruby", "perl", "awk", "eval"]);
+      const allowKey = INTERPRETER_TOKENS.has(firstToken) ? `bash-cmd:${rawCommand}` : `bash:${firstToken}`;
+      if (planSessionAllows.has(allowKey)) return;
+      const rememberNote = INTERPRETER_TOKENS.has(firstToken)
+        ? `"Allow for this session" remembers only this exact command until plan mode toggles.`
+        : `"Allow for this session" remembers \`${clip(firstToken)}\` commands until plan mode toggles.`;
+      const reason = await planApprovalPrompt(
+        ctx,
+        `Allow command with possible side effects in plan mode?`,
+        `This command may execute repository-controlled code or modify files.\n\nCommand: ${clip(event.input.command || "")}\n\n${rememberNote}`,
+        rememberPlanAllow,
+        allowKey,
+      );
+      if (reason) {
         return { block: true, reason: `pi-plan: bash command rejected by user.\nCommand: ${event.input.command}` };
       }
       return;
@@ -1955,8 +2009,21 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     // ponytail: even baseline/unknown custom tools (e.g. obsidian) need confirm unless known-read
     if (!READ_ONLY_TOOLS.has(event.toolName)) {
       if (!ctx.hasUI) return { block: true, reason: `pi-plan: ${event.toolName} requires confirmation but UI is not available.` };
-      if (!await ctx.ui.confirm(`Allow ${event.toolName} in plan mode?`, `Tool: ${event.toolName}`)) {
-        return { block: true, reason: `pi-plan: ${event.toolName} rejected by user.` };
+      // subagent approvals are per requested agent set — approving ONE mutating
+      // agent must not whitelist every other mutating agent.
+      const subagentKey = event.toolName === "subagent"
+        ? `subagent:${[...extractSubagentNames(event.input)].sort().join(",")}`
+        : event.toolName;
+      if (planSessionAllows.has(subagentKey)) return;
+      const reason = await planApprovalPrompt(
+        ctx,
+        `Allow ${event.toolName} in plan mode?`,
+        `Tool: ${event.toolName}`,
+        rememberPlanAllow,
+        subagentKey,
+      );
+      if (reason) {
+        return { block: true, reason: `pi-plan: ${reason}` };
       }
       return;
     }

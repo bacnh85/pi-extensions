@@ -1,7 +1,7 @@
 {
   "name": "@bacnh85/pi-permission",
-  "version": "0.1.2",
-  "description": "Granular permission system for Pi — allow/ask/deny rules per tool with wildcard patterns, external-directory boundary, and a doom-loop guard. Config-driven, opt-in companion to Pi's container-first philosophy. Inspired by OpenCode's permission config.",
+  "version": "0.2.0",
+  "description": "Granular permission system for Pi \u2014 allow/ask/deny rules per tool with wildcard patterns, external-directory boundary, and a doom-loop guard. Config-driven, opt-in companion to Pi's container-first philosophy. Inspired by OpenCode's permission config.",
   "keywords": [
     "pi-package",
     "pi",
