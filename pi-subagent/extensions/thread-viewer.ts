@@ -255,7 +255,7 @@ export class ThreadViewer {
 
     // Scroll indicator at top
     if (aboveShown) {
-      const abmsg = this.theme.fg(color, `↓ ${offset}`) + this.theme.fg("muted", ` more lines above`);
+      const abmsg = this.theme.fg(color, `↑ ${offset}`) + this.theme.fg("muted", ` more lines above`);
       visible.unshift(truncateFit(
         abmsg,
         width,
