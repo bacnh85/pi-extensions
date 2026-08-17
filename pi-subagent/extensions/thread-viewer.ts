@@ -35,6 +35,12 @@ export interface ThreadViewerCallbacks {
 
 /** Viewport height for the overlay (estimated lines). Must be > 3. */
 const OVERLAY_HEIGHT = 24;
+const borderSize = 1;
+const truncateFit = function (text: string, width: number): string {
+  text = " " + text;
+  return truncateToWidth(text, width - ((borderSize*2) +1), "...", true) + " ";
+
+  }
 
 export class ThreadViewer {
   private thread: SubagentThread;
@@ -44,12 +50,16 @@ export class ThreadViewer {
   private cachedWidth?: number;
   private cachedUpdatedAt?: number;
   private cachedLines?: string[];
+  private lastThreadId: string | null = null;
 
   constructor(thread: SubagentThread, callbacks: ThreadViewerCallbacks, theme: ViewerTheme) {
     this.thread = thread;
     this.callbacks = callbacks;
     this.theme = theme;
+    this.lastThreadId = thread.id;
+
   }
+
 
   handleInput(data: string): void {
     if (matchesKey(data, Key.escape)) {
@@ -58,14 +68,12 @@ export class ThreadViewer {
     }
     if (matchesKey(data, Key.alt("left"))) {
       if (this.callbacks.hasPrev) {
-        this.scrollOffset = 0;
         this.callbacks.onPrev();
       }
       return;
     }
     if (matchesKey(data, Key.alt("right"))) {
       if (this.callbacks.hasNext) {
-        this.scrollOffset = 0;
         this.callbacks.onNext();
       }
       return;
@@ -131,19 +139,19 @@ export class ThreadViewer {
       const reasonColor = result.stopReason === "timeout" ? "warning" : "error";
       header += ` ${t.fg(reasonColor, `[${result.stopReason}]`)}`;
     }
-    lines.push(truncateToWidth(header, width));
+    lines.push(truncateFit(header, width));
 
     // Error message
     if (result && isErr && result.errorMessage) {
       const msgColor = result.stopReason === "timeout" ? "warning" : "error";
-      lines.push(truncateToWidth(t.fg(msgColor, `Error: ${result.errorMessage}`), width));
+      lines.push(truncateFit(t.fg(msgColor, `Error: ${result.errorMessage}`), width));
     }
 
     lines.push("");
 
     // Task
-    lines.push(truncateToWidth(t.fg("muted", "─── Task ───"), width));
-    lines.push(truncateToWidth(t.fg("dim", this.thread.task), width));
+    lines.push(truncateFit(t.fg("muted", "─── Task ───"), width));
+    lines.push(truncateFit(t.fg("dim", this.thread.task), width));
     lines.push("");
 
     if (status === "running") {
@@ -152,18 +160,18 @@ export class ThreadViewer {
       const activity = this.thread.lastActivityAt ? `${Math.floor((now - this.thread.lastActivityAt) / 1000)}s ago (${this.thread.lastActivityLabel})` : "none yet";
       const idleMs = this.thread.inactivityDeadline ? this.thread.inactivityDeadline - now : 0;
       const idle = this.thread.inactivityDeadline ? `${Math.max(0, Math.ceil(idleMs / 1000))}s remaining` : "pending";
-      lines.push(truncateToWidth(t.fg(idleMs < 30_000 ? "warning" : "muted", `Elapsed ${elapsed}s · last activity ${activity} · idle ${idle}`), width));
+      lines.push(truncateFit(t.fg(idleMs < 30_000 ? "warning" : "muted", `Elapsed ${elapsed}s · last activity ${activity} · idle ${idle}`), width));
     }
     if (status === "running" && (!result || result.messages.length === 0)) {
-      lines.push(truncateToWidth(t.fg("muted", "(waiting for first message...)"), width));
+      lines.push(truncateFit(t.fg("muted", "(waiting for first message...)"), width));
     } else if (result) {
       const displayItems = getDisplayItems(result.messages);
       const finalOutput = getFinalOutput(result.messages);
 
-      lines.push(truncateToWidth(t.fg("muted", "─── Output ───"), width));
+      lines.push(truncateFit(t.fg("muted", "─── Output ───"), width));
 
       if (displayItems.length === 0 && !finalOutput) {
-        lines.push(truncateToWidth(t.fg("muted", "(no output)"), width));
+        lines.push(truncateFit(t.fg("muted", "(no output)"), width));
       } else {
         const mdTheme = getMarkdownTheme();
 
@@ -171,7 +179,7 @@ export class ThreadViewer {
         for (const item of displayItems) {
           if (item.type === "toolCall") {
             lines.push(
-              truncateToWidth(
+              truncateFit(
                 t.fg("muted", "→ ") + formatToolCall(item.name, item.args, t.fg.bind(t)),
                 width,
               ),
@@ -182,7 +190,7 @@ export class ThreadViewer {
             const md = new Markdown(item.text.trim(), 0, 0, mdTheme);
             const mdLines = md.render(contentWidth);
             for (const mdLine of mdLines) {
-              lines.push(`  ${truncateToWidth(mdLine, contentWidth)}`);
+              lines.push(`  ${truncateFit(mdLine, contentWidth)}`);
             }
           }
         }
@@ -194,7 +202,7 @@ export class ThreadViewer {
           const contentWidth = Math.max(1, width - 2);
           const md = new Markdown(finalOutput.trim(), 0, 0, mdTheme);
           for (const mdLine of md.render(contentWidth)) {
-            lines.push(`  ${truncateToWidth(mdLine, contentWidth)}`);
+            lines.push(`  ${truncateFit(mdLine, contentWidth)}`);
           }
         }
       }
@@ -203,7 +211,7 @@ export class ThreadViewer {
       const usageStr = formatUsageStats(result.usage, result.model);
       if (usageStr) {
         lines.push("");
-        lines.push(truncateToWidth(t.fg("dim", usageStr), width));
+        lines.push(truncateFit(t.fg("dim", usageStr), width));
       }
     }
 
@@ -215,7 +223,7 @@ export class ThreadViewer {
     if (this.callbacks.hasPrev) navParts.push("alt+← prev");
     if (this.callbacks.hasNext) navParts.push("alt+→ next");
     navParts.push("↑↓ scroll");
-    lines.push(truncateToWidth(t.fg("dim", navParts.join(" · ")), width));
+    lines.push(truncateFit(t.fg("dim", navParts.join(" · ")), width));
 
     this.cachedLines = lines;
     this.cachedWidth = width;
@@ -227,6 +235,7 @@ export class ThreadViewer {
   private renderVisible(allLines: string[], width: number): string[] {
     const total = allLines.length;
     const maxVisible = Math.max(3, OVERLAY_HEIGHT);
+    const color = this.thread.color ?? "accent";
 
     // Clamp scrollOffset so the last page shows a full viewport minus one indicator line
     const maxOffset =
@@ -246,21 +255,47 @@ export class ThreadViewer {
 
     // Scroll indicator at top
     if (aboveShown) {
-      visible.unshift(truncateToWidth(
-        this.theme.fg("muted", `↑ ${offset} more lines above`),
+      const abmsg = this.theme.fg(color, `↓ ${offset}`) + this.theme.fg("muted", ` more lines above`);
+      visible.unshift(truncateFit(
+        abmsg,
         width,
       ));
     }
     // Scroll indicator at bottom
     if (belowShown) {
       const remaining = total - offset - bodyHeight;
-      visible.push(truncateToWidth(
-        this.theme.fg("muted", `↓ ${remaining} more lines below`),
+      const remmsg = this.theme.fg(color, `↓ ${remaining}`) + this.theme.fg("muted", ` more lines below`);
+        visible.push(truncateFit(
+        remmsg,
         width,
       ));
     }
 
-    return visible;
+    // Add border around the visible content
+    const borderWidth = width - 2;
+    const borderedLines: string[] = [];
+
+
+    // Top border with colored characters
+    const borderColor = this.theme.fg(color, "─");
+    const cornerColor = this.theme.fg(color, "┌");
+    const bottomCornerColor = this.theme.fg(color, "└");
+    const sideBorder = this.theme.fg(color, "│");
+    borderedLines.push(cornerColor + borderColor.repeat(borderWidth) + this.theme.fg(color, "┐"));
+
+    // Content with side borders
+    for (const line of visible) {
+      let borderedLine = sideBorder + line + sideBorder;
+      if (line.trim() == "") {
+        borderedLine = sideBorder + " ".repeat(Math.max(0, width - ( borderSize * 2))) + sideBorder;
+      }
+      borderedLines.push(borderedLine);
+    }
+
+    // Bottom border with colored characters
+    borderedLines.push(bottomCornerColor + borderColor.repeat(borderWidth) + this.theme.fg(color, "┘"));
+
+    return borderedLines;
   }
 
   invalidate(): void {
@@ -273,7 +308,11 @@ export class ThreadViewer {
   setThread(thread: SubagentThread, callbacks: ThreadViewerCallbacks): void {
     this.thread = thread;
     this.callbacks = callbacks;
-    this.scrollOffset = 0;
+    // Only reset scrollOffset when switching to a different thread
+    if (this.lastThreadId !== thread.id) {
+      this.scrollOffset = 0;
+      this.lastThreadId = thread.id;
+    }
     this.invalidate();
   }
 }
