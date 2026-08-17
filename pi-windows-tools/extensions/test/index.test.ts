@@ -37,12 +37,14 @@ describe("extension registration", () => {
     const f = fakePi();
     piWindowsToolsExtension(f.api as any);
     const tool = f.tools.find(tool => tool.name === "windows_shell_exec");
-    // Dangerous read-ish command (npm publish is confirm-risk) that fails fast on exec —
-    // we only care that the SECOND call skips the prompt entirely.
     let prompts = 0;
     const ctx = { cwd: process.cwd(), hasUI: true, ui: { select: async () => { prompts++; return "Allow for this session"; } } };
-    await tool.execute("id", { command: "npm publish" }, new AbortController().signal, undefined, ctx as any);
-    await tool.execute("id", { command: "npm publish --tag next" }, new AbortController().signal, undefined, ctx as any);
+    // Pre-abort signal: the gate still fires (abort is checked AFTER classifyCommand
+    // and the select prompt), so this validates session-allow without waiting for
+    // real process execution which hangs on npm publish in CI.
+    const signal = AbortSignal.timeout(1);
+    await tool.execute("id", { command: "npm publish" }, signal, undefined, ctx as any);
+    await tool.execute("id", { command: "npm publish --tag next" }, signal, undefined, ctx as any);
     expect(prompts).to.equal(1);
     process.env.PI_WINDOWS_TOOLS_ENABLED = old;
   });
@@ -55,9 +57,9 @@ describe("extension registration", () => {
     const tool = f.tools.find(tool => tool.name === "windows_shell_exec");
     let prompts = 0;
     const ctx = { cwd: process.cwd(), hasUI: true, ui: { select: async () => { prompts++; return "Allow for this session"; } } };
-    // Two DIFFERENT destructive payloads behind the same interpreter: the second must still prompt.
-    await tool.execute("id", { command: "powershell -Command \"git reset --hard\"" }, new AbortController().signal, undefined, ctx as any);
-    await tool.execute("id", { command: "powershell -Command \"Remove-Item -Recurse -Force C:\\tmp\"" }, new AbortController().signal, undefined, ctx as any);
+    const signal = AbortSignal.timeout(1);
+    await tool.execute("id", { command: "powershell -Command \"git reset --hard\"" }, signal, undefined, ctx as any);
+    await tool.execute("id", { command: "powershell -Command \"Remove-Item -Recurse -Force C:\\tmp\"" }, signal, undefined, ctx as any);
     expect(prompts).to.equal(2);
     process.env.PI_WINDOWS_TOOLS_ENABLED = old;
   });
