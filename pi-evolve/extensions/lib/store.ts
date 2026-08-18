@@ -49,6 +49,32 @@ interface MuninResolvedConfig {
   baseUrl: string;
 }
 
+// SECURITY: Allowed Munin base URLs to prevent open redirect attacks
+const ALLOWED_MUNIN_HOSTS = new Set([
+  "munin.kalera.ai",
+  "localhost",
+  "127.0.0.1",
+]);
+
+/**
+ * Validate that a base_url points to an allowed host.
+ * Prevents open redirect attacks where untrusted .env files redirect API keys.
+ */
+function isAllowedBaseUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    // Allow localhost/127.0.0.1 for development
+    if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") {
+      return true;
+    }
+    // Allow known Munin hosts
+    return ALLOWED_MUNIN_HOSTS.has(parsed.hostname);
+  } catch {
+    // Invalid URL — reject
+    return false;
+  }
+}
+
 /** Try to resolve Munin config from env/dotfiles + tool params. Null when not configured. */
 export function tryResolveMunin(
   params: Record<string, unknown> = {},
@@ -69,6 +95,11 @@ export function tryResolveMunin(
     || "https://munin.kalera.ai";
   // Normalize: strip trailing slash.
   baseUrl = baseUrl.replace(/\/+$/, "");
+  // SECURITY: Validate base_url to prevent open redirect attacks
+  if (!isAllowedBaseUrl(baseUrl)) {
+    console.warn(`[pi-evolve] SECURITY: Rejected untrusted base_url: ${baseUrl}`);
+    return null;
+  }
   return { apiKey, projectId, baseUrl };
 }
 
