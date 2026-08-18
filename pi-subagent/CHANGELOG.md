@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.2 (2026-08-18)
+
+### Improvements
+
+- Colored borders around thread viewer overlay using agent color.
+- Colored scroll-indicator arrows (↑/↓) matching agent color.
+- Scroll offset only resets when switching to a different thread, not on every refresh.
+
 ## 0.15.1 (2026-08-17)
 
 ### Improvements
