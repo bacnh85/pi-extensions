@@ -57,9 +57,9 @@ Aliases map to agy's canonical machine names (run `agy models` to list them):
 
 | Alias | agy machine name | Typical use |
 |-------|------------------|-------------|
-| `flash-low` | `gemini-3.6-flash-low` | Trivial, few-step, high-volume work |
-| `flash-medium` | `gemini-3.6-flash-medium` | Default coding, exploration, and tests |
-| `flash-high` | `gemini-3.6-flash-high` | Difficult agentic work |
+| `flash-low` | `gemini-3.7-flash-low` | Trivial, few-step, high-volume work |
+| `flash-medium` | `gemini-3.7-flash-medium` | Default coding, exploration, and tests |
+| `flash-high` | `gemini-3.7-flash-high` | Difficult agentic work |
 | `pro-low` | `gemini-3.1-pro-low` | Advanced reasoning |
 | `pro-high` | `gemini-3.1-pro-high` | Hardest Gemini reasoning |
 | `sonnet` | `claude-sonnet-4-6` | Normal Claude coding and review |

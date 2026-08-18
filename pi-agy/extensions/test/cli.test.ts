@@ -37,9 +37,9 @@ describe("buildAgyArgs", () => {
   });
 
   const models = [
-    ["flash-low", "gemini-3.6-flash-low"],
-    ["flash-medium", "gemini-3.6-flash-medium"],
-    ["flash-high", "gemini-3.6-flash-high"],
+    ["flash-low", "gemini-3.7-flash-low"],
+    ["flash-medium", "gemini-3.7-flash-medium"],
+    ["flash-high", "gemini-3.7-flash-high"],
     ["pro-low", "gemini-3.1-pro-low"],
     ["pro-high", "gemini-3.1-pro-high"],
     ["sonnet", "claude-sonnet-4-6"],
@@ -55,8 +55,8 @@ describe("buildAgyArgs", () => {
   }
 
   for (const [tier, displayName] of [
-    ["flash", "gemini-3.6-flash-high"],
-    ["flash-lo", "gemini-3.6-flash-low"],
+    ["flash", "gemini-3.7-flash-high"],
+    ["flash-lo", "gemini-3.7-flash-low"],
     ["pro", "gemini-3.1-pro-high"],
   ] as const) {
     it(`keeps legacy tier: ${tier}`, () => {
@@ -72,7 +72,7 @@ describe("buildAgyArgs", () => {
 
   it("defaults to flash-medium when model and tier are omitted", () => {
     const args = buildAgyArgs({ prompt: "test", dir: "/tmp", timeout_ms: 60_000 });
-    expect(args[args.indexOf("--model") + 1]).to.equal("gemini-3.6-flash-medium");
+    expect(args[args.indexOf("--model") + 1]).to.equal("gemini-3.7-flash-medium");
   });
 
   it("calculates --print-timeout from timeout_ms (rounded up)", () => {
@@ -90,7 +90,7 @@ describe("buildAgyArgs", () => {
   it("builds args in correct order: model, print-timeout, add-dir, mode, skip-perm, -p, prompt", () => {
     const args = buildAgyArgs({ prompt: "go", dir: "/x", timeout_ms: 30_000 });
     expect(args).to.deep.equal([
-      "--model", "gemini-3.6-flash-medium",
+      "--model", "gemini-3.7-flash-medium",
       "--print-timeout", "30s",
       "--add-dir", "/x",
       "--mode", "accept-edits",

@@ -220,9 +220,9 @@ const LIVE = process.env.AGY_LIVE === "1";
   this.timeout(180_000);
   const { execFileSync } = _require("node:child_process");
   const aliases: Record<string, string> = {
-    "flash-low": "gemini-3.6-flash-low",
-    "flash-medium": "gemini-3.6-flash-medium",
-    "flash-high": "gemini-3.6-flash-high",
+    "flash-low": "gemini-3.7-flash-low",
+    "flash-medium": "gemini-3.7-flash-medium",
+    "flash-high": "gemini-3.7-flash-high",
     "pro-low": "gemini-3.1-pro-low",
     "pro-high": "gemini-3.1-pro-high",
     sonnet: "claude-sonnet-4-6",
