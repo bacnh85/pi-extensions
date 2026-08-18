@@ -286,8 +286,8 @@ export class ThreadViewer {
     // Content with side borders
     for (const line of visible) {
       let borderedLine = sideBorder + line + sideBorder;
-      if (line.trim() == "") {
-        borderedLine = sideBorder + " ".repeat(Math.max(0, width - ( borderSize * 2))) + sideBorder;
+      if (line.trim() === "") {
+      borderedLine = sideBorder + " ".repeat(Math.max(0, width - ( borderSize * 2))) + sideBorder;
       }
       borderedLines.push(borderedLine);
     }
