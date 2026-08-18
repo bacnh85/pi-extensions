@@ -46,8 +46,17 @@ export interface UsageStats {
   turns: number;
 }
 
-export const DEFAULT_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
-export const HARD_TIMEOUT_MS = 20 * 60 * 1000;
+const ENV_THINKING_TIMEOUT_MINS = parseInt(process.env.PI_SUBAGENT_THINKING_TIMEOUT_MINS ?? '',10);
+const ENV_INACTIVITY_TIMEOUT_MINS = parseInt(process.env.PI_SUBAGENT_INACTIVITY_TIMEOUT_MINS ?? '',10);
+const ENV_HARD_TIMEOUT_MINS = parseInt(process.env.PI_SUBAGENT_HARD_TIMEOUT_MINS ?? '',10);
+const THINKING_TIMEOUT_MINS: number = isNaN(ENV_THINKING_TIMEOUT_MINS) ? 10 : ENV_THINKING_TIMEOUT_MINS;
+const INACTIVITY_TIMEOUT_MINS: number = isNaN(ENV_INACTIVITY_TIMEOUT_MINS) ? 3 : ENV_INACTIVITY_TIMEOUT_MINS;
+const HARD_TIMEOUT_MINS: number = isNaN(ENV_HARD_TIMEOUT_MINS) ? 20 : ENV_HARD_TIMEOUT_MINS;
+
+export const DEFAULT_THINKING_TIMEOUT_MS = THINKING_TIMEOUT_MINS * 60 * 1000;
+export const DEFAULT_INACTIVITY_TIMEOUT_MS = INACTIVITY_TIMEOUT_MINS * 60 * 1000;
+export const HARD_TIMEOUT_MS = Number(HARD_TIMEOUT_MINS) * 60 * 1000;
+
 
 // ---------------------------------------------------------------------------
 // Extension resource loader
