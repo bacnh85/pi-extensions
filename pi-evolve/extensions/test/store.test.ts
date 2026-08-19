@@ -4,6 +4,7 @@ import { join, dirname } from "node:path";
 import { expect } from "chai";
 import { MuninClient } from "@kalera/munin-sdk";
 import {
+  tryResolveMunin,
   type Learning,
   resolveStoreConfig,
   activeBackend,
@@ -70,6 +71,59 @@ describe("store config", () => {
       restoreEnv(saved);
       rmSync(cwd, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Munin exfiltration guards (issue #18)", () => {
+  let cwd: string;
+  let saved: Record<string, string | undefined>;
+  beforeEach(() => {
+    cwd = tmpCwd();
+    saved = saveEnv();
+  });
+  afterEach(() => {
+    restoreEnv(saved);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("ignores base_url override without explicit api_key (never pairs with user's key)", () => {
+    process.env.MUNIN_API_KEY = "real-user-key";
+    process.env.MUNIN_PROJECT = "proj";
+    const munin = tryResolveMunin({ base_url: "https://attacker.example" }, cwd);
+    expect(munin).to.equal(null);
+  });
+
+  it("accepts base_url override WITH its own api_key", () => {
+    const munin = tryResolveMunin({ base_url: "https://selfhosted.example/", api_key: "k", project: "p" }, cwd);
+    expect(munin).to.not.equal(null);
+    expect(munin!.baseUrl).to.equal("https://selfhosted.example"); // trailing slash stripped
+  });
+
+  it("rejects non-http(s) schemes, embedded credentials, and query/fragment", () => {
+    process.env.MUNIN_API_KEY = "k";
+    process.env.MUNIN_PROJECT = "p";
+    expect(tryResolveMunin({ base_url: "file://munin.kalera.ai/x", api_key: "k", project: "p" }, cwd)).to.equal(null);
+    expect(tryResolveMunin({ base_url: "https://user:pass@munin.example", api_key: "k", project: "p" }, cwd)).to.equal(null);
+    expect(tryResolveMunin({ base_url: "https://munin.example/?q=1", api_key: "k", project: "p" }, cwd)).to.equal(null);
+    expect(tryResolveMunin({ base_url: "not a url", api_key: "k", project: "p" }, cwd)).to.equal(null);
+  });
+
+  it("does NOT read cwd .env when project is untrusted (fail closed)", () => {
+    process.env.MUNIN_API_KEY = "real-user-key"; // shell env — attacker needs only a base_url redirect
+    process.env.MUNIN_PROJECT = "p";
+    writeFileSync(join(cwd, ".env"), "MUNIN_BASE_URL=https://attacker.example\n");
+    // untrusted (default): cwd .env ignored → default baseUrl, not attacker's
+    expect(tryResolveMunin({}, cwd, false)!.baseUrl).to.equal("https://munin.kalera.ai");
+    // trusted: cwd .env is honored
+    expect(tryResolveMunin({}, cwd, true)!.baseUrl).to.equal("https://attacker.example");
+  });
+
+  it("defaults to untrusted: cwd .env not read when trusted flag is omitted", () => {
+    process.env.MUNIN_API_KEY = "k";
+    process.env.MUNIN_PROJECT = "p";
+    writeFileSync(join(cwd, ".env"), "MUNIN_BASE_URL=https://attacker.example\n");
+    expect(tryResolveMunin({}, cwd)!.baseUrl).to.equal("https://munin.kalera.ai");
+    expect(activeBackend({}, resolveStoreConfig({ store: "auto" }), cwd)).to.equal("munin"); // still works via shell env
   });
 });
 

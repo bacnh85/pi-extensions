@@ -49,57 +49,51 @@ interface MuninResolvedConfig {
   baseUrl: string;
 }
 
-// SECURITY: Allowed Munin base URLs to prevent open redirect attacks
-const ALLOWED_MUNIN_HOSTS = new Set([
-  "munin.kalera.ai",
-  "localhost",
-  "127.0.0.1",
-]);
-
-/**
- * Validate that a base_url points to an allowed host.
- * Prevents open redirect attacks where untrusted .env files redirect API keys.
- */
-function isAllowedBaseUrl(url: string): boolean {
+// SECURITY (mirrors pi-munin's guards — see issue #18):
+// 1. URL shape: http(s) only, no credentials, no query/fragment.
+// 2. An explicit base_url override requires an explicit api_key, so an
+//    attacker-controlled override can never pair with the user's real key.
+// 3. cwd/.env* (incl. the parent-dir walk) is only read for trusted projects,
+//    so an untrusted repo's .env can't redirect exfiltration either.
+function normalizeBaseUrl(value: string): string | null {
+  let url: URL;
   try {
-    const parsed = new URL(url);
-    // Allow localhost/127.0.0.1 for development
-    if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") {
-      return true;
-    }
-    // Allow known Munin hosts
-    return ALLOWED_MUNIN_HOSTS.has(parsed.hostname);
+    url = new URL(value);
   } catch {
-    // Invalid URL — reject
-    return false;
+    return null;
   }
+  if (!["http:", "https:"].includes(url.protocol)) return null;
+  if (url.username || url.password) return null;
+  if (url.search || url.hash) return null;
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }
 
 /** Try to resolve Munin config from env/dotfiles + tool params. Null when not configured. */
 export function tryResolveMunin(
   params: Record<string, unknown> = {},
   cwd = process.cwd(),
-  includeCwdEnv = true,
+  includeCwdEnv: boolean | (() => boolean) = false,
 ): MuninResolvedConfig | null {
-  const fileEnv = loadMuninEnv(cwd, includeCwdEnv);
-  const apiKey = (typeof params.api_key === "string" && params.api_key ? params.api_key : undefined)
+  // pi-munin's getMuninConfig mirrors this gate: cwd env files (and the
+  // parent-dir walk) are only read when the project is trusted.
+  const includeCwd = typeof includeCwdEnv === "function" ? includeCwdEnv() : includeCwdEnv;
+  const fileEnv = loadMuninEnv(cwd, includeCwd);
+  const explicitApiKey = typeof params.api_key === "string" && params.api_key ? params.api_key : undefined;
+  const explicitBaseUrl = typeof params.base_url === "string" && params.base_url ? params.base_url : undefined;
+  // SECURITY: a base_url override without its own api_key is ignored outright —
+  // an attacker-controlled override must never pair with the user's real key.
+  if (explicitBaseUrl && !explicitApiKey) return null;
+  const apiKey = explicitApiKey
     || process.env.MUNIN_API_KEY
     || fileEnv.MUNIN_API_KEY;
   const projectId = (typeof params.project === "string" && params.project ? params.project : undefined)
     || process.env.MUNIN_PROJECT
     || fileEnv.MUNIN_PROJECT;
   if (!apiKey || !projectId) return null;
-  let baseUrl = (typeof params.base_url === "string" && params.base_url ? params.base_url : undefined)
-    || process.env.MUNIN_BASE_URL
-    || fileEnv.MUNIN_BASE_URL
-    || "https://munin.kalera.ai";
-  // Normalize: strip trailing slash.
-  baseUrl = baseUrl.replace(/\/+$/, "");
-  // SECURITY: Validate base_url to prevent open redirect attacks
-  if (!isAllowedBaseUrl(baseUrl)) {
-    console.warn(`[pi-evolve] SECURITY: Rejected untrusted base_url: ${baseUrl}`);
-    return null;
-  }
+  const baseUrl = normalizeBaseUrl(
+    explicitBaseUrl || process.env.MUNIN_BASE_URL || fileEnv.MUNIN_BASE_URL || "https://munin.kalera.ai",
+  );
+  if (!baseUrl) return null; // malformed URL shape — fall back to the local store
   return { apiKey, projectId, baseUrl };
 }
 
@@ -150,8 +144,8 @@ function parentEnvCandidates(cwd: string): string[] {
 // ---------------------------------------------------------------------------
 
 /** Decide the active backend given resolved config + user preference. */
-export function activeBackend(params: Record<string, unknown>, cfg: StoreConfig, cwd: string): "munin" | "local" {
-  const munin = tryResolveMunin(params, cwd, true);
+export function activeBackend(params: Record<string, unknown>, cfg: StoreConfig, cwd: string, trusted?: boolean): "munin" | "local" {
+  const munin = tryResolveMunin(params, cwd, trusted === true);
   if (cfg.store === "local") return "local";
   if (cfg.store === "munin") return munin ? "munin" : "local";
   return munin ? "munin" : "local"; // auto
@@ -163,6 +157,7 @@ export async function writeLearning(
   params: Record<string, unknown>,
   cfg: StoreConfig,
   cwd: string,
+  trusted?: boolean,
 ): Promise<StoredLearning> {
   const key = makeKey(learning);
   const title = `[${learning.kind}] ${learning.trigger}`.slice(0, 120);
@@ -175,7 +170,7 @@ export async function writeLearning(
 
   const backend = activeBackend(params, cfg, cwd);
   if (backend === "munin") {
-    const munin = tryResolveMunin(params, cwd, true)!;
+    const munin = tryResolveMunin(params, cwd, trusted === true)!;
     const client = new MuninClient({ apiKey: munin.apiKey, baseUrl: munin.baseUrl });
     // ponytail: direct store() — no capability dance; if it throws, caller handles.
     if (typeof (client as any).store === "function") {
@@ -204,10 +199,11 @@ export async function readRecentLearnings(
   params: Record<string, unknown>,
   cfg: StoreConfig,
   cwd: string,
+  trusted?: boolean,
 ): Promise<StoredLearning[]> {
   const backend = activeBackend(params, cfg, cwd);
   if (backend === "munin") {
-    const munin = tryResolveMunin(params, cwd, true)!;
+    const munin = tryResolveMunin(params, cwd, trusted === true)!;
     const client = new MuninClient({ apiKey: munin.apiKey, baseUrl: munin.baseUrl });
     let result: unknown;
     try {
@@ -238,10 +234,11 @@ export async function searchLearnings(
   params: Record<string, unknown>,
   cfg: StoreConfig,
   cwd: string,
+  trusted?: boolean,
 ): Promise<StoredLearning[]> {
   const backend = activeBackend(params, cfg, cwd);
   if (backend === "munin") {
-    const munin = tryResolveMunin(params, cwd, true)!;
+    const munin = tryResolveMunin(params, cwd, trusted === true)!;
     const client = new MuninClient({ apiKey: munin.apiKey, baseUrl: munin.baseUrl });
     let result: unknown;
     try {
