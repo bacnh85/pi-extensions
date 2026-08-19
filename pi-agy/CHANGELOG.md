@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2 (2026-08-19)
+
+### Changed
+
+- Flash aliases (`flash-low/medium/high`, legacy `flash`/`flash-lo`) now map to
+  `gemini-3.7-flash-*` — the current Flash generation in agy 1.1.x. `pro-*`,
+  `sonnet`, `opus`, and `gpt-oss` are unchanged. Verified against live
+  `agy models` on agy CLI 1.1.14.
+
 ## 0.3.1 (2026-08-05)
 
 ### Improvements
