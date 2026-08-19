@@ -117,7 +117,7 @@ it("issue #20 L1: config file lands in a private mkdtemp dir (symlink-clobber ha
       },
       {
         fetchImpl: healthFetch(alive),
-        spawnImpl: (b, args) => { spawnResult.calls.push(args); return makeChild(); },
+        spawnImpl: ((b: string, args: string[]) => { spawnResult.calls.push({ binary: b, args }); return makeChild(); }) as any,
         writeFile: async (p) => { writes.push(p); },
         mkdir: async () => {},
         tmpdir: () => "/tmp",
