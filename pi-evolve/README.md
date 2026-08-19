@@ -95,6 +95,14 @@ Optional `evolve` key in `settings.json`:
 - **Munin configured** (`MUNIN_API_KEY` + `MUNIN_PROJECT` set via env or `.env.local`) → learnings stored with tag `type:learning,domain:<inferred>`, searchable via `munin_search`.
 - **Munin not configured** → local JSONL at `.pi/evolve/learnings.jsonl` (capped at `localCap`).
 
+### Security (exfiltration guards, v0.3.2)
+
+Mirrors pi-munin's guards so a Munin credential can never be redirected:
+
+- `MUNIN_BASE_URL` from the project's `.env`/`.env.local` (including the parent-dir walk) is only read when the project is **trusted** — an untrusted checkout can't redirect your shell-exported `MUNIN_API_KEY` to an attacker's server. Global `~/.pi/agent/.env*` and real env vars are always honored.
+- A `base_url` passed alongside `api_key`/`project` tool params is accepted (self-hosted servers fine); `base_url` **without** its own `api_key` is ignored.
+- `MUNIN_BASE_URL` must be a well-formed http(s) URL without embedded credentials, query, or fragment.
+
 ## Safety
 
 - Input digests are **truncated to 200 chars and redacted** (API keys, tokens, Bearer headers, long base64 blobs → `[REDACTED]`) before reaching the buffer.

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2 (2026-08-19)
+
+### Fixed — Munin credential exfiltration guards (issue #18)
+
+- **cwd `.env*` trust gate:** `MUNIN_BASE_URL`/`MUNIN_API_KEY`/`MUNIN_PROJECT` from the project's `.env`/`.env.local` (including the parent-dir walk) are only read when the project is trusted (`ctx.isProjectTrusted()`). An untrusted checkout can no longer pair its `MUNIN_BASE_URL` with your shell-exported `MUNIN_API_KEY`. All store entrypoints (`activeBackend`, `writeLearning`, `readRecentLearnings`, `searchLearnings`) fail closed (untrusted) by default.
+- **Override needs its own key:** a `base_url` tool param without a matching `api_key` is ignored outright — never half-applied against the user's real key. Self-hosted servers keep working by passing `base_url` + `api_key` together.
+- **URL shape validation** (mirrors pi-munin's `normalizeBaseUrl`): http(s) only, no embedded credentials, no query/fragment, trailing slash normalized. Malformed URLs fall back to the local JSONL store instead of silently breaking persistence.
+- Replaces the earlier host-whitelist approach from this PR, which broke every self-hosted Munin deployment with a silent persistence failure and didn't check the URL scheme.
+
 ## 0.3.1 (2026-08-11)
 
 ### Fixed — per-turn input latency from uncached, unbounded Munin injection

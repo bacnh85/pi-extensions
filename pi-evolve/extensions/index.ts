@@ -127,7 +127,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
             text: `Recent trajectory (${snapshot.length} entries, ${errors.length} errors, ${recoveries} recoveries):\n\n${digest}\n\n---\n${skeleton}`,
           },
         ],
-        details: { snapshot, store: activeBackend({}, resolveStoreConfig(settings), ctx.cwd) },
+        details: { snapshot, store: activeBackend({}, resolveStoreConfig(settings), ctx.cwd, ctx?.isProjectTrusted?.() === true) },
       };
     },
   });
@@ -188,14 +188,15 @@ export default function evolveExtension(pi: ExtensionAPI) {
       let stored: { key: string; title: string; storedAt: string };
       let backend: "munin" | "local";
       try {
-        stored = await writeLearning(learning, {}, storeCfg, ctx.cwd);
-        backend = activeBackend({}, storeCfg, ctx.cwd);
+        const trusted = ctx?.isProjectTrusted?.() === true;
+        stored = await writeLearning(learning, {}, storeCfg, ctx.cwd, trusted);
+        backend = activeBackend({}, storeCfg, ctx.cwd, trusted);
       } catch (err) {
         if (storeCfg.store === "auto") {
           // Fall back to local JSONL.
           try {
             const localCfg = { ...storeCfg, store: "local" as const };
-            stored = await writeLearning(learning, {}, localCfg, ctx.cwd);
+            stored = await writeLearning(learning, {}, localCfg, ctx.cwd, ctx?.isProjectTrusted?.() === true);
             backend = "local";
           } catch (localErr) {
             return {
@@ -241,7 +242,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
     description: "Show pi-evolve status: buffer, last seal, learnings written, store backend.",
     handler: async (_args, ctx) => {
       const settings = readEvolveSettings(ctx.cwd);
-      const backend = activeBackend({}, resolveStoreConfig(settings), ctx.cwd);
+      const backend = activeBackend({}, resolveStoreConfig(settings), ctx.cwd, ctx?.isProjectTrusted?.() === true);
       const status = settings.enabled ? "enabled" : "disabled";
       const seal = lastSealTs ? new Date(lastSealTs).toISOString() : "never";
       ctx.ui.notify(
@@ -338,7 +339,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
         const timeout = new Promise<Awaited<ReturnType<typeof searchLearnings>>>((resolve) => {
           timer = setTimeout(() => resolve([]), RECALL_TIMEOUT_MS);
         });
-        const found = await Promise.race([searchLearnings(text, 1, {}, storeCfg, ctx.cwd), timeout]);
+        const found = await Promise.race([searchLearnings(text, 1, {}, storeCfg, ctx.cwd, ctx?.isProjectTrusted?.() === true), timeout]);
         if (found.length > 0 && found[0]?.lesson) {
           // Sanitize like the injection path (inject.ts sanitize): single-line,
           // strip heading markers + code fences, so a stored lesson can't inject
@@ -436,7 +437,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
           // best-effort context ("apply when its trigger matches") — the agent
           // rarely needs learnings before it has done any work — so the digest
           // simply lands in the cache for message 2 onward.
-          seedInFlight = seedInjectCache(cacheKey, settings, String(event?.prompt ?? ""), ctx.cwd)
+          seedInFlight = seedInjectCache(cacheKey, settings, String(event?.prompt ?? ""), ctx.cwd, ctx?.isProjectTrusted?.() === true)
             .catch(() => { /* best-effort */ })
             .finally(() => { seedInFlight = null; });
         }
@@ -480,6 +481,7 @@ async function seedInjectCache(
   settings: ReturnType<typeof readEvolveSettings>,
   promptText: string,
   cwd: string,
+  trusted = false,
 ): Promise<void> {
   const storeCfg = resolveStoreConfig(settings);
   const wantSimilar = settings.injectMode === "similar" || settings.injectMode === "both";
@@ -498,13 +500,13 @@ async function seedInjectCache(
   try {
     if (wantSimilar && promptText.trim()) {
       learnings = await Promise.race([
-        searchLearnings(promptText, settings.maxInject, {}, storeCfg, cwd),
+        searchLearnings(promptText, settings.maxInject, {}, storeCfg, cwd, trusted),
         deadline,
       ]);
     }
     if (learnings.length === 0 && (wantRecent || settings.injectMode === "similar")) {
       recentRan = true;
-      const recentPromise = readRecentLearnings(settings.maxInject, {}, storeCfg, cwd);
+      const recentPromise = readRecentLearnings(settings.maxInject, {}, storeCfg, cwd, trusted);
       if (searchTimedOut) {
         learnings = await raceWithBudget(recentPromise, RECENT_FALLBACK_BUDGET_MS, () => {
           recentTimedOut = true;
