@@ -14,7 +14,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, mkdtemp } from "node:fs/promises";
 import {
   buildDaemonConfig,
   generateKonnectToml,
@@ -75,6 +75,7 @@ export interface DaemonDeps {
   tmpdir?: () => string;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  mkdtemp?: (prefix: string) => Promise<string>;
 }
 
 export interface DaemonStatus {
@@ -107,6 +108,7 @@ export class KonnectDaemon {
       tmpdir: deps.tmpdir ?? tmpdir,
       now: deps.now ?? Date.now,
       sleep: deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+      mkdtemp: deps.mkdtemp ?? ((prefix) => mkdtemp(prefix)),
     };
   }
 
@@ -139,8 +141,11 @@ export class KonnectDaemon {
     const port = await pickFreePort(this.config.httpPort);
     const daemonCfg = buildDaemonConfig(this.config, port);
     const toml = generateKonnectToml(daemonCfg);
-    // Flat file in tmpdir — no subdir/mkdir needed (Konnect only needs the file).
-    const configPath = join(this.deps.tmpdir(), `pi-kicad-daemon-${port}.toml`);
+    // Private dir via mkdtemp (issue #20 L1): a predictable flat tmpdir filename
+    // is a symlink-clobber target on multi-user hosts. mkdtemp gives us an
+    // unpredictable, 0o700 directory — no O_EXCL dance needed.
+    const cfgDir = await mkdtemp(join(this.deps.tmpdir(), "pi-kicad-daemon-"));
+    const configPath = join(cfgDir, `daemon-${port}.toml`);
     await this.deps.writeFile(configPath, toml);
 
     this.stderrTail = "";

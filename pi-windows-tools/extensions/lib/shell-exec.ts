@@ -47,7 +47,10 @@ export function buildShellArgs(kind: WindowsShellKind, command: string, distro?:
     case "pwsh":
     case "powershell": {
       const info = detectShell(kind);
-      const common = ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"];
+      const common = ["-NoLogo", "-NoProfile", "-NonInteractive"];
+      // ponytail: no -ExecutionPolicy on -Command/-EncodedCommand paths (issue
+      // #20 L4): execution policy only gates script *files*; it never applies to
+      // -Command. Keep Bypass only if a future -File path is added.
       // ponytail: -EncodedCommand only for fragile inputs (multiline/long); keeps simple cmds debuggable on -Command
       return shouldEncode(command)
         ? { exe: info.executable, args: [...common, "-EncodedCommand", encodeForPwsh(command)] }

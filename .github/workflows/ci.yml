@@ -16,11 +16,28 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      # Supply-chain guard (issue #16): every lockfile entry with a `resolved`
+      # URL must carry an `integrity` hash — otherwise npm ci installs an
+      # unverifiable tarball. Runs before any package install.
+      - name: Verify lockfile integrity coverage
+        run: |
+          python3 - <<'EOF'
+          import json, glob, sys
+          bad = []
+          for lp in sorted(glob.glob('*/package-lock.json')):
+              for name, node in json.load(open(lp)).get('packages', {}).items():
+                  if node.get('resolved') and not node.get('integrity'):
+                      bad.append(f"{lp}: {name}@{node.get('version')}")
+          if bad:
+              print("Lockfile entries missing integrity:"); [print(" -", b) for b in bad]
+              sys.exit(1)
+          print(f"All lockfile entries carry integrity hashes.")
+          EOF
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
-      - uses: dorny/paths-filter@v4
+      - uses: dorny/paths-filter@9d7afb8d214ad99e78fbd4247752c4caed2b6e4c # v4.0.0
         id: filter
         with:
           filters: |
@@ -55,7 +72,7 @@ jobs:
 
       - name: Build matrix
         id: set-matrix
-        uses: actions/github-script@v7
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
         with:
           script: |
             const all = [
@@ -115,8 +132,8 @@ jobs:
       run:
         working-directory: ./${{ matrix.package }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'

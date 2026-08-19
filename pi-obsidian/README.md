@@ -97,6 +97,10 @@ These are post-processed by the extension for richer output:
 
 Previously this extension registered 43 separate tools (`obsidian_read`, `obsidian_create`, `obsidian_search`, etc.), consuming ~8,122 tokens per request. v0.3 consolidated to a single `obsidian` tool that parses the `run` string and dispatches to the Obsidian CLI. v0.4 adds post-processing for recursive file listing, task filtering/grouping, task creation, and template-based note creation — all through the same unified tool.
 
+### Known local-only disclosure (eval)
+
+Write/eval commands pass note content (base64 chunks) as process argv to `obsidian-cli`. argv is visible to other local processes via `ps`/`Get-Process` for the call's lifetime. Content is never secrets-shaped by design — still, on shared hosts, prefer `eval file=` (vault note) or `create-from-template` over inline `eval code=` with sensitive content. Upstream stdin/file transport would remove this entirely (tracked in issue #20 L2).
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for release history.
