@@ -17,7 +17,7 @@ const cp = _require("node:child_process") as typeof import("node:child_process")
 const AGY_FETCH_TIMEOUT_MS = 90_000; // agy needs time for model call + web fetch
 const AGY_PROBE_TIMEOUT_MS = 5_000;
 const AGY_MAX_OUTPUT_BYTES = 200_000; // bound output to protect Pi context
-export const AGY_MODEL = "gemini-3.6-flash-medium"; // ponytail: fixed default; users needing model control use agy_execute
+export const AGY_MODEL = "gemini-3.7-flash-medium"; // ponytail: fixed default; users needing model control use agy_execute
 
 // Cache install status with a TTL — spawnSync blocks the event loop up to
 // AGY_PROBE_TIMEOUT_MS, and web_status/extract can call this repeatedly.

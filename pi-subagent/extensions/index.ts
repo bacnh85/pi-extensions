@@ -95,6 +95,9 @@ function getTrustedConfig(ctx: ExtensionContext): { allowUnconfirmedProjectAgent
   };
 }
 
+/** Session-scoped approvals for project-local agents ("Trust for this session"). */
+const trustedProjectAgentDirs = new Set<string>();
+
 
 // ---------------------------------------------------------------------------
 // Tool parameter schema
@@ -186,6 +189,7 @@ export default function (pi: ExtensionAPI) {
     currentCtx = ctx;
     if (event.reason === "reload") invalidateAgentCache();
     threadStore.clear();
+    trustedProjectAgentDirs.clear();
     // Clear any widget from a prior session.
     widget.clearWidgetIfIdle();
     // Mark prior-session running tasks as interrupted (we can't resume them).
@@ -591,19 +595,22 @@ export default function (pi: ExtensionAPI) {
 
         if (projectAgentsRequested.length > 0) {
           if (confirmProjectAgents) {
-            if (ctx.hasUI) {
+            const dir = discovery.projectAgentsDir ?? "(unknown)";
+            if (trustedProjectAgentDirs.has(dir)) {
+              // Previously approved "Trust for this session" for this agents dir.
+            } else if (ctx.hasUI) {
               const names = projectAgentsRequested.map((a) => a.name).join(", ");
-              const dir = discovery.projectAgentsDir ?? "(unknown)";
-              const ok = await ctx.ui.confirm(
-                "Run project-local agents?",
-                `Agents: ${names}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
+              const choice = await ctx.ui.select(
+                `Run project-local agents?\n\nAgents: ${names}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
+                ["Allow once", "Trust for this session", "Deny"],
               );
-              if (!ok) {
+              if (choice !== "Allow once" && choice !== "Trust for this session") {
                 return {
                   content: [{ type: "text", text: "Canceled: project-local agents not approved." }],
                   details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
                 };
               }
+              if (choice === "Trust for this session") trustedProjectAgentDirs.add(dir);
             } else {
               // Fail closed in headless sessions.
               return {

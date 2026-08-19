@@ -13,6 +13,7 @@ import {
   rpcUrl,
 } from "../lib/client";
 import { buildAgentCard, STATE_COMPLETED } from "../lib/protocol";
+import { setGatewayRegistrationName, gatewayKeyFromUrl } from "../lib/config";
 
 // ---------------------------------------------------------------------------
 // fetch mock helpers
@@ -125,6 +126,70 @@ describe("client", () => {
   });
 
   describe("a2aCall", () => {
+    it("attaches X-Gateway-Caller on gateway-proxied calls", async () => {
+      const result = { task: { id: "t", contextId: "c", status: { state: STATE_COMPLETED }, artifacts: [{ parts: [{ text: "ok" }] }] } };
+      let seenHeaders: Record<string, string> = {};
+      globalThis.fetch = (async (url: string, init?: any) => {
+        seenHeaders = { ...(init?.headers || {}) };
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ jsonrpc: "2.0", id: 1, result }),
+        };
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.selfIdentity = "pi-s2-9912";
+      cfg.peers.bob = { url: "http://127.0.0.1:9920/peer/bob/", auth: { type: "bearer", token: "gw-token" }, timeout: 5000, capabilities: [], viaGateway: true };
+      const out = await a2aCall({ cfg, piDir, agent: "bob", message: "hi" });
+      assert.include(out, "ok");
+      assert.equal(seenHeaders["X-Gateway-Caller"], "pi-s2-9912");
+    });
+
+    it("omits X-Gateway-Caller for non-gateway peers", async () => {
+      const result = { task: { id: "t", contextId: "c", status: { state: STATE_COMPLETED }, artifacts: [{ parts: [{ text: "ok" }] }] } };
+      let seenHeaders: Record<string, string> = {};
+      globalThis.fetch = (async (_url: string, init?: any) => {
+        seenHeaders = { ...(init?.headers || {}) };
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ jsonrpc: "2.0", id: 1, result }),
+        };
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.selfIdentity = "pi-s2-9912";
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      await a2aCall({ cfg, piDir, agent: "bob", message: "hi" });
+      assert.isUndefined(seenHeaders["X-Gateway-Caller"]);
+    });
+
+    it("falls back to the runtime gateway registration name for X-Gateway-Caller", async () => {
+      const result = { task: { id: "t", contextId: "c", status: { state: STATE_COMPLETED }, artifacts: [{ parts: [{ text: "ok" }] }] } };
+      let seenHeaders: Record<string, string> = {};
+      globalThis.fetch = (async (url: string, init?: any) => {
+        seenHeaders = { ...(init?.headers || {}) };
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ jsonrpc: "2.0", id: 1, result }),
+        };
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.selfIdentity = ""; // no operator-pinned identity
+      cfg.discovery.gateway = { enabled: true, url: "http://127.0.0.1:9920", token: "gw-token" };
+      cfg.peers.bob = { url: "http://127.0.0.1:9920/peer/bob/", auth: { type: "bearer", token: "gw-token" }, timeout: 5000, capabilities: [], viaGateway: true };
+      // Single configured gateway → its registration name (derived key) is the
+      // fallback for unlabeled viaGateway peers.
+      setGatewayRegistrationName("pi-9910", gatewayKeyFromUrl("http://127.0.0.1:9920"));
+      try {
+        const out = await a2aCall({ cfg, piDir, agent: "bob", message: "hi" });
+        assert.include(out, "ok");
+        assert.equal(seenHeaders["X-Gateway-Caller"], "pi-9910");
+      } finally {
+        setGatewayRegistrationName(null, gatewayKeyFromUrl("http://127.0.0.1:9920"));
+      }
+    });
+
     it("sends a task and returns the reply (wrapped {task} result)", async () => {
       const result = {
         task: {

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.14 (2026-08-17)
+
+### Fixed
+
+- **Windows: cross-vault bash guard no longer silently no-ops for forward-slash
+  vault paths (#4).** The guard compared raw strings, so `rm D:/MyVault/foo.md`
+  (forward slashes) or mixed-case drive letters bypassed it while the CLI
+  reports the root with backslashes (`D:\MyVault`). Both sides are now
+  normalized (separators always; case on Windows) before the substring check,
+  so Windows path-style commands are blocked exactly like their backslash
+  twins. POSIX behavior is unchanged (separator-only normalization).
+
 ## 0.8.13 (2026-08-05)
 
 ### Improvements

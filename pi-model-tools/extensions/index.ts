@@ -48,6 +48,17 @@ import {
 } from "./lib/shell-helpers.ts";
 import { debugLog, logWarn } from "./lib/logger.ts";
 import {
+  MINIMAL_SYSTEM_PROMPT,
+  BOOTSTRAP_TOOLS,
+  anchorEnabled,
+  isAnchorTarget,
+  hasPromotionSignal,
+  dshBootstrapTools,
+  weNeedDirectiveEnabled,
+  WE_NEED_DIRECTIVE,
+} from "./lib/ds-anchor.ts";
+import { createStrReplaceEditorToolDefinition } from "./lib/str-replace-editor.ts";
+import {
   deepSeekSelectionGuidance,
   clearGuidanceCache,
   runTaskFirstToolHint,
@@ -194,6 +205,24 @@ export default function (pi: ExtensionAPI) {
   // before_provider_request — never the system prompt (the cache head).
   let pendingGuidance: string | undefined;
 
+  // DeepSeek v4 Pro minimal-mode anchor (two-phase bootstrap) state.
+  // Invariant: anchorBootstrapping = anchorReady && !anchorPromoted && target.
+  let anchorReady = false;
+  let anchorPromoted = false;
+  let anchorRunActive = false;
+  let anchorInspectedCount = 0;
+  let anchorWarned = false;
+  // Last-known thinking level (thinking_level_select) — surfaced in status
+  // because the DSH minimal-mode recipe requires max thinking.
+  let currentThinking: string | undefined;
+  // Ring buffer of anchor decisions — surfaced by /model-tools-status so the
+  // bootstrap can be verified without PI_MODEL_TOOLS_DEBUG.
+  const anchorTrace: string[] = [];
+  function anchorTracePush(line: string) {
+    anchorTrace.push(`${new Date().toISOString().slice(11, 19)} ${line}`);
+    if (anchorTrace.length > 8) anchorTrace.shift();
+  }
+
   const repairCounts = new Map<string, number>();
   const reminderCounts = new Map<string, number>();
   const errorHistory = new Map<string, { count: number; lastCategory: ErrorCategory }>();
@@ -208,10 +237,52 @@ export default function (pi: ExtensionAPI) {
     return detectFamily(model) ?? detectFamily(sessionModel);
   }
 
+  // Anchor target: check BOTH ctx.model and session-captured model — proxies
+  // rewrite ctx.model between hooks (see family() above for the same defense).
+  function anchorTarget(model?: { id?: string }): boolean {
+    return anchorEnabled() && (isAnchorTarget(model?.id) || isAnchorTarget(sessionModel?.id));
+  }
+
+  function warnAnchorOnce(ctx: any, message: string) {
+    if (anchorWarned) return;
+    anchorWarned = true;
+    logWarn("ds-anchor:", message);
+    try { ctx?.ui?.notify?.(message, "warning"); } catch { /* no UI */ }
+  }
+
+  // Scan durable entries for a promotion signal; fail-open on error.
+  function scanAnchorEntries(ctx: any) {
+    if (anchorPromoted) return;
+    try {
+      const entries: any[] = ctx.sessionManager.getEntries();
+      const from = entries.length >= anchorInspectedCount ? anchorInspectedCount : 0;
+      if (hasPromotionSignal(entries.slice(from))) anchorPromoted = true;
+      anchorInspectedCount = entries.length;
+      if (!anchorReady) anchorReady = true;
+    } catch {
+      anchorPromoted = true;
+      warnAnchorOnce(ctx, "pi-model-tools: ds-anchor session inspection failed; full catalog exposed");
+    }
+  }
+
+  function anchorBootstrapping(model?: { id?: string }): boolean {
+    // Target check per hook — proxies rewrite ctx.model between hooks WITHOUT
+    // firing model_select (e.g. a session requested as flash that is served
+    // deepseek-v4-pro). Requiring a session_start-latched ready flag silently
+    // skipped the bootstrap for such sessions — the exact failure observed in
+    // a live a2a gateway session. anchorReady is display-only here.
+    const target = anchorTarget(model);
+    if (target && !anchorReady) anchorReady = true;
+    return target && !anchorPromoted;
+  }
+
   // ── Register wrapped built-in tools ONCE (the single source of tool-wrapping) ──
   const toolFactories: Record<string, (cwd: string) => any> = {
     read: createReadToolDefinition, write: createWriteToolDefinition, edit: createEditToolDefinition,
     grep: createGrepToolDefinition, find: createFindToolDefinition, ls: createLsToolDefinition, bash: createBashToolDefinition,
+    // DSH Minimal-pair editor (anchors DeepSeek v4 Pro request #1; also a
+    // generally useful view/create/replace/insert editor in the full catalog).
+    str_replace_editor: createStrReplaceEditorToolDefinition,
   };
   for (const f of Object.values(toolFactories)) {
     const template = f(process.cwd());
@@ -271,6 +342,10 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("model-tools-status", {
     description: "Show pi-model-tools configuration, detected family, repair stats, and error history.",
     handler: async (_args, cmdCtx) => {
+      const anchorActive = anchorTarget(cmdCtx.model); // includes sessionModel fallback
+      const anchorState = !anchorActive || !anchorReady
+        ? "off"
+        : anchorPromoted ? "promoted" : "bootstrapping";
       const status = [
         "## pi-model-tools status",
         "",
@@ -286,6 +361,9 @@ export default function (pi: ExtensionAPI) {
         `  Strict Serena mode (DeepSeek): ${strictSerenaEnabled() ? "on" : "off"}`,
         `  Selection guidance (DeepSeek): ${selectionGuidanceEnabled() ? "on" : "off"}`,
         `  Super Power Mode (DeepSeek): ${superPowerModeEnabled() ? "on" : "off"}`,
+        `  ds-anchor (v4-pro): ${anchorState}`,
+        `  Thinking level: ${currentThinking ?? "unknown"}${currentThinking !== "max" && anchorActive ? " (recipe wants max)" : ""}`,
+        ...(anchorTrace.length > 0 ? ["", "**ds-anchor trace:**", ...anchorTrace.map((l) => `  ${l}`)] : []),
         `  Super Power turns: ${turnCounter}`,
         `  Debug: ${process.env.PI_MODEL_TOOLS_DEBUG ? "on" : "off"}`,
         "",
@@ -318,6 +396,16 @@ export default function (pi: ExtensionAPI) {
   // ── session_start ──
   pi.on("session_start", (_event, ctx) => {
     sessionModel = ctx.model ? { id: ctx.model.id, provider: ctx.model.provider } : undefined;
+    // ds-anchor: reset and init from durable state (resume of a session that
+    // already has an assistant reply = instantly promoted, no bootstrap).
+    anchorReady = anchorTarget(ctx.model);
+    anchorPromoted = false;
+    anchorRunActive = false;
+    anchorInspectedCount = 0;
+    anchorWarned = false;
+    anchorTrace.length = 0; // per-session trace — never leak prior-session lines
+    anchorTracePush(`session_start: requested=${ctx.model?.id ?? "?"}${anchorTarget(ctx.model) ? " → target" : " → not target"}`);
+    scanAnchorEntries(ctx);
     activeFamily = null;
     repairThisTurn = false;
     hasErrorThisTurn = false;
@@ -337,6 +425,38 @@ export default function (pi: ExtensionAPI) {
     debugLog("session_start:", ctx.model?.provider, ctx.model?.id);
   });
 
+  // ── thinking_level_select: track the level (max is required by the DSH recipe) ──
+  pi.on("thinking_level_select", (event) => { currentThinking = event.level; });
+
+  // ── session_start: capture the session's initial thinking level (select
+  // events only fire on CHANGES; a session born at max never fires one, so
+  // without this the status shows "unknown" for the most important case). ──
+  pi.on("session_start", (_event, ctx) => {
+    currentThinking = ctx.thinkingLevel;
+  });
+
+  // ── model_select: re-init the anchor when switching to/from a target ──
+  pi.on("model_select", (event, ctx) => {
+    // Keep the session-captured model in sync on explicit switches — the
+    // stale-sessionModel fallback would otherwise keep matching the OLD target
+    // after a /model switch away (bootstrap firing on e.g. flash, pinning
+    // max_tokens=256000 and hiding tools for a non-target model).
+    sessionModel = event.model ? { id: event.model.id, provider: event.model.provider } : undefined;
+    if (isAnchorTarget(event.model?.id)) {
+      if (!anchorReady) {
+        anchorReady = true;
+        anchorPromoted = false;
+        anchorInspectedCount = 0;
+        scanAnchorEntries(ctx);
+      }
+      return;
+    }
+    // Switched away (or to a non-target): anchor goes inert.
+    anchorReady = false;
+    anchorPromoted = false;
+    anchorRunActive = false;
+  });
+
   // ── before_agent_start: repair flag + error hints + DeepSeek guidance ──
   //
   // Cache-stability split: the system prompt is the byte-stable HEAD of the
@@ -351,6 +471,23 @@ export default function (pi: ExtensionAPI) {
   // selection guidance, apply_patch preference) stays in the system prompt —
   // byte-identical per session, therefore cache-safe.
   pi.on("before_agent_start", (event, ctx) => {
+    // ds-anchor bootstrap: request #1 gets the byte-identical Minimal prompt
+    // and NO guidance (Super Power, selection guidance, hints all suppressed).
+    if (anchorBootstrapping(ctx.model)) {
+      scanAnchorEntries(ctx);
+      if (!anchorPromoted) {
+        anchorRunActive = true;
+        pendingGuidance = undefined;
+        anchorTracePush(`bootstrap: minimal prompt engaged (model=${ctx.model?.id ?? "?"}${weNeedDirectiveEnabled() ? ", +we-need directive" : ""})`);
+        return { systemPrompt: weNeedDirectiveEnabled() ? WE_NEED_DIRECTIVE + MINIMAL_SYSTEM_PROMPT : MINIMAL_SYSTEM_PROMPT };
+      }
+      // Scan found a durable signal (resume edge) — fall through to the
+      // normal path: full prompt + full catalog.
+      anchorTracePush("bootstrap skipped: durable signal found (resume)");
+    } else if (anchorTarget(ctx.model)) {
+      anchorTracePush(`bootstrap skipped: already promoted=${anchorPromoted}`);
+    }
+
     activeFamily = family(ctx.model);
     repairThisTurn = activeFamily !== null && repairEnabled();
     remindedThisTurn = false;
@@ -440,6 +577,31 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_provider_request", (event, ctx) => {
     if (!family(ctx.model)) return;
     let payload = event.payload;
+    // ds-anchor bootstrap: replace the provider payload's tools with the
+    // byte-exact DSH Minimal pair. Request-level only — Pi's global active-tool
+    // state is untouched; execution routes to the registered tools by name.
+    if (anchorBootstrapping(ctx.model) && anchorRunActive) {
+      const p = payload as any;
+      const filtered = dshBootstrapTools(p?.tools);
+      if (!filtered.ok) {
+        anchorPromoted = true; // fail-open
+        anchorTracePush(`FAIL-OPEN: ${filtered.reason}`);
+        warnAnchorOnce(ctx, `pi-model-tools: ds-anchor ${filtered.reason}; bootstrap disabled, full catalog exposed`);
+      } else {
+        // max_tokens: the DSH captured minimal-mode payload sent 256000, and
+        // dsh-anchored-standard issue #11 isolated the output budget as a
+        // trajectory lever. Match it on the bootstrap request only. Exactly
+        // one budget field is emitted — the other is dropped from the spread
+        // so a payload carrying both can't send conflicting fields.
+        const other = (p as any)?.max_completion_tokens !== undefined ? "max_completion_tokens" : "max_tokens";
+        const dropped = other === "max_tokens" ? "max_completion_tokens" : "max_tokens";
+        const { [dropped]: _omit, ...rest } = p ?? {};
+        payload = { ...rest, tools: filtered.tools, [other]: 256000 };
+        anchorTracePush(`payload: tools=[bash,str_replace_editor] + ${other}=256000 sent to ${ctx.model?.id ?? "?"}`);
+        const sys = Array.isArray(p?.messages) && p.messages.find((m: any) => m?.role === "system");
+        debugLog("ds-anchor: bootstrap payload tools=", filtered.tools.map((t: any) => t?.function?.name ?? t?.name).join(","), "system=", JSON.stringify(sys?.content ?? p?.system));
+      }
+    }
     // Append per-turn dynamic guidance to the current user message (request
     // tail) so the system-prompt cache head stays byte-identical across turns
     // (both DeepSeek exact-prefix and GLM Z.ai content-similarity caches).
@@ -497,8 +659,32 @@ export default function (pi: ExtensionAPI) {
   // ── agent_end ──
   pi.on("agent_end", () => { repairThisTurn = false; debugLog("agent_end: flags reset"); });
 
+  // ── agent_settled: end of anchor run window ──
+  pi.on("agent_settled", () => { anchorRunActive = false; });
+
   // ── turn_end: accumulate prompt-cache usage for /model-tools-status ──
   pi.on("turn_end", (event) => {
+    // ds-anchor: any durable assistant message promotes (in-run promotion so
+    // request #2+ of the SAME run sees the full catalog).
+    // ds-anchor: promote only on a DURABLE assistant reply — an error/aborted
+    // bootstrap request (429, network blip, 400 from the injected payload)
+    // must NOT silently promote the session (matches hasPromotionSignal's
+    // non-empty-content semantics; keeps the retry anchored).
+    if (anchorRunActive && event.message.role === "assistant") {
+      const m = event.message as { stopReason?: string; content?: unknown[] };
+      const durable =
+        m.stopReason !== "error" &&
+        m.stopReason !== "aborted" &&
+        Array.isArray(m.content) &&
+        m.content.length > 0;
+      if (durable) {
+        anchorPromoted = true;
+        anchorRunActive = false;
+        anchorTracePush("promoted: first durable assistant reply received");
+      } else {
+        anchorTracePush(`bootstrap: reply not durable (stopReason=${m.stopReason ?? "?"}) — retry stays anchored`);
+      }
+    }
     // turn_end fires once per assistant LLM call (agent-loop emits per round),
     // so each message.usage is a single API call — no double-counting.
     if (event.message.role !== "assistant") return;
@@ -521,6 +707,20 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", (event, ctx) => {
     const f = family(ctx.model);
     if (!f) return;
+
+    // ds-anchor bootstrap: keep the dangerous-command guard (trust boundary),
+    // block hallucinated hidden tools, skip ALL other steering.
+    if (anchorBootstrapping(ctx.model) && anchorRunActive) {
+      if (event.toolName === "bash" && blockDangerousEnabled()) {
+        const command = isRecord(event.input) ? event.input.command : undefined;
+        const danger = typeof command === "string" ? checkDangerousCommand(command) : undefined;
+        if (danger) { logWarn("DANGEROUS:", danger); return { block: true, reason: `Safety: ${danger}` }; }
+      }
+      if (!BOOTSTRAP_TOOLS.includes(event.toolName)) {
+        return { block: true, reason: `pi-model-tools: ${event.toolName} is unavailable during the bootstrap request; use bash or str_replace_editor (command: "view" to read files).` };
+      }
+      return;
+    }
 
     // Dangerous command guard — all families
     if (event.toolName === "bash" && blockDangerousEnabled()) {

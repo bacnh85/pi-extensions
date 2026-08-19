@@ -96,6 +96,7 @@ export function authenticate(opts: {
 // ---------------------------------------------------------------------------
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"]);
+export { LOOPBACK };
 
 export function localhostOnly(cfg: A2AConfig): boolean {
   return !cfg.server.sharedToken && Object.keys(cfg.server.peerTokens).length === 0;
@@ -240,8 +241,10 @@ export class AntiLoop {
 // Push-notification signing
 // ---------------------------------------------------------------------------
 
-export function getPushSecret(cfg: A2AConfig): string {
-  return cfg.server.sharedToken || "pi-a2a-push-default";
+// Fail closed (#11): no default secret — a hardcoded fallback would make
+// push-payload HMACs forgeable by anyone. No sharedToken ⇒ no signing secret.
+export function getPushSecret(cfg: A2AConfig): string | null {
+  return cfg.server.sharedToken || null;
 }
 
 export function signPushPayload(payload: string, secret: string): string {

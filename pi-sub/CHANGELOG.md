@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.29 (2026-08-15)
+
+### Features
+
+- **tok/s speed now shown for all providers.** Previously the footer was cleared
+  for providers without a subscription adapter (e.g. `ollama`); now the last
+  response speed renders as a standalone `145 tok/s` line, and `/sub` reports
+  provider/model plus last and session-average speed instead of only
+  "tracking inactive".
+
 ## 0.1.28 (2026-08-09)
 
 ### Improvements

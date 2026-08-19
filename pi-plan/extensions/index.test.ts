@@ -1114,8 +1114,8 @@ describe("tool gating in plan mode", () => {
     const ctx = fakeCtx({
       hasUI: true,
       ui: {
-        confirm: async (_t: string, body: string) => { confirmed.push(body); return true; },
-        select: async () => null, editor: async () => "",
+        confirm: async () => true,
+        select: async (title: string) => { confirmed.push(title); return "Allow once"; }, editor: async () => "",
         setStatus: () => {}, setWidget: () => {}, notify: () => {},
         theme: { fg: (_s: string, t: string) => t },
       },
@@ -1135,6 +1135,100 @@ describe("tool gating in plan mode", () => {
     const r2 = await tc({ toolName: "read", input: { path: "f.ts" } }, ctx);
     assert.equal(r2, undefined, "read auto-allowed");
     assert.equal(confirmed.length, 1, "only obsidian triggered confirm");
+  });
+
+  it("'Allow for this session' suppresses subsequent prompts for the same tool", async () => {
+    const choices: (string | undefined)[] = ["Allow for this session", "Deny"];
+    const prompts: string[] = [];
+    const { handlers } = createFakePi(["read", "obsidian", "bash"], { plan: true });
+    const ctx = fakeCtx({
+      hasUI: true,
+      ui: {
+        confirm: async () => false,
+        select: async (title: string) => { prompts.push(title); return choices.shift() ?? "Deny"; }, editor: async () => "",
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+
+    // First obsidian call: user picks "Allow for this session" → allowed.
+    assert.equal(await tc({ toolName: "obsidian", input: {} }, ctx), undefined);
+    // Second obsidian call: no prompt (next choice "Deny" would block if prompted).
+    assert.equal(await tc({ toolName: "obsidian", input: {} }, ctx), undefined, "session allow suppresses re-prompt");
+    assert.equal(prompts.length, 1, "only one prompt for obsidian");
+
+    // Bash session-allow is keyed by first token: same executable re-allowed, different still prompts.
+    const bashChoices: (string | undefined)[] = ["Allow for this session", "Deny"];
+    ctx.ui.select = async (title: string) => { prompts.push(title); return bashChoices.shift() ?? "Deny"; };
+    assert.equal(await tc({ toolName: "bash", input: { command: "npm test" } }, ctx), undefined);
+    assert.equal(await tc({ toolName: "bash", input: { command: "npm test -- --grep foo" } }, ctx), undefined, "same executable session-allowed");
+    const blocked = await tc({ toolName: "bash", input: { command: "node script.js" } }, ctx);
+    assert.ok(blocked?.block, "different executable still prompts");
+    assert.equal(prompts.length, 3);
+  });
+
+  it("session allows do not survive session_start and interpreters are keyed by full command (review fixes)", async () => {
+    const prompts: string[] = [];
+    const { handlers } = createFakePi(["read", "bash", "subagent"], { plan: true });
+    const ctx = fakeCtx({
+      hasUI: true,
+      ui: {
+        confirm: async () => false,
+        select: async (title: string) => { prompts.push(title); return "Allow for this session"; }, editor: async () => "",
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+
+    // Approve `node script.js` for the session.
+    assert.equal(await tc({ toolName: "bash", input: { command: "node script.js" } }, ctx), undefined);
+    // Same exact command: remembered (no new prompt).
+    const promptsBefore = prompts.length;
+    assert.equal(await tc({ toolName: "bash", input: { command: "node script.js" } }, ctx), undefined);
+    assert.equal(prompts.length, promptsBefore, "exact interpreter command session-allowed");
+    // A DIFFERENT node payload must still prompt (interpreter → full-command key).
+    const blocked = await tc({ toolName: "bash", input: { command: "node -e 'rm x'" } }, ctx);
+    assert.equal(blocked, undefined, "different node payload prompted then allowed");
+    assert.equal(prompts.length, promptsBefore + 1, "different node payload re-prompted");
+
+    // Session replacement clears the allows (startup re-arms plan mode from
+    // the --plan flag, so only the allows are what changes).
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await tc({ toolName: "bash", input: { command: "node script.js" } }, ctx);
+    assert.equal(prompts.length, promptsBefore + 2, "session_start cleared planSessionAllows");
+  });
+
+  it("subagent session allows are keyed per requested agent set (review fix)", async () => {
+    const prompts: string[] = [];
+    const { handlers } = createFakePi(["read", "subagent"], { plan: true });
+    const ctx = fakeCtx({
+      hasUI: true,
+      ui: {
+        confirm: async () => false,
+        select: async (title: string) => { prompts.push(title); return "Allow for this session"; }, editor: async () => "",
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+
+    // Approve worker once.
+    assert.equal(await tc({ toolName: "subagent", input: { agent: "worker", task: "x" } }, ctx), undefined);
+    const promptsBefore = prompts.length;
+    // Same agent set: remembered.
+    assert.equal(await tc({ toolName: "subagent", input: { agent: "worker", task: "y" } }, ctx), undefined);
+    assert.equal(prompts.length, promptsBefore, "same agent set session-allowed");
+    // A DIFFERENT mutating agent must still prompt.
+    await tc({ toolName: "subagent", input: { agent: "general-purpose", task: "z" } }, ctx);
+    assert.equal(prompts.length, promptsBefore + 1, "different mutating agent re-prompted");
   });
 
   it("blocks direct source mutators", async () => {
@@ -1161,8 +1255,8 @@ describe("tool gating in plan mode", () => {
     const ctx = fakeCtx({
       hasUI: true,
       ui: {
-        confirm: async (_title: string, body: string) => { confirmations.push(body); return decisions.shift()!; },
-        select: async () => null, editor: async () => "",
+        confirm: async () => true,
+        select: async (title: string) => { confirmations.push(title); return decisions.shift()! ? "Allow once" : "Deny"; }, editor: async () => "",
         setStatus: () => {}, setWidget: () => {}, notify: () => {},
         theme: { fg: (_s: string, t: string) => t },
       },
@@ -1274,7 +1368,7 @@ describe("tool gating in plan mode", () => {
       hasUI: true,
       ui: {
         confirm: async () => { confirmations++; return true; },
-        select: async () => null, editor: async () => "",
+        select: async () => { confirmations++; return "Allow once"; }, editor: async () => "",
         setStatus: () => {}, setWidget: () => {}, notify: () => {},
         theme: { fg: (_s: string, t: string) => t },
       },
@@ -1323,14 +1417,14 @@ describe("tool gating in plan mode", () => {
   });
 
   it("requires confirmation for mixed read/unknown chains", async () => {
-    const decisions = [true, true];
     const confirmations: string[] = [];
+    const decisions = [true, true];
     const { handlers } = createFakePi(["read", "bash"], { plan: true });
     const ctx = fakeCtx({
       hasUI: true,
       ui: {
-        confirm: async (_title: string, body: string) => { confirmations.push(body); return decisions.shift()!; },
-        select: async () => null, editor: async () => "",
+        confirm: async () => true,
+        select: async (title: string) => { confirmations.push(title); return decisions.shift()! ? "Allow once" : "Deny"; }, editor: async () => "",
         setStatus: () => {}, setWidget: () => {}, notify: () => {},
         theme: { fg: (_s: string, t: string) => t },
       },
@@ -1387,8 +1481,8 @@ describe("tool gating in plan mode", () => {
       const ctx = fakeCtx({
         hasUI: true,
         ui: {
-          confirm: async (_t: string, body: string) => { confirmations.push(body); return true; },
-          select: async () => null, editor: async () => "",
+          confirm: async () => true,
+          select: async (title: string) => { confirmations.push(title); return "Allow once"; }, editor: async () => "",
           setStatus: () => {}, setWidget: () => {}, notify: () => {},
           theme: { fg: (_s: string, t: string) => t },
         },
@@ -1431,7 +1525,7 @@ describe("tool gating in plan mode", () => {
         hasUI: true,
         ui: {
           confirm: async () => { confirmations++; return true; },
-          select: async () => null, editor: async () => "",
+          select: async () => { confirmations++; return "Allow once"; }, editor: async () => "",
           setStatus: () => {}, setWidget: () => {}, notify: () => {},
           theme: { fg: (_s: string, t: string) => t },
         },
@@ -1451,7 +1545,7 @@ describe("tool gating in plan mode", () => {
         hasUI: true,
         ui: {
           confirm: async () => { confirmations++; return true; },
-          select: async () => null, editor: async () => "",
+          select: async () => { confirmations++; return "Allow once"; }, editor: async () => "",
           setStatus: () => {}, setWidget: () => {}, notify: () => {},
           theme: { fg: (_s: string, t: string) => t },
         },

@@ -22,6 +22,11 @@ import {
 } from "./protocol";
 import {
   authHeaders,
+  gatewayEntries,
+  getGatewayCallerName,
+  getGatewayPeers,
+  getGatewayRegistrationName,
+  normUrl,
   type A2AConfig,
   type Peer,
   resolvePeer,
@@ -35,6 +40,8 @@ import {
   loadConversation,
   persistMessage,
 } from "./persistence";
+import { clean } from "./discovery";
+import { list as listRegistry } from "./registry";
 
 // ---------------------------------------------------------------------------
 // Card discovery
@@ -105,6 +112,46 @@ function assertSafeUrl(rawUrl: string): void {
   }
 }
 
+/** Operator-configured gateway origins (all entries) — used to pin
+ *  gateway-proxy peer URLs to a known gateway. */
+function gatewayOrigins(cfg: A2AConfig): Set<string> {
+  const out = new Set<string>();
+  for (const { entry } of gatewayEntries(cfg)) {
+    try {
+      out.add(new URL(entry.url).origin);
+    } catch {
+      /* skip malformed */
+    }
+  }
+  return out;
+}
+
+/** Gateway key from a `gw/<key>/<name>` peer label, or null. */
+function gatewayKeyOfPeer(agentLabel: string): string | null {
+  const m = /^gw\/([A-Za-z0-9._-]{1,64})\//.exec(agentLabel);
+  return m ? m[1]! : null;
+}
+
+/** assertSafeUrl for gateway-proxy peers: the private-range block would reject
+ *  LAN-hosted a2a-switchboard gateways (the primary self-hosted topology). Overlay URLs
+ *  are same-origin-pinned to an operator-configured gateway URL by
+ *  mergeGatewayPeers, so only those origins are permitted — never anything
+ *  else. */
+function assertGatewayUrl(rawUrl: string, origins: Set<string>): void {
+  let u: URL;
+  try {
+    u = new URL(rawUrl);
+  } catch {
+    throw new Error(`invalid URL: ${rawUrl}`);
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    throw new Error(`unsupported protocol: ${u.protocol} (only http/https)`);
+  }
+  if (!origins.has(u.origin)) {
+    throw new Error(`refused SSRF: ${rawUrl} is outside the configured gateway origins`);
+  }
+}
+
 export async function fetchCard(
   baseUrl: string,
   headers: Record<string, string>,
@@ -147,8 +194,10 @@ async function postJsonRpc(
   body: JsonRpcRequest,
   headers: Record<string, string>,
   timeoutMs: number,
+  gatewayOrigins?: Set<string>,
 ): Promise<any> {
-  assertSafeUrl(url);
+  if (gatewayOrigins) assertGatewayUrl(url, gatewayOrigins);
+  else assertSafeUrl(url);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -290,14 +339,43 @@ async function sendTask(opts: {
 }): Promise<SendResult> {
   const { cfg, piDir, peer, agentLabel, message } = opts;
   const headers = authHeaders(peer);
+  // Advisory caller attribution for the gateway's routing log/dashboard.
+  // Self-declared display name — stripped by the gateway before forwarding.
+  if (peer.viaGateway) {
+    // Prefer the operator-pinned identity; fall back to the runtime-resolved
+    // registration name of the gateway this peer came from (set by the
+    // server's upstream at start) or the base agent name so the dashboard
+    // shows a real caller name, not a fingerprint. The registration name is
+    // session-scoped and never persisted.
+    const key = gatewayKeyOfPeer(agentLabel);
+    // Manually-configured gateway peers (viaGateway without a `gw/<key>/`
+    // label) fall back to the SINGLE configured gateway's registration name
+    // (when exactly one gateway is configured) — otherwise there's no
+    // unambiguous gateway to attribute to.
+    let gwName: string | null = null;
+    if (key) {
+      gwName = getGatewayCallerName(key);
+    } else {
+      const entries = gatewayEntries(cfg);
+      if (entries.length === 1) gwName = getGatewayCallerName(entries[0]!.key);
+      else gwName = getGatewayRegistrationName();
+    }
+    const caller =
+      cfg.selfIdentity || gwName || cfg.server.agentName || "";
+    if (caller) headers["X-Gateway-Caller"] = caller;
+  }
   const timeout = peer.timeout || cfg.timeouts.send;
 
   // Best-effort card fetch (to learn the rpc URL); non-fatal on failure.
+  // Gateway peers are exempt: a proxied card advertises the peer's DIRECT
+  // url, which would bypass the gateway — pin the RPC to the proxy URL.
   let card: AgentCard | null = null;
-  try {
-    card = await fetchCard(peer.url, headers, Math.min(timeout, 30000));
-  } catch {
-    /* tolerate */
+  if (!peer.viaGateway) {
+    try {
+      card = await fetchCard(peer.url, headers, Math.min(timeout, 30000));
+    } catch {
+      /* tolerate */
+    }
   }
 
   const ctx = opts.contextId || newContextId();
@@ -315,7 +393,25 @@ async function sendTask(opts: {
   metrics.outboundTotal += 1;
 
   const started = Date.now();
-  const resp = await postJsonRpc(rpcUrl(peer.url, card), rpcBody, headers, timeout);
+  // SSRF pin: prefer the peer's own publishing gateway origin (overlay-first
+  // routing works even when the live config has no gateway block); fall back
+  // to the configured gateway origins; an empty set means the peer is not
+  // gateway-pinned → normal assertSafeUrl applies.
+  let gwOrigins: Set<string> | undefined;
+  if (peer.viaGateway) {
+    if (peer.gatewayUrl) {
+      try {
+        gwOrigins = new Set([new URL(peer.gatewayUrl).origin]);
+      } catch {
+        gwOrigins = undefined;
+      }
+    } else {
+      const origins = gatewayOrigins(cfg);
+      // Empty set = no gateway configured → normal assertSafeUrl applies.
+      gwOrigins = origins.size > 0 ? origins : undefined;
+    }
+  }
+  const resp = await postJsonRpc(rpcUrl(peer.url, card), rpcBody, headers, timeout, gwOrigins);
   metrics.recordLatency(Date.now() - started);
   if (resp.error) {
     const msg = resp.error.message || JSON.stringify(resp.error);
@@ -378,6 +474,16 @@ export async function a2aDiscover(opts: {
   for (const s of skills.slice(0, 20)) {
     lines.push(`  - ${s.name || s.id}: ${s.description ?? ""}`);
   }
+  // Full session-metadata tool list from the pi-session extension (matches
+  // the card's metadata.tools — never truncated).
+  const meta = (card as any).metadata ?? {};
+  const tools = Array.isArray(meta.tools) ? meta.tools.map(String) : [];
+  if (tools.length) {
+    lines.push(`Tools (${tools.length}):`);
+    for (let i = 0; i < tools.length; i += 10) {
+      lines.push(`  ${tools.slice(i, i + 10).join(", ")}`);
+    }
+  }
   return lines.join("\n");
 }
 
@@ -391,7 +497,7 @@ export async function a2aCall(opts: {
   const agent = (opts.agent || "").trim();
   const message = (opts.message || "").trim();
   if (!agent || !message) return "Error: both 'agent' and 'message' are required.";
-  const peer = resolvePeer(opts.cfg, agent);
+  const peer = resolvePeer(opts.cfg, agent, { knownLoopbackUrls: knownLoopbackUrls(opts.cfg, opts.piDir) });
   if (!peer || !peer.url) {
     return (
       `Error: unknown agent '${agent}'. Configure it under 'a2a.peers' in ` +
@@ -426,7 +532,38 @@ export async function a2aCall(opts: {
   return `${header}\n${body}`;
 }
 
-export function a2aList(opts: { cfg: A2AConfig; piDir: string }): string {
+/** Build the set of loopback URLs that are KNOWN peers (same-machine, same-user):
+ *  configured peers + live local-registry entries. mDNS peers are excluded —
+ *  their URLs come from the network and must not receive the shared token. */
+function knownLoopbackUrls(cfg: A2AConfig, piDir: string): Set<string> {
+  const known = new Set<string>();
+  for (const p of Object.values(cfg.peers)) {
+    if (p.url) known.add(normUrl(p.url));
+  }
+  try {
+    for (const d of listRegistry({ piDir, ttlSec: cfg.discovery.local.ttlSec })) {
+      if (d.url) known.add(normUrl(d.url));
+    }
+  } catch {
+    /* registry read is best-effort */
+  }
+  return known;
+}
+
+export function a2aList(opts: {
+  cfg: A2AConfig;
+  piDir: string;
+  /** Pre-merged discovered peers (local registry + mDNS). When provided, an
+   * extra "Discovered peers" section is appended. */
+  discoveredPeers?: Array<{
+    name: string;
+    url: string;
+    source: string;
+    cwd?: string;
+    model?: { provider: string; id: string; name?: string } | null;
+    tools?: string[];
+  }>;
+}): string {
   const { cfg, piDir } = opts;
   const peers = cfg.peers;
   const lines: string[] = [];
@@ -441,6 +578,36 @@ export function a2aList(opts: { cfg: A2AConfig; piDir: string }): string {
   } else {
     lines.push("No peers configured. Add them under 'a2a.peers' in settings.json.");
   }
+
+  // Gateway overlay (read-only, in-memory — refreshed after each gateway
+  // heartbeat; never written to settings.json).
+  const gateway = Object.entries(getGatewayPeers());
+  if (gateway.length > 0) {
+    lines.push("");
+    lines.push(`Gateway peers (${gateway.length}) — call by name, routed via the a2a-switchboard proxy:`);
+    for (const [name, p] of gateway) {
+      const capStr = p.capabilities.length ? ` caps: ${p.capabilities.join(", ")}` : "";
+      lines.push(`  - ${name}: ${p.url} (auth: ${p.auth.type})${capStr}`);
+    }
+  }
+
+  // Discovered peers (0.2.0) — exclude any already listed as configured (by URL).
+  const configuredUrls = new Set(names.map((n) => peers[n]!.url.replace(/\/+$/, "").toLowerCase()));
+  const discovered = (opts.discoveredPeers ?? []).filter(
+    (p) => !configuredUrls.has(p.url.replace(/\/+$/, "").toLowerCase()),
+  );
+  if (discovered.length > 0) {
+    lines.push("");
+    lines.push(`Discovered peers (${discovered.length}):`);
+    for (const p of discovered) {
+      const parts = [`  - ${clean(p.name)}`, clean(p.url), `[${p.source}]`];
+      if (p.cwd) parts.push(`cwd=${clean(p.cwd)}`);
+      if (p.model) parts.push(`model=${clean(p.model.provider)}/${clean(p.model.id)}`);
+      if (p.tools && p.tools.length) parts.push(`tools=${p.tools.slice(0, 8).map(clean).join(",")}`);
+      lines.push(parts.join("  "));
+    }
+  }
+
   const convos = listConversations(piDir);
   if (convos.length > 0) {
     lines.push("");

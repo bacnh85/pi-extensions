@@ -30,7 +30,10 @@ const FALLBACK_MAX_TOKENS = 8_192;
 // ponytail: overrides are GATED on the API under-reporting (no/zero context_length),
 // so a model that truthfully reports its window is never inflated.
 const CONTEXT_OVERRIDES: { pattern: RegExp; contextWindow: number; maxTokens?: number }[] = [
-  { pattern: /glm-5\.2/i, contextWindow: 1_000_000, maxTokens: 131_072 },
+  // GLM-5.2/5.3 only: 1M context, 128K output (glm-5.3[1m] Coding Plan route + launch
+  // coverage report the same 1M window as glm-5.2). Lookahead keeps future glm-5.4+
+  // (unverified profile) on the generic /glm-5/ 200K floor below.
+  { pattern: /glm-5\.[23](?!\d)/i, contextWindow: 1_000_000, maxTokens: 131_072 },
   { pattern: /glm-5/i, contextWindow: 200_000 },
   { pattern: /deepseek-v[34]/i, contextWindow: 1_000_000 },
   { pattern: /kimi-k3|kimi-k2\.7/i, contextWindow: 1_000_000 },
@@ -105,6 +108,7 @@ const CAPABILITIES: Record<string, { vision: boolean; reasoning: boolean }> = {
   "zai-org/glm-5.1": { vision: false, reasoning: false },
   "zai-org/glm-5.2": { vision: false, reasoning: true },
   "zai-org/glm-5.2-fast": { vision: false, reasoning: false },
+  "zai-org/glm-5.3": { vision: false, reasoning: true },
 };
 
 // ── Thinking level maps ────────────────────────────────────────────────────────
@@ -147,7 +151,9 @@ const THINKING_LEVEL_MAP_BY_FORMAT: Record<string, ThinkingLevelMap> = {
 function detectThinkingFormat(id: string): keyof typeof THINKING_LEVEL_MAP_BY_FORMAT {
   const norm = normalizeId(id);
   if (/deepseek-v[34]/.test(norm)) return "deepseek";
-  if (/glm-5\.2/.test(norm)) return "zai";
+  // GLM-5.2/5.3: single thinking tier — low/medium/high map to "high", max to "max".
+  // GLM-5.3 shares GLM-5.2's high/max reasoning_effort set, so the zai map applies.
+  if (/glm-5\.[23](?!\d)/.test(norm)) return "zai";
   if (/kimi/.test(norm)) return "kimi";
   if (/gpt-5\.6-sol/.test(norm)) return "openai-max";
   if (/qwen|step-|hy3/.test(norm)) return "qwen";

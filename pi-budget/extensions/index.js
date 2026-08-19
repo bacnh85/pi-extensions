@@ -5,8 +5,8 @@
  * Companion to pi-sub: pi-sub *renders* subscription usage, pi-budget *enforces*
  * a spend policy. Zero deps, plain JS (pi-ux/pi-ponytail pattern).
  *
- * Flag: `--budget <usd>` (e.g. `pi --budget 0.50`). Parsed at startup and
- * lazily re-read on the first message if no session_start has fired yet.
+ * Flag: `--budget <usd>` (e.g. `pi --budget 0.50`). Parsed once at extension
+ * load; `session_start` only resets per-session accumulators.
  * Cost source: `message_end` assistant messages (`usage.cost.total`).
  * Enforcement: `ctx.abort()` + notify + one custom entry for the session record.
  * Reset: new session (`session_start`) = fresh budget. Compaction does NOT reset
@@ -35,45 +35,45 @@ export function parseBudgetCap(value) {
 }
 
 export default function budgetExtension(pi) {
-  // Session-scoped state. `exceeded` guards so abort fires exactly once per session.
-  const state = {
-    budgetCap: undefined,
-    cumulativeCost: 0,
-    exceeded: false,
-    // Idempotency: message IDs already counted (guards double-count on
-    // retry/replay when the host re-fires message_end for the same message).
-    countedMessageIds: new Set(),
-    budgetInitAttempted: false,
-  };
-
   pi.registerFlag("budget", {
     description: "Max USD spend before auto-abort (e.g. 0.50)",
     type: "string",
   });
 
+  // CLI flags are immutable after parse; capture once at load so event
+  // handlers never touch the captured pi API (stale after session
+  // replacement/reload — getFlag throws there).
+  let rawBudget = undefined;
+  try {
+    rawBudget = pi.getFlag("budget");
+  } catch {
+    rawBudget = undefined;
+  }
+
+  // Session-scoped state. `exceeded` guards so abort fires exactly once per session.
+  const state = {
+    budgetCap: parseBudgetCap(rawBudget),
+    cumulativeCost: 0,
+    exceeded: false,
+    // Idempotency: message IDs already counted (guards double-count on
+    // retry/replay when the host re-fires message_end for the same message).
+    countedMessageIds: new Set(),
+  };
+
   pi.on("session_start", (event, ctx) => {
-    const raw = pi.getFlag("budget");
-    state.budgetCap = parseBudgetCap(raw);
     state.cumulativeCost = 0;
     state.exceeded = false;
     state.countedMessageIds = new Set();
-    if (raw !== undefined && raw !== null && raw !== "" && state.budgetCap === undefined) {
+    if (rawBudget !== undefined && rawBudget !== null && rawBudget !== "" && state.budgetCap === undefined) {
       // A non-empty flag we couldn't parse means the user asked for a cap that
       // will NOT be enforced. Say so — silent disable is a false sense of safety.
       try {
-        ctx.ui.notify(`Invalid --budget value "${raw}"; spend enforcement disabled.`, "warning");
+        ctx.ui.notify(`Invalid --budget value "${rawBudget}"; spend enforcement disabled.`, "warning");
       } catch { /* best-effort UI */ }
     }
   });
 
   pi.on("message_end", (event, ctx) => {
-    // Lazy init: if message_end ever fires before session_start (host ordering
-    // edge), still enforce rather than silently dropping the first message's cost.
-    if (state.budgetCap === undefined && !state.budgetInitAttempted) {
-      state.budgetInitAttempted = true;
-      state.budgetCap = parseBudgetCap(pi.getFlag("budget"));
-    }
-
     if (event.message?.role === "assistant") {
       const cost = Number(event.message.usage?.cost?.total);
       if (Number.isFinite(cost) && cost > 0) {

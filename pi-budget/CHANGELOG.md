@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.2 - 2026-08-15
+
+Stale-extension-ctx crash fix (same root cause as pi-notify 0.1.1).
+
+### Fixed
+
+- `--budget` flag is captured once at extension load instead of being read from
+  the extension API inside `session_start`/`message_end` handlers. After a
+  session replacement (/new-session, fork, switch) or reload, the old runner is
+  invalidated and `pi.getFlag` throws "extension ctx is stale" — a handler
+  firing during teardown crashed the extension. CLI flags are immutable after
+  parse, so the load-time capture is equivalent and removes the lazy re-read.
+  Lazy-init edge (message_end before session_start) still enforced: the cap is
+  known at load.
+
 ## 0.1.1 - 2026-08-05
 
 Patch version bump for release sync and package documentation update.

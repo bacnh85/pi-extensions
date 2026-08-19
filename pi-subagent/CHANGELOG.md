@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.15.2 (2026-08-18)
+
+### Improvements
+
+- Colored borders around thread viewer overlay using agent color.
+- Colored scroll-indicator arrows (↑/↓) matching agent color.
+- Scroll offset only resets when switching to a different thread, not on every refresh.
+
+## 0.15.1 (2026-08-17)
+
+### Improvements
+
+- Project-local agent approval is now a single select — **Allow once / Trust for this session / Deny** — instead of a yes/no confirm repeated on every delegation. "Trust for this session" remembers the project agents dir for the session (cleared on `session_start`); dismissed dialogs and Deny cancel the delegation. Headless sessions still fail closed.
+- New test coverage for the approval gate (Deny / dismissed / headless / trust-remembering / session_start clearing).
+
 ## 0.15.0 (2026-08-09)
 
 ### Packaging

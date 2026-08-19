@@ -23,7 +23,7 @@
  * non-trivial piece — it has its own test suite.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
 import os from "node:os";
 
 /**
@@ -50,7 +50,10 @@ export function wildcardToRegex(pattern) {
     else if ("\\^$.|+()[]{}:".includes(ch)) re += "\\" + ch;
     else re += ch;
   }
-  return new RegExp("^" + re + "$");
+  // "s" flag: `*` must cross newlines like it crosses `/` — without it,
+  // multiline commands (heredocs, multi-line scripts) matched NO rule and
+  // bypassed every ask/deny.
+  return new RegExp("^" + re + "$", "s");
 }
 
 /**
@@ -82,9 +85,13 @@ function expandHome(pattern, home) {
   return pattern;
 }
 
-// Avoid importing node:path just for join — keep zero-dep.
-function join(base, rest) {
-  return base.replace(/\/$/, "") + "/" + rest.replace(/^\//, "");
+// Avoid importing node:path just for join — keep zero-dep. Variadic so nested
+// paths (~/.pi/agent) resolve correctly (the old 2-arg version silently
+// dropped the third segment).
+function join(...parts) {
+  return parts
+    .map((p, i) => (i === 0 ? String(p).replace(/\/+$/, "") : String(p).replace(/^\/+/, "")))
+    .join("/");
 }
 
 /**
@@ -123,6 +130,11 @@ export function readSettingsKey(cwd, key) {
  */
 function toolSubject(toolName, input) {
   if (toolName === "bash") return String(input?.command || "");
+  if (toolName === "grep" || toolName === "find" || toolName === "ls") {
+    // Subject = path only (the security-relevant scope); a pattern-only
+    // search spans the whole cwd — too broad to key a remember-choice on.
+    return String(input?.path || "");
+  }
   if (toolName === "read" || toolName === "write" || toolName === "edit") {
     return String(input?.path || "");
   }
@@ -146,11 +158,97 @@ function isExternal(path, cwd) {
 // Tools that take a path and can trigger the external_directory boundary.
 const PATH_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls"]);
 
-// Tools to surface in the UI when "ask" fires.
+// Tools to surface in the UI when "ask" fires. Control characters are
+// flattened and long commands/paths clipped so untrusted command text can't
+// reshape the dialog.
 function describe(toolName, input) {
-  if (toolName === "bash") return `\`bash\`: ${input?.command || ""}`;
-  if (input?.path) return `\`${toolName}\`: ${input.path}`;
+  const clip = (s) => {
+    const c = String(s).replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim();
+    return c.length > 120 ? c.slice(0, 120) + "…" : c;
+  };
+  if (toolName === "bash") return `\`bash\`: ${clip(String(input?.command || ""))}`;
+  if (input?.path) return `\`${toolName}\`: ${clip(String(input.path))}`;
   return `\`${toolName}\``;
+}
+
+// Session-scoped allowlist for "Allow for this session" promotions. Module
+// state — settings are re-read from disk on every tool_call, so promotions
+// cannot live on the (ephemeral) rules object.
+const sessionAllows = new Map(); // toolName → Set<subject>
+
+function promoteToSessionAllow(toolName, subject) {
+  if (!sessionAllows.has(toolName)) sessionAllows.set(toolName, new Set());
+  sessionAllows.get(toolName).add(subject);
+}
+
+function sessionAllowed(toolName, subject) {
+  return sessionAllows.get(toolName)?.has(subject) === true;
+}
+
+/**
+ * Persist an "allow" rule for this exact (tool, subject) into the settings.json
+ * that already carries the permission config (same resolution order as
+ * readSettingsKey); if none exists, create <cwd>/.pi/settings.json.
+ * Returns { file } on success or { error } on failure.
+ * Exported for unit testing (dirs overrides the search list).
+ */
+export function persistAllowlistRule(toolName, subject, ctx, dirs) {
+  try {
+    // A subject bearing wildcards (e.g. `git add *`) would be stored as a
+    // glob pattern far broader than what the user approved — refuse.
+    if (/[\x2a\x3f]/.test(String(subject))) {
+      return { error: `subject contains wildcard characters (* or ?): ${String(subject)} — add the rule manually` };
+    }
+    const home = os.homedir();
+    const search = dirs ?? [
+      join(ctx?.cwd || process.cwd(), ".pi"),
+      process.env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent"),
+      join(home, ".pi", "agents"),
+    ];
+    let target = search[0];
+    for (const dir of search) {
+      try {
+        const existing = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
+        if (existing?.permission && typeof existing.permission === "object" && !Array.isArray(existing.permission)) {
+          target = dir;
+          break;
+        }
+      } catch { /* no/invalid settings.json here — keep looking */ }
+    }
+    mkdirSync(target, { recursive: true });
+    const file = join(target, "settings.json");
+    let parsed = {};
+    try {
+      const raw = readFileSync(file, "utf8");
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      if (e?.code !== "ENOENT") {
+        // An existing-but-unparseable settings.json must never be overwritten.
+        return { error: `settings.json at ${file} is not valid JSON; not overwriting` };
+      }
+      parsed = {};
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) parsed = {};
+    const perm = parsed.permission && typeof parsed.permission === "object" && !Array.isArray(parsed.permission)
+      ? parsed.permission
+      : {};
+    const prev = perm[toolName];
+    const toolRules = prev && typeof prev === "object" && !Array.isArray(prev) ? prev : {};
+    if (typeof prev === "string") toolRules["*"] = prev; // whole-tool rule kept as `*` (inserted first, specific allow still wins)
+    // Re-append the subject LAST so the explicit allow wins (last-match-wins),
+    // even when the same key already existed earlier in insertion order.
+    delete toolRules[String(subject)];
+    toolRules[String(subject)] = "allow";
+    perm[toolName] = toolRules;
+    parsed.permission = perm;
+    // Atomic write: temp file + rename so a crash can't truncate settings.json.
+    const tmp = `${file}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(parsed, null, 2) + "\n");
+    renameSync(tmp, file);
+    return { file };
+  } catch (e) {
+    return { error: String(e?.message || e) };
+  }
 }
 
 export default function permissionExtension(pi) {
@@ -164,6 +262,19 @@ export default function permissionExtension(pi) {
     type: "boolean",
   });
 
+  // CLI flags are immutable after parse; capture once at load so event
+  // handlers never touch the captured pi API (stale after session
+  // replacement/reload — getFlag throws there).
+  let yolo = false;
+  let auto = false;
+  try {
+    yolo = Boolean(pi.getFlag("yolo"));
+    auto = Boolean(pi.getFlag("auto"));
+  } catch {
+    yolo = false;
+    auto = false;
+  }
+
   // doom-loop state: ring of recent (tool, inputKey) signatures
   const recent = [];
   const DOOM_THRESHOLD = 3;
@@ -176,7 +287,6 @@ export default function permissionExtension(pi) {
       pi.config?.permission;
     if (!rules) return undefined; // not configured → no opinion
 
-    const yolo = pi.getFlag("yolo") || pi.getFlag("auto");
     const { toolName, input } = event;
     const home = ctx.home || process.env.HOME || "";
 
@@ -224,13 +334,6 @@ export default function permissionExtension(pi) {
       }
     }
 
-    // 1b. session-scoped "Allow always" promotions: if the user previously chose
-    // "Allow always this session" for this exact (tool, subject), short-circuit.
-    if (action !== "allow") {
-      const allowed = sessionAllowed(rules, toolName, toolSubject(toolName, input));
-      if (allowed) return undefined;
-    }
-
     // 2. global "*" default
     if (action === null && rules["*"] !== undefined) {
       action = rules["*"];
@@ -249,8 +352,13 @@ export default function permissionExtension(pi) {
       return { block: true, reason: `denied by permission rule (${matchedRule})` };
     }
 
-    // ── "ask" ───────────────────────────────────────────────────────────
-    if (yolo) return undefined; // auto-approve
+    // Session promotions only suppress the "ask" prompt — an explicit deny
+    // (tool rule or global, possibly tightened mid-session after a re-read)
+    // always wins.
+    if (sessionAllowed(toolName, toolSubject(toolName, input))) return undefined;
+
+    // ── "ask" ───────────────────────────────────────────────────────
+    if (yolo || auto) return undefined; // auto-approve (--yolo or --auto)
 
     if (!ctx.hasUI) {
       // Non-interactive: can't ask → block by default (fail closed).
@@ -258,16 +366,32 @@ export default function permissionExtension(pi) {
     }
 
     try {
+      const subject = toolSubject(toolName, input);
+      // Subject-less tools (no command/path to key on) get no remember options.
+      const options = subject
+        ? ["Allow once", "Allow for this session", "Add to permanent allowlist", "Deny"]
+        : ["Allow once", "Deny"];
       const choice = await ctx.ui.select(
         `Permission required (${matchedRule}):\n\n  ${describe(toolName, input)}`,
-        ["Allow once", "Allow always this session", "Deny"],
+        options,
       );
-      if (choice === "Allow always this session") {
-        // Promote to allow for this session: remember this exact (tool, subject).
-        promoteToSessionAllow(rules, toolName, toolSubject(toolName, input));
+      if (choice === "Allow for this session") {
+        promoteToSessionAllow(toolName, subject);
         return undefined;
       }
-      if (choice === "Deny") {
+      if (choice === "Add to permanent allowlist") {
+        const written = persistAllowlistRule(toolName, subject, ctx);
+        if (written.error) {
+          return { block: true, reason: `could not persist allowlist rule: ${written.error}` };
+        }
+        promoteToSessionAllow(toolName, subject); // cover the rest of this session too
+        try {
+          ctx.ui.notify(`Permission rule added to ${written.file}: ${describe(toolName, input)} → allow`, "info");
+        } catch { /* best-effort */ }
+        return undefined;
+      }
+      if (choice !== "Allow once") {
+        // "Deny" or dismissed dialog (Esc) — fail closed.
         return { block: true, reason: `denied by user (${matchedRule})` };
       }
       return undefined; // Allow once
@@ -276,19 +400,7 @@ export default function permissionExtension(pi) {
     }
   });
 
-  // Reset doom-loop memory on new session so a prior session's calls don't
-  // poison the new one when pi reuses the extension process.
-  pi.on("session_start", () => { recent.length = 0; });
-}
-
-// Session-scoped allowlist for "Allow always" promotions. Stored on the rules
-// object under a hidden key; consulted in the tool-rule resolution path.
-function promoteToSessionAllow(rules, toolName, subject) {
-  if (!rules.__sessionAllows) rules.__sessionAllows = {};
-  if (!rules.__sessionAllows[toolName]) rules.__sessionAllows[toolName] = new Set();
-  rules.__sessionAllows[toolName].add(subject);
-}
-
-function sessionAllowed(rules, toolName, subject) {
-  return rules.__sessionAllows?.[toolName]?.has(subject) === true;
+  // Reset doom-loop + session-allow memory on new session so a prior session's
+  // calls don't poison the new one when pi reuses the extension process.
+  pi.on("session_start", () => { recent.length = 0; sessionAllows.clear(); });
 }

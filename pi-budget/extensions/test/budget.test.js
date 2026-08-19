@@ -3,7 +3,7 @@ import test from "node:test";
 
 import budgetExtension, { parseBudgetCap } from "../index.js";
 
-function createPiHarness(flagValue) {
+function createPiHarness(flagValue, opts = {}) {
   const events = new Map();
   const appendedEntries = [];
   const statusCalls = [];
@@ -14,6 +14,11 @@ function createPiHarness(flagValue) {
     },
     flags: new Map(),
     getFlag(name) {
+      // Regression: after session replacement/reload the SDK's runtime is
+      // stale and getFlag throws — load-time capture must swallow it.
+      if (opts.getFlagThrows) {
+        throw new Error("This extension ctx is stale after session replacement or reload.");
+      }
       return name === "budget" ? flagValue : undefined;
     },
     on(eventName, handler) {
@@ -242,4 +247,15 @@ test("enforces even when message_end fires before session_start (review: LOW)", 
   // No session_start fired yet — lazy init reads the flag.
   events.get("message_end")({ message: assistantMsg(0.6, "m1") }, ctx);
   assert.equal(ctx.aborted(), true, "lazy init enforced the cap");
+});
+
+test("stale runner (getFlag throws at load) never crashes handlers (regression)", () => {
+  // Simulates the SDK invalidating the runner after session replacement: the
+  // load-time flag capture must swallow the throw and fall back to no cap,
+  // then handlers must still run without touching the captured pi API.
+  const { events } = createPiHarness(undefined, { getFlagThrows: true });
+  const ctx = createCtx();
+  assert.doesNotThrow(() => events.get("session_start")({}, ctx));
+  assert.doesNotThrow(() => events.get("message_end")({ message: assistantMsg(5, "m1") }, ctx));
+  assert.equal(ctx.aborted(), false, "no cap when flag unreadable → no abort");
 });

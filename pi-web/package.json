@@ -59,7 +59,13 @@
     "@types/node": "^26.0.1",
     "@types/turndown": "^5.0.6",
     "chai": "^6.2.2",
-    "mocha": "^11.7.6",
+    "mocha": "^11.8.0",
     "tsx": "^4.22.4"
+  },
+  "overrides": {
+    "serialize-javascript@>=5.0.0 <7.0.5": "^7.0.5",
+    "js-yaml@>=4.0.0 <4.3.1": "^4.3.1",
+    "brace-expansion@>=2.0.0 <2.1.4": "^2.1.4",
+    "diff": "^8.0.3"
   }
 }

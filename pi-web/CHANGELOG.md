@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1 (2026-08-19)
+
+### Changed
+
+- `web_extract` agy backend default model updated to `gemini-3.7-flash-medium`
+  — the current Flash generation in agy 1.1.x (3.6 is still served, this just
+  follows the latest).
+
 ## 0.6.0 (2026-08-07)
 
 ### Features

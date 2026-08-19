@@ -1,6 +1,6 @@
 import { assert } from "chai";
 import * as fs from "node:fs";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -8,6 +8,8 @@ import { DEFAULTS } from "./helpers";
 import { A2AServer, type SessionRunner } from "../lib/server";
 import { STATE_CANCELED, STATE_COMPLETED, STATE_FAILED, STATE_INPUT_REQUIRED, STATE_REJECTED } from "../lib/protocol";
 import { metrics } from "../lib/client";
+import { list as listRegistry } from "../lib/registry";
+import { setGatewayRegistrationName, getGatewayCallerName, gatewayKeyFromUrl } from "../lib/config";
 
 // ---------------------------------------------------------------------------
 // Stub session runner — returns a canned reply without spawning a real agent.
@@ -38,7 +40,7 @@ async function freePort(): Promise<number> {
   });
 }
 
-async function startServer(opts: { cfg: typeof DEFAULTS extends infer T ? any : any; runner?: SessionRunner }): Promise<{
+async function startServer(opts: { cfg: typeof DEFAULTS extends infer T ? any : any; runner?: SessionRunner; piDir?: string; cwd?: string; onActivity?: (a: any) => void }): Promise<{
   server: A2AServer;
   url: string;
   stop: () => Promise<void>;
@@ -46,11 +48,13 @@ async function startServer(opts: { cfg: typeof DEFAULTS extends infer T ? any : 
   const port = await freePort();
   const cfg = { ...opts.cfg };
   cfg.server = { ...cfg.server, port };
+  const piDir = opts.piDir ?? tmpDir();
   const server = new A2AServer({
     cfg,
-    cwd: tmpDir(),
-    piDir: tmpDir(),
+    cwd: opts.cwd ?? tmpDir(),
+    piDir,
     runner: opts.runner ?? stubRunner(),
+    onActivity: opts.onActivity,
   });
   const info = await server.start();
   return { server, url: info.url, stop: () => server.stop() };
@@ -89,6 +93,112 @@ describe("server", () => {
         assert.equal(resp.status, 200);
         const card = await resp.json();
         assert.equal(card.version, "1.0.0");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("#9: strips enriched session metadata from the card for anonymous (unauthenticated) callers", async () => {
+      const cfg = DEFAULTS();
+      cfg.server.sharedToken = "test-shared-token";
+      const { url, stop } = await startServer({ cfg });
+      try {
+        // Anonymous (no Authorization header) → plain card, no metadata.
+        const anon = await (await fetch(url + ".well-known/agent-card.json")).json();
+        assert.equal(anon.metadata, undefined);
+        assert.equal(anon.capabilities.extensions, undefined);
+        // Authenticated → enriched card with pi-session metadata.
+        const auth = await (await fetch(url + ".well-known/agent-card.json", {
+          headers: { Authorization: "Bearer test-shared-token" },
+        })).json();
+        assert.notEqual(auth.metadata, undefined);
+        assert.equal(auth.metadata.extension, "https://bacnh85.dev/a2a/extensions/pi-session/v1");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("#9: /metrics requires authentication", async () => {
+      const cfg = DEFAULTS();
+      cfg.server.sharedToken = "test-shared-token";
+      const { url, stop } = await startServer({ cfg });
+      try {
+        const anon = await fetch(url + "metrics");
+        assert.equal(anon.status, 401);
+        const auth = await fetch(url + "metrics", {
+          headers: { Authorization: "Bearer test-shared-token" },
+        });
+        assert.equal(auth.status, 200);
+      } finally {
+        await stop();
+      }
+    });
+  });
+
+  describe("session discovery (0.2.0)", () => {
+    it("registers itself in the local file registry on start", async () => {
+      const piDir = tmpDir();
+      const cwd = "/test-repo";
+      const { server, stop } = await startServer({ cfg: DEFAULTS(), piDir, cwd });
+      try {
+        // The server uses process.pid as the registry key — which is alive.
+        const entries = listRegistry({ piDir, ttlSec: 60 });
+        const self = entries.find((e) => e.pid === process.pid);
+        assert.isOk(self, "server should have registered its own pid");
+        assert.equal(self!.cwd, cwd);
+        assert.equal(self!.port, server.port);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("unregisters from the registry on stop", async () => {
+      const piDir = tmpDir();
+      const { stop } = await startServer({ cfg: DEFAULTS(), piDir });
+      await stop();
+      const entries = listRegistry({ piDir, ttlSec: 60 });
+      const self = entries.find((e) => e.pid === process.pid);
+      assert.isUndefined(self, "registry entry should be removed on stop");
+    });
+
+    it("enriches the Agent Card with session metadata when enrichCard is on", async () => {
+      const cfg = DEFAULTS();
+      const cwd = "/enriched-repo";
+      const { url, stop } = await startServer({ cfg, cwd });
+      try {
+        const resp = await fetch(url + ".well-known/agent-card.json");
+        const card = await resp.json();
+        assert.isDefined(card.capabilities.extensions, "card should declare the extension");
+        assert.isDefined(card.metadata, "card should carry metadata");
+        assert.equal(card.metadata.cwd, cwd);
+        assert.equal(card.metadata.pid, process.pid);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("omits metadata from the card when enrichCard is off", async () => {
+      const cfg = DEFAULTS();
+      cfg.discovery.enrichCard = false;
+      const { url, stop } = await startServer({ cfg });
+      try {
+        const resp = await fetch(url + ".well-known/agent-card.json");
+        const card = await resp.json();
+        assert.isUndefined(card.metadata);
+        assert.isUndefined(card.capabilities.extensions);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("does NOT write a registry file when local discovery is disabled", async () => {
+      const cfg = DEFAULTS();
+      cfg.discovery.local.enabled = false;
+      const piDir = tmpDir();
+      const { stop } = await startServer({ cfg, piDir });
+      try {
+        const entries = listRegistry({ piDir, ttlSec: 60 });
+        assert.lengthOf(entries, 0, "no registry file should be written");
       } finally {
         await stop();
       }
@@ -136,6 +246,207 @@ describe("server", () => {
         );
         assert.isUndefined(r.error);
         assert.equal(r.result.status.state, STATE_COMPLETED);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("rejects a non-loopback Host in localhost-only mode (DNS-rebinding guard)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
+      try {
+        // Node's fetch() forbids the Host header, so use raw http.request —
+        // this is exactly how a DNS-rebinding attack presents itself.
+        const status = await new Promise<number>((resolve, reject) => {
+          const req = httpRequest(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Host: "evil.example.com", // attacker domain resolving to 127.0.0.1
+            },
+          }, (res) => {
+            res.resume();
+            resolve(res.statusCode ?? 0);
+          });
+          req.on("error", reject);
+          req.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "SendMessage",
+            params: { message: { role: "ROLE_USER", parts: [{ text: "hi" }] } },
+          }));
+        });
+        assert.equal(status, 403, "non-loopback Host must be rejected");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("rejects a non-loopback Origin (CSRF guard)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
+      try {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Origin: "https://evil.example.com",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "SendMessage",
+            params: { message: { role: "ROLE_USER", parts: [{ text: "hi" }] } },
+          }),
+        });
+        assert.equal(resp.status, 403, "non-loopback Origin must be rejected");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("rejects browser simple-request content-types (text/plain CSRF body)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
+      try {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=UTF-8" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "SendMessage",
+            params: { message: { role: "ROLE_USER", parts: [{ text: "hi" }] } },
+          }),
+        });
+        assert.equal(resp.status, 415, "text/plain must be rejected");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("accepts a bracketed IPv6 loopback Host [::1] (no false-positive 403)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
+      try {
+        // Server binds 127.0.0.1; we send a bracketed-IPv6 Host header over that
+        // connection — this exercises the header parser, exactly where the old
+        // split(":")[0] bug lived ([::1]:port → "[" → false 403).
+        const status = await new Promise<number>((resolve, reject) => {
+          const u = new URL(url);
+          const req = httpRequest(
+            {
+              host: "127.0.0.1",
+              port: u.port,
+              method: "POST",
+              path: "/",
+              headers: { "Content-Type": "application/json", Host: `[::1]:${u.port}` },
+            },
+            (res) => {
+              res.resume();
+              resolve(res.statusCode ?? 0);
+            },
+          );
+          req.on("error", reject);
+          req.end(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "SendMessage", params: { message: { role: "ROLE_USER", parts: [{ text: "hi" }] } } }));
+        });
+        assert.equal(status, 200, "[::1]:port Host must be recognized as loopback, not 403");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("applies the Host gate to GET requests too (agent card via rebinding domain → 403)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
+      try {
+        const status = await new Promise<number>((resolve, reject) => {
+          const u = new URL(url);
+          const req = httpRequest(
+            { host: "127.0.0.1", port: u.port, method: "GET", path: "/.well-known/agent-card.json", headers: { Host: "evil.example.com" } },
+            (res) => {
+              res.resume();
+              resolve(res.statusCode ?? 0);
+            },
+          );
+          req.on("error", reject);
+          req.end();
+        });
+        assert.equal(status, 403, "GET with non-loopback Host must be rejected");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("rejects Origin: null (sandboxed iframe) with 403", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
+      try {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Origin: "null" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "SendMessage", params: { message: { role: "ROLE_USER", parts: [{ text: "hi" }] } } }),
+        });
+        assert.equal(resp.status, 403, "Origin: null must be rejected");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("keeps working with application/json + loopback Host/Origin (no regression)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        assert.isUndefined(r.error, "loopback request must still pass");
+        assert.equal(r.result.status.state, STATE_COMPLETED);
+      } finally {
+        await stop();
+      }
+    });
+  });
+
+  describe("outbound reply redaction", () => {
+    it("redacts credential-shaped strings from the reply artifact", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("key is sk-test-abcdEFGH01234567JKLM and ghp_ABCDEFGHIJKLMNOPQRST and mytest@example.com") });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "show secrets" }] },
+        });
+        const text = r.result.artifacts?.[0]?.parts?.[0]?.text ?? "";
+        assert.notInclude(text, "sk-test-abcdEFGH01234567JKLM", "sk-* must be redacted");
+        assert.notInclude(text, "ghp_ABCDEFGHIJKLMNOPQRST", "ghp_* must be redacted");
+        assert.notInclude(text, "mytest@example.com", "email must be redacted");
+        assert.include(text, "[redacted]", "redaction placeholder present");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("leaves plain replies unchanged (no over-redaction)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("hello world") });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        const text = r.result.artifacts?.[0]?.parts?.[0]?.text ?? "";
+        assert.equal(text, "hello world");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("redacts the failure message too (error text can embed reply content)", async () => {
+      // Runner throws an error whose message embeds a credential-shaped string —
+      // the FAILED task's status.message must be scrubbed before tasks/get or
+      // SSE returns it to a peer.
+      const runner: SessionRunner = async () => {
+        throw new Error("tool failed: token sk-abcdEFGHIJKL0123456789 leaked in payload");
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        assert.equal(r.result.status.state, STATE_FAILED);
+        const msg = r.result.status.message?.parts?.[0]?.text ?? "";
+        assert.notInclude(msg, "sk-abcdEFGHIJKL0123456789", "failure message must be redacted");
+        assert.include(msg, "[redacted]", "redaction placeholder present");
       } finally {
         await stop();
       }
@@ -211,6 +522,96 @@ describe("server", () => {
     });
   });
 
+  describe("inbound activity (0.3.0)", () => {
+    it("emits arrived → progress → completed for a successful task", async () => {
+      const events: any[] = [];
+      const runner: SessionRunner = async ({ onProgress }) => {
+        onProgress?.("⚙ bash npm test");
+        return { reply: "all good", inputRequired: false };
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner, onActivity: (a) => events.push(a) });
+      try {
+        await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "run tests" }] },
+        });
+        const types = events.map((e) => e.type);
+        assert.deepEqual(types, ["arrived", "progress", "completed"]);
+        assert.equal(events[0]!.identity, "ip:127.0.0.1"); // localhost-only mode
+        assert.match(events[0]!.text, /run tests/);
+        assert.match(events[1]!.line, /npm test/);
+        assert.match(events[2]!.replyPreview, /all good/);
+        assert.equal(events[2]!.state, STATE_COMPLETED);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("emits failed with the error when the runner throws", async () => {
+      const events: any[] = [];
+      const runner: SessionRunner = async () => {
+        throw new Error("kaboom");
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner, onActivity: (a) => events.push(a) });
+      try {
+        await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "boom" }] },
+        });
+        const types = events.map((e) => e.type);
+        assert.deepEqual(types, ["arrived", "failed"]);
+        assert.match(events[1]!.error, /kaboom/);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("emits completed (canceled) for a user cancel", async () => {
+      const events: any[] = [];
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const runner: SessionRunner = async ({ signal }) => {
+        await new Promise<void>((resolve, reject) => {
+          const onAbort = () => reject(new Error("aborted"));
+          signal.addEventListener("abort", onAbort, { once: true });
+          void gate.then(() => {
+            signal.removeEventListener("abort", onAbort);
+            resolve();
+          });
+        });
+        return { reply: "never", inputRequired: false };
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner, onActivity: (a) => events.push(a) });
+      try {
+        const sendP = jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        // Let the task start, then cancel it.
+        await new Promise((r) => setTimeout(r, 50));
+        const tasks = await jsonRpc(url, "tasks/list", {});
+        const tid = tasks.result.tasks[0]!.id;
+        await jsonRpc(url, "tasks/cancel", { id: tid });
+        await sendP;
+        const types = events.map((e) => e.type);
+        assert.deepEqual(types, ["arrived", "completed"]);
+        assert.equal(events[1]!.state, STATE_CANCELED);
+      } finally {
+        release();
+        await stop();
+      }
+    });
+
+    it("does not crash without an onActivity handler (backward compat)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("ok") });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        assert.equal(r.result.status.state, STATE_COMPLETED);
+      } finally {
+        await stop();
+      }
+    });
+  });
+
   describe("anti-loop", () => {
     it("rejects after the per-context turn cap", async () => {
       const cfg = DEFAULTS();
@@ -274,6 +675,34 @@ describe("server", () => {
         const tid = send.result.id;
         const cancel = await jsonRpc(url, "tasks/cancel", { id: tid });
         assert.equal(cancel.error?.code, -32002);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("#10: tasks are per-identity — another peer cannot get/list/cancel them", async () => {
+      const cfg = DEFAULTS();
+      cfg.server.peerTokens = { alice: "tok-alice", bob: "tok-bob" };
+      const { url, stop } = await startServer({ cfg, runner: stubRunner("secret result") });
+      const aliceH = { Authorization: "Bearer tok-alice" };
+      const bobH = { Authorization: "Bearer tok-bob" };
+      try {
+        const send = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "alice task" }] },
+        }, aliceH);
+        const tid = send.result.id;
+        // Bob cannot fetch Alice's task or see it in his list.
+        const foreignGet = await jsonRpc(url, "tasks/get", { id: tid }, bobH);
+        assert.equal(foreignGet.error?.code, -32001, "foreign tasks/get must fail");
+        const bobList = await jsonRpc(url, "tasks/list", {}, bobH);
+        assert.equal(bobList.result.tasks.length, 0, "tasks/list must only show own tasks");
+        const foreignCancel = await jsonRpc(url, "tasks/cancel", { id: tid }, bobH);
+        assert.equal(foreignCancel.error?.code, -32001, "foreign tasks/cancel must fail");
+        // Alice still can.
+        const ownGet = await jsonRpc(url, "tasks/get", { id: tid }, aliceH);
+        assert.equal(ownGet.result.id, tid);
+        const aliceList = await jsonRpc(url, "tasks/list", {}, aliceH);
+        assert.equal(aliceList.result.tasks.length, 1);
       } finally {
         await stop();
       }
@@ -502,6 +931,85 @@ describe("server", () => {
       await server.stop();
       assert.equal(server.url, "", "stopped server must not advertise a port");
       assert.isNull(server.port, "stopped server port is null");
+    });
+  });
+
+  describe("gateway registration gating (0.5.0)", () => {
+    let realFetch: typeof fetch;
+    let calls: Array<{ url: string; init?: RequestInit }>;
+
+    beforeEach(() => {
+      realFetch = globalThis.fetch;
+      calls = [];
+      // Stub fetch: record every request; the gateway is never reachable.
+      // Any /register or /channel attempt therefore fails (network error →
+      // register() returns false silently), but we can OBSERVE the attempt.
+      (globalThis as any).fetch = async (url: any, init?: RequestInit) => {
+        calls.push({ url: String(url), init });
+        throw new Error("gateway unreachable (stubbed)");
+      };
+    });
+
+    afterEach(() => {
+      (globalThis as any).fetch = realFetch;
+      setGatewayRegistrationName(null);
+    });
+
+    it("does not register when gateway.enabled is false (no fetch attempt)", async () => {
+      const cfg = DEFAULTS();
+      cfg.discovery.gateway = { enabled: false, url: "http://127.0.0.1:9920", token: "x" };
+      const port = await freePort();
+      cfg.server = { ...cfg.server, port };
+      const server = new A2AServer({ cfg, cwd: tmpDir(), piDir: tmpDir(), runner: stubRunner("ok") });
+      await server.start();
+      await server.stop();
+      // The gate must short-circuit BEFORE any network call: no register,
+      // no channel, no directory fetch.
+      assert.equal(calls.length, 0, "disabled gateway must make zero fetch calls");
+    });
+
+    it("attempts registration when gateway.enabled is true", async () => {
+      const cfg = DEFAULTS();
+      cfg.discovery.gateway = { enabled: true, url: "http://127.0.0.1:9920", token: "x" };
+      const port = await freePort();
+      cfg.server = { ...cfg.server, port };
+      const server = new A2AServer({ cfg, cwd: tmpDir(), piDir: tmpDir(), runner: stubRunner("ok") });
+      await server.start();
+      // The resolved registration name is NOT published when the gateway is
+      // unreachable — a caller name must not be advertised before a
+      // successful register (X-Gateway-Caller producer side).
+      const key = gatewayKeyFromUrl("http://127.0.0.1:9920");
+      assert.isNull(getGatewayCallerName(key), "no registration name while registration failed");
+      await server.stop();
+      // Registration is attempted (POST /register) even though the gateway is
+      // unreachable. The reverse channel only opens AFTER a successful
+      // register, so with a failing stub there is no /channel call yet — the
+      // enabled:false test above proves the gate itself is what suppresses
+      // every call.
+      const urls = calls.map((c) => c.url);
+      assert.ok(urls.some((u) => u.includes("/register")), "register attempted: " + urls.join(", "));
+    });
+
+    it("registers to EACH enabled gateway in the gateways map (0.6.0)", async () => {
+      const cfg = DEFAULTS();
+      cfg.discovery.gateways = {
+        work: { enabled: true, url: "http://127.0.0.1:9920", token: "x" },
+        lab: { enabled: true, url: "http://127.0.0.1:9921", token: "y" },
+        off: { enabled: false, url: "http://127.0.0.1:9922", token: "z" },
+      };
+      const port = await freePort();
+      cfg.server = { ...cfg.server, port };
+      const server = new A2AServer({ cfg, cwd: tmpDir(), piDir: tmpDir(), runner: stubRunner("ok") });
+      await server.start();
+      await server.stop();
+      const urls = calls.map((c) => c.url);
+      // 2 enabled gateways → 2 POST /register attempts (the DELETE-on-stop
+      // calls carry ?name= and must not count); disabled one skipped.
+      const posts = urls.filter((u) => u.includes("/register") && !u.includes("?name="));
+      assert.equal(posts.length, 2, urls.join(", "));
+      assert.ok(posts.some((u) => u.includes("9920")), "work gateway registered");
+      assert.ok(posts.some((u) => u.includes("9921")), "lab gateway registered");
+      assert.ok(!urls.some((u) => u.includes("9922")), "disabled gateway must not be touched");
     });
   });
 });

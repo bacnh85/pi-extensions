@@ -115,8 +115,10 @@ function detectThinkingFormat(modelId: string): string {
 // This table corrects known gaps client-side.
 // Source: https://models.dev/api.json
 const CONTEXT_OVERRIDES: { pattern: RegExp; contextWindow: number; maxTokens?: number }[] = [
-  // GLM-5.2: 1M context (models.dev: zhipuai/glm-5.2)
-  { pattern: /glm-5\.2/i, contextWindow: 1_000_000, maxTokens: 131_072 },
+  // GLM-5.2/5.3 only: 1M context, 128K output (models.dev: zhipuai/glm-5.2; GLM-5.3[1m]
+  // Coding Plan route + launch coverage report the same window). Lookahead keeps
+  // future glm-5.4+ (unverified profile) off this override.
+  { pattern: /glm-5\.[23](?!\d)/i, contextWindow: 1_000_000, maxTokens: 131_072 },
   // DeepSeek V4: 1M context (models.dev + 9router codebuddy/nvidia overrides)
   { pattern: /deepseek-v[34]/i, contextWindow: 1_000_000 },
 ];

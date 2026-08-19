@@ -18,6 +18,9 @@
  */
 
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import os from "node:os";
 
 const DEFAULTS = {
   onComplete: true,
@@ -26,6 +29,31 @@ const DEFAULTS = {
   sound: true,
   volume: 0.4,
 };
+
+/**
+ * Read the `notify` settings key from settings.json (first existing file
+ * wins: <cwd>/.pi/settings.json → ~/.pi/agent/settings.json →
+ * ~/.pi/agents/settings.json). Same pattern as pi-references/pi-permission.
+ * Returns undefined when unset/unreadable.
+ */
+export function readSettingsKey(cwd, key) {
+  const home = os.homedir();
+  const dirs = [
+    join(cwd || process.cwd(), ".pi"),
+    process.env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent"),
+    join(home, ".pi", "agents"),
+  ];
+  for (const dir of dirs) {
+    try {
+      const parsed = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
+      const v = parsed?.[key];
+      if (v && typeof v === "object" && !Array.isArray(v)) return v;
+    } catch {
+      // missing/unreadable settings.json is fine — try next location
+    }
+  }
+  return undefined;
+}
 
 /**
  * Merge user config over defaults. Exported for testing.
@@ -114,22 +142,52 @@ export function playSound(volume, backend = detectBackend()) {
   }
 }
 
-export default function notifyExtension(pi) {
+export default function notifyExtension(pi, opts = {}) {
+  // Test seam: injectable notifier/sound so tests observe the EFFECT (call
+  // counts), not just "does not throw". Falls back to the real implementations.
+  const doNotify = opts.notify || notify;
+  const doSound = opts.playSound || playSound;
+
   pi.registerFlag("no-notify", {
     description: "Disable pi-notify desktop notifications and sounds",
     type: "boolean",
   });
 
+  // CLI flags are immutable after parse; the runtime is active while the
+  // factory runs, so capture once here instead of touching `pi` from event
+  // handlers (which fire on a stale runner after session replacement/reload
+  // and throw "extension ctx is stale").
+  let noNotify = false;
+  try {
+    noNotify = Boolean(pi.getFlag("no-notify"));
+  } catch {
+    noNotify = false;
+  }
+
+  // notify settings — cached, refreshed on session_start with a fresh ctx.cwd.
+  let cfg = resolveConfig(undefined);
+  const refreshConfig = (cwd) => {
+    try {
+      cfg = resolveConfig(readSettingsKey(cwd, "notify"));
+    } catch {
+      cfg = resolveConfig(undefined); // best-effort: keep defaults
+    }
+  };
+
   const fire = (title, body, opts) => {
-    if (pi.getFlag("no-notify")) return;
-    const cfg = resolveConfig(pi.getSetting?.("notify") || pi.config?.notify);
-    const kind = opts?.kind;
-    if (kind === "complete" && !cfg.onComplete) return;
-    if (kind === "error" && !cfg.onError) return;
-    if (kind === "question" && !cfg.onQuestion) return;
-    try { notify(title, body); } catch { /* best-effort */ }
-    if (cfg.sound) {
-      try { playSound(cfg.volume); } catch { /* best-effort */ }
+    try {
+      if (noNotify) return;
+      const kind = opts?.kind;
+      if (kind === "complete" && !cfg.onComplete) return;
+      if (kind === "error" && !cfg.onError) return;
+      if (kind === "question" && !cfg.onQuestion) return;
+      try { doNotify(title, body); } catch { /* best-effort */ }
+      if (cfg.sound) {
+        try { doSound(cfg.volume); } catch { /* best-effort */ }
+      }
+    } catch {
+      // Notifications must never throw out of an event handler (stale ctx,
+      // missing config, anything) — best-effort by contract.
     }
   };
 
@@ -139,6 +197,10 @@ export default function notifyExtension(pi) {
   // Error: tool result flagged as error. We only fire on the first error per
   // turn to avoid a storm; best-effort dedupe via a turn-scoped flag.
   let erroredThisTurn = false;
+  pi.on("session_start", (_event, ctx) => {
+    erroredThisTurn = false;
+    refreshConfig(ctx?.cwd || process.cwd());
+  });
   pi.on("turn_start", () => { erroredThisTurn = false; });
   pi.on("tool_result", (event) => {
     if (erroredThisTurn) return;

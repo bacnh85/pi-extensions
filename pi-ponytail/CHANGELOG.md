@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.11 (2026-08-14)
+
+### Fixes
+
+- `/ponytail-review`, `/ponytail-audit`, `/ponytail-debt`, `/ponytail-gain`, `/ponytail-help` now pass `{ expandPromptTemplates: true }` to `pi.sendUserMessage()` so the `/skill:` payload actually expands. Since pi 0.84.1, extension-originated `sendUserMessage()` skipped skill/command expansion; pi 0.84.2 added the opt-in flag that restores it.
+
 ## 0.1.10 (2026-08-05)
 
 ### Improvements

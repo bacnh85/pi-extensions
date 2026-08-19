@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.5 (2026-08-14)
+
+### Fixes
+
+- **GLM-5.3 support.** Widened the context override and thinking-format
+  detection from `/glm-5\.2/` to `/glm-5\.[23](?!\d)/` (1M context, 131,072 max
+  tokens) so GLM-5.3 gets the zai single-tier map instead of the full OpenAI set.
+  Without the format fix, GLM-5.3 would send `reasoning_effort:
+  "low"/"medium"/"xhigh"` — values the GLM API rejects with HTTP 400 (the bug
+  class fixed in 0.1.3/0.1.4). Added an explicit `zai-org/glm-5.3` capabilities
+  entry (text-only, reasoning). The negative lookahead keeps future GLM-5.4+
+  (unverified profile) on the generic 200K floor and openai format.
+
 ## 0.1.4 (2026-08-11)
 
 ### Fixes

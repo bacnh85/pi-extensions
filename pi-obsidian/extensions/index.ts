@@ -944,8 +944,16 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
           // Ponytail: isVaultFilesystemBashCommand is over-aggressive for && chains.
           // Cross-vault guard requires an actual vault path reference in the command.
           // Only check for the full vault root path or .obsidian marker.
+          // Normalize separators and (on Windows) case so `rm D:/MyVault/x.md`
+          // matches the vault root as the CLI prints it (`D:\MyVault`) — without
+          // this the cross-vault guard silently no-ops on Windows path styles (#4).
           const cmd = input.command;
-          const containsVaultPath = cmd.includes(root) || cmd.includes(".obsidian");
+          const norm = (s: string) =>
+            (process.platform === "win32" ? s.toLowerCase() : s).replace(/[\\/]+/g, sep);
+          const normalizedCmd = norm(cmd);
+          const normalizedRoot = norm(root);
+          const containsVaultPath =
+            normalizedCmd.includes(normalizedRoot) || cmd.includes(".obsidian");
           if (!containsVaultPath) continue;
           return {
             block: true,

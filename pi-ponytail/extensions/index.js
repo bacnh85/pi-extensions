@@ -135,7 +135,7 @@ export default function ponytailExtension(pi) {
   ["review", "audit", "gain", "debt", "help"].forEach((name) => {
     pi.registerCommand(`ponytail-${name}`, {
       description: `Run /skill:ponytail-${name}`,
-      handler: () => pi.sendUserMessage(`/skill:ponytail-${name}`),
+      handler: () => pi.sendUserMessage(`/skill:ponytail-${name}`, { expandPromptTemplates: true }),
     });
   });
 

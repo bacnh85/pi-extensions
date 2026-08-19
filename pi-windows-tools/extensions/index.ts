@@ -36,6 +36,9 @@ function _fmt() {
 
 export default function piWindowsToolsExtension(pi: ExtensionAPI) {
   if (process.env.PI_WINDOWS_TOOLS_ENABLED === "false") return;
+  // Session-scoped allows from the "Allow for this session" prompt choice.
+  const sessionAllowedCommands = new Set<string>();
+  pi.on("session_start", () => { sessionAllowedCommands.clear(); });
   // ── Shell tools ──
   pi.registerTool({ name: "windows_shell_detect", label: "Windows: Detect Shells", description: "Detect available Windows shells.", promptSnippet: "Detect available Windows shells", promptGuidelines: ["Use to check what shells are available."], parameters: Type.Object({ ...cs }),
     execute() { return tr(detectAllShells().map(s => `  ${s.available ? "\u2713" : "\u2717"} ${s.displayName}${s.version ? " " + s.version : ""}`).join("\n")); } });
@@ -48,7 +51,30 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
       const safe = classifyCommand(p.command);
       if (safe.risk === "confirm") {
         if (!ctx?.hasUI) return tr(`Command requires confirmation but UI is unavailable: ${safe.reasons.join("; ")}`);
-        if (!await ctx.ui.confirm("Run dangerous Windows command?", `Command: ${p.command}\n\nRisk: ${safe.reasons.join("; ")}`)) return tr("Command cancelled by user.");
+        // ponytail: session-allow keyed by first token — BUT interpreter/wrapper
+        // tokens run arbitrary payloads, so those key on the full command
+        // (one approval must not silence the danger gate for the interpreter).
+        const INTERPRETER_TOKENS = new Set(["pwsh", "powershell", "cmd", "cmd.exe", "wsl", "wsl.exe", "bash", "sh", "node", "npx", "python", "python3", "git-bash"]);
+        const raw = p.command.trim();
+        const firstToken = raw.split(/\s+/)[0] || "";
+        const allowKey = INTERPRETER_TOKENS.has(firstToken.toLowerCase()) || /\.exe$/i.test(firstToken)
+          ? `cmd:${raw}`
+          : firstToken;
+        if (allowKey && sessionAllowedCommands.has(allowKey)) {
+          // approved "Allow for this session" earlier
+        } else {
+          const clip = (s: string) => {
+            const c = String(s).replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim();
+            return c.length > 120 ? c.slice(0, 120) + "…" : c;
+          };
+          const isInterpreter = INTERPRETER_TOKENS.has(firstToken.toLowerCase()) || /\.exe$/i.test(firstToken);
+          const choice = await ctx.ui.select(
+            `Run dangerous Windows command?\n\nCommand: ${clip(raw)}\n\nRisk: ${safe.reasons.join("; ")}\n\n"Allow for this session" ${isInterpreter ? "remembers only this exact command" : `remembers \`${clip(firstToken)}\` commands until the session ends.`}`,
+            ["Allow once", "Allow for this session", "Deny"],
+          );
+          if (choice === "Allow for this session") sessionAllowedCommands.add(allowKey);
+          else if (choice !== "Allow once") return tr("Command cancelled by user.");
+        }
       }
       // ponytail: SDK OutputAccumulator is internal; throttled onChunk buffer suffices, add temp-file spill if builds regularly exceed 1MB
       let flushTimer: ReturnType<typeof setTimeout> | undefined;

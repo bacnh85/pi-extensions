@@ -1,5 +1,85 @@
 # Changelog
 
+## 0.6.0 (2026-08-16)
+
+### Features
+
+- **DeepSeek v4 Pro "minimal-mode anchor" (two-phase bootstrap).** Community
+  finding (r/DeepSeek 1vovxxc, confirmed by DeepSeek staff): DeepSeek v4 Pro GA
+  is overfitted to DeepSeek Harness (DSH) *minimal mode* — a one-line system
+  prompt (`You are a helpful software engineer assistant.`) with only
+  `bash`+`str_replace_editor` exposed. Running the first request in that exact
+  distribution unlocks the model's benchmark-level capability. pi-model-tools
+  now replicates this for model ids containing `deepseek-v4-pro`: request #1 of
+  a session replaces the system prompt with the byte-identical Minimal persona
+  and narrows the provider payload's tools to the **real DSH Minimal pair** —
+  `bash` + `str_replace_editor` (a faithful port of DSH's view/create/
+  str_replace/insert editor, byte-identical name/schema/description); after
+  the first durable assistant message (tool call or text), the session
+  promotes back to Pi's full prompt, full tool catalog, and all existing
+  guidance (Super Power, selection guidance, repairs) unchanged. The pair
+  matters: dsh-anchored-standard issue #11 measured the real Minimal schema
+  anchoring `We need…` first lines 5/5 while `bash`/`read` and `pwsh`/`read`
+  substitutions produced standard-like first lines 11/11 (the first
+  implementation, ported from hank9999, used the non-anchoring `bash`+`read`;
+  corrected to the real pair in 0.6.0). Promotion is derived from durable
+  session entries (resume/fork-safe), `/model` switches re-init correctly,
+  hidden-tool hallucinations during bootstrap are blocked, and everything
+  fail-opens to the full catalog on surprise. The dangerous-command guard is
+  never suppressed. Disable with `PI_MODEL_TOOLS_DS_ANCHOR=0`. Two-phase design
+  ported from [hank9999/pi-ds-anchored](https://github.com/hank9999/pi-ds-anchored)
+  (MIT), from [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard)
+  (Project2 benchmark: 98/99).
+
+### Fixes
+
+- **ds-anchor engages for proxy-rewritten sessions.** The bootstrap previously
+  required an `anchorReady` latch set only at `session_start`/`model_select`.
+  Proxy/subscription providers (opencode-go, 9router) rewrite `ctx.model`
+  between hooks WITHOUT firing `model_select` — a session requested as
+  `opencode-go/deepseek-v4-flash` (a2a gateway agent config) that is served
+  `deepseek-v4-pro` silently skipped the bootstrap and sent request #1 with the
+  full Pi prompt + full catalog. The target check now runs per hook, so the
+  anchor engages whenever the served model is a v4-pro target.
+- **Bootstrap payload now carries the byte-exact DSH Minimal tool
+  definitions** (bash + str_replace_editor with DSH's own descriptions and
+  schemas — no `strict` field, DSH parameter shapes) instead of Pi's
+  serialized entries, matching the exact tool schema the model was trained
+  with (the measured anchor lever).
+- **Anchor activity trace in `/model-tools-status`** — every session_start /
+  bootstrap / payload / promotion decision is recorded (ring buffer) so the
+  anchor can be verified without `PI_MODEL_TOOLS_DEBUG`. Also shows the
+  current thinking level and flags `(recipe wants max)` when below max.
+- **`PI_MODEL_TOOLS_DS_ANCHOR_WE_NEED=1` A/B knob** — prepends the
+  community's portable "We need…" thinking directive to the bootstrap prompt
+  for routes where the pure minimal persona alone doesn't reproduce the
+  trajectory.
+- **Bootstrap output budget pins `max_tokens: 256000`** — matching DSH's
+  captured minimal-mode payload (issue #11: output budget is a trajectory
+  lever). Bootstrap-only; promoted requests keep the model's configured
+  budget. Exactly one budget field is emitted (a conflicting
+  `max_completion_tokens`/`max_tokens` pair is collapsed, never both).
+  `Thinking level` now also captures the session's initial level
+  (select events only fire on change, so a session born at max previously
+  showed "unknown").
+- **`/model` switch keeps the anchor consistent** — the session-captured
+  model is updated on `model_select`, so switching away from v4-pro fully
+  disables the bootstrap (no stale-sessionModel re-engage on flash), and
+  switching to it re-engages.
+- **Failed/aborted bootstrap replies don't silently promote** — promotion
+  now requires a durable assistant reply (stopReason not error/aborted with
+  non-empty content), matching the resume-path semantics; a transient 429/
+  400 on request #1 leaves the retry anchored.
+- **Bootstrap tool substitution preserves the payload's tool shape** — flat
+  `{name,…}` payloads get flat DSH defs, function-wrapped payloads get
+  function-wrapped defs (no provider 400 on shape mismatch).
+- **Block message during bootstrap points at real tools** — `use bash or
+  str_replace_editor (view to read)` instead of the stale `bash or read`.
+- **`~` paths resolve to home** in `str_replace_editor`, matching Pi's
+  built-in file tools.
+- **ds-anchor trace is per-session** — reset on `session_start`, no
+  prior-session lines leaked into `/model-tools-status`.
+
 ## 0.5.5 (2026-08-05)
 
 ### Improvements

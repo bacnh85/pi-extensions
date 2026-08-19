@@ -17,7 +17,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { loadConfig, resolvePeer, type A2AConfig } from "./lib/config";
+import { buildA2ASettingsPatch, getGatewayPeers, loadConfig, setConfigOverrides, writeSettingsA2A, type A2AConfig } from "./lib/config";
 import {
   a2aCall,
   a2aDiscover,
@@ -27,6 +27,11 @@ import {
   metrics,
 } from "./lib/client";
 import { A2AServer, type SessionRunner } from "./lib/server";
+import { formatPeers, listPeers } from "./lib/discovery";
+import { activityLine, activityStatusLine, activityToText, preview, type InboundActivity } from "./lib/activity";
+import { openConfigPanel, type PanelAction } from "./lib/config-panel";
+
+import { Container, Text } from "@earendil-works/pi-tui";
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -48,7 +53,7 @@ function cfgFor(ctx: ExtensionContext): A2AConfig {
 // ---------------------------------------------------------------------------
 
 function makeSessionRunner(ctx: ExtensionContext): SessionRunner {
-  return async ({ message, signal }) => {
+  return async ({ message, signal, onProgress }) => {
     const sdk = await import("@earendil-works/pi-coding-agent");
     const { createAgentSession, SessionManager, SettingsManager, DefaultResourceLoader } = sdk;
     const modelRegistry = ctx.modelRegistry as any;
@@ -59,16 +64,26 @@ function makeSessionRunner(ctx: ExtensionContext): SessionRunner {
       compaction: { enabled: false },
       retry: { enabled: true, maxRetries: 1 },
     });
+    // The loader must NOT receive the inMemory settingsManager: it would then
+    // resolve zero extension packages and the child session would run without
+    // any host extensions (pi-model-tools' ds-anchor bootstrap included).
+    // Letting DefaultResourceLoader fall back to SettingsManager.create(cwd,
+    // agentDir) loads the real on-disk settings/packages — the same path
+    // pi-subagent's runner uses.
     const resourceLoader = new DefaultResourceLoader({
       cwd,
       agentDir: sdk.getAgentDir(),
-      settingsManager,
     });
-    await resourceLoader.reload();
+    await resourceLoader.reload({
+      // Forward the host's trust decision so project-local (.pi/) extensions
+      // load in child sessions when the user already trusted the project —
+      // same behavior as pi-subagent's runner; never prompt (no UI).
+      resolveProjectTrust: async () => (ctx as any).isProjectTrusted?.() ?? false,
+    });
     const created = await createAgentSession({
       cwd,
       model,
-      thinkingLevel: "medium",
+      thinkingLevel: ctx.thinkingLevel ?? "medium",
       resourceLoader,
       sessionManager: SessionManager.inMemory(cwd),
       settingsManager,
@@ -83,6 +98,10 @@ function makeSessionRunner(ctx: ExtensionContext): SessionRunner {
     let resolveDone!: () => void;
     const done = new Promise<void>((r) => (resolveDone = r));
     const unsub = session.subscribe((event: any) => {
+      // Forward meaningful activity to the host TUI (0.3.0): tool calls and
+      // assistant text deltas become one-line progress entries.
+      const line = activityLine(event);
+      if (line && onProgress) onProgress(line);
       if (event.type === "message_end" && event.message?.role === "assistant") {
         // Agent-session events carry the OpenAI-style message shape: the text
         // parts live under `content` (e.g. [{type:"text",text:"..."}]), not
@@ -125,6 +144,116 @@ function makeSessionRunner(ctx: ExtensionContext): SessionRunner {
 }
 
 // ---------------------------------------------------------------------------
+// Inbound activity → host TUI (0.3.0)
+// ---------------------------------------------------------------------------
+
+/** In-flight inbound tasks (identity + taskId), for the footer status line. */
+const activeInboundTasks = new Map<string, { identity: string; last: InboundActivity }>();
+
+/**
+ * Surface an inbound activity event to the host TUI.
+ * - transcript on: sendMessage (custom message, visible in transcript)
+ * - always: notify() toast on arrived/completed/failed
+ * Caller provides the ctx for ui access (may be undefined in tests).
+ */
+function broadcastActivity(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext | undefined,
+  cfg: A2AConfig | undefined,
+  a: InboundActivity,
+): void {
+  const transcript = cfg?.ui?.transcript ?? true;
+  if (transcript) {
+    try {
+      pi.sendMessage({
+        customType: "a2a-inbound",
+        content: activityToText(a),
+        display: true,
+      });
+    } catch {
+      /* session may be mid-replace; ignore */
+    }
+  }
+  if (!ctx) return;
+  switch (a.type) {
+    case "arrived":
+      activeInboundTasks.set(a.taskId, { identity: a.identity, last: a });
+      // Toast stays short (it would flood the TUI); the transcript carries full text.
+      ctx.ui.notify(`A2A task from ${a.identity}: ${preview(a.text, 160)}`, "info");
+      break;
+    case "progress":
+      activeInboundTasks.set(a.taskId, { identity: activeInboundTasks.get(a.taskId)?.identity ?? "peer", last: a });
+      break;
+    case "completed":
+    case "failed":
+      activeInboundTasks.delete(a.taskId);
+      ctx.ui.notify(
+        a.type === "completed"
+          ? `A2A task ${a.taskId.slice(0, 8)} completed (${(a.elapsedMs / 1000).toFixed(1)}s)`
+          : `A2A task ${a.taskId.slice(0, 8)} failed: ${a.error}`,
+        a.type === "completed" ? "info" : "error",
+      );
+      break;
+  }
+  // Footer status while tasks are active.
+  const active = [...activeInboundTasks.values()].map((t) => ({ taskId: t.last.taskId, identity: t.identity }));
+  const status = activityStatusLine(active);
+  try {
+    ctx.ui.setStatus("a2a-inbound", status);
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Status lines (gateway registration, channel open, …) → transcript + toast,
+ *  rendered like the [A2A inbound] activity lines instead of vanishing in the
+ *  console. */
+function statusSink(pi: ExtensionAPI, ctx: ExtensionContext | undefined): (m: string) => void {
+  return (m) => {
+    // DELIBERATELY not pi.sendMessage: custom messages are converted to USER
+    // MESSAGES in the LLM context (buildSessionContext), so routing lifecycle
+    // lines through it polluted every model request with "[a2a] registered…"
+    // / "gateway channel open…" noise — enough to derail DeepSeek v4 Pro's
+    // minimal-mode bootstrap (request #1 must be a clean user message).
+    // TUI notification only: visible to the human, invisible to the model.
+    // Headless modes (json/print, hasUI=false) fall back to stderr so the
+    // lifecycle remains observable — same pattern as errorSink.
+    const ui = ctx && ctx.hasUI ? ctx.ui : undefined;
+    if (ui) {
+      try {
+        ui.notify(m, "info");
+      } catch {
+        /* best-effort */
+      }
+    } else {
+      try {
+        console.error(m);
+      } catch {
+        /* best-effort */
+      }
+    }
+  };
+}
+
+/** Gateway diagnostic/error lines → error toast only — a SEPARATE surface
+ *  from the [a2a] status lines above, so failures don't render interleaved
+ *  with lifecycle output in the transcript. Headless falls back to stderr. */
+function errorSink(ctx: ExtensionContext | undefined): (m: string) => void {
+  return (m) => {
+    const ui = ctx && ctx.hasUI ? ctx.ui : undefined;
+    if (ui) {
+      try {
+        ui.notify(m, "error");
+        return;
+      } catch {
+        /* fall through */
+      }
+    }
+    console.error(m);
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Tool parameter schemas
 // ---------------------------------------------------------------------------
 
@@ -145,6 +274,25 @@ const contextIdParam = Type.Optional(
 // ---------------------------------------------------------------------------
 
 export default function a2aExtension(pi: ExtensionAPI): void {
+  // Compact transcript renderer for inbound activity messages (0.3.0).
+  // Renders as a terse colored line instead of a full assistant block.
+  pi.registerMessageRenderer?.("a2a-inbound", (message, _opts, theme) => {
+    try {
+      const fg = theme.fg.bind(theme);
+      const raw = message.content;
+      const content = typeof raw === "string"
+        ? raw
+        : (Array.isArray(raw) ? raw.map((p: any) => (typeof p?.text === "string" ? p.text : "")).join("") : "");
+      const isFail = content.includes(" failed ");
+      const icon = isFail ? fg("error", "✗") : fg("accent", "⇄");
+      const c = new Container();
+      c.addChild(new Text(`${icon} ${content}`, 0, 0));
+      return c;
+    } catch {
+      return undefined; // pi-tui unavailable → fall back to default rendering
+    }
+  });
+
   // -------------------------------------------------------------------------
   // Tools (outbound client) — always registered
   // -------------------------------------------------------------------------
@@ -214,7 +362,19 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     parameters: Type.Object({}),
     execute: async (_id, _args, _signal, _onUpdate, ctx) => {
       const cfg = cfgFor(ctx);
-      return { content: [{ type: "text" as const, text: a2aList({ cfg, piDir: piDir() }) }], details: {} };
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: a2aList({
+              cfg,
+              piDir: piDir(),
+              discoveredPeers: listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "" }),
+            }),
+          },
+        ],
+        details: {},
+      };
     },
   });
 
@@ -288,6 +448,25 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerTool({
+    name: "a2a_peers",
+    label: "A2A Peers",
+    description:
+      "List discoverable A2A peers (local file registry, mDNS, and configured) with their " +
+      "working folder, model, and tools. Use before a2a_call to pick the right peer for a task.",
+    promptSnippet: "list discoverable A2A peers with their cwd/model/tools",
+    promptGuidelines: [
+      "Returns peers from three sources: local registry (same machine), mDNS (network), and configured (settings.json).",
+      "Use it to choose which peer to delegate to based on working folder, model, or abilities.",
+    ],
+    parameters: Type.Object({}),
+    execute: async (_id, _args, _signal, _onUpdate, ctx) => {
+      const cfg = cfgFor(ctx);
+      const peers = listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "", gatewayPeers: getGatewayPeers() });
+      return { content: [{ type: "text" as const, text: formatPeers(peers) }], details: {} };
+    },
+  });
+
   // -------------------------------------------------------------------------
   // Commands
   // -------------------------------------------------------------------------
@@ -309,7 +488,14 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     description: "List configured A2A peers",
     handler: async (_args, ctx) => {
       const cfg = cfgFor(ctx as unknown as ExtensionContext);
-      ctx.ui.notify(a2aList({ cfg, piDir: piDir() }), "info");
+      ctx.ui.notify(
+        a2aList({
+          cfg,
+          piDir: piDir(),
+          discoveredPeers: listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "" }),
+        }),
+        "info",
+      );
     },
   });
 
@@ -363,21 +549,209 @@ export default function a2aExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("a2a-config", {
-    description: "Show current A2A config: /a2a-config",
-    handler: async (_args, ctx) => {
-      const cfg = cfgFor(ctx as unknown as ExtensionContext);
-      ctx.ui.notify(
-        [
-          "Current A2A config:",
-          `  server.enabled: ${cfg.server.enabled}`,
-          `  server.port: ${cfg.server.port}`,
-          `  server.host: ${cfg.server.host}`,
-          `  peers: ${Object.keys(cfg.peers).join(", ") || "(none)"}`,
-          "",
-          "Edit ~/.pi/agent/settings.json under the 'a2a' key to configure peers and server.",
-        ].join("\n"),
-        "info",
-      );
+    description: "Configure A2A interactively (TUI) or show config",
+    handler: async (args, ctx) => {
+      const ectx = ctx as unknown as ExtensionContext;
+      const cfg = cfgFor(ectx);
+      const sub = String(args ?? "").trim().toLowerCase();
+
+      // Non-interactive mode or explicit "show": print the summary.
+      if (sub === "show" || ectx.mode !== "tui" || !ectx.hasUI) {
+        ctx.ui.notify(
+          [
+            "Current A2A config:",
+            `  server.enabled: ${cfg.server.enabled}`,
+            `  server.port: ${cfg.server.port}`,
+            `  server.host: ${cfg.server.host}`,
+            `  discovery: local=${cfg.discovery.local.enabled} mdns=${cfg.discovery.mdns.enabled} enrichCard=${cfg.discovery.enrichCard}`,
+            `  gateway: ${cfg.discovery.gateway ? `${cfg.discovery.gateway.enabled ? "enabled" : "disabled"} ${cfg.discovery.gateway.url || "(no url)"}${cfg.discovery.gateway.token ? " · token (set)" : ""}` : "not configured"}`,
+            `  gateways: ${Object.keys(cfg.discovery.gateways ?? {}).join(", ") || "(none)"}`,
+            `  ui.transcript: ${cfg.ui.transcript}`,
+            `  peers: ${Object.keys(cfg.peers).join(", ") || "(none)"}`,
+            "",
+            "Interactive editor: run /a2a-config in TUI mode (no args).",
+            "Or edit ~/.pi/agent/settings.json under the 'a2a' key.",
+          ].join("\n"),
+          "info",
+        );
+        return;
+      }
+
+      // TUI mode: open the interactive panel. Save persists to settings.json,
+      // applies live via overrides, and restarts the server when needed.
+      const workingCfg = structuredClone(cfg);
+      let peerChanges = false;
+      const beforePeers = JSON.stringify(workingCfg.peers);
+      const beforeGateway = JSON.stringify(workingCfg.discovery.gateway ?? null);
+      const beforeGateways = JSON.stringify(workingCfg.discovery.gateways ?? null);
+
+      const actions: Record<string, PanelAction> = {
+        addPeer: {
+          label: "Add peer",
+          run: (prompt) => {
+            return new Promise<void>((resolve) => {
+              prompt("Peer name", (name) => {
+                if (!name) return resolve();
+                prompt("Peer URL", (url) => {
+                  if (!url) return resolve();
+                  if (workingCfg.peers[name]) {
+                    ctx.ui.notify(`Peer '${name}' already exists — edit its URL row instead.`, "warning");
+                    return resolve();
+                  }
+                  workingCfg.peers[name] = {
+                    url,
+                    auth: { type: "none" },
+                    timeout: 120000,
+                    capabilities: [],
+                  };
+                  peerChanges = true;
+                  resolve();
+                });
+              });
+            });
+          },
+        },
+        removePeer: {
+          label: "Remove peer",
+          run: (prompt) => {
+            return new Promise<void>((resolve) => {
+              const names = Object.keys(workingCfg.peers);
+              if (names.length === 0) {
+                ctx.ui.notify("No peers configured to remove.", "warning");
+                return resolve();
+              }
+              prompt(`Remove peer (${names.join(", ")})`, (pick) => {
+                if (!pick || !workingCfg.peers[pick]) return resolve();
+                delete workingCfg.peers[pick];
+                peerChanges = true;
+                resolve();
+              });
+            });
+          },
+        },
+        addGateway: {
+          label: "Add gateway",
+          run: (prompt) => {
+            return new Promise<void>((resolve) => {
+              prompt("Gateway key (e.g. work, lab — [A-Za-z0-9._-])", (key) => {
+                if (!key) return resolve();
+                if (!/^[A-Za-z0-9._-]{1,64}$/.test(key)) {
+                  ctx.ui.notify("Invalid gateway key — use letters, digits, . _ -", "warning");
+                  return resolve();
+                }
+                if (workingCfg.discovery.gateways?.[key]) {
+                  ctx.ui.notify(`Gateway '${key}' already exists — edit its rows instead.`, "warning");
+                  return resolve();
+                }
+                prompt(`Gateway URL for '${key}'`, (url) => {
+                  if (!url) return resolve();
+                  prompt(`API token for '${key}'`, (token) => {
+                    workingCfg.discovery.gateways ??= {};
+                    workingCfg.discovery.gateways[key] = {
+                      enabled: true,
+                      url: String(url),
+                      token: String(token ?? ""),
+                    };
+                    resolve();
+                  });
+                });
+              });
+            });
+          },
+        },
+        removeGateway: {
+          label: "Remove gateway",
+          run: (prompt) => {
+            return new Promise<void>((resolve) => {
+              const names = Object.keys(workingCfg.discovery.gateways ?? {});
+              if (names.length === 0) {
+                ctx.ui.notify("No gateways configured to remove.", "warning");
+                return resolve();
+              }
+              prompt(`Remove gateway (${names.join(", ")})`, (pick) => {
+                if (!pick || !workingCfg.discovery.gateways?.[pick]) return resolve();
+                delete workingCfg.discovery.gateways[pick];
+                resolve();
+              });
+            });
+          },
+        },
+      };
+
+      await openConfigPanel({
+        ctx: ectx,
+        cfg: workingCfg,
+        actions,
+        onSave: (saved, editedKeys) => {
+          if (!saved) return;
+          const afterPeers = JSON.stringify(workingCfg.peers);
+          const gatewayChanged =
+            JSON.stringify(workingCfg.discovery.gateway ?? null) !== beforeGateway ||
+            JSON.stringify(workingCfg.discovery.gateways ?? null) !== beforeGateways;
+          const restartChanged =
+            JSON.stringify(workingCfg.server) !== JSON.stringify(cfg.server) ||
+            JSON.stringify(workingCfg.discovery) !== JSON.stringify(cfg.discovery);
+          peerChanges = peerChanges || beforePeers !== afterPeers;
+
+          // Persist to settings.json (a2a key, preserving other keys) via the
+          // pure patch builder (unit-tested in config.test.ts). Key invariants:
+          // a gateway block already in settings.json survives unrelated
+          // discovery edits; env-sourced secrets are never copied to disk
+          // unless the user edited that exact row.
+          const written = writeSettingsA2A({
+            cwd: ectx.cwd,
+            patch: buildA2ASettingsPatch({
+              cfg,
+              working: workingCfg,
+              peerChanges,
+              gatewayChanged,
+              editedGatewayKeys: editedKeys,
+            }),
+          });
+
+          // Apply live for this session (no /reload needed).
+          setConfigOverrides({
+            peers: workingCfg.peers,
+            selfIdentity: workingCfg.selfIdentity,
+            server: workingCfg.server,
+            discovery: workingCfg.discovery,
+            ui: workingCfg.ui,
+          });
+
+          ctx.ui.notify(`A2A config saved → ${written}`, "info");
+
+          // Restart the running server if server/discovery settings changed.
+          if (restartChanged && server) {
+            void (async () => {
+              ctx.ui.notify("A2A config changed — restarting inbound server…", "info");
+              try {
+                await server!.stop();
+              } catch {
+                /* best-effort */
+              }
+              const fresh = cfgFor(ectx);
+              server = new A2AServer({
+                cfg: fresh,
+                ctx: ectx,
+                cwd: ectx.cwd,
+                piDir: piDir(),
+                runner: makeSessionRunner(ectx),
+                api: pi,
+                onActivity: (a) => broadcastActivity(pi, ectx, fresh, a),
+                onStatus: statusSink(pi, ectx),
+                onError: errorSink(ectx),
+              });
+              try {
+                const info = await server.start();
+                ctx.ui.notify(`A2A server restarted on ${info.host}:${info.port}`, "info");
+              } catch (e: any) {
+                server = null;
+                ctx.ui.notify(`A2A server restart failed: ${e?.message || e}`, "error");
+              }
+            })();
+          }
+        },
+      });
     },
   });
 
@@ -399,6 +773,10 @@ export default function a2aExtension(pi: ExtensionAPI): void {
             cwd: ectx.cwd,
             piDir: piDir(),
             runner: makeSessionRunner(ectx),
+            api: pi,
+            onActivity: (a) => broadcastActivity(pi, ectx, cfg, a),
+            onStatus: statusSink(pi, ectx),
+            onError: errorSink(ectx),
           });
           const info = await server.start();
           const defaultNote =
@@ -432,6 +810,15 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerCommand("a2a-peers", {
+    description: "List discoverable A2A peers (local registry + mDNS + configured + gateway)",
+    handler: async (_args, ctx) => {
+      const cfg = cfgFor(ctx as unknown as ExtensionContext);
+      const peers = listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "", gatewayPeers: getGatewayPeers() });
+      ctx.ui.notify(formatPeers(peers), "info");
+    },
+  });
+
   pi.registerCommand("a2a-help", {
     description: "Show A2A help",
     handler: async (_args, ctx) => {
@@ -443,7 +830,8 @@ export default function a2aExtension(pi: ExtensionAPI): void {
           "  /a2a-send <agent> <msg>      Send a task to a peer",
           "  /a2a-broadcast <msg> --agents a,b,c   Parallel fan-out",
           "  /a2a-status                  Metrics + server status",
-          "  /a2a-config                  Show config",
+          "  /a2a-config                  Interactive config panel (TUI)",
+          "  /a2a-config show             Show config summary",
           "  /a2a-server start|stop|status  Manage inbound server",
           "",
           "Tools: a2a_call, a2a_discover, a2a_list, a2a_history, a2a_orchestrate",
@@ -457,7 +845,21 @@ export default function a2aExtension(pi: ExtensionAPI): void {
   // Server lifecycle hooks (auto-start only when a2a.server.enabled)
   // -------------------------------------------------------------------------
 
+  // Live model changes → refresh the session descriptor (registry file + card).
+  pi.on("model_select", async () => {
+    if (server) server.refreshDescriptor();
+  });
+
   pi.on("session_start", async (_event, ctx) => {
+    // Only HOST sessions serve inbound A2A. SDK-created child sessions (a2a
+    // inbound tasks via makeSessionRunner, pi-subagent children) have
+    // hasUI=false AND mode='print' — without this guard every child would
+    // auto-start its own A2AServer: same-pid registry overwrite, port climbing
+    // per task, and duplicate gateway registration. The host session is the
+    // single inbound server; children only run the task. json-mode hosts are
+    // long-lived headless HOSTS (mode='json'), not children — they keep the
+    // auto-start.
+    if (!ctx.hasUI && ctx.mode !== "json") return;
     const cfg = cfgFor(ctx);
     if (!cfg.server.enabled) return;
     try {
@@ -467,6 +869,10 @@ export default function a2aExtension(pi: ExtensionAPI): void {
         cwd: ctx.cwd,
         piDir: piDir(),
         runner: makeSessionRunner(ctx),
+        api: pi,
+        onActivity: (a) => broadcastActivity(pi, ctx, cfg, a),
+        onStatus: statusSink(pi, ctx),
+        onError: errorSink(ctx),
       });
       const info = await server.start();
       const defaultNote =

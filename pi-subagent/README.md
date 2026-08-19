@@ -91,7 +91,7 @@ Threads are session-memory only and are cleared when Pi replaces or reloads the 
 Agent files under `.pi/agents/` are controlled by the current repository. A project agent's system prompt may instruct a child to execute shell commands or modify files.
 
 - **Project-agent approval cannot be disabled by the model.** The `confirmProjectAgents` parameter is not exposed in the tool schema. Confirmation policy comes from trusted user configuration only.
-- **Interactive sessions** prompt the user before executing project agents.
+- **Interactive sessions** prompt the user before executing project agents (**Allow once / Trust for this session / Deny**); "Trust for this session" remembers the project agents dir until the session ends. Dismissed dialogs and Deny cancel the delegation.
 - **Headless sessions fail closed.** Project agents are not executed without UI confirmation unless the trusted setting `allowUnconfirmedProjectAgents` is enabled (via `PI_SUBAGENT_ALLOW_UNCONFIRMED_PROJECT_AGENTS=true` environment variable or pi settings).
 - **The extension service path** (`pi-subagent:run` event) follows the same policy.
 

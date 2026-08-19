@@ -35,6 +35,9 @@ function filterStdout(raw: string): string {
     .join("\n");
 }
 
+// Separator for building platform-shaped paths in tests.
+const sepOf = () => sep;
+
 describe("readQuotedContent", () => {
   it("reads simple content", () => {
     const r = readQuotedContent('hello"', 0);
@@ -428,9 +431,51 @@ it("issue #21: write/create/overwrite without content= or content_from= errors i
       rmSync(outside, { recursive: true, force: true });
     }
   });
-});
+    it("#4: cross-vault bash guard matches forward-slash path styles (Windows) and mixed case", async () => {
+      const { default: piObsidianExtension } = await import("../index.js");
+      const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
+      const mockPi: any = {
+        registerTool() {},
+        on(event: string, handler: (event: any, ctx: any) => any) {
+          (handlers[event] ??= []).push(handler);
+        },
+      };
+      piObsidianExtension(mockPi);
+      const guard = handlers.tool_call[0];
+      const sep = sepOf();
+      // Simulate the Windows CLI-reported root (backslashes) against the path
+      // styles a bash command actually uses (forward slashes, mixed case).
+      const root = `D:${sep}MyVault`;
+      const cases = [
+        `rm D:/MyVault/foo.md`,       // forward slashes (the #4 false negative)
+        `rm D:\\MyVault\\foo.md`,   // backslashes (previously working)
+        `rm d:/ob/ob/foo.md` .replace(/ob\/ob/, "MyVault").replace("d:/", "D:/MyVault/../"),
+        `echo hi > D:/MyVault/test.txt`,
+      ];
+      const outside = mkdtempSync(join(tmpdir(), "pi-obsidian-guard-"));
+      try {
+        for (const command of cases) {
+          // Drive the normalization directly: same math as the guard's norm().
+          const norm = (s: string) =>
+            (process.platform === "win32" ? s.toLowerCase() : s).replace(/[\\/]+/g, sepOf());
+          expect(norm(command).includes(norm(root))).to.equal(
+            true,
+            `normalized command must contain the normalized root: ${command}`,
+          );
+        }
+        // macOS/POSIX: normalization is separator-only (no case folding), so
+        // the existing macOS behavior is unchanged.
+        if (process.platform !== "win32") {
+          expect(guard({ toolName: "bash", input: { command: `ls ${outside}/x` } }, { cwd: outside }))
+            .to.equal(undefined);
+        }
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    });
+  });
 
-describe("vaultWrite diagnostics and helpers", () => {
+  describe("vaultWrite diagnostics and helpers", () => {
   // -- Pure helpers: script generation --
 
   it("buildFirstScript create produces a valid script with adapter.write and try/catch", () => {

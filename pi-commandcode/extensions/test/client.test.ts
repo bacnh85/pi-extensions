@@ -32,6 +32,23 @@ describe("mapModel", () => {
     assert.equal(model.maxTokens, 131_072);
   });
 
+  it("applies glm-5.3 context + maxTokens override (1M like 5.2)", () => {
+    const raw: CommandCodeModelRaw = { id: "zai-org/glm-5.3" };
+    const model = mapModel(raw);
+    assert.equal(model.contextWindow, 1_000_000);
+    assert.equal(model.maxTokens, 131_072);
+    // Explicit CAPABILITIES entry: text-only + reasoning (not default-dependent).
+    assert.equal(model.reasoning, true);
+    assert.deepEqual(model.input, ["text"]);
+  });
+
+  it("does not override future glm-5.4+ (profile unverified)", () => {
+    // /glm-5\.[23](?!\d)/ must not match glm-5.4 — falls to the /glm-5/ 200K floor.
+    const raw: CommandCodeModelRaw = { id: "zai-org/glm-5.4" };
+    const model = mapModel(raw);
+    assert.equal(model.contextWindow, 200_000, "glm-5.4 must NOT get the 1M override");
+  });
+
   it("narrows Claude: only Opus/Sonnet/Fable 5 get 1M; a 3.5 model falls back", () => {
     // The broad /claude/i override was narrowed to Claude-5 family only.
     const sonnet35 = mapModel({ id: "anthropic/claude-3-5-sonnet" });
@@ -116,6 +133,12 @@ describe("mapModel", () => {
 
     // GLM-5.2: single thinking tier — low/medium/high all map to "high", max to "max".
     assert.deepEqual(mapModel({ id: "zai-org/glm-5.2" }).thinkingLevelMap, {
+      off: null, minimal: null, low: "high", medium: "high", high: "high", xhigh: null, max: "max",
+    });
+
+    // GLM-5.3: same zai single-tier map — off/minimal/xhigh hidden so invalid
+    // reasoning_effort values are never sent (HTTP 400 bug class fixed in 0.1.3/0.1.4).
+    assert.deepEqual(mapModel({ id: "zai-org/glm-5.3" }).thinkingLevelMap, {
       off: null, minimal: null, low: "high", medium: "high", high: "high", xhigh: null, max: "max",
     });
 
