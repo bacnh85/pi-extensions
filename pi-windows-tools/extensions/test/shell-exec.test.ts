@@ -2,7 +2,10 @@ import { describe, it, beforeEach, afterEach } from "mocha";
 import { expect } from "chai";
 import { buildShellArgs, executeCommand, mergeEnv, shouldEncode, encodeForPwsh, resolveWslDistro } from "../lib/shell-exec";
 
-describe("shell-exec", () => {
+describe("shell-exec", function () {
+  // buildShellArgs probes real binaries (where.exe + --version, 3s timeouts each)
+  // — flaky under mocha's 2s default on loaded runners (failed main run 32209298980).
+  this.timeout(15000);
 
   describe("buildShellArgs", () => {
     it("pwsh: builds correct args", () => {
