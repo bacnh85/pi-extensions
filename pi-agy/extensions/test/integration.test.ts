@@ -167,8 +167,27 @@ describe("agy_execute tool integration", function () {
         );
         expect.fail("should have thrown");
       } catch (err) {
-        expect((err as Error).message).to.include("agy failed:");
-        expect((err as Error).message).to.include("ENOENT");
+        // containment guard (issue #20 L3) rejects a nonexistent dir before spawn
+        expect((err as Error).message).to.include("does not exist");
+      }
+    });
+
+    it("issue #20 L3: rejects dir outside the workspace root", async () => {
+      try {
+        await execute("test-id", { prompt: "ping", dir: ".." }, undefined, undefined, mockCtx);
+        expect.fail("should have thrown");
+      } catch (err) {
+        expect((err as Error).message).to.include("outside the workspace root");
+      }
+    });
+
+    it("issue #20 L3: containment error mentions the opt-out env var", async () => {
+      const outside = path.resolve(mockCtx.cwd, "..");
+      try {
+        await execute("test-id", { prompt: "ping", dir: outside }, undefined, undefined, mockCtx);
+        expect.fail("should have thrown");
+      } catch (err) {
+        expect((err as Error).message).to.include("PI_AGY_ALLOW_EXTERNAL_CWD");
       }
     });
 

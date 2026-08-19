@@ -343,6 +343,29 @@ describe("piObsidianExtension tool integration", () => {
     }
   });
 
+it("issue #21: write/create/overwrite without content= or content_from= errors instead of clobbering", async () => {
+    const { default: piObsidianExtension } = await import("../index.js");
+    let registeredTool: any = null;
+    const mockPi: any = {
+      registerTool(tool: any) { registeredTool = tool; },
+      on() {},
+    };
+    piObsidianExtension(mockPi);
+    // Exact reproduction from the issue: search/replace params on write → must error, never touch the file.
+    for (const run of [
+      'write file="path/to/note.md" search="old text" replace="new text" regex=true preview=true',
+      "write file=note.md",
+      "overwrite file=note.md",
+    ]) {
+      try {
+        await registeredTool.execute("test-id", { run });
+        expect.fail(`Should have thrown for: ${run}`);
+      } catch (err: any) {
+        expect(err.message).to.match(/would write an empty file|does not take search/);
+      }
+    }
+  });
+
   it("blocks generic vault filesystem operations but leaves normal shell work alone", async () => {
     const { default: piObsidianExtension } = await import("../index.js");
     let registeredTool: any = null;

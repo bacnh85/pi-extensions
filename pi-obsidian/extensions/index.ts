@@ -1185,6 +1185,22 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
           rArgs.push("read", `path=${flags.content_from}`);
           content = execObsidian(rArgs, false, timeoutMs).stdout;
         }
+        // Data-loss guard (issue #21): a write/create/overwrite with no content source,
+        // or carrying params that belong to other commands (search/replace/regex/preview),
+        // is a caller mistake — error instead of silently clobbering the file with "".
+        const foreignParams = ["search", "replace", "regex", "preview"].filter((k) => k in flags);
+        if (foreignParams.length > 0 && flags.content === undefined) {
+          throw new Error(
+            `"${cmd}" does not take ${foreignParams.map((k) => k + "=").join("/")} — those belong to the search command. ` +
+            `This looks like a search/replace call. Use search/replace on the search command, or pass content= explicitly.`
+          );
+        }
+        if (flags.content === undefined && !flags.content_from) {
+          throw new Error(
+            `"${cmd}" with no content=/content_from= would write an empty file. ` +
+            `Pass content= (the full new file content), or use search+replace to edit in place.`
+          );
+        }
         const overwrite = cmd !== "create" || raw.includes("overwrite=true");
         return vaultWrite(path, content, overwrite ? "overwrite" : "create", v, timeoutMs);
       }

@@ -82,6 +82,7 @@ function makeDaemon(opts: {
       writeFile: async () => {},
       mkdir: async () => {},
       tmpdir: () => "/tmp",
+      mkdtemp: async (prefix: string) => `/tmp/${prefix}XYZ/`,
       now: () => (opts.nowStep ? (n += opts.nowStep) : 0),
       sleep: async () => {},
     },
@@ -105,6 +106,33 @@ describe("daemon", () => {
   });
 
   describe("KonnectDaemon.ensure", () => {
+it("issue #20 L1: config file lands in a private mkdtemp dir (symlink-clobber hardening)", async () => {
+    const writes: string[] = [];
+    const alive = { value: true };
+    const spawnResult: SpawnResult = { child: makeChild(), calls: [] };
+    const daemon = new KonnectDaemon(
+      {
+        env: { KONNECT_BINARY: "/bin/konnect", KICAD_CLI: "/bin/kicad-cli" },
+        home: "/h", platform: "darwin", cwd: "/proj", exists: () => true,
+      },
+      {
+        fetchImpl: healthFetch(alive),
+        spawnImpl: (b, args) => { spawnResult.calls.push(args); return makeChild(); },
+        writeFile: async (p) => { writes.push(p); },
+        mkdir: async () => {},
+        tmpdir: () => "/tmp",
+        mkdtemp: async () => "/tmp/pi-kicad-daemon-7f3a",
+        now: () => 0,
+        sleep: async () => {},
+      },
+    );
+    await daemon.ensure();
+    assert.equal(writes.length, 1);
+    assert.match(writes[0], /^\/tmp\/pi-kicad-daemon-[a-zA-Z0-9]+\/daemon-\d+\.toml$/);
+    assert.notEqual(writes[0], `/tmp/pi-kicad-daemon-0.toml`); // never the predictable flat path
+    await daemon.stop();
+  });
+
     it("does NOT reuse a stranger daemon — spawns its own even if one is healthy on the port", async () => {
       const alive = { value: true }; // a healthy stranger is up before we start
       const spawnResult: SpawnResult = { child: makeChild(), calls: [] };

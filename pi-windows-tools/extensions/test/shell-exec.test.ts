@@ -11,8 +11,7 @@ describe("shell-exec", () => {
       expect(args).to.include("-NoLogo");
       expect(args).to.include("-NoProfile");
       expect(args).to.include("-NonInteractive");
-      expect(args).to.include("-ExecutionPolicy");
-      expect(args).to.include("Bypass");
+      expect(args).to.not.include("-ExecutionPolicy"); // issue #20 L4: not needed for -Command
       expect(args).to.include("-Command");
       expect(args).to.include("echo hello");
     });

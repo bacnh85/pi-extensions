@@ -1,8 +1,36 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { stat } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import * as path from "node:path";
 import { checkAgyHealth, checkAgyConnectivity, spawnAgy, buildAgyPrompt, detectVerifyCommand, parseJsonResponse } from "./lib/cli.js";
+
+// Containment guard (issue #20 L3): resolve the requested dir against the
+// workspace root and reject escapes. Same semantics as pi-subagent's
+// resolveSafeCwd — self-contained here to keep pi-agy dependency-free.
+// Opt out with PI_AGY_ALLOW_EXTERNAL_CWD=true (mirrors pi-subagent's knob).
+function resolveContainedDir(workspaceRoot: string, requested?: string): { path: string; error?: string } {
+  const root = realpathSync(workspaceRoot);
+  if (!requested) return { path: root };
+  const abs = path.resolve(root, requested);
+  let canonical: string;
+  try {
+    canonical = realpathSync(abs);
+  } catch {
+    return { path: "", error: `Working directory does not exist: ${requested}` };
+  }
+  const inside = canonical === root || canonical.startsWith(root + path.sep);
+  if (!inside && process.env.PI_AGY_ALLOW_EXTERNAL_CWD !== "true") {
+    return {
+      path: "",
+      error:
+        `Working directory "${requested}" is outside the workspace root "${workspaceRoot}". ` +
+        `agy write modes can edit files in place, so paths outside the workspace are rejected by default ` +
+        `(set PI_AGY_ALLOW_EXTERNAL_CWD=true to opt out).`,
+    };
+  }
+  return { path: canonical };
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -88,7 +116,10 @@ export default function piAgyExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const cwd = params.dir ? path.resolve(ctx.cwd, params.dir) : ctx.cwd;
+      // Containment guard (issue #20 L3) throws like every other input error.
+      const dir = resolveContainedDir(ctx.cwd, params.dir);
+      if (dir.error) throw new Error(dir.error);
+      const cwd = dir.path;
       const prompt = params.prompt;
       const abortSignal = signal ?? new AbortController().signal;
       const timeoutMs = Math.min(
