@@ -107,14 +107,14 @@ const TaskItem = Type.Object({
   agent: Type.String({ description: "Name of the agent to invoke" }),
   task: Type.String({ description: "Task to delegate to the agent" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent" })),
-  timeout: Type.Optional(Type.Number({ description: "Inactivity timeout in milliseconds for this task; real child activity resets it (default 3 minutes, absolute cap 20 minutes)" })),
+  timeout: Type.Optional(Type.Number({ description: "Inactivity timeout in milliseconds for this task; real child activity resets it (default 3 minutes, default absolute cap 20 minutes or as set by Environment variables,)" })),
 });
 
 const ChainItem = Type.Object({
   agent: Type.String({ description: "Name of the agent to invoke" }),
   task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent" })),
-  timeout: Type.Optional(Type.Number({ description: "Inactivity timeout in milliseconds for this step; real child activity resets it (default 3 minutes, absolute cap 20 minutes)" })),
+  timeout: Type.Optional(Type.Number({ description: "Inactivity timeout in milliseconds for this step; real child activity resets it (default 3 minutes, default absolute cap 20 minutes or as set by Environment variables)" })),
 });
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
@@ -153,7 +153,7 @@ const SubagentParams = Type.Object({
   // Project-agent confirmation is enforced via trusted configuration.
   // See Security model section in README.
   cwd: Type.Optional(Type.String({ description: "Working directory (single mode, must be inside workspace)" })),
-  timeout: Type.Optional(Type.Number({ description: "Global inactivity timeout in milliseconds (default 3 minutes; real activity resets it; fixed 20-minute absolute cap)" })),
+  timeout: Type.Optional(Type.Number({ description: "Global inactivity timeout in milliseconds (default 3 minutes; real activity resets it; default fixed 20-minute absolute cap or as set by Environment variables)" })),
   instructions: Type.Optional(Type.String({ description: "Bounded repository/task instructions passed to each child (max 16 KB)" })),
   abortOnFailure: Type.Optional(Type.Boolean({ description: "In parallel mode, cancel remaining tasks when one fails. Default: false.", default: false })),
 });

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.3 (2026-08-20)
+ ### Improvements
+- Timeouts have been extracted as Environment Variables enabling overriding.
+- `PI_SUBAGENT_INACTIVITY_TIMEOUT_MINS` default : 10 Mins
+- `PI_SUBAGENT_HARD_TIMEOUT_MINS` default: 20 Mins
+
 ## 0.15.2 (2026-08-18)
 
 ### Improvements
