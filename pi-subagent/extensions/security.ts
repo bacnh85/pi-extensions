@@ -65,16 +65,92 @@ export const MUTATION_TOOLS: readonly string[] = ["edit", "write"];
 export const EXECUTION_TOOLS: readonly string[] = ["bash"];
 
 /**
- * Default inactivity timeout. Real SDK lifecycle activity resets this window;
- * the runner separately enforces a fixed 20-minute absolute cap.
+ * Generic warning sink for configuration problems. Stderr so it is visible
+ * with or without a TUI attached. Warnings are also buffered so the extension
+ * host can surface them as TUI notifications — the interactive TUI swallows
+ * module-load stderr, so module-load warnings alone are invisible in-TUI.
  */
-export const DEFAULT_TIMEOUT_MS = 3 * 60 * 1_000; // 3 minutes
+const warnings: string[] = [];
+function warn(message: string): void {
+  process.stderr.write(`[pi-subagent] ${message}\n`);
+  warnings.push(message);
+}
+
+/**
+ * Flush env-var config warnings collected at module load. Called once from
+ * the /subagent tool handler so the warnings surface as TUI notifications
+ * (module-load stderr is not visible inside the interactive TUI).
+ */
+export function flushWarnings(): string[] {
+  return warnings.splice(0, warnings.length);
+}
+
+/**
+ * Read a numeric value from an env var, with validation:
+ * - undefined/empty -> defaultValue (no warning)
+ * - not a finite number (NaN) -> defaultValue + warning
+ * - below `min` -> `min` + warning
+ * - above `max` -> `max` + warning
+ * - otherwise -> the parsed value (no warning)
+ */
+export function getNumericEnvVar(
+  envVar: string,
+  defaultValue: number,
+  min: number,
+  max: number,
+): number {
+  const raw = process.env[envVar];
+  if (raw === undefined || raw === "") return defaultValue;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    warn(`ENV VAR: ${envVar}="${raw}" is not a number; using default ${defaultValue}.`);
+    return defaultValue;
+  }
+  if (value < min) {
+    warn(`ENV VAR: ${envVar}=${value} is below the minimum of ${min}; using ${min}.`);
+    return min;
+  }
+  if (value > max) {
+    warn(`ENV VAR: ${envVar}=${value} is above the maximum of ${max}; using ${max}.`);
+    return max;
+  }
+  return value;
+}
 
 /**
  * Absolute maximum timeout. Any requested value above this cap is rejected
  * at validation time rather than silently clamped.
  */
 export const MAX_TIMEOUT_MS = 60 * 60 * 1_000; // 60 minutes
+
+/**
+ * Timeout caps, in minutes, shared by getNumericEnvVar for both env vars.
+ * No timeout may be shorter than 1 minute; the inactivity window may not
+ * exceed the 60-minute absolute maximum.
+ */
+const MIN_TIMEOUT_MINS = 1;
+const MAX_TIMEOUT_MINS = MAX_TIMEOUT_MS / 60_000;
+
+/**
+ * Default inactivity timeout. Real SDK lifecycle activity resets this window;
+ * the runner enforces a fixed absolute cap (HARD_TIMEOUT_MS).
+ *
+ * Reads PI_SUBAGENT_INACTIVITY_TIMEOUT_MINS (default 3 min, range 1–60) and
+ * PI_SUBAGENT_HARD_TIMEOUT_MINS (default 20 min, range 1–60) from env via
+ * getNumericEnvVar, which warns on invalid/out-of-range values. The hard cap
+ * is additionally clamped up to the inactivity window: a lifetime cap smaller
+ * than the idle window is nonsensical.
+ */
+const INACTIVITY_TIMEOUT_MINS = getNumericEnvVar("PI_SUBAGENT_INACTIVITY_TIMEOUT_MINS", 3, MIN_TIMEOUT_MINS, MAX_TIMEOUT_MINS);
+let hardTimeoutMins = getNumericEnvVar("PI_SUBAGENT_HARD_TIMEOUT_MINS", 20, MIN_TIMEOUT_MINS, MAX_TIMEOUT_MINS);
+if (hardTimeoutMins < INACTIVITY_TIMEOUT_MINS) {
+  warn(
+    `PI_SUBAGENT_HARD_TIMEOUT_MINS (${hardTimeoutMins}) is below the inactivity window (${INACTIVITY_TIMEOUT_MINS}); raising hard cap to ${INACTIVITY_TIMEOUT_MINS}.`,
+  );
+  hardTimeoutMins = INACTIVITY_TIMEOUT_MINS;
+}
+export const DEFAULT_TIMEOUT_MS = INACTIVITY_TIMEOUT_MINS * 60 * 1_000;
+export const HARD_TIMEOUT_MS = hardTimeoutMins * 60 * 1_000;
 
 // ---------------------------------------------------------------------------
 // Canonical result status

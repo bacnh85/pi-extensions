@@ -30,6 +30,8 @@ import {
   classifyStopReason,
   createCombinedAbortSignal,
   type SubagentStatus,
+  DEFAULT_TIMEOUT_MS,
+  HARD_TIMEOUT_MS,
 } from "./security.ts";
 
 // ---------------------------------------------------------------------------
@@ -46,16 +48,9 @@ export interface UsageStats {
   turns: number;
 }
 
-
-const ENV_INACTIVITY_TIMEOUT_MINS = parseInt(process.env.PI_SUBAGENT_INACTIVITY_TIMEOUT_MINS ?? '',10);
-const ENV_HARD_TIMEOUT_MINS = parseInt(process.env.PI_SUBAGENT_HARD_TIMEOUT_MINS ?? '',10);
-
-const INACTIVITY_TIMEOUT_MINS: number = isNaN(ENV_INACTIVITY_TIMEOUT_MINS) ? 3 : ENV_INACTIVITY_TIMEOUT_MINS;
-const HARD_TIMEOUT_MINS: number = isNaN(ENV_HARD_TIMEOUT_MINS) ? 20 : ENV_HARD_TIMEOUT_MINS;
-
-export const DEFAULT_THINKING_TIMEOUT_MS = 10 * 60 * 1000;
-export const DEFAULT_INACTIVITY_TIMEOUT_MS = INACTIVITY_TIMEOUT_MINS * 60 * 1000;
-export const HARD_TIMEOUT_MS = HARD_TIMEOUT_MINS * 60 * 1000;
+/** Re-export from security.ts — single source of truth for both timeouts. */
+export const DEFAULT_INACTIVITY_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
+export { HARD_TIMEOUT_MS };
 
 
 // ---------------------------------------------------------------------------
