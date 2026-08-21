@@ -30,6 +30,8 @@ import {
   classifyStopReason,
   createCombinedAbortSignal,
   type SubagentStatus,
+  DEFAULT_TIMEOUT_MS,
+  HARD_TIMEOUT_MS,
 } from "./security.ts";
 
 // ---------------------------------------------------------------------------
@@ -46,8 +48,10 @@ export interface UsageStats {
   turns: number;
 }
 
-export const DEFAULT_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
-export const HARD_TIMEOUT_MS = 20 * 60 * 1000;
+/** Re-export from security.ts — single source of truth for both timeouts. */
+export const DEFAULT_INACTIVITY_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
+export { HARD_TIMEOUT_MS };
+
 
 // ---------------------------------------------------------------------------
 // Extension resource loader

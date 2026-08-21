@@ -39,6 +39,7 @@ import {
   startHeartbeat,
 } from "./runner.ts";
 import {
+  flushWarnings,
   isRateLimitError,
   normalizeTimeout,
   resolveSafeCwd,
@@ -107,14 +108,14 @@ const TaskItem = Type.Object({
   agent: Type.String({ description: "Name of the agent to invoke" }),
   task: Type.String({ description: "Task to delegate to the agent" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent" })),
-  timeout: Type.Optional(Type.Number({ description: "Inactivity timeout in milliseconds for this task; real child activity resets it (default 3 minutes, absolute cap 20 minutes)" })),
+  timeout: Type.Optional(Type.Number({ description: "Inactivity timeout in ms; aborts on no activity within timeout. Default: 3 min (PI_SUBAGENT_INACTIVITY_TIMEOUT_MINS). The agent always has a lifetime cap: default 20 min  or (PI_SUBAGENT_HARD_TIMEOUT_MINS)." })),
 });
 
 const ChainItem = Type.Object({
   agent: Type.String({ description: "Name of the agent to invoke" }),
   task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent" })),
-  timeout: Type.Optional(Type.Number({ description: "Inactivity timeout in milliseconds for this step; real child activity resets it (default 3 minutes, absolute cap 20 minutes)" })),
+  timeout: Type.Optional(Type.Number({ description: "Inactivity timeout in ms; aborts on no activity within timeout. Default: 3 min (PI_SUBAGENT_INACTIVITY_TIMEOUT_MINS). The agent always has a lifetime cap: default 20 min or (PI_SUBAGENT_HARD_TIMEOUT_MINS)." })),
 });
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
@@ -153,7 +154,7 @@ const SubagentParams = Type.Object({
   // Project-agent confirmation is enforced via trusted configuration.
   // See Security model section in README.
   cwd: Type.Optional(Type.String({ description: "Working directory (single mode, must be inside workspace)" })),
-  timeout: Type.Optional(Type.Number({ description: "Global inactivity timeout in milliseconds (default 3 minutes; real activity resets it; fixed 20-minute absolute cap)" })),
+  timeout: Type.Optional(Type.Number({ description: "Inactivity timeout for the whole run, in ms; resets on activity, aborts on silence. Default 3 min (PI_SUBAGENT_INACTIVITY_TIMEOUT_MINS). Lifetime cap: 20 min or (PI_SUBAGENT_HARD_TIMEOUT_MINS)." })),
   instructions: Type.Optional(Type.String({ description: "Bounded repository/task instructions passed to each child (max 16 KB)" })),
   abortOnFailure: Type.Optional(Type.Boolean({ description: "In parallel mode, cancel remaining tasks when one fails. Default: false.", default: false })),
 });
@@ -477,6 +478,11 @@ export default function (pi: ExtensionAPI) {
       "Use /subagent to list all available agents or /subagent <name> for agent details.",
     ],
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      // Surface env-var timeout warnings collected at module load. The
+      // interactive TUI swallows module-load stderr, so notify on launch.
+      for (const msg of flushWarnings()) {
+        ctx.ui?.notify?.(msg, "warning");
+      }
       const agentScope: AgentScope = params.agentScope ?? "user";
       const discovery = discoverAgents(ctx.cwd, agentScope, bundledAgentsDir);
       const agents = discovery.agents;

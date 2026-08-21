@@ -140,8 +140,8 @@ each writes into its own checkout.
 
 Every child execution receives a timeout:
 
-- **Default inactivity window:** 3 minutes (`DEFAULT_TIMEOUT_MS`); real SDK lifecycle activity resets it.
-- **Absolute cap:** 20 minutes for every child, even when active.
+- **Default inactivity window:** 3 minutes (`DEFAULT_TIMEOUT_MS`); real SDK lifecycle activity resets it.  Overridable with Environment Variable `PI_SUBAGENT_INACTIVITY_TIMEOUT_MINS` 
+- **Absolute cap:** Default 20 minutes for every child, even when active. Overridable with Environment variable `PI_SUBAGENT_HARD_TIMEOUT_MINS` 
 - **Maximum requested inactivity window:** 60 minutes (`MAX_TIMEOUT_MS`); values must be positive integers.
 - Timeout diagnostics distinguish `Idle timeout` from `Hard timeout` and parent cancellation.
 - 30-second progress heartbeats only keep the parent transport alive; they never reset inactivity.
