@@ -58,10 +58,16 @@ describe("mapModel", () => {
     assert.equal(opus5.contextWindow, 1_000_000, "claude-opus-5 gets the 1M override");
   });
 
-  it("override is a floor: API context_length wins when it is >= the override", () => {
-    // A model upgraded to a larger window must not be capped by a stale override.
-    const raw: CommandCodeModelRaw = { id: "deepseek/deepseek-v4-flash", context_length: 2_000_000 };
-    assert.equal(mapModel(raw).contextWindow, 2_000_000);
+  it("API context_length is authoritative — a smaller reported value beats a larger override", () => {
+    // The API now reports vendor-official windows; the override table only
+    // fills blank fields. Pre-fix floor semantics inflated kimi-k2.7-code
+    // 256K→1M and qwen3.8-27b 262K→1M → Pi over-packed context past what
+    // upstream accepts.
+    const raw: CommandCodeModelRaw = { id: "moonshotai/Kimi-K2.7-Code", context_length: 256_000 };
+    assert.equal(mapModel(raw).contextWindow, 256_000);
+
+    const qwen = mapModel({ id: "Qwen/Qwen3.8-27B", context_length: 262_144 });
+    assert.equal(qwen.contextWindow, 262_144);
   });
 
   it("falls back to provided context_length when no override matches", () => {
@@ -112,6 +118,18 @@ describe("mapModel", () => {
     assert.equal(mapModel({ id: "unknown/future-model" }).reasoning, true);
     // Forward-compat: an explicit API capabilities.reasoning wins over the table.
     assert.equal(mapModel({ id: "zai-org/GLM-5", capabilities: { reasoning: true } }).reasoning, true);
+  });
+
+  it("maps the 2026-08-24 catalog additions (gemini-3.7-flash, qwen3.8-27b, ox-alpha, grok-4.6)", () => {
+    // Docs caps registry: all four are reasoning-capable; grok-4.6 is text-only.
+    assert.deepEqual(mapModel({ id: "google/gemini-3.7-flash" }).input, ["text", "image"]);
+    assert.equal(mapModel({ id: "google/gemini-3.7-flash" }).reasoning, true);
+    assert.deepEqual(mapModel({ id: "Qwen/Qwen3.8-27B" }).input, ["text", "image"]);
+    assert.equal(mapModel({ id: "Qwen/Qwen3.8-27B" }).reasoning, true);
+    assert.deepEqual(mapModel({ id: "stealth/ox-alpha" }).input, ["text", "image"]);
+    assert.equal(mapModel({ id: "stealth/ox-alpha" }).reasoning, true);
+    assert.deepEqual(mapModel({ id: "xai/grok-4.6" }).input, ["text"]);
+    assert.equal(mapModel({ id: "xai/grok-4.6" }).reasoning, true);
   });
 
   it("uses the API display name when present, falling back to the id", () => {

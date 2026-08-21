@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.6 (2026-08-24)
+
+### Fixes
+
+- **Catalog update: 4 new models + correct context windows.** Command Code
+  added `google/gemini-3.7-flash`, `Qwen/Qwen3.8-27B`, `stealth/ox-alpha`, and
+  `xai/grok-4.6` (57 total); the capabilities table now covers all of them
+  (the first three are vision+reasoning, grok-4.6 is text-only + reasoning,
+  per the docs caps registry).
+- **API context_length is now authoritative; overrides only fill gaps.** The
+  Provider API now reports vendor-official `context_length` for every model.
+  The previous "override as floor" semantics inflated four models past what
+  upstream accepts (`kimi-k2.7-code` 256K→1M, `kimi-k2.7-code-highspeed`
+  262K→1M, `qwen3.8-27b` 262K→1M, `gpt-5.6-*` 1.05M→1.1M) — an inflated
+  window makes Pi over-pack context and fail mid-session. `mapModel` now uses
+  `context_length` verbatim when present; the override table only fills a
+  blank/zero field (old disk caches, older API builds).
+
 ## 0.1.5 (2026-08-14)
 
 ### Fixes

@@ -25,10 +25,13 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const FALLBACK_CONTEXT_WINDOW = 128_000;
 const FALLBACK_MAX_TOKENS = 8_192;
 
-// Verified context-window overrides for models Command Code under-reports.
+// Context-window fallbacks for models the API lists WITHOUT context_length
+// (older API builds + caches written before the field was populated).
 // Source: https://commandcode.ai/docs/reference/cli/models (context column).
-// ponytail: overrides are GATED on the API under-reporting (no/zero context_length),
-// so a model that truthfully reports its window is never inflated.
+// ponytail: the API's own context_length is authoritative when present — the
+// override only fills a blank/zero field, never inflates a reported value
+// (a stale 1M override on a 256K model makes Pi over-pack context past what
+// upstream accepts → mid-session failures).
 const CONTEXT_OVERRIDES: { pattern: RegExp; contextWindow: number; maxTokens?: number }[] = [
   // GLM-5.2/5.3 only: 1M context, 128K output (glm-5.3[1m] Coding Plan route + launch
   // coverage report the same 1M window as glm-5.2). Lookahead keeps future glm-5.4+
@@ -69,6 +72,7 @@ const CAPABILITIES: Record<string, { vision: boolean; reasoning: boolean }> = {
   "google/gemini-3.5-flash": { vision: true, reasoning: true },
   "google/gemini-3.5-flash-lite": { vision: true, reasoning: true },
   "google/gemini-3.6-flash": { vision: true, reasoning: true },
+  "google/gemini-3.7-flash": { vision: true, reasoning: true },
   "gpt-5.3-codex": { vision: true, reasoning: true },
   "gpt-5.4": { vision: true, reasoning: true },
   "gpt-5.4-mini": { vision: true, reasoning: true },
@@ -94,14 +98,17 @@ const CAPABILITIES: Record<string, { vision: boolean; reasoning: boolean }> = {
   "qwen/qwen3.7-flash": { vision: true, reasoning: true },
   "qwen/qwen3.7-max": { vision: false, reasoning: true },
   "qwen/qwen3.7-plus": { vision: true, reasoning: true },
+  "qwen/qwen3.8-27b": { vision: true, reasoning: true },
   "qwen/qwen3.8-max": { vision: true, reasoning: true },
   "sakana/fugu-ultra": { vision: true, reasoning: true },
+  "stealth/ox-alpha": { vision: true, reasoning: true },
   "stepfun/step-3.5-flash": { vision: false, reasoning: true },
   "stepfun/step-3.7-flash": { vision: true, reasoning: true },
   "tencent/hy3-paid": { vision: false, reasoning: true },
   "thinkingmachines/inkling": { vision: true, reasoning: true },
   "thinkingmachines/inkling-small": { vision: true, reasoning: true },
   "xai/grok-4.5": { vision: true, reasoning: true },
+  "xai/grok-4.6": { vision: false, reasoning: true },
   "xiaomi/mimo-v2.5": { vision: true, reasoning: false },
   "xiaomi/mimo-v2.5-pro": { vision: false, reasoning: false },
   "zai-org/glm-5": { vision: false, reasoning: false },
@@ -189,13 +196,13 @@ export async function fetchModels(
  *  at runtime, so static cost is 0 (matches pi-9router). */
 export function mapModel(raw: CommandCodeModelRaw): ProviderModelConfig {
   const override = lookupContextOverride(raw.id);
-  // ponytail: override is a floor, not a replacement — trust the API when it
-  // reports a positive context_length larger than the override (e.g. a model
-  // upgraded to a bigger window), only fill gaps the API leaves blank/zero.
-  const apiContext = parsePositiveInt(raw.context_length);
-  const contextWindow = apiContext && apiContext >= (override.contextWindow ?? 0)
-    ? apiContext
-    : (override.contextWindow ?? apiContext ?? FALLBACK_CONTEXT_WINDOW);
+  // The API's context_length is authoritative (it now reports vendor-official
+  // windows for every model); the override table only fills a missing/zero
+  // field — a floor would inflate models the table over-remembers (e.g.
+  // kimi-k2.7-code 256K, qwen3.8-27b 262K vs a stale 1M override).
+  const contextWindow = parsePositiveInt(raw.context_length)
+    ?? override.contextWindow
+    ?? FALLBACK_CONTEXT_WINDOW;
   const maxTokens = override.maxTokens ?? FALLBACK_MAX_TOKENS;
   const input: ("text" | "image")[] = resolveVision(raw) ? ["text", "image"] : ["text"];
 
