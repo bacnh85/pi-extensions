@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { DEFAULTS } from "./helpers";
 import { A2AServer, type SessionRunner } from "../lib/server";
 import { STATE_CANCELED, STATE_COMPLETED, STATE_FAILED, STATE_INPUT_REQUIRED, STATE_REJECTED } from "../lib/protocol";
+import { authenticate } from "../lib/security";
 import { metrics } from "../lib/client";
 import { list as listRegistry } from "../lib/registry";
 import { setGatewayRegistrationName, getGatewayCallerName, gatewayKeyFromUrl } from "../lib/config";
@@ -1010,6 +1011,99 @@ describe("server", () => {
       assert.ok(posts.some((u) => u.includes("9920")), "work gateway registered");
       assert.ok(posts.some((u) => u.includes("9921")), "lab gateway registered");
       assert.ok(!urls.some((u) => u.includes("9922")), "disabled gateway must not be touched");
+    });
+
+    it("mints a per-session upstream_token and accepts it inbound (no explicit upstreamToken)", async () => {
+      const cfg = DEFAULTS();
+      cfg.discovery.gateway = { enabled: true, url: "http://127.0.0.1:9920", token: "x" };
+      const port = await freePort();
+      cfg.server = { ...cfg.server, port };
+      const piDir = tmpDir();
+      const server = new A2AServer({ cfg, cwd: tmpDir(), piDir, runner: stubRunner("ok") });
+      await server.start();
+      // Register body must carry a minted agw-* upstream_token.
+      const post = calls.find((c) => (c.init as any)?.method === "POST");
+      const body = JSON.parse(String(post?.init?.body ?? "{}"));
+      assert.match(String(body.upstream_token), /^agw-/);
+      // The minted token authenticates inbound (extraTokens path) WITHOUT
+      // flipping cfg.server.peerTokens (localhostOnly must stay untouched).
+      const minted = (server as any).mintedInboundTokens[String(body.name)] as string;
+      assert.equal(minted, body.upstream_token);
+      assert.equal(Object.keys(cfg.server.peerTokens).length, 0, "peerTokens config untouched");
+      assert.equal(
+        authenticate({ authHeader: `Bearer ${minted}`, clientIp: "127.0.0.1", peerTokens: {}, sharedToken: "", extraTokens: (server as any).mintedInboundTokens }),
+        String(body.name),
+      );
+      // No-token loopback deployment stays anonymous-friendly: absent bearer
+      // still authenticates as ip: (minted map alone must not require a token).
+      assert.match(
+        String(authenticate({ authHeader: null, clientIp: "127.0.0.1", peerTokens: {}, sharedToken: "", extraTokens: (server as any).mintedInboundTokens })),
+        /^ip:/,
+      );
+      await server.stop();
+    });
+
+    it("two unnamed gateway entries mint DISTINCT tokens, both authenticate inbound", async () => {
+      const cfg = DEFAULTS();
+      cfg.discovery.gateways = {
+        work: { enabled: true, url: "http://127.0.0.1:9920", token: "x" },
+        lab: { enabled: true, url: "http://127.0.0.1:9921", token: "y" },
+      };
+      const port = await freePort();
+      cfg.server = { ...cfg.server, port };
+      const server = new A2AServer({ cfg, cwd: tmpDir(), piDir: tmpDir(), runner: stubRunner("ok") });
+      await server.start();
+      // Both entries share the auto-name base-port — tokens must still differ.
+      const posts = calls.filter((c) => (c.init as any)?.method === "POST" && String(c.url).includes("/register"));
+      const tokens = posts.map((c) => JSON.parse(String(c.init?.body ?? "{}")).upstream_token as string);
+      assert.equal(tokens.length, 2);
+      assert.notEqual(tokens[0], tokens[1], "per-gateway tokens must not collide");
+      const minted = (server as any).mintedInboundTokens as Record<string, string>;
+      // Same peer name → last mint wins the name→token identity, but BOTH
+      // tokens authenticate (identity = the name either way).
+      for (const t of tokens) {
+        assert.isString(
+          authenticate({ authHeader: `Bearer ${t}`, clientIp: "10.0.0.9", peerTokens: {}, sharedToken: "", extraTokens: minted }),
+          `token ${t} must authenticate`,
+        );
+      }
+      await server.stop();
+    });
+
+    it("two gateways pinned to the SAME name mint distinct keys — both authenticate", async () => {
+      const cfg = DEFAULTS();
+      cfg.discovery.gateways = {
+        work: { enabled: true, url: "http://127.0.0.1:9920", token: "x", name: "pi" },
+        lab: { enabled: true, url: "http://127.0.0.1:9921", token: "y", name: "pi" },
+      };
+      const port = await freePort();
+      cfg.server = { ...cfg.server, port };
+      const server = new A2AServer({ cfg, cwd: tmpDir(), piDir: tmpDir(), runner: stubRunner("ok") });
+      await server.start();
+      const minted = (server as any).mintedInboundTokens as Record<string, string>;
+      const keys = Object.keys(minted);
+      assert.equal(keys.length, 2, "both minting entries retain their token");
+      assert.notEqual(minted[keys[0]!], minted[keys[1]!]);
+      for (const k of keys) {
+        assert.isString(
+          authenticate({ authHeader: `Bearer ${minted[k]}`, clientIp: "10.0.0.9", peerTokens: {}, sharedToken: "", extraTokens: minted }),
+          `token for ${k} must authenticate`,
+        );
+      }
+      await server.stop();
+    });
+
+    it("keeps an explicitly-pinned upstreamToken untouched", async () => {
+      const cfg = DEFAULTS();
+      cfg.discovery.gateway = { enabled: true, url: "http://127.0.0.1:9920", token: "x", upstreamToken: "pinned-tok" };
+      const port = await freePort();
+      cfg.server = { ...cfg.server, port };
+      const server = new A2AServer({ cfg, cwd: tmpDir(), piDir: tmpDir(), runner: stubRunner("ok") });
+      await server.start();
+      const post2 = calls.find((c) => (c.init as any)?.method === "POST");
+      const body = JSON.parse(String(post2?.init?.body ?? "{}"));
+      assert.equal(body.upstream_token, "pinned-tok");
+      await server.stop();
     });
   });
 });

@@ -520,7 +520,7 @@ export async function a2aCall(opts: {
     if (/HTTP 429/.test(msg)) return `Error: peer '${agent}' rate limited us (HTTP 429). Retry later.`;
     return `Error: call to '${agent}' failed — ${msg}`;
   }
-  let header = `[${agent} · context ${result.contextId}`;
+  let header = `[A2A → ${agent} · context ${result.contextId}`;
   if (result.state) header += ` · ${shortState(result.state)}`;
   header += "]";
   let body = result.reply || "(no text reply)";

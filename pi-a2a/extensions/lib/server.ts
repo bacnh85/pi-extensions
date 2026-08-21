@@ -34,6 +34,7 @@ import {
   newContextId,
   newTaskId,
   normalizeRole,
+  uuid,
   type AgentCard,
   type Message,
   type Task,
@@ -181,6 +182,9 @@ export class A2AServer {
   private http: Server | null = null;
   private boundPort: number | null = null;
   private store = new TaskStore();
+  /** Per-session minted inbound tokens (peer name → agw-* token) registered
+   *  as upstream_token with gateways. Kept OUT of cfg.server.peerTokens. */
+  private mintedInboundTokens: Record<string, string> = {};
   private antiLoop: AntiLoop;
   private limiter: RateLimiter;
   private cfg: A2AConfig;
@@ -385,13 +389,34 @@ export class A2AServer {
     const entries = gatewayEntries(this.cfg).filter((e) => e.entry.enabled !== false);
     if (entries.length === 0) return;
     const { GatewayUpstream } = await import("./gateway.js");
-    for (const { key, entry: gw } of entries) {
+    for (const { key, entry } of entries) {
+      let gw = entry;
       if (!gw.url || !gw.token) continue;
       // Unique name per session (name-port) unless explicitly pinned — sessions
       // on the same machine share config, and one gateway entry per live session
       // beats last-registration-wins.
       const base = gw.name || this.cfg.server.agentName || hostname() || "pi";
       const name = gw.name ? gw.name : `${base}-${this.boundPort}`;
+      // Dedicated per-session inbound token: when the entry pins no
+      // upstreamToken, mint one per server start and accept it inbound. The
+      // switchboard presents it when proxying TO us — the static sharedToken
+      // then only serves the local mesh, never leaves this machine.
+      // Map key is unique per gateway ENTRY whenever more than one entry
+      // mints (pinned or auto names can still collide across gateways):
+      // count entries that will mint (no explicit upstreamToken), and suffix
+      // -key when >1 — a single minter keeps the stable name identity.
+      const minters = entries.filter((e) => !e.entry.upstreamToken);
+      const inboundId = minters.length > 1 ? `${name}-${key}` : name;
+      if (!gw.upstreamToken) {
+        const minted = `agw-${uuid().replace(/-/g, "").slice(0, 24)}`;
+        // Server-side map, NOT cfg.server.peerTokens: mutating the config
+        // mid-session would flip localhostOnly() (anonymous loopback peers
+        // suddenly 401) and publicUrl()'s bind clamp. authenticate() consults
+        // this map via extraTokens — lookup only, never for the hasTokens
+        // decision.
+        this.mintedInboundTokens[inboundId] = minted;
+        gw = { ...gw, upstreamToken: minted };
+      }
       const upstream = new GatewayUpstream(
         {
           ...gw,
@@ -429,12 +454,11 @@ export class A2AServer {
       this.gatewayUpstreams.set(key, upstream);
       const ok = await upstream.start(this.publicUrl());
       if (ok) {
-        // Publish the resolved registration name to outbound callers ONLY
-        // after a successful register — an unreachable/pending gateway must
-        // not advertise a caller name that isn't actually listed. In-memory
-        // only — NEVER through setConfigOverrides, which loadConfig applies
-        // and the /a2a-config panel would persist to settings.json.
-        setGatewayRegistrationName(name, key);
+        // registeredName, not the local computation: a 409 self-heal may have
+        // renamed the peer — publishing the pre-rename name would advertise a
+        // caller identity the gateway never registered.
+        const registeredName = upstream.registeredName;
+        setGatewayRegistrationName(registeredName, key);
         const state = upstream.lastState;
         const pending = state === "pending";
         let host = gw.url;
@@ -444,7 +468,7 @@ export class A2AServer {
           /* keep raw url */
         }
         const msg =
-          `[a2a] registered to a2a-switchboard ${key}@${host} as ${name}` +
+          `[a2a] registered to a2a-switchboard ${key}@${host} as ${registeredName}` +
           (pending ? " (pending admin acceptance — not yet listed for peers)" : "");
         if (this.onStatus) {
           try {
@@ -463,12 +487,11 @@ export class A2AServer {
     if (this.gatewayUpstreams.size === 0) return;
     const upstreams = [...this.gatewayUpstreams.entries()];
     this.gatewayUpstreams.clear();
-    for (const [key, upstream] of upstreams) {
-      await upstream.stop();
-      // The resolved registration name is session-scoped — stop presenting it
-      // (and never persist it) once the upstream is gone.
-      setGatewayRegistrationName(null, key);
-    }
+    // Parallel stop: each upstream's DELETE is bounded (DEREG_TIMEOUT_MS) but
+    // sequential stops made /reload and session_shutdown wait N×timeout.
+    await Promise.all(upstreams.map(([key, upstream]) =>
+      upstream.stop().finally(() => setGatewayRegistrationName(null, key)),
+    ));
   }
 
   /** Stop local-registry declaration + mDNS. */
@@ -660,6 +683,7 @@ export class A2AServer {
       clientIp: (req.socket.remoteAddress || "").replace(/^::ffff:/, ""),
       peerTokens: this.cfg.server.peerTokens,
       sharedToken: this.cfg.server.sharedToken,
+      extraTokens: this.mintedInboundTokens,
     });
   }
 
@@ -687,6 +711,7 @@ export class A2AServer {
       clientIp,
       peerTokens: this.cfg.server.peerTokens,
       sharedToken: this.cfg.server.sharedToken,
+      extraTokens: this.mintedInboundTokens,
     });
     if (identity === null) {
       return this.send(res, 401, jsonrpcError(null, -32050, "unauthorized"));

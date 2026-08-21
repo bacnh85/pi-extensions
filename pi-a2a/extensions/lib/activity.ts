@@ -124,6 +124,29 @@ export function activityToText(a: InboundActivity): string {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Visual classification (TUI renderer colors)
+// ---------------------------------------------------------------------------
+
+/** How a rendered line should be colored: distinguishes WHAT the peer sent,
+ *  what the isolated session is EXECUTING to answer, and what we SEND BACK.
+ *  0.8.0 UX — mirrors the user/tool/assistant distinction of the main chat. */
+export type A2ALineClass = "received" | "executing" | "replying" | "completed" | "failed";
+
+/** Classify a rendered activity line by shape. Pure — unit-testable, and the
+ *  renderer stays a thin color map. Order matters: the explicit ✎/completed/
+ *  failed prefixes (which may wrap MULTI-LINE reply/error text) are checked
+ *  before the generic received/executing shapes. */
+export function classifyLine(content: string): A2ALineClass {
+  if (/^\[A2A inbound\] task from /.test(content)) return "received";
+  if (/^\[A2A inbound\] ✎ /.test(content)) return "replying";
+  if (/^\[A2A inbound\] task .+ completed /.test(content)) return "completed";
+  if (/^\[A2A inbound\] task .+ failed /.test(content)) return "failed";
+  // Multi-line with no recognized prefix = the arrived task text itself.
+  if (content.includes("\n")) return "received";
+  return "executing"; // ⚙ tool runs, “✓ agent finished”, anything else mid-flight
+}
+
 /** Short footer status while tasks are running (e.g. "2 inbound · 3 tools"). */
 export function activityStatusLine(active: Array<{ taskId: string; identity: string }>): string | undefined {
   if (active.length === 0) return undefined;

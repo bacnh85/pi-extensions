@@ -28,7 +28,7 @@ import {
 } from "./lib/client";
 import { A2AServer, type SessionRunner } from "./lib/server";
 import { formatPeers, listPeers } from "./lib/discovery";
-import { activityLine, activityStatusLine, activityToText, preview, type InboundActivity } from "./lib/activity";
+import { activityLine, activityStatusLine, activityToText, classifyLine, preview, type InboundActivity } from "./lib/activity";
 import { openConfigPanel, type PanelAction } from "./lib/config-panel";
 
 import { Container, Text } from "@earendil-works/pi-tui";
@@ -274,8 +274,12 @@ const contextIdParam = Type.Optional(
 // ---------------------------------------------------------------------------
 
 export default function a2aExtension(pi: ExtensionAPI): void {
-  // Compact transcript renderer for inbound activity messages (0.3.0).
-  // Renders as a terse colored line instead of a full assistant block.
+  // Compact transcript renderer for inbound activity messages (0.3.0 → 0.6.2 UX).
+  // Class-colored so the three phases of an A2A exchange read at a glance:
+  //   ⚑ warning  — received from a peer (like a user turn, different color)
+  //   ⚙ dim      — isolated session executing tools to answer
+  //   ✎ success  — reply being sent back
+  //   ✓ success / ✗ error — completion markers
   pi.registerMessageRenderer?.("a2a-inbound", (message, _opts, theme) => {
     try {
       const fg = theme.fg.bind(theme);
@@ -283,10 +287,17 @@ export default function a2aExtension(pi: ExtensionAPI): void {
       const content = typeof raw === "string"
         ? raw
         : (Array.isArray(raw) ? raw.map((p: any) => (typeof p?.text === "string" ? p.text : "")).join("") : "");
-      const isFail = content.includes(" failed ");
-      const icon = isFail ? fg("error", "✗") : fg("accent", "⇄");
+      const kind = classifyLine(content);
+      const icon =
+        kind === "received" ? "⚑" :
+        kind === "failed" ? "✗" :
+        kind === "replying" || kind === "completed" ? "✓" : "⇄";
+      const color =
+        kind === "received" ? "warning" :
+        kind === "failed" ? "error" :
+        kind === "executing" ? "dim" : "success";
       const c = new Container();
-      c.addChild(new Text(`${icon} ${content}`, 0, 0));
+      c.addChild(new Text(fg(color, `${icon} ${content}`), 0, 0));
       return c;
     } catch {
       return undefined; // pi-tui unavailable → fall back to default rendering

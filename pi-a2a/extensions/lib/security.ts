@@ -76,13 +76,24 @@ export function authenticate(opts: {
   clientIp?: string;
   peerTokens: PeerTokensMap;
   sharedToken: string;
+  /** Per-session minted inbound tokens (a2a-switchboard upstream_token) —
+   *  consulted for token→identity lookup ONLY, never for the hasTokens /
+   *  localhostOnly decision, so auto-minting must not flip a token-less
+   *  loopback deployment into token-required mode mid-session. */
+  extraTokens?: PeerTokensMap;
 }): string | null {
-  const { authHeader, clientIp = "", peerTokens, sharedToken } = opts;
+  const { authHeader, clientIp = "", peerTokens, sharedToken, extraTokens } = opts;
   const hasTokens = Object.keys(peerTokens).length > 0 || !!sharedToken;
-  if (!hasTokens) return `ip:${clientIp || "local"}`;
   const presented = parseBearer(authHeader);
+  // Minted per-session tokens (extraTokens) never require auth by themselves:
+  // they exist so the GATEWAY can call us, not to lock down loopback peers.
+  // No operator tokens + no bearer → anonymous loopback identity as before.
+  if (!hasTokens && presented === null) return `ip:${clientIp || "local"}`;
   if (presented === null) return null;
   for (const [name, tok] of Object.entries(peerTokens)) {
+    if (constantTimeEqual(presented, tok)) return name;
+  }
+  for (const [name, tok] of Object.entries(extraTokens ?? {})) {
     if (constantTimeEqual(presented, tok)) return name;
   }
   if (sharedToken && constantTimeEqual(presented, sharedToken)) {

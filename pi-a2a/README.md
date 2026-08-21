@@ -281,10 +281,12 @@ groups):
   | PATCH unsupported (`405`) or rejected (`401`) | `POST /register` | shared token |
 
   The `caller_token` is disclosed by the gateway **only at mint**, so it is
-  persisted per gateway key at `~/.pi/agent/a2a_gateways/<key>.json`
-  (`{name, callerToken}`) — after a restart, heartbeats PATCH immediately
-  instead of re-minting. Lose the file (or the entry) and the only recovery is
-  POST re-registration, which re-mints.
+   persisted per gateway key and peer name at
+   `~/.pi/agent/a2a_gateways/<key>/<name>.json` (`{name, callerToken}`) — after
+   a restart, heartbeats PATCH immediately instead of re-minting. If both the
+   file and caller token are lost while the old peer still exists, delete that
+   peer in the switchboard admin UI once, then restart Pi; the next POST mints
+   a replacement token.
 - The directory fetch (`GET /.well-known/agent.json`) always uses the shared
   token — unchanged by PATCH heartbeats.
 

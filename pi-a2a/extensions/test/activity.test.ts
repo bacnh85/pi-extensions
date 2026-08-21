@@ -4,6 +4,7 @@ import {
   activityLine,
   activityStatusLine,
   activityToText,
+  classifyLine,
   preview,
   type InboundActivity,
 } from "../lib/activity";
@@ -84,6 +85,26 @@ describe("activity", () => {
         { taskId: "t2", identity: "session-b" },
       ]);
       assert.equal(line, "A2A: 2 inbound tasks (hermes, session-b)");
+    });
+  });
+
+  describe("classifyLine (0.6.2 UX colors)", () => {
+    it("classifies received / executing / replying / completed / failed", () => {
+      assert.equal(classifyLine("[A2A inbound] task from hermes:\nfind TODOs"), "received");
+      assert.equal(classifyLine("[A2A inbound] ⚙ bash grep TODO"), "executing");
+      assert.equal(classifyLine("[A2A inbound] ✓ agent finished"), "executing");
+      assert.equal(classifyLine("[A2A inbound] ✎ here is the list"), "replying");
+      assert.equal(classifyLine("[A2A inbound] task t1 comp completed (2.5s) — done"), "completed");
+      assert.equal(classifyLine("[A2A inbound] task t1 comp failed (1.0s): boom"), "failed");
+    });
+    it("multi-line prefixes classify by prefix, not by newline", () => {
+      // Real replies and error stacks are multi-line — the prefix wins.
+      assert.equal(classifyLine("[A2A inbound] ✎ line1\nline2\nline3"), "replying");
+      assert.equal(classifyLine("[A2A inbound] task t1 comp failed (1.0s): boom\nstack"), "failed");
+      assert.equal(classifyLine("[A2A inbound] task t1 comp completed (1.0s) — a\nb"), "completed");
+    });
+    it("multi-line with no recognized prefix is always received", () => {
+      assert.equal(classifyLine("[A2A inbound] ⚙ bash\nsecond line"), "received");
     });
   });
 });

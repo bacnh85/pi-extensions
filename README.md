@@ -9,12 +9,13 @@ Each package lives in its own directory and can be installed independently. This
 | Package | Version | What it adds |
 | --- | ---: | --- |
 | [`@bacnh85/pi-9router`](./pi-9router) | 0.1.7 | Connect to a 9router AI routing proxy instance via OpenAI-compatible API with interactive login. |
+| [`@bacnh85/pi-chatgpt-web`](./pi-chatgpt-web) | 0.2.0 | ChatGPT web-tier providers via self-hosted OpenAI-compatible bridges — chat-only `chatgpt-web` (chatgpt2api) + agentic `codex-web` (codex-proxy, tool-capable). No Plus subscription. |
 | [`@bacnh85/pi-commandcode`](./pi-commandcode) | 0.1.0 | Connect to Command Code's OpenAI-compatible Provider API; uses built-in `/login` for API-key setup. |
 | [`@bacnh85/pi-agy`](./pi-agy) | 0.3.1 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
 | [`@bacnh85/pi-budget`](./pi-budget) | 0.1.2 | Spend cap enforcement — `--budget <usd>` aborts the agent at the cap. |
 | [`@bacnh85/pi-checkpoint`](./pi-checkpoint) | 0.1.0 | Git-backed undo/redo — snapshots file state per turn so `/undo` rolls back a message AND its file changes. |
 | [`@bacnh85/pi-evolve`](./pi-evolve) | 0.3.1 | Trajectory-based self-learning loop — captures tool-call trajectories, reflects to extract learnings, persists to Munin or local JSONL, injects recent learnings into future sessions. |
-| [`@bacnh85/pi-a2a`](./pi-a2a) | 0.6.0 | A2A Protocol v1.0 bidirectional — Pi distributes tasks to remote agents (Hermes, ADK, LangChain, any A2A peer), exposes itself as an A2A-callable agent, self-declares for local session discovery (file registry + enriched Agent Card + mDNS), registers with **multiple a2a-switchboard gateways** (`discovery.gateways`), shows inbound task activity in the host TUI, and has an interactive config panel. |
+| [`@bacnh85/pi-a2a`](./pi-a2a) | 0.6.2 | A2A Protocol v1.0 bidirectional — Pi distributes tasks to remote agents (Hermes, ADK, LangChain, any A2A peer), exposes itself as an A2A-callable agent, self-declares for local session discovery (file registry + enriched Agent Card + mDNS), registers with **multiple a2a-switchboard gateways** (`discovery.gateways`), shows inbound task activity in the host TUI, and has an interactive config panel. |
 | [`@bacnh85/pi-fff`](./pi-fff) | 0.7.9 | FFF-powered fuzzy file and content search for Pi. |
 | [`@bacnh85/pi-init`](./pi-init) | 0.1.0 | Guided AGENTS.md generation — `/init` scans the repo and generates/updates AGENTS.md with build/test/lint commands, architecture, and conventions. |
 | [`@bacnh85/pi-kicad`](./pi-kicad) | 0.1.3 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon. |
@@ -43,6 +44,7 @@ Install the published package you want:
 
 ```bash
 pi install npm:@bacnh85/pi-9router
+pi install npm:@bacnh85/pi-chatgpt-web
 pi install npm:@bacnh85/pi-agy
 pi install npm:@bacnh85/pi-budget
 pi install npm:@bacnh85/pi-checkpoint
@@ -86,6 +88,7 @@ Packages are standalone npm packages. Most TypeScript packages use Mocha + `tsx`
 ```text
 pi-extensions/
   pi-9router/
+  pi-chatgpt-web/
   pi-commandcode/
   pi-agy/
   pi-budget/

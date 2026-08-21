@@ -8,6 +8,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | Package | Version | Description |
 |---------|---------|-------------|
 | **pi-9router** | 0.1.7 | Connect to a 9router AI routing proxy instance via its OpenAI-compatible API with interactive login. |
+| **pi-chatgpt-web** | 0.2.0 | ChatGPT web-tier providers via self-hosted OpenAI-compatible bridges — chat-only `chatgpt-web` (chatgpt2api) + agentic `codex-web` (codex-proxy, tool-capable). No Plus subscription. |
 | **pi-commandcode** | 0.1.0 | Connect to Command Code's OpenAI-compatible Provider API; uses built-in `/login` for API-key setup. |
 | **pi-checkpoint** | 0.1.0 | Git-backed undo/redo — snapshots file state per turn into a dedicated ref namespace so `/undo` rolls back a message AND its file changes. |
 | **pi-notify** | 0.1.1 | Desktop notifications and sounds — fires on task completion, errors, and questions; cross-platform (macOS/Linux/Windows + terminal OSC). |
@@ -21,7 +22,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-model-tools** | 0.5.5 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, and a Codex-style apply_patch diff tool. |
 | **pi-munin** | 0.5.2 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and confirmed cross-project sharing. |
 | **pi-evolve** | 0.3.1 | Trajectory-based self-learning loop — captures tool-call trajectories, reflects to extract learnings, persists to Munin or local JSONL, injects recent learnings into future sessions. |
-| **pi-a2a** | 0.6.0 | A2A Protocol v1.0 bidirectional — Pi distributes tasks to remote agents (Hermes, ADK, LangChain, any A2A peer), exposes itself as an A2A-callable agent, self-declares for local session discovery (file registry + enriched Agent Card + mDNS), registers with **multiple a2a-switchboard gateways** (`discovery.gateways`), shows inbound task activity in the host TUI, and has an interactive config panel. |
+| **pi-a2a** | 0.6.2 | A2A Protocol v1.0 bidirectional — Pi distributes tasks to remote agents (Hermes, ADK, LangChain, any A2A peer), exposes itself as an A2A-callable agent, self-declares for local session discovery (file registry + enriched Agent Card + mDNS), registers with **multiple a2a-switchboard gateways** (`discovery.gateways`), shows inbound task activity in the host TUI, and has an interactive config panel. |
 | **pi-notebooklm** | 0.1.8 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | **pi-obsidian** | 0.8.13 | Obsidian vault integration for Pi. |
 | **pi-plan** | 0.10.4 | Plan mode with read-only gating and plan → implement → verify → review workflow; fallback model chain on overload. |
@@ -55,6 +56,7 @@ pi-extensions/
   pi-rtk/               # TS extension for RTK bash command rewriting
   pi-model-tools/        # TS extension for unified tool-wrapping + DeepSeek guidance + Super Power Mode (DeepSeek V4 + GLM)
    pi-9router/           # TS extension to connect to a 9router AI routing proxy.
+   pi-chatgpt-web/       # TS extension: ChatGPT web-tier provider via self-hosted chatgpt2api bridge.
   pi-commandcode/       # TS extension for Command Code Provider API.
   pi-budget/            # JS extension for spend-cap enforcement (--budget <usd>).
   pi-sub/               # TS extension for subscription usage footer
@@ -148,6 +150,7 @@ cd pi-<name> && npm test
 # pi-sub:        npm pack --dry-run                    (packaging check)
 # pi-themes:     npm pack --dry-run                    (packaging check; pure-themes, no extension code)
 # pi-9router:    node --import tsx --node test          (node:test + tsx)
+# pi-chatgpt-web: node --import tsx --test extensions/test/unit.test.ts (node:test + tsx)
 # pi-commandcode: node --import tsx --test extensions/test/*.test.ts (node:test + tsx)
 ```
 

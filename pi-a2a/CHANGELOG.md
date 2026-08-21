@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.6.2 — 2026-08-20
+
+### Fixed
+
+- **a2a-switchboard registration conflicts:** caller tokens are now persisted
+  per gateway key *and* Pi peer name, so concurrent or port-changing Pi
+  sessions cannot overwrite one another's management credential and trigger
+  a `409` on their next heartbeat. Matching pre-0.6.2 state files are read once
+  and migrated on the next token write. Graceful deregistration now also uses
+  the peer caller token, as required by current switchboard versions.
+- **Reverse channel opened with the shared token (HTTP 403):** switchboard
+  issue #3 makes the per-peer `caller_token` the only accepted credential for
+  `GET /channel` once one exists; `ChannelClient` now inherits the minted
+  caller token from `GatewayUpstream` instead of the shared token.
+- **Dedicated per-session inbound token (a2a-switchboard deployments):**
+  gateway entries without an explicit `upstreamToken` now mint a fresh
+  `agw-…` token per server start, register it as the peer's `upstream_token`
+  and accept it inbound via `peerTokens`. The static `sharedToken` no longer
+  leaves this machine — the switchboard presents the per-session token when
+  proxying to us.
+- **Reviewer follow-up fixes (all 6 findings):** minted tokens live in a
+  server-side `mintedInboundTokens` map consulted via `authenticate()`'s new
+  `extraTokens` (lookup-only — never flips `localhostOnly`, never required
+  for anonymous loopback peers); per-entry identity keys so two unnamed
+  gateway entries can't overwrite each other's token; the 409 self-heal
+  rename now removes the pre-rename state file, `stateFile` follows the live
+  name, and the server publishes `upstream.registeredName` (post-rename) for
+  X-Gateway-Caller attribution; `classifyLine` checks ✎/completed/failed
+  prefixes before the multi-line heuristic; `ChannelClient.stop()` dead
+  no-op wait removed.
+- **Epoch-guard race (review round 3):** `register()` re-checks the epoch
+  AFTER the response body parse, so a `stop()` landing during that await can
+  no longer resurrect state (un-stop the instance, refill the gateway peer
+  overlay after `stop()` cleared it); `refreshPeers()` guards on the
+  register-captured epoch.
+- **Faster `/reload` and shutdown:** gateway deregistration now runs in
+  parallel across upstreams and the best-effort `DELETE /register` timeout
+  dropped 3s → 1.5s.
+- **Channel-open status line names the peer:**
+  `[a2a] gateway channel open: <gateway> as <peer-name> (firewall-safe
+  receive)` — matching the registration line's `as <name>` style, so the
+  session's registered peer name is visible without `/a2a-status`.
+- **Class-colored A2A activity (UX):** inbound lines now read as a
+  conversation, not a flat log — ⚑ **warning** for *received from peer* (like
+  a user turn, distinct color), ⚙ **dim** for *executing tools* mid-answer,
+  ✎ **success** for the *reply being sent back*, ✓ **success** / ✗ **error**
+  for completion. Outbound replies are prefixed `[A2A → <peer> · context …]`
+  so both directions are recognizable at a glance.
+- **Self-healing initial-registration 409:** if the port-derived peer name is
+  already held by a stale entry from a previous session (which the switchboard
+  cannot re-issue a caller token for), the first `POST /register` now retries
+  once with a unique name suffix so registration succeeds without manual
+  switchboard cleanup.
+
 ## 0.6.1 — 2026-08-17
 
 ### Security

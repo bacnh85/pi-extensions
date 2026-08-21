@@ -5,7 +5,7 @@
  *
  * Lifecycle: register (POST) on server start → PATCH /register heartbeats
  * once the per-peer caller_token is known (POST mints it; the token is
- * persisted so restarts skip the mint) → deregister on graceful stop. A crashed
+ * persisted per gateway + peer name so restarts skip the mint) → deregister on graceful stop. A crashed
  * session leaves a stale entry; the gateway's health prober marks it
  * unreachable, and the admin can delete it (or the next session with the same
  * name + token takes the entry over via re-registration).
@@ -53,7 +53,7 @@ export interface GatewayConfig {
   piDir?: string;
 }
 
-const DEREG_TIMEOUT_MS = 3000;
+const DEREG_TIMEOUT_MS = 1500; // best-effort DELETE; stale entries decay via gateway health probing
 
 // ---------------------------------------------------------------------------
 // Peer directory merge (pure — no I/O, no global state)
@@ -248,13 +248,13 @@ export class GatewayUpstream {
   /** Sticky false after a 405 (old switchboard without PATCH) — POST-only for
    *  the rest of the session to avoid flapping. */
   private patchSupported = true;
+  /** Set after we retry an initial 409 with a unique name, so we only retry once. */
+  private triedUnique = false;
   /** Last directory-fetch status (0 = none yet). Only a CHANGED failing
    *  status is logged — repeated identical failures stay quiet. */
   private lastDirStatus = 0;
-  /** `<piDir>/a2a_gateways/<key>.json` — null when cfg.piDir is unset. */
-  private readonly stateFile: string | null;
-  // ponytail: one state file per gateway key; concurrent same-machine sessions
-  // sharing a key overwrite each other (name-guarded at load) — per-name files if that ever matters.
+  /** Pre-0.6.2 state path, read-only migration fallback. */
+  private readonly legacyStateFile: string | null;
 
   constructor(
     private readonly cfg: GatewayConfig,
@@ -267,25 +267,44 @@ export class GatewayUpstream {
      *  reverse channel opening — surfaced like the registration message. */
     private readonly onStatus: ((msg: string) => void) | undefined = undefined,
   ) {
-    this.stateFile = cfg.piDir
+    this.legacyStateFile = cfg.piDir
       ? join(cfg.piDir, "a2a_gateways", `${this.key.replace(/[^A-Za-z0-9._-]/g, "_")}.json`)
       : null;
     this.callerToken = this.loadPersistedToken();
   }
 
-  /** Load the persisted caller_token. A foreign entry name (concurrent
-   *  session under the same key) is ignored — the gateway binds the token to
-   * the peer name, another name's token would only 401. */
+  /** State path follows the LIVE peer name: the 409 self-heal renames the
+   *  peer mid-session, and the persisted file must keep matching the name it
+   *  was minted for (loadPersistedToken name-matches) — otherwise the token
+   *  is written under the pre-rename path and never loads again. */
+  private get stateFile(): string | null {
+    if (!this.cfg.piDir) return null;
+    const stateDir = join(this.cfg.piDir, "a2a_gateways");
+    const key = this.key.replace(/[^A-Za-z0-9._-]/g, "_");
+    const name = this.name.replace(/[^A-Za-z0-9._-]/g, "_");
+    return join(stateDir, key, `${name}.json`);
+  }
+
+  /** The name actually registered with the gateway — may differ from the
+   *  configured name after a 409 self-heal rename. Callers publishing the
+   *  registration name (X-Gateway-Caller attribution, status lines) must use
+   *  this, not their own computation. */
+  get registeredName(): string {
+    return this.name;
+  }
+
+  /** Read the named state first; one matching legacy file is migrated on write. */
   private loadPersistedToken(): string | null {
-    if (!this.stateFile) return null;
-    try {
-      const j = JSON.parse(fs.readFileSync(this.stateFile, "utf8"));
-      return j?.name === this.name && typeof j.callerToken === "string" && j.callerToken
-        ? j.callerToken
-        : null;
-    } catch {
-      return null;
+    for (const file of [this.stateFile, this.legacyStateFile]) {
+      if (!file) continue;
+      try {
+        const j = JSON.parse(fs.readFileSync(file, "utf8"));
+        if (j?.name === this.name && typeof j.callerToken === "string" && j.callerToken) return j.callerToken;
+      } catch {
+        /* absent/corrupt state is a first-registration path */
+      }
     }
+    return null;
   }
 
   private persistToken(): void {
@@ -358,6 +377,25 @@ export class GatewayUpstream {
     if (!res) res = await this.send("POST", "/register", this.cfg.token, body);
     if (at !== this.epoch) return false; // stop() raced us — registration is dead
     if (!res?.ok) {
+      // Initial mint POST hit a 409: the port-derived name is already held by a
+      // stale entry from a previous session (the switchboard issues each peer a
+      // per-peer caller_token and rejects shared-token re-registration by
+      // design, so we can't take it over). Retry ONCE with a unique suffix so
+      // registration self-heals without manual switchboard cleanup.
+      if (!this.callerToken && !this.triedUnique && res?.status === 409) {
+        this.triedUnique = true;
+        // Remove the pre-rename state file: it would persist a token the
+        // gateway bound to the OLD name, and loadPersistedToken (name-match)
+        // would never load it — a dead file.
+        const preRename = this.stateFile;
+        this.cfg.name = `${this.cfg.name}-${Math.random().toString(36).slice(2, 8)}`;
+        try {
+          if (preRename) fs.rmSync(preRename, { force: true });
+        } catch {
+          /* best-effort */
+        }
+        return this.register(url);
+      }
       this.log(`[a2a-gateway:${this.label}] register failed: ${res ? res.status : "network error"}`);
       return false;
     }
@@ -371,17 +409,20 @@ export class GatewayUpstream {
     } catch {
       this.lastState = "";
     }
+    // A stop() may have landed while we awaited the body above. Bail WITHOUT
+    // resurrecting state (stop() already cleared the overlay via onPeers({})).
+    if (at !== this.epoch || this.stopped) return false;
     this.lastUrl = url;
     this.stopped = false;
-    await this.refreshPeers();
+    await this.refreshPeers(at);
     return true;
   }
 
   /** GET /.well-known/agent.json → merged overlay via onPeers. Failures keep
    *  the last known overlay (a blip between heartbeats shouldn't evaporate
    *  peers). */
-  private async refreshPeers(): Promise<void> {
-    const at = this.epoch;
+  private async refreshPeers(guardEpoch?: number): Promise<void> {
+    const at = guardEpoch ?? this.epoch;
     try {
       const res = await fetch(this.url("/.well-known/agent.json"), {
         headers: { authorization: `Bearer ${this.cfg.token}` },
@@ -428,7 +469,10 @@ export class GatewayUpstream {
     // requests — everything rides connections WE initiated.
     if (this.cfg.channel !== false) {
       this.channel = new ChannelClient(
-        { ...this.cfg, localToken: this.cfg.localToken ?? this.cfg.upstreamToken },
+        // Channel open is a management action (switchboard issue #3): once a
+        // per-peer caller_token exists it is the ONLY accepted credential —
+        // the shared token 403s. register() above has already minted/loaded it.
+        { ...this.cfg, token: this.callerToken ?? this.cfg.token, localToken: this.cfg.localToken ?? this.cfg.upstreamToken },
         this.cfg.localBase ?? url,
         this.log,
         this.epochRef,
@@ -457,7 +501,7 @@ export class GatewayUpstream {
     try {
       await fetch(this.url(`/register?name=${encodeURIComponent(this.name)}`), {
         method: "DELETE",
-        headers: { authorization: `Bearer ${this.cfg.token}` },
+        headers: { authorization: `Bearer ${this.callerToken ?? this.cfg.token}` },
         signal: AbortSignal.timeout(DEREG_TIMEOUT_MS),
       });
     } catch {
@@ -564,7 +608,10 @@ export class ChannelClient {
     })
       .then((res) => {
         if (!res.ok || !res.body) throw new Error(`channel open failed: HTTP ${res.status}`);
-        if (attempt === 0) this.status(`[a2a] gateway channel open: ${this.label} (firewall-safe receive)`);
+        if (attempt === 0)
+          this.status(
+            `[a2a] gateway channel open: ${this.label} as ${this.cfg.name || "pi"} (firewall-safe receive)`,
+          );
         const connected = attempt === 0;
         // readStream never resolves while healthy — keep it detached.
         void this.readStream(res.body!)
@@ -703,12 +750,8 @@ export class ChannelClient {
     this.epoch += 1; // kill in-flight connect/reconnect
     this.controller?.abort();
     this.controller = null;
-    // Wait (bounded) for in-flight dispatches so no response is posted
-    // after the session shut down.
-    const pending = [...this.inflight];
-    void Promise.allSettled(pending).then(() => {
-      const t = setTimeout(() => undefined, 5000);
-      t.unref?.();
-    });
+    // In-flight dispatches are NOT awaited: responses may race shutdown and
+    // post after the session ends — the gateway expires pending response ids.
+    this.inflight.clear();
   }
 }
