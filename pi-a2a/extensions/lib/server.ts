@@ -36,6 +36,7 @@ import {
   normalizeRole,
   uuid,
   type AgentCard,
+  type AgentSkill,
   type Message,
   type Task,
 } from "./protocol";
@@ -202,7 +203,18 @@ export class A2AServer {
   /** One GatewayUpstream per configured gateway (0.6.0), keyed by gateway key. */
   private gatewayUpstreams = new Map<string, import("./gateway.js").GatewayUpstream>();
   private pid = process.pid;
-  private api: { getActiveTools?: () => string[] } | undefined;
+  /** Mirrors the SDK's SlashCommandSource union so a rename upstream breaks
+   * typecheck instead of silently disabling skill discovery. */
+  private api:
+    | {
+        getActiveTools?: () => string[];
+        getCommands?: () => Array<{
+          name: string;
+          description?: string;
+          source: "extension" | "prompt" | "skill";
+        }>;
+      }
+    | undefined;
   /** Host-TUI activity hook (0.3.0) — fired on task lifecycle events. */
   private onActivity: ((a: InboundActivity) => void) | undefined;
   /** Host-TUI status hook — gateway registration result (replaces console.log). */
@@ -216,7 +228,14 @@ export class A2AServer {
     cwd: string;
     piDir: string;
     runner?: SessionRunner;
-    api?: { getActiveTools?: () => string[] };
+    api?: {
+      getActiveTools?: () => string[];
+      getCommands?: () => Array<{
+        name: string;
+        description?: string;
+        source: "extension" | "prompt" | "skill";
+      }>;
+    };
     onActivity?: (a: InboundActivity) => void;
     /** Called with human-readable status lines (gateway registration) so the
      * host can surface them as a TUI toast instead of console.log. */
@@ -260,9 +279,7 @@ export class A2AServer {
       name,
       url,
       description: "Pi coding agent — A2A-callable. Runs in the configured workspace.",
-      skills: this.cfg.server.skills.length
-        ? this.cfg.server.skills
-        : [{ id: "coding", name: "coding", description: "Read, edit, run, debug, refactor, test" }],
+      skills: this.activeSkills(stripEnrichedMetadata),
       streaming: true,
       pushNotifications: false,
       authRequired: !localhostOnly(this.cfg),
@@ -307,9 +324,7 @@ export class A2AServer {
       sessionName: this.ctx ? (this.ctx as any).getSessionName?.() : undefined,
       selfIdentity: this.cfg.selfIdentity || undefined,
       tools: this.activeTools(),
-      skills: this.cfg.server.skills.length
-        ? this.cfg.server.skills
-        : [{ id: "coding", name: "coding", description: "Read, edit, run, debug, refactor, test" }],
+      skills: this.activeSkills(),
       startedAt: this.descriptor?.startedAt ?? new Date().toISOString(),
       mtime: Date.now(),
     };
@@ -323,6 +338,34 @@ export class A2AServer {
       /* ignore */
     }
     return [];
+  }
+
+  /** Self-discovered skills from the live session: getCommands() lists every
+   * loaded skill as `skill:<name>` (source "skill") straight from the resource
+   * loader (user + project + extension-package skills). Explicit
+   * cfg.server.skills still wins (backward compat). When `anonymous` is set,
+   * discovered skills are withheld (they disclose local SKILL.md content to
+   * unauthenticated callers) — explicitly configured skills stay public, as
+   * they were pre-0.6.3 opt-in. */
+  private activeSkills(anonymous = false): AgentSkill[] {
+    if (this.cfg.server.skills.length) return this.cfg.server.skills;
+    const FALLBACK: AgentSkill[] = [
+      { id: "coding", name: "coding", description: "Read, edit, run, debug, refactor, test" },
+    ];
+    if (anonymous) return FALLBACK;
+    try {
+      const cmds = this.api?.getCommands?.() ?? [];
+      const skills = cmds
+        .filter((c) => c.source === "skill" && c.name.startsWith("skill:"))
+        .map((c) => ({
+          id: c.name.slice("skill:".length),
+          name: c.name.slice("skill:".length),
+          description: (c.description ?? "").slice(0, 1024),
+        }));
+      return skills.length ? skills : FALLBACK;
+    } catch {
+      return FALLBACK;
+    }
   }
 
   /** Re-snapshot cwd/model/tools and refresh the registry + card (call on model_select). */

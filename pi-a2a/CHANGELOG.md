@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.3 — 2026-08-21
+
+### Changed
+
+- **Agent Card skills are now self-discovered** from the live session instead
+  of requiring manual `server.skills` config. The card lists every loaded
+  skill (user `~/.pi/agent/skills`, project `.pi/skills`, and
+  extension-package skills) via the host's command registry — the same list
+  that drives `/skill:<name>` invocation. `server.skills` in config still wins
+  when set (backward compat); with no skills discoverable the card falls back
+  to the previous default `coding` skill. The local-registry descriptor and
+  gateway registration use the same live list.
+
 ## 0.6.2 — 2026-08-20
 
 ### Fixed

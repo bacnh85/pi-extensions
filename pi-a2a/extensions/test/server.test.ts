@@ -6,6 +6,7 @@ import * as path from "node:path";
 
 import { DEFAULTS } from "./helpers";
 import { A2AServer, type SessionRunner } from "../lib/server";
+import type { A2AConfig } from "../lib/config";
 import { STATE_CANCELED, STATE_COMPLETED, STATE_FAILED, STATE_INPUT_REQUIRED, STATE_REJECTED } from "../lib/protocol";
 import { authenticate } from "../lib/security";
 import { metrics } from "../lib/client";
@@ -41,7 +42,14 @@ async function freePort(): Promise<number> {
   });
 }
 
-async function startServer(opts: { cfg: typeof DEFAULTS extends infer T ? any : any; runner?: SessionRunner; piDir?: string; cwd?: string; onActivity?: (a: any) => void }): Promise<{
+async function startServer(opts: {
+  cfg: A2AConfig;
+  runner?: SessionRunner;
+  piDir?: string;
+  cwd?: string;
+  onActivity?: (a: any) => void;
+  api?: ConstructorParameters<typeof A2AServer>[0]["api"];
+}): Promise<{
   server: A2AServer;
   url: string;
   stop: () => Promise<void>;
@@ -55,6 +63,7 @@ async function startServer(opts: { cfg: typeof DEFAULTS extends infer T ? any : 
     cwd: opts.cwd ?? tmpDir(),
     piDir,
     runner: opts.runner ?? stubRunner(),
+    api: opts.api,
     onActivity: opts.onActivity,
   });
   const info = await server.start();
@@ -99,6 +108,79 @@ describe("server", () => {
       }
     });
 
+    it("self-discovers skills from the live session (getCommands) when none configured", async () => {
+      const api = {
+        getCommands: () => [
+          { name: "a2a-config", description: "panel", source: "extension" as const },
+          { name: "skill:notebooklm", description: "Google NotebookLM bridge", source: "skill" as const },
+          { name: "skill:ponytail", description: "Lazy senior dev mode", source: "skill" as const },
+        ],
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), api });
+      try {
+        const card = await (await fetch(url + ".well-known/agent-card.json")).json();
+        assert.deepEqual(
+          card.skills.map((s: any) => s.id),
+          ["notebooklm", "ponytail"],
+        );
+        assert.equal(card.skills[0].description, "Google NotebookLM bridge");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("falls back to the default coding skill when no skills are discoverable", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), api: {} });
+      try {
+        const card = await (await fetch(url + ".well-known/agent-card.json")).json();
+        assert.equal(card.skills.length, 1);
+        assert.equal(card.skills[0].id, "coding");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("explicit server.skills config wins over discovery (backward compat)", async () => {
+      const cfg = DEFAULTS();
+      cfg.server.skills = [{ id: "custom", name: "custom", description: "configured" }];
+      const api = {
+        getCommands: () => [{ name: "skill:notebooklm", description: "discovered", source: "skill" as const }],
+      };
+      const { url, stop } = await startServer({ cfg, api });
+      try {
+        const card = await (await fetch(url + ".well-known/agent-card.json")).json();
+        assert.equal(card.skills.length, 1);
+        assert.equal(card.skills[0].id, "custom");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("falls back to the coding skill when getCommands() throws", async () => {
+      const api = { getCommands: () => { throw new Error("boom"); } };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), api });
+      try {
+        const card = await (await fetch(url + ".well-known/agent-card.json")).json();
+        assert.equal(card.skills.length, 1);
+        assert.equal(card.skills[0].id, "coding");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("caps discovered skill descriptions at 1024 chars", async () => {
+      const api = {
+        getCommands: () => [{ name: "skill:big", description: "x".repeat(2000), source: "skill" as const }],
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), api });
+      try {
+        const card = await (await fetch(url + ".well-known/agent-card.json")).json();
+        assert.equal(card.skills[0].description.length, 1024);
+      } finally {
+        await stop();
+      }
+    });
+
     it("#9: strips enriched session metadata from the card for anonymous (unauthenticated) callers", async () => {
       const cfg = DEFAULTS();
       cfg.server.sharedToken = "test-shared-token";
@@ -114,6 +196,47 @@ describe("server", () => {
         })).json();
         assert.notEqual(auth.metadata, undefined);
         assert.equal(auth.metadata.extension, "https://bacnh85.dev/a2a/extensions/pi-session/v1");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("#9: anonymous card withholds discovered skills (configured skills stay public)", async () => {
+      const cfg = DEFAULTS();
+      cfg.server.sharedToken = "test-shared-token";
+      const api = {
+        getCommands: () => [{ name: "skill:notebooklm", description: "Google NotebookLM bridge", source: "skill" as const }],
+      };
+      const { url, stop } = await startServer({ cfg, api });
+      try {
+        // Anonymous → coding fallback only; local skill names are not disclosed.
+        const anon = await (await fetch(url + ".well-known/agent-card.json")).json();
+        assert.equal(anon.skills.length, 1);
+        assert.equal(anon.skills[0].id, "coding");
+        // Authenticated → full discovered list.
+        const auth = await (await fetch(url + ".well-known/agent-card.json", {
+          headers: { Authorization: "Bearer test-shared-token" },
+        })).json();
+        assert.deepEqual(auth.skills.map((s: any) => s.id), ["notebooklm"]);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("#9: anonymous card still serves explicitly configured skills", async () => {
+      const cfg = DEFAULTS();
+      cfg.server.sharedToken = "test-shared-token";
+      cfg.server.skills = [{ id: "custom", name: "custom", description: "configured" }];
+      const api = {
+        getCommands: () => [{ name: "skill:notebooklm", description: "discovered", source: "skill" as const }],
+      };
+      const { url, stop } = await startServer({ cfg, api });
+      try {
+        // Configured skills are opt-in public (pre-0.6.3 semantics) — served
+        // even to anonymous callers, ahead of the anonymous-withholding guard.
+        const anon = await (await fetch(url + ".well-known/agent-card.json")).json();
+        assert.equal(anon.skills.length, 1);
+        assert.equal(anon.skills[0].id, "custom");
       } finally {
         await stop();
       }

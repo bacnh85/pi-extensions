@@ -82,7 +82,7 @@ Edit `~/.pi/agent/settings.json` under the `a2a` key. Key reference:
 | `server.replyTimeoutSec` | `300` | Seconds to wait for the agent's reply |
 | `server.maxPingpongTurns` | `5` | Anti-loop turn cap per context (max 20) |
 | `server.rateLimitPerMin` | `60` | Requests/minute per identity |
-| `server.skills` | `[]` | Skills advertised on the Agent Card |
+| `server.skills` | `[]` | Skills advertised on the Agent Card. When empty (default), skills are **self-discovered** from the live session — no config needed |
 | `timeouts.send` | `120000` | Outbound send timeout (ms) |
 | `timeouts.async` | `30000` | Async task poll interval (ms) |
 | `timeouts.stream` | `120000` | Streaming timeout (ms) |
@@ -119,12 +119,9 @@ Example:
       "portFallback": 10,     // if port is busy (another Pi session), climb to port+1 … +10, then OS-assigned
       "host": "127.0.0.1",    // widen to 0.0.0.0 ONLY with a token set
       "workspace": "",        // defaults to the host session's cwd
-      "agentName": "pi",
-      "skills": [
-        { "id": "coding", "name": "coding",
-          "description": "Read, edit, run, debug, refactor, test",
-          "tags": ["coding"] }
-      ]
+      "agentName": "pi"
+      // "skills": [...] — optional override; when omitted the card
+      // self-discovers the session's loaded skills
     },
     "timeouts": { "send": 120000, "async": 30000, "stream": 120000 }
   }
