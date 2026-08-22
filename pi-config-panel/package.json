@@ -1,0 +1,59 @@
+{
+  "name": "@bacnh85/pi-config-panel",
+  "version": "0.1.0",
+  "description": "Shared interactive config-panel kernel for Pi extensions \u2014 arrow-key toggle/edit overlay panels (PanelRow/PanelGroup/PanelAction row model + ConfigPanelModel TUI shell) rendered via ctx.ui.custom.",
+  "type": "module",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-config-panel",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git",
+    "directory": "pi-config-panel"
+  },
+  "bugs": {
+    "url": "https://github.com/bacnh85/pi-extensions/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "config",
+    "tui",
+    "panel"
+  ],
+  "scripts": {
+    "test": "cd extensions && mocha",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "main": "./extensions/lib/panel.ts",
+  "exports": {
+    ".": "./extensions/lib/panel.ts"
+  },
+  "types": "./extensions/lib/panel.ts",
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "extensions/lib/",
+    "extensions/package.json",
+    "extensions/test/",
+    "extensions/tsconfig.json",
+    "tsconfig.json",
+    "extensions/.mocharc.yml"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-tui": "^0.84.1",
+    "@types/chai": "^4.3.20",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.19.43",
+    "chai": "^4.5.0",
+    "mocha": "^11.8.0",
+    "tsx": "^4.22.4"
+  }
+}
