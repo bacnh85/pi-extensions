@@ -4,9 +4,9 @@
   instead of the misleading aggregate windows (R:100%/5H W:0%/2D). Credit-based
   upstreams report "Unavailable" session/weekly in the usage text; pi-sub now
   recognizes that shape and fetches `credits_usd` from the management usage
-  API. Needs `ROUTER_MGMT_TOKEN` (an `oma_` CLI token or manage-scope key) in
-  env / `~/.pi/agent/.env.local`; without it, the footer degrades to the clean
-  endpoint display (no aggregate leak).
+  API — grant the router key the `manage` scope in the OmniRoute dashboard
+  (done), or set `ROUTER_MGMT_TOKEN`. Without it, the footer degrades to the
+  clean endpoint display (no aggregate leak).
 - The plain-retry fallback (drop `?provider=`) now fires only on "No cached
   usage data" (wrong/unknown slug), not on "Unavailable" windows.
 - pi-sub now reads `.env.local`/`.env` (cwd then `~/.pi/agent`) for its own

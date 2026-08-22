@@ -362,11 +362,13 @@ function routerOrigin(baseUrl: string): string {
   return baseUrl.replace(/\/v1\/?$/, "");
 }
 
-/** OmniRoute management token (oma_ CLI token or manage-scope key) from env —
- *  unlocks /api/usage/<connectionId> which carries the raw USD balance for
- *  credit-based upstreams (deepseek) that the key-authable endpoints strip. */
-function readRouterMgmtToken(): string | undefined {
-  return process.env.ROUTER_MGMT_TOKEN || process.env.OMNIROUTE_MGMT_TOKEN || undefined;
+/** OmniRoute management credential (manage-scope key or oma_ CLI token) from
+ *  env — optional override. The router key itself works when it holds the
+ *  `manage` scope (API Keys dashboard), which unlocks
+ *  /api/usage/<connectionId> carrying the raw USD balance for credit-based
+ *  upstreams (deepseek) that the key-authable endpoints normalize away. */
+function readRouterMgmtToken(apiKey: string | undefined): string | undefined {
+  return process.env.ROUTER_MGMT_TOKEN || process.env.OMNIROUTE_MGMT_TOKEN || apiKey;
 }
 
 /** Parse OmniRoute's `/api/usage/om-usage` plain-text report into windows.
@@ -667,15 +669,15 @@ interface RouterCredits {
 
 /** Fetch the raw USD balance for credit-based upstreams (deepseek: `credits_usd`)
  *  via OmniRoute's management usage API. Only called when the key-authable
- *  om-usage text reports no usable windows — the API-key surface normalizes
- *  credits to meaningless percentages, so this needs ROUTER_MGMT_TOKEN.
- *  Uses connection discovery from /api/v1/me/status (key-authable) +
- *  /api/usage/<id> (management token). */
+ *  om-usage text reports no usable windows — that surface normalizes credits
+ *  to meaningless percentages. Needs the router key to hold the `manage`
+ *  scope (or ROUTER_MGMT_TOKEN as override). Connection discovery comes from
+ *  /api/v1/me/status (key-authable); the balance from /api/usage/<id>. */
 async function fetchRouterCredits(provider: string | undefined, w: ReturnType<typeof parseOmniUsageText>): Promise<RouterCredits | undefined> {
   if (!provider || w.session || w.providerWeekly) return undefined;
   const cfg = readRouterConfig();
   const apiKey = readRouterApiKey();
-  const mgmtToken = readRouterMgmtToken();
+  const mgmtToken = readRouterMgmtToken(apiKey);
   if (!cfg || !apiKey || !mgmtToken) return undefined;
   const origin = routerOrigin(cfg.baseUrl);
   try {
