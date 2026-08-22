@@ -4,6 +4,28 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+/** Pi config dirs + .env.local/.env discovery (pi-munin convention, stdlib parse). */
+function loadEnvFiles(): void {
+  const dirs = process.env.PI_CODING_AGENT_DIR
+    ? [process.env.PI_CODING_AGENT_DIR]
+    : [path.join(os.homedir(), ".pi", "agent"), path.join(os.homedir(), ".pi", "agents")];
+  const candidates = [path.resolve(process.cwd(), ".env.local"), path.resolve(process.cwd(), ".env")]
+    .concat(dirs.flatMap((d) => [path.join(d, ".env.local"), path.join(d, ".env")]));
+  for (const file of candidates) {
+    try {
+      const text = fs.readFileSync(file, "utf8");
+      for (const line of text.split(/\r?\n/)) {
+        const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+        if (!m) continue;
+        let v = m[2].trim();
+        if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+        if (process.env[m[1]] === undefined) process.env[m[1]] = v;
+      }
+    } catch { /* optional file */ }
+  }
+}
+loadEnvFiles();
+
 const STATUS_KEY = "pi-sub";
 const MESSAGE_TYPE = "pi-sub-status";
 const USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
@@ -340,6 +362,13 @@ function routerOrigin(baseUrl: string): string {
   return baseUrl.replace(/\/v1\/?$/, "");
 }
 
+/** OmniRoute management token (oma_ CLI token or manage-scope key) from env —
+ *  unlocks /api/usage/<connectionId> which carries the raw USD balance for
+ *  credit-based upstreams (deepseek) that the key-authable endpoints strip. */
+function readRouterMgmtToken(): string | undefined {
+  return process.env.ROUTER_MGMT_TOKEN || process.env.OMNIROUTE_MGMT_TOKEN || undefined;
+}
+
 /** Parse OmniRoute's `/api/usage/om-usage` plain-text report into windows.
  *  Sections: "Personal quota" (per-key USD budgets: Daily/Weekly) and
  *  "Provider quota" (connection session/weekly). Lines: `<Label>`,
@@ -420,7 +449,7 @@ if (process.env.PI_SUB_SELF_CHECK === "1") {
   assert(p.personalWeekly?.remaining === 90, "personal weekly 90");
   assert(p.session?.remaining === 47, "session 47");
   assert(p.providerWeekly?.remaining === 28, "provider weekly 28");
-  assert(p.personalDaily?.resetLabel?.includes("15h"), "daily reset label");
+  assert(p.personalDaily?.resetLabel?.includes("15h") === true, "daily reset label");
   const disabled = parseOmniUsageText("Usage command is disabled for this API key.");
   assert(Object.keys(disabled).length === 0, "disabled text parses empty");
   // Live-verified: provider without cached data → no windows (endpoint fallback).
@@ -432,7 +461,7 @@ if (process.env.PI_SUB_SELF_CHECK === "1") {
   );
   assert(live.session?.remaining === 90, "session 90");
   assert(live.providerWeekly?.remaining === 0, "weekly 0");
-  assert(live.session?.resetLabel?.includes("1h 59m"), "session reset");
+  assert(live.session?.resetLabel?.includes("1h 59m") === true, "session reset");
   // Live-verified 2026-08-22: glm-cn scoped quota — Session 99%, Weekly
   // "Unavailable" (skipped, so W stays absent like the direct Z.ai footer).
   const glmCn = parseOmniUsageText(
@@ -553,9 +582,11 @@ async function fetchRouterUsage(signal?: AbortSignal, provider?: string): Promis
         let text = await response.text();
         if (text && !text.includes("disabled")) {
           let w = parseOmniUsageText(text);
-          // Provider-scoped call but no cached quota for that upstream — retry
-          // without ?provider= so the report shows the best/all snapshot.
-          if (provider && !w.session && !w.providerWeekly) {
+          // "No cached usage data" = unknown/wrong slug — retry without
+          // ?provider= for the best/all snapshot. "Unavailable" windows mean a
+          // known credit-based upstream (deepseek) — keep them empty so the
+          // USD-balance path below takes over instead of showing the aggregate.
+          if (provider && !w.session && !w.providerWeekly && text.includes("No cached usage data")) {
             const plain = await fetch(url.replace(/\?provider=.*$/, ""), {
               headers: { Accept: "text/plain", Authorization: `Bearer ${apiKey}` },
               signal: combined,
@@ -567,6 +598,23 @@ async function fetchRouterUsage(signal?: AbortSignal, provider?: string): Promis
                 text = plainText;
               }
             }
+          }
+          // Credit-based upstreams (deepseek): the usage text prints "Unavailable"
+          // windows — pull the real USD balance from the management API instead.
+          const credits = await fetchRouterCredits(provider, w);
+          if (credits) {
+            const account: SubscriptionAccountSnapshot = {
+              ...baseAccount,
+              plan: `Router · ${provider}`,
+              monthlyCredits: credits.balanceUsd,
+              usageBreakdown: credits.breakdown,
+            };
+            return {
+              providerDisplayName: "Router",
+              accounts: [account],
+              activeAccount: account,
+              fetchedAt: Date.now(),
+            };
           }
           // personalDaily = per-key budget (nearest reset → R slot),
           // provider weekly/session = upstream quota (W slot). Fall back sensibly.
@@ -610,6 +658,56 @@ async function fetchRouterUsage(signal?: AbortSignal, provider?: string): Promis
     activeAccount: baseAccount,
     fetchedAt: now,
   };
+}
+
+interface RouterCredits {
+  balanceUsd: number;
+  breakdown: string;
+}
+
+/** Fetch the raw USD balance for credit-based upstreams (deepseek: `credits_usd`)
+ *  via OmniRoute's management usage API. Only called when the key-authable
+ *  om-usage text reports no usable windows — the API-key surface normalizes
+ *  credits to meaningless percentages, so this needs ROUTER_MGMT_TOKEN.
+ *  Uses connection discovery from /api/v1/me/status (key-authable) +
+ *  /api/usage/<id> (management token). */
+async function fetchRouterCredits(provider: string | undefined, w: ReturnType<typeof parseOmniUsageText>): Promise<RouterCredits | undefined> {
+  if (!provider || w.session || w.providerWeekly) return undefined;
+  const cfg = readRouterConfig();
+  const apiKey = readRouterApiKey();
+  const mgmtToken = readRouterMgmtToken();
+  if (!cfg || !apiKey || !mgmtToken) return undefined;
+  const origin = routerOrigin(cfg.baseUrl);
+  try {
+    const combined = AbortSignal.timeout(7_000);
+    // 1. Connection id for this upstream via the key-authable status endpoint.
+    const statusRes = await fetch(`${origin}/api/v1/me/status`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: combined,
+    });
+    if (!statusRes.ok) return undefined;
+    const status = (await statusRes.json()) as { accountQuotas?: Array<{ provider?: string; connectionId?: string }> };
+    const connectionId = status.accountQuotas?.find((q) => q.provider === provider)?.connectionId;
+    if (!connectionId) return undefined;
+    // 2. Raw usage (management token) — quotas.credits_usd.remaining is the USD balance.
+    const usageRes = await fetch(`${origin}/api/usage/${connectionId}`, {
+      headers: { Authorization: `Bearer ${mgmtToken}` },
+      signal: combined,
+    });
+    if (!usageRes.ok) return undefined;
+    const usage = (await usageRes.json()) as { quotas?: Record<string, { remaining?: number }> };
+    const credits = usage.quotas?.credits_usd ?? usage.quotas?.credits;
+    const remaining = credits?.remaining;
+    if (typeof remaining !== "number" || !Number.isFinite(remaining)) return undefined;
+    const cny = usage.quotas?.credits_cny?.remaining;
+    return {
+      balanceUsd: remaining,
+      breakdown: `🪙 Balance (USD) $${remaining.toFixed(2)}` +
+        (typeof cny === "number" ? ` · ¥${cny.toFixed(2)} CNY` : ""),
+    };
+  } catch {
+    return undefined; // no mgmt token / upstream down — fall back to endpoint display
+  }
 }
 
 // Command Code's /alpha/billing/credits endpoint (auth: same Provider API key
