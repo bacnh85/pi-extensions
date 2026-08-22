@@ -392,12 +392,31 @@ if (process.env.PI_SUB_SELF_CHECK === "1") {
   const p = parseOmniUsageText(sample);
   const assert = (cond: boolean, msg: string) => { if (!cond) throw new Error("pi-sub self-check: " + msg); };
   assert(p.personalDaily?.remaining === 80, "personal daily 80");
+  // routerUpstreamPrefix: provider first segment, aliases + generic filtered
+  const rp = (id: string) => routerUpstreamPrefix({ id });
+  assert(rp("command-code/deepseek/deepseek-v4-flash") === "command-code", "prefix command-code");
+  assert(rp("cmd/deepseek/deepseek-v4-flash") === "command-code", "alias cmd → command-code");
+  assert(rp("oc/gpt-5") === "opencode-go", "alias oc → opencode-go");
+  assert(rp("zai-coding/glm-5.2") === "zai-coding", "prefix zai-coding");
+  assert(rp("auto/best") === undefined, "generic auto filtered");
+  assert(rp("openrouter/gpt-5") === undefined, "generic openrouter filtered");
+  assert(rp("nvidia/gpt-5") === undefined, "generic nvidia filtered");
   assert(p.personalWeekly?.remaining === 90, "personal weekly 90");
   assert(p.session?.remaining === 47, "session 47");
   assert(p.providerWeekly?.remaining === 28, "provider weekly 28");
   assert(p.personalDaily?.resetLabel?.includes("15h"), "daily reset label");
   const disabled = parseOmniUsageText("Usage command is disabled for this API key.");
   assert(Object.keys(disabled).length === 0, "disabled text parses empty");
+  // Live-verified: provider without cached data → no windows (endpoint fallback).
+  const noCache = parseOmniUsageText("Provider quota\nNo cached usage data available.");
+  assert(Object.keys(noCache).length === 0, "no-cached-data parses empty");
+  // Live-verified: opencode-go quota via ?provider=opencode-go.
+  const live = parseOmniUsageText(
+    "Provider quota\nSession\n90% left\n⏱ reset in 1h 59m\n\nWeekly\n0% left\n⏱ reset in 1d 20h 26m"
+  );
+  assert(live.session?.remaining === 90, "session 90");
+  assert(live.providerWeekly?.remaining === 0, "weekly 0");
+  assert(live.session?.resetLabel?.includes("1h 59m"), "session reset");
 }
 
 async function fetchUsageFromPiAuth(entry: PiAuthEntry, signal?: AbortSignal): Promise<UsageApiSnapshot | undefined> {
@@ -471,7 +490,7 @@ async function fetchOpenCodeGoUsage(_signal?: AbortSignal): Promise<Subscription
   }
 }
 
-async function fetchRouterUsage(signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> {
+async function fetchRouterUsage(signal?: AbortSignal, provider?: string): Promise<SubscriptionUsageSnapshot> {
   const cfg = readRouterConfig();
   const now = Date.now();
   if (!cfg) {
@@ -491,29 +510,50 @@ async function fetchRouterUsage(signal?: AbortSignal): Promise<SubscriptionUsage
   };
 
   // OmniRoute exposes per-key usage at GET <origin>/api/usage/om-usage
-  // (Bearer = the router API key). The report is plain text: Personal quota
-  // (Daily/Weekly USB budgets) + Provider quota (Session/Weekly connections).
+  // (Bearer = the router API key). `?provider=` selects that upstream's quota
+  // (e.g. command-code/deepseek/deepseek-v4-flash → provider=command-code);
+  // without it the report shows the best/all snapshot. Plain text: Personal
+  // quota (Daily/Weekly USD budgets) + Provider quota (Session/Weekly).
   // Non-OmniRoute routers 404 here — fall back to endpoint-only display.
   if (apiKey) {
     try {
       const timeoutSignal = AbortSignal.timeout(7_000);
       const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-      const response = await fetch(`${routerOrigin(cfg.baseUrl)}/api/usage/om-usage`, {
+      const url = `${routerOrigin(cfg.baseUrl)}/api/usage/om-usage` +
+        (provider ? `?provider=${encodeURIComponent(provider)}` : "");
+      const response = await fetch(url, {
         headers: { Accept: "text/plain", Authorization: `Bearer ${apiKey}` },
         signal: combined,
       });
       if (response.ok) {
-        const text = await response.text();
+        let text = await response.text();
         if (text && !text.includes("disabled")) {
-          const w = parseOmniUsageText(text);
+          let w = parseOmniUsageText(text);
+          // Provider-scoped call but no cached quota for that upstream — retry
+          // without ?provider= so the report shows the best/all snapshot.
+          if (provider && !w.session && !w.providerWeekly) {
+            const plain = await fetch(url.replace(/\?provider=.*$/, ""), {
+              headers: { Accept: "text/plain", Authorization: `Bearer ${apiKey}` },
+              signal: combined,
+            });
+            if (plain.ok) {
+              const plainText = await plain.text();
+              if (plainText && !plainText.includes("disabled")) {
+                w = parseOmniUsageText(plainText);
+                text = plainText;
+              }
+            }
+          }
           // personalDaily = per-key budget (nearest reset → R slot),
-          // provider weekly = connection quota (W slot). Fall back sensibly.
+          // provider weekly/session = upstream quota (W slot). Fall back sensibly.
           const account: SubscriptionAccountSnapshot = {
             ...baseAccount,
-            plan: "Router usage",
+            plan: provider ? `Router · ${provider}` : "Router usage",
             fiveHour: w.personalDaily ?? w.session,
             weekly: w.providerWeekly ?? w.personalWeekly,
-            usageBreakdown: text.length > 120 ? text : undefined,
+            // breakdown keeps only the provider-quota section — the raw text can
+            // include personal USD budget lines (privacy) and is noisy.
+            usageBreakdown: providerQuotaSection(text),
           };
           return {
             providerDisplayName: "Router",
@@ -524,10 +564,11 @@ async function fetchRouterUsage(signal?: AbortSignal): Promise<SubscriptionUsage
         }
         // Usage command exists but is disabled for this key — keep the footer
         // clean (endpoint display) and surface the hint in /sub detail only.
+        const keyFp = apiKey ? `${apiKey.slice(0, 4)}…${apiKey.slice(-4)}` : "?";
         const hintAccount: SubscriptionAccountSnapshot = {
           ...baseAccount,
-          usageBreakdown: "OmniRoute usage command is disabled for this API key — " +
-            "enable it in the dashboard (API Keys → this key → usage command).",
+          usageBreakdown: `OmniRoute usage command is disabled for the router key ${keyFp} — ` +
+            `enable it in the dashboard (API Keys → the key ending ${apiKey?.slice(-4)} → usage command).`,
         };
         return {
           providerDisplayName: "Router",
@@ -831,10 +872,52 @@ function supportedAdapter(model: ModelLike): SubscriptionProviderAdapter | undef
   if (isOpenCodeGoModel(model)) return { id: OPC_PROVIDER, displayName: "OpenCode Go", fetchUsage: fetchOpenCodeGoUsage };
   if (isZaiModel(model)) return { id: ZAI_PROVIDER, displayName: "Z.ai", ...zaiUsageAdapter(ZAI_PROVIDER, ZAI_USAGE_URL, "Z.ai") };
   if (isZaiCodingCnModel(model)) return { id: ZAI_CODING_CN_PROVIDER, displayName: "Z.ai (CN)", ...zaiUsageAdapter(ZAI_CODING_CN_PROVIDER, ZAI_CODING_CN_USAGE_URL, "Z.ai (CN)") };
-  if (isRouterModel(model)) return { id: ROUTER_PROVIDER, displayName: "Router", fetchUsage: fetchRouterUsage };
+  if (isRouterModel(model)) {
+    const prefix = routerUpstreamPrefix(model);
+    return {
+      // Prefix in the id makes adapterChanged fire when switching upstreams
+      // (e.g. opencode-go → command-code), so the in-flight fetch from the
+      // previous model is discarded via the refreshGeneration guard.
+      id: prefix ? `${ROUTER_PROVIDER}:${prefix}` : ROUTER_PROVIDER,
+      displayName: "Router",
+      // ponytail: capture the upstream provider prefix so fetchRouterUsage can
+      // request that provider's quota from the OmniRoute usage API.
+      fetchUsage: (signal) => fetchRouterUsage(signal, prefix),
+    };
+  }
   if (isRouterModel(model, LEGACY_9ROUTER_PROVIDER)) return { id: LEGACY_9ROUTER_PROVIDER, displayName: "9router (legacy)", fetchUsage: fetchRouterUsage };
   if (isCommandCodeModel(model)) return { id: COMMAND_CODE_PROVIDER, displayName: "Command Code", fetchUsage: fetchCommandCodeUsage };
   return undefined;
+}
+
+/** Strip everything up to and including the "Provider quota" section header
+ *  so /sub breakdown never shows personal USD budget lines. */
+function providerQuotaSection(text: string): string | undefined {
+  const idx = text.indexOf("Provider quota");
+  if (idx < 0) return undefined;
+  const section = text.slice(idx);
+  return section.trim().length > 0 ? section : undefined;
+}
+
+/** First path segment of a router model id = the upstream provider OmniRoute
+ *  routes to (e.g. `command-code/deepseek/deepseek-v4-flash` → `command-code`).
+ *  `router/provider/model` in pi flattens to id `provider/model`, so the prefix
+ *  is the first segment. Aliases normalize to the canonical provider id
+ *  (`cmd` → `command-code`); generic router aliases carry no provider info —
+ *  return undefined so the usage API picks the best snapshot. */
+function routerUpstreamPrefix(model: ModelLike): string | undefined {
+  const id = model?.id ?? "";
+  const first = id.split("/")[0]?.toLowerCase();
+  if (!first) return undefined;
+  // Alias normalization: OmniRoute exposes the same upstream under several ids.
+  if (first === "cmd") return "command-code";
+  if (first === "oc") return "opencode-go";
+  if (first === "ds") return "deepseek";
+  if (first === "glmcn" || first === "glm-cn") return "zai-coding-cn";
+  // Generic router aliases / upstreams without cached quota data — no provider
+  // selection; the usage API returns the best snapshot instead.
+  const generic = new Set(["auto", "aug", "no-think", "tllm", "combo", "openrouter", "nvidia", "felo", "pepper", "mcode", "ddgw", "veoaifree-web", "veo-free"]);
+  return generic.has(first) ? undefined : first;
 }
 
 function formatRemaining(window: UsageWindow | undefined): string {

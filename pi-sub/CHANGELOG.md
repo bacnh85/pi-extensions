@@ -1,3 +1,23 @@
+## 0.1.28 (2026-08-22)
+
+- Router usage is now **provider-scoped**: the active router model's upstream
+  prefix (e.g. `command-code` from `router/command-code/deepseek/deepseek-v4-flash`)
+  is passed as `?provider=` to the OmniRoute usage API, so the footer shows that
+  upstream's quota (e.g. opencode-go session/weekly windows).
+- Aliases normalized before the API call: `cmd`→`command-code`, `oc`→`opencode-go`,
+  `ds`→`deepseek`, `glmcn`/`glm-cn`→`zai-coding-cn`; generic router aliases
+  (auto/aug/no-think/tllm/combo/openrouter/nvidia/…) are filtered out.
+- When the selected upstream has no cached quota ("No cached usage data"),
+  the adapter retries without `?provider=` so the footer still shows the best
+  snapshot instead of empty windows.
+- Switching between router models with different upstreams now refreshes
+  immediately (adapter id includes the prefix, so stale in-flight results are
+  discarded via the generation guard).
+- `/sub` breakdown shows only the Provider quota section — personal USD budget
+  lines are no longer surfaced.
+- Self-check extended (17 assertions) and now exercises the real
+  `routerUpstreamPrefix` (aliases + generic filter).
+
 ## 0.1.27 (2026-08-22)
 
 - Router adapter now fetches real usage from OmniRoute instances: GET
