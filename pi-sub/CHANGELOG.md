@@ -1,3 +1,15 @@
+## 0.1.27 (2026-08-22)
+
+- Router adapter now fetches real usage from OmniRoute instances: GET
+  `<origin>/api/usage/om-usage` (Bearer = router API key from auth.json or
+  ROUTER_API_KEY env). The plain-text report (Personal quota Daily/Weekly +
+  Provider quota Session/Weekly) is parsed into the footer R:/W: windows.
+  Non-OmniRoute routers 404 → fall back to the endpoint-only display.
+  When the per-key usage command is disabled, the footer shows a hint to
+  enable it in the OmniRoute dashboard (API Keys → the key).
+- New pure parser `parseOmniUsageText` with an env-gated self-check
+  (PI_SUB_SELF_CHECK=1) — pi-sub stays pack-only for CI.
+
 ## 0.1.26 (2026-08-21)
 
 - Router adapter: reads `router.baseUrl` from `~/.pi/agent/settings.json`

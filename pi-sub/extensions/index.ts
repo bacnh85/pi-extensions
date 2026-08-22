@@ -327,6 +327,79 @@ function readRouterConfig(): { baseUrl: string } | null {
   }
 }
 
+/** Router API key: auth.json `router` credential (via /login), then env. */
+function readRouterApiKey(): string | undefined {
+  const stored = readStoredCredential(ROUTER_PROVIDER, piAuthPath()) as PiAuthEntry | undefined;
+  if (stored?.key) return stored.key;
+  return process.env.ROUTER_API_KEY || process.env.NINE_ROUTER_API_KEY || undefined;
+}
+
+/** Strip a `/v1` suffix so management routes (under the origin) can be
+ *  derived from the OpenAI-compatible baseUrl. */
+function routerOrigin(baseUrl: string): string {
+  return baseUrl.replace(/\/v1\/?$/, "");
+}
+
+/** Parse OmniRoute's `/api/usage/om-usage` plain-text report into windows.
+ *  Sections: "Personal quota" (per-key USD budgets: Daily/Weekly) and
+ *  "Provider quota" (connection session/weekly). Lines: `<Label>`,
+ *  `NN% left`, `⏱ reset in <countdown>`. Robust to missing/unknown blocks. */
+export function parseOmniUsageText(text: string): {
+  personalDaily?: UsageWindow;
+  personalWeekly?: UsageWindow;
+  session?: UsageWindow;
+  providerWeekly?: UsageWindow;
+} {
+  const out: {
+    personalDaily?: UsageWindow;
+    personalWeekly?: UsageWindow;
+    session?: UsageWindow;
+    providerWeekly?: UsageWindow;
+  } = {};
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  let inPersonal = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.toLowerCase() === "personal quota") { inPersonal = true; continue; }
+    if (line.toLowerCase() === "provider quota") { inPersonal = false; continue; }
+    const usedMatch = line.match(/^(\d+)%\s*left$/);
+    if (!usedMatch) continue;
+    const label = (lines[i - 1] ?? "").toLowerCase();
+    const resetMatch = lines[i + 1]?.match(/reset in (.+)$/);
+    const remaining = Number(usedMatch[1]);
+    if (remaining < 0 || remaining > 100) continue;
+    const window: UsageWindow = { remaining };
+    if (resetMatch) window.resetLabel = `⏱ ${resetMatch[1].trim()}`;
+    if (inPersonal) {
+      if (label.includes("daily")) out.personalDaily = window;
+      else if (label.includes("weekly")) out.personalWeekly = window;
+    } else {
+      if (label.includes("session")) out.session = window;
+      else if (label.includes("weekly")) out.providerWeekly = window;
+    }
+  }
+  return out;
+}
+
+// ponytail: runnable self-check (pi-sub has no test runner — pack gate only)
+if (process.env.PI_SUB_SELF_CHECK === "1") {
+  const sample = [
+    "Personal quota", "Daily", "80% left", "⏱ reset in 15h 0m", "",
+    "Weekly", "90% left", "⏱ reset in 7d 0h 0m", "",
+    "Provider quota", "Session", "47% left", "⏱ reset in 9m", "",
+    "Weekly", "28% left", "⏱ reset in 1d 0h 0m",
+  ].join("\n");
+  const p = parseOmniUsageText(sample);
+  const assert = (cond: boolean, msg: string) => { if (!cond) throw new Error("pi-sub self-check: " + msg); };
+  assert(p.personalDaily?.remaining === 80, "personal daily 80");
+  assert(p.personalWeekly?.remaining === 90, "personal weekly 90");
+  assert(p.session?.remaining === 47, "session 47");
+  assert(p.providerWeekly?.remaining === 28, "provider weekly 28");
+  assert(p.personalDaily?.resetLabel?.includes("15h"), "daily reset label");
+  const disabled = parseOmniUsageText("Usage command is disabled for this API key.");
+  assert(Object.keys(disabled).length === 0, "disabled text parses empty");
+}
+
 async function fetchUsageFromPiAuth(entry: PiAuthEntry, signal?: AbortSignal): Promise<UsageApiSnapshot | undefined> {
   const accountId = getCodexAccountId(entry) ?? entry.accountId;
   if (!accountId) throw new Error("Missing openai-codex OAuth entry in Pi auth");
@@ -398,7 +471,7 @@ async function fetchOpenCodeGoUsage(_signal?: AbortSignal): Promise<Subscription
   }
 }
 
-async function fetchRouterUsage(_signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> {
+async function fetchRouterUsage(signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> {
   const cfg = readRouterConfig();
   const now = Date.now();
   if (!cfg) {
@@ -409,16 +482,67 @@ async function fetchRouterUsage(_signal?: AbortSignal): Promise<SubscriptionUsag
       error: "router not configured — set router.baseUrl in ~/.pi/agent/settings.json",
     };
   }
-  const account: SubscriptionAccountSnapshot = {
+  const apiKey = readRouterApiKey();
+  const baseAccount: SubscriptionAccountSnapshot = {
     id: cfg.baseUrl,
     isActive: true,
     accountLabel: cfg.baseUrl.replace(/^https?:\/\//, ""),
     lastActivity: "Now",
   };
+
+  // OmniRoute exposes per-key usage at GET <origin>/api/usage/om-usage
+  // (Bearer = the router API key). The report is plain text: Personal quota
+  // (Daily/Weekly USB budgets) + Provider quota (Session/Weekly connections).
+  // Non-OmniRoute routers 404 here — fall back to endpoint-only display.
+  if (apiKey) {
+    try {
+      const timeoutSignal = AbortSignal.timeout(7_000);
+      const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+      const response = await fetch(`${routerOrigin(cfg.baseUrl)}/api/usage/om-usage`, {
+        headers: { Accept: "text/plain", Authorization: `Bearer ${apiKey}` },
+        signal: combined,
+      });
+      if (response.ok) {
+        const text = await response.text();
+        if (text && !text.includes("disabled")) {
+          const w = parseOmniUsageText(text);
+          // personalDaily = per-key budget (nearest reset → R slot),
+          // provider weekly = connection quota (W slot). Fall back sensibly.
+          const account: SubscriptionAccountSnapshot = {
+            ...baseAccount,
+            plan: "Router usage",
+            fiveHour: w.personalDaily ?? w.session,
+            weekly: w.providerWeekly ?? w.personalWeekly,
+            usageBreakdown: text.length > 120 ? text : undefined,
+          };
+          return {
+            providerDisplayName: "Router",
+            accounts: [account],
+            activeAccount: account,
+            fetchedAt: Date.now(),
+          };
+        }
+        // Usage command exists but is disabled for this key — keep the footer
+        // clean (endpoint display) and surface the hint in /sub detail only.
+        const hintAccount: SubscriptionAccountSnapshot = {
+          ...baseAccount,
+          usageBreakdown: "OmniRoute usage command is disabled for this API key — " +
+            "enable it in the dashboard (API Keys → this key → usage command).",
+        };
+        return {
+          providerDisplayName: "Router",
+          accounts: [hintAccount],
+          activeAccount: hintAccount,
+          fetchedAt: Date.now(),
+        };
+      }
+    } catch { /* non-OmniRoute or transient — fall through to endpoint display */ }
+  }
+
   return {
     providerDisplayName: "Router",
-    accounts: [account],
-    activeAccount: account,
+    accounts: [baseAccount],
+    activeAccount: baseAccount,
     fetchedAt: now,
   };
 }

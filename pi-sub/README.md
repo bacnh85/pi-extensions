@@ -53,7 +53,22 @@ The built-in `zai-coding-cn` provider targets the domestic BigModel endpoint (`o
 
 ### Router (pi-router — formerly 9router)
 
-The router (9router, omniroute, …) is a proxy with no upstream usage API, so the footer shows the configured endpoint and last response speed. The endpoint URL is read from `~/.pi/agent/settings.json` (`router.baseUrl`) with `ROUTER_BASE_URL` env override:
+For **OmniRoute** instances the footer shows real usage: `GET <origin>/api/usage/om-usage`
+with the router API key (auth.json `router` credential from `/login router`, or
+`ROUTER_API_KEY` env) returns the per-key report — Personal quota (daily/weekly
+USD budgets) and Provider quota (session/weekly connection windows) — rendered
+as `R:`/`W:` remaining-percent windows:
+
+```text
+Router usage R:80% W:28% 145 tok/s
+```
+
+Requirements:
+- The router instance must be OmniRoute (other routers 404 → endpoint-only fallback).
+- The API key must have the **usage command enabled** in the OmniRoute dashboard
+  (API Keys → the key → enable "usage command"); the footer shows a hint when it's off.
+
+The endpoint URL is read from `~/.pi/agent/settings.json` (`router.baseUrl`), env `ROUTER_BASE_URL` overrides:
 
 ```text
 Router (172.30.55.22:20128) 145 tok/s
