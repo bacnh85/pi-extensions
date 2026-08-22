@@ -1,4 +1,4 @@
-## 0.1.28 (2026-08-22)
+## 0.1.30 (2026-08-22)
 
 - Router usage is now **provider-scoped**: the active router model's upstream
   prefix (e.g. `command-code` from `router/command-code/deepseek/deepseek-v4-flash`)
