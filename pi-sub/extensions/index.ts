@@ -344,6 +344,15 @@ function routerOrigin(baseUrl: string): string {
  *  Sections: "Personal quota" (per-key USD budgets: Daily/Weekly) and
  *  "Provider quota" (connection session/weekly). Lines: `<Label>`,
  *  `NN% left`, `⏱ reset in <countdown>`. Robust to missing/unknown blocks. */
+/** Convert OmniRoute's "reset in 2h 55m" countdown into the compact footer
+ *  label (e.g. 3H), matching the direct Z.ai display (R:99%/4H). */
+function countdownToLabel(text: string): string | undefined {
+  const m = text.match(/(?:(\d+)\s*d)?\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?/);
+  if (!m || (!m[1] && !m[2] && !m[3])) return undefined;
+  const secs = Number(m[1] || 0) * 86400 + Number(m[2] || 0) * 3600 + Number(m[3] || 0) * 60;
+  return secs ? formatRemainingTime(Date.now() / 1000 + secs) : undefined;
+}
+
 export function parseOmniUsageText(text: string): {
   personalDaily?: UsageWindow;
   personalWeekly?: UsageWindow;
@@ -369,7 +378,10 @@ export function parseOmniUsageText(text: string): {
     const remaining = Number(usedMatch[1]);
     if (remaining < 0 || remaining > 100) continue;
     const window: UsageWindow = { remaining };
-    if (resetMatch) window.resetLabel = `⏱ ${resetMatch[1].trim()}`;
+      if (resetMatch) {
+        window.resetLabel = `⏱ ${resetMatch[1].trim()}`;
+        window.remainingLabel = countdownToLabel(resetMatch[1]);
+      }
     if (inPersonal) {
       if (label.includes("daily")) out.personalDaily = window;
       else if (label.includes("weekly")) out.personalWeekly = window;
@@ -397,6 +409,10 @@ if (process.env.PI_SUB_SELF_CHECK === "1") {
   assert(rp("command-code/deepseek/deepseek-v4-flash") === "command-code", "prefix command-code");
   assert(rp("cmd/deepseek/deepseek-v4-flash") === "command-code", "alias cmd → command-code");
   assert(rp("oc/gpt-5") === "opencode-go", "alias oc → opencode-go");
+  // OmniRoute's connection slug is `glm-cn` (live-verified; zai-coding-cn is a
+  // Pi provider id, NOT an OmniRoute slug — wrong slug = no cached data).
+  assert(rp("glm-cn/glm-5.2") === "glm-cn", "glm-cn passes through");
+  assert(rp("glmcn/glm-5.2") === "glm-cn", "alias glmcn → glm-cn");
   assert(rp("zai-coding/glm-5.2") === "zai-coding", "prefix zai-coding");
   assert(rp("auto/best") === undefined, "generic auto filtered");
   assert(rp("openrouter/gpt-5") === undefined, "generic openrouter filtered");
@@ -417,6 +433,14 @@ if (process.env.PI_SUB_SELF_CHECK === "1") {
   assert(live.session?.remaining === 90, "session 90");
   assert(live.providerWeekly?.remaining === 0, "weekly 0");
   assert(live.session?.resetLabel?.includes("1h 59m"), "session reset");
+  // Live-verified 2026-08-22: glm-cn scoped quota — Session 99%, Weekly
+  // "Unavailable" (skipped, so W stays absent like the direct Z.ai footer).
+  const glmCn = parseOmniUsageText(
+    "Provider quota\nSession\n99% left\n⏱ reset in 2h 55m\n\nWeekly\nUnavailable\n⏱ reset in unknown"
+  );
+  assert(glmCn.session?.remaining === 99, "glm-cn session 99");
+  assert(glmCn.session?.remainingLabel === "3H", "glm-cn reset label 3H");
+  assert(glmCn.providerWeekly === undefined, "glm-cn weekly unavailable skipped");
 }
 
 async function fetchUsageFromPiAuth(entry: PiAuthEntry, signal?: AbortSignal): Promise<UsageApiSnapshot | undefined> {
@@ -913,7 +937,7 @@ function routerUpstreamPrefix(model: ModelLike): string | undefined {
   if (first === "cmd") return "command-code";
   if (first === "oc") return "opencode-go";
   if (first === "ds") return "deepseek";
-  if (first === "glmcn" || first === "glm-cn") return "zai-coding-cn";
+  if (first === "glmcn") return "glm-cn"; // OmniRoute connection slug (not the Pi provider id zai-coding-cn)
   // Generic router aliases / upstreams without cached quota data — no provider
   // selection; the usage API returns the best snapshot instead.
   const generic = new Set(["auto", "aug", "no-think", "tllm", "combo", "openrouter", "nvidia", "felo", "pepper", "mcode", "ddgw", "veoaifree-web", "veo-free"]);

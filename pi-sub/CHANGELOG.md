@@ -1,3 +1,15 @@
+## 0.1.31 (2026-08-22)
+
+- **Fixed glm-cn quota via OmniRoute**: OmniRoute's connection slug for the
+  Z.ai (CN) upstream is `glm-cn`, not `zai-coding-cn` (a Pi provider id).
+  Wrong slug returned "No cached usage data", so the plain-retry fallback
+  showed the aggregate snapshot (e.g. R:100% W:0%) instead of the Z.ai windows.
+  Alias `glmcn` now maps to the correct slug; footer shows `R:99%/3H`-style
+  windows matching the direct Z.ai display.
+- OmniRoute "reset in 2h 55m" countdowns are now converted into compact
+  footer labels (`/3H`), and "Unavailable" windows are skipped (previously
+  `0%`-style aggregates leaked in via the fallback).
+
 ## 0.1.30 (2026-08-22)
 
 - Router usage is now **provider-scoped**: the active router model's upstream
