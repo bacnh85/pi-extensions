@@ -1,17 +1,17 @@
-import type { NineRouterConfig } from "./config.js";
+import type { RouterSettings } from "./config.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export interface NineRouterModelRaw {
+export interface RouterModelRaw {
   id: string;
   object?: string;
   owned_by?: string;
   [key: string]: unknown;
 }
 
-export interface NineRouterModelsResponse {
+export interface RouterModelsResponse {
   object: string;
-  data: NineRouterModelRaw[];
+  data: RouterModelRaw[];
 }
 
 /** Pi model shape with optional reasoning-level support. */
@@ -42,20 +42,27 @@ const FALLBACK_MAX_TOKENS = 4_096;
 // ── Public API ───────────────────────────────────────────────────────────────
 
 export async function fetchModels(
-  config: NineRouterConfig,
+  config: RouterSettings,
   signal?: AbortSignal,
-): Promise<NineRouterModelRaw[]> {
+  apiKey?: string,
+): Promise<RouterModelRaw[]> {
   const headers: Record<string, string> = { Accept: "application/json" };
-  if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
+  // RefreshModelsContext.credential (auth.json via /login) wins; env is the fallback.
+  const key = apiKey ?? process.env.ROUTER_API_KEY ?? process.env.NINE_ROUTER_API_KEY;
+  if (key) headers.Authorization = `Bearer ${key}`;
 
-  const url = `${config.baseUrl}/v1/models`;
+  // baseUrl conventionally ends in /v1 (README + provider baseUrl for chat);
+  // never double the segment — append only when missing.
+  const url = /\/v1\/?$/.test(config.baseUrl)
+    ? `${config.baseUrl.replace(/\/+$/, "")}/models`
+    : `${config.baseUrl}/v1/models`;
   const response = await fetchWithTimeout(url, { headers, signal });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`9router returned ${response.status}: ${text || response.statusText}`);
+    throw new Error(`router returned ${response.status}: ${text || response.statusText}`);
   }
 
-  const payload = (await response.json()) as NineRouterModelsResponse;
+  const payload = (await response.json()) as RouterModelsResponse;
   return payload.data ?? [];
 }
 
@@ -72,8 +79,12 @@ function detectThinkingFormat(modelId: string): string {
   // Model-family detection (matching 9router's FORMAT_LEVELS keys)
   if (id.includes("deepseek")) return "deepseek";
   if (id.includes("claude")) {
-    // Claude 4.6+ uses adaptive thinking (none, low, medium, high, max)
-    if (/\b(4\.[6789]|[5-9]\d*)(\b|\-)/.test(id) || /\b(sonnet|opus)-5\b/.test(id)) {
+    // Claude 4.6+ uses adaptive thinking (none, low, medium, high, max).
+    // Parse major[.-]minor so claude-3-5/3-7 aren't misread by the minor digit,
+    // and dash forms like claude-4-6 resolve to 4.6.
+    const v = id.match(/claude[^\d]*(\d+)(?:[-.](\d+))?/);
+    const ver = v ? Number(v[1]) + (v[2] ? Number(v[2]) / 10 : 0) : 0;
+    if (ver >= 4.6 || /\b(sonnet|opus)-5\b/.test(id)) {
       return "claude-adaptive";
     }
     return "claude-budget";
@@ -158,7 +169,7 @@ function getThinkingLevelMap(modelId: string): Record<string, string | null> {
   return FORMAT_TO_LEVEL_MAP[fmt] ?? FORMAT_TO_LEVEL_MAP["openai"];
 }
 
-export function mapModel(raw: NineRouterModelRaw, enableReasoning: boolean): PiModel {
+export function mapModel(raw: RouterModelRaw, enableReasoning: boolean): PiModel {
   const isCombo = raw.owned_by === "combo";
   const caps = raw.capabilities as
     | { contextWindow?: unknown; maxOutput?: unknown; vision?: unknown }
@@ -192,6 +203,19 @@ export function mapModel(raw: NineRouterModelRaw, enableReasoning: boolean): PiM
 function parsePositiveInt(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.floor(value);
   return undefined;
+}
+
+/** Re-map an already-mapped model with a new enableReasoning flag — used by
+ *  /router-reasoning to toggle thinking levels without re-fetching. */
+export function applyReasoning(model: PiModel, enableReasoning: boolean): PiModel {
+  return {
+    ...model,
+    reasoning: enableReasoning,
+    ...(enableReasoning
+      ? { thinkingLevelMap: getThinkingLevelMap(model.id) }
+      : { thinkingLevelMap: undefined }),
+    compat: { ...model.compat!, supportsReasoningEffort: enableReasoning },
+  };
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────

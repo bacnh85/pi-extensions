@@ -16,8 +16,11 @@ const ZAI_PROVIDER = "zai";
 const ZAI_USAGE_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
 const ZAI_CODING_CN_PROVIDER = "zai-coding-cn";
 const ZAI_CODING_CN_USAGE_URL = "https://open.bigmodel.cn/api/monitor/usage/quota/limit";
-const NINE_ROUTER_PROVIDER = "9router";
-const NINE_ROUTER_CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "9router-config.json");
+const ROUTER_PROVIDER = "router";
+const LEGACY_9ROUTER_PROVIDER = "9router";
+// pi-router (formerly pi-9router): URL lives in settings.json `router.baseUrl`
+// (env override ROUTER_BASE_URL), key in auth.json `router` credential.
+const ROUTER_SETTINGS_PATH = path.join(os.homedir(), ".pi", "agent", "settings.json");
 const COMMAND_CODE_PROVIDER = "commandcode";
 const COMMAND_CODE_USAGE_URL = "https://api.commandcode.ai/alpha/billing/credits";
 
@@ -117,8 +120,8 @@ function isZaiCodingCnModel(model: ModelLike): boolean {
   return (model?.provider?.toLowerCase() ?? "") === ZAI_CODING_CN_PROVIDER;
 }
 
-function isNineRouterModel(model: ModelLike): boolean {
-  return (model?.provider?.toLowerCase() ?? "") === NINE_ROUTER_PROVIDER;
+function isRouterModel(model: ModelLike, provider: string = ROUTER_PROVIDER): boolean {
+  return (model?.provider?.toLowerCase() ?? "") === provider;
 }
 
 function isCommandCodeModel(model: ModelLike): boolean {
@@ -309,16 +312,16 @@ async function readZaiAuth(providerId: string, label: string): Promise<{ key: st
   return { key: entry.key, account: authAccountSnapshot(label, entry) };
 }
 
-// ponytail: duplicated from pi-9router — no shared config lib, 8 lines, acceptable
-function readNineRouterConfig(): { baseUrl: string; apiKey?: string } | null {
+// ponytail: duplicated from pi-router — no shared config lib, ~12 lines, acceptable
+function readRouterConfig(): { baseUrl: string } | null {
   try {
-    const exists = (p: string) => { try { return fs.statSync(p).isFile(); } catch { return false; } };
-    if (!exists(NINE_ROUTER_CONFIG_PATH)) return null;
-    const data = JSON.parse(fs.readFileSync(NINE_ROUTER_CONFIG_PATH, "utf8")) as Record<string, unknown>;
-    const baseUrl = process.env.NINE_ROUTER_BASE_URL || (typeof data.baseUrl === "string" ? data.baseUrl : undefined);
-    const apiKey = process.env.NINE_ROUTER_API_KEY || (typeof data.apiKey === "string" ? data.apiKey : undefined);
-    if (!baseUrl || typeof baseUrl !== "string") return null;
-    return { baseUrl, apiKey };
+    let baseUrl = process.env.ROUTER_BASE_URL || process.env.NINE_ROUTER_BASE_URL;
+    if (!baseUrl && fs.statSync(ROUTER_SETTINGS_PATH).isFile()) {
+      const settings = JSON.parse(fs.readFileSync(ROUTER_SETTINGS_PATH, "utf8")) as Record<string, unknown>;
+      const router = settings.router as { baseUrl?: unknown } | undefined;
+      if (typeof router?.baseUrl === "string" && router.baseUrl) baseUrl = router.baseUrl;
+    }
+    return baseUrl ? { baseUrl } : null;
   } catch {
     return null;
   }
@@ -395,15 +398,15 @@ async function fetchOpenCodeGoUsage(_signal?: AbortSignal): Promise<Subscription
   }
 }
 
-async function fetchNineRouterUsage(_signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> {
-  const cfg = readNineRouterConfig();
+async function fetchRouterUsage(_signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> {
+  const cfg = readRouterConfig();
   const now = Date.now();
   if (!cfg) {
     return {
-      providerDisplayName: "9router",
+      providerDisplayName: "Router",
       accounts: [],
       fetchedAt: now,
-      error: "9router not configured — run /login-9router",
+      error: "router not configured — set router.baseUrl in ~/.pi/agent/settings.json",
     };
   }
   const account: SubscriptionAccountSnapshot = {
@@ -413,7 +416,7 @@ async function fetchNineRouterUsage(_signal?: AbortSignal): Promise<Subscription
     lastActivity: "Now",
   };
   return {
-    providerDisplayName: "9router",
+    providerDisplayName: "Router",
     accounts: [account],
     activeAccount: account,
     fetchedAt: now,
@@ -704,7 +707,8 @@ function supportedAdapter(model: ModelLike): SubscriptionProviderAdapter | undef
   if (isOpenCodeGoModel(model)) return { id: OPC_PROVIDER, displayName: "OpenCode Go", fetchUsage: fetchOpenCodeGoUsage };
   if (isZaiModel(model)) return { id: ZAI_PROVIDER, displayName: "Z.ai", ...zaiUsageAdapter(ZAI_PROVIDER, ZAI_USAGE_URL, "Z.ai") };
   if (isZaiCodingCnModel(model)) return { id: ZAI_CODING_CN_PROVIDER, displayName: "Z.ai (CN)", ...zaiUsageAdapter(ZAI_CODING_CN_PROVIDER, ZAI_CODING_CN_USAGE_URL, "Z.ai (CN)") };
-  if (isNineRouterModel(model)) return { id: NINE_ROUTER_PROVIDER, displayName: "9router", fetchUsage: fetchNineRouterUsage };
+  if (isRouterModel(model)) return { id: ROUTER_PROVIDER, displayName: "Router", fetchUsage: fetchRouterUsage };
+  if (isRouterModel(model, LEGACY_9ROUTER_PROVIDER)) return { id: LEGACY_9ROUTER_PROVIDER, displayName: "9router (legacy)", fetchUsage: fetchRouterUsage };
   if (isCommandCodeModel(model)) return { id: COMMAND_CODE_PROVIDER, displayName: "Command Code", fetchUsage: fetchCommandCodeUsage };
   return undefined;
 }

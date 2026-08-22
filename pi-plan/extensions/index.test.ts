@@ -2497,7 +2497,7 @@ describe("per-mode model preferences", () => {
     cleanPrefs();
     writeFileSync(prefsPath(), JSON.stringify({
       version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {},
-      planModel: "9router/glm/glm-5.2",
+      planModel: "router/glm/glm-5.2",
     }));
     const notices: string[] = [];
     const ext = createFakePi(["read"], { plan: true });
@@ -2513,14 +2513,14 @@ describe("per-mode model preferences", () => {
     assert.ok(notices.some((n) => /not loaded yet/i.test(n)), "notifies that a retry is scheduled");
   });
 
-  it("applies the deferred model when 9router:models-loaded fires", async () => {
+  it("applies the deferred model when router:models-loaded fires", async () => {
     cleanPrefs();
     writeFileSync(prefsPath(), JSON.stringify({
       version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {},
-      planModel: "9router/glm/glm-5.2",
+      planModel: "router/glm/glm-5.2",
     }));
     const ext = createFakePi(["read"], { plan: true });
-    const glmModel = { provider: "9router", id: "glm/glm-5.2" };
+    const glmModel = { provider: "router", id: "glm/glm-5.2" };
     // Registry starts empty; find() will return the model only AFTER we flip a flag
     let loaded = false;
     const ctx = fakeCtx({
@@ -2528,18 +2528,18 @@ describe("per-mode model preferences", () => {
       modelRegistry: {
         getAvailable: () => (loaded ? [glmModel] : []),
         refresh: async () => {},
-        find: (p: string, i: string) => loaded && p === "9router" && i === "glm/glm-5.2" ? glmModel : undefined,
+        find: (p: string, i: string) => loaded && p === "router" && i === "glm/glm-5.2" ? glmModel : undefined,
       },
     });
     await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
     assert.equal(ext.modelSets.length, 0, "no switch yet — model not loaded");
 
-    // Simulate 9router finishing its model load
+    // Simulate router finishing its model load
     loaded = true;
-    for (const h of ext.eventHandlers?.["9router:models-loaded"] ?? []) h({ provider: "9router", count: 1 });
+    for (const h of ext.eventHandlers?.["router:models-loaded"] ?? []) h({ provider: "router", count: 1 });
     // The event handler runs synchronously inside applyModeModel; await a microtask
     await new Promise((r) => setTimeout(r, 0));
-    assert.ok(ext.modelSets.some((m: any) => m.provider === "9router" && m.id === "glm/glm-5.2"),
+    assert.ok(ext.modelSets.some((m: any) => m.provider === "router" && m.id === "glm/glm-5.2"),
       "deferred model applies after the models-loaded signal");
   });
 

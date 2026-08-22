@@ -1880,10 +1880,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     }
   });
 
-  // Cross-extension signal: a late-loading provider (e.g. pi-9router) has
+  // Cross-extension signal: a late-loading provider (pi-router) has
   // finished registering its models. If we deferred a per-mode model apply
   // because the model wasn't in the registry yet, retry immediately.
-  pi.events.on("9router:models-loaded", () => {
+  pi.events.on("router:models-loaded", () => {
     if (pendingModelApply && lastCtx) {
       pendingModelApply = false;
       if (modelRetryTimer) { clearTimeout(modelRetryTimer); modelRetryTimer = undefined; }

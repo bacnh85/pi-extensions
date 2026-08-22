@@ -8,7 +8,7 @@ Each package lives in its own directory and can be installed independently. This
 
 | Package | Version | What it adds |
 | --- | ---: | --- |
-| [`@bacnh85/pi-9router`](./pi-9router) | 0.1.7 | Connect to a 9router AI routing proxy instance via OpenAI-compatible API with interactive login. |
+| [`@bacnh85/pi-router`](./pi-router) | 1.0.1 | Connect to any OpenAI-compatible AI router (9router, omniroute, …) — API key via built-in /login, URL in settings.json, cached model discovery. |
 | [`@bacnh85/pi-chatgpt-web`](./pi-chatgpt-web) | 0.2.0 | ChatGPT web-tier providers via self-hosted OpenAI-compatible bridges — chat-only `chatgpt-web` (chatgpt2api) + agentic `codex-web` (codex-proxy, tool-capable). No Plus subscription. |
 | [`@bacnh85/pi-commandcode`](./pi-commandcode) | 0.1.0 | Connect to Command Code's OpenAI-compatible Provider API; uses built-in `/login` for API-key setup. |
 | [`@bacnh85/pi-agy`](./pi-agy) | 0.3.1 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
@@ -43,7 +43,7 @@ Each package lives in its own directory and can be installed independently. This
 Install the published package you want:
 
 ```bash
-pi install npm:@bacnh85/pi-9router
+pi install npm:@bacnh85/pi-router
 pi install npm:@bacnh85/pi-chatgpt-web
 pi install npm:@bacnh85/pi-agy
 pi install npm:@bacnh85/pi-budget
@@ -87,7 +87,7 @@ Packages are standalone npm packages. Most TypeScript packages use Mocha + `tsx`
 
 ```text
 pi-extensions/
-  pi-9router/
+  pi-router/
   pi-chatgpt-web/
   pi-commandcode/
   pi-agy/

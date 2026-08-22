@@ -1,3 +1,11 @@
+## 0.1.26 (2026-08-21)
+
+- Router adapter: reads `router.baseUrl` from `~/.pi/agent/settings.json`
+  (env `ROUTER_BASE_URL`/`NINE_ROUTER_BASE_URL`) now that pi-router moved the
+  endpoint URL out of the old `9router-config.json` (which is migrated away on
+  pi-router load). Footer shows for both new `router/` and legacy `9router/`
+  provider models.
+
 # Changelog
 
 ## 0.1.29 (2026-08-15)

@@ -1,3 +1,10 @@
+## 0.10.6 (2026-08-21)
+
+- Renamed the late-loading-provider signal listener `9router:models-loaded` →
+  `router:models-loaded` to match the pi-router rename (was: pi-9router).
+  Deferred per-mode model apply now retries on the new event; behavior
+  otherwise unchanged.
+
 # Changelog
 
 ## 0.10.5 (2026-08-17)

@@ -7,7 +7,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| **pi-9router** | 0.1.7 | Connect to a 9router AI routing proxy instance via its OpenAI-compatible API with interactive login. |
+| **pi-router** | 1.0.1 | Connect to any OpenAI-compatible AI router (9router, omniroute, …) via its /v1 API; API key via built-in /login, URL in settings.json, models auto-cached in models-store.json. |
 | **pi-chatgpt-web** | 0.2.0 | ChatGPT web-tier providers via self-hosted OpenAI-compatible bridges — chat-only `chatgpt-web` (chatgpt2api) + agentic `codex-web` (codex-proxy, tool-capable). No Plus subscription. |
 | **pi-commandcode** | 0.1.0 | Connect to Command Code's OpenAI-compatible Provider API; uses built-in `/login` for API-key setup. |
 | **pi-checkpoint** | 0.1.0 | Git-backed undo/redo — snapshots file state per turn into a dedicated ref namespace so `/undo` rolls back a message AND its file changes. |
@@ -55,7 +55,7 @@ pi-extensions/
   pi-fff/               # TS extension for FFF-powered find/grep/autocomplete
   pi-rtk/               # TS extension for RTK bash command rewriting
   pi-model-tools/        # TS extension for unified tool-wrapping + DeepSeek guidance + Super Power Mode (DeepSeek V4 + GLM)
-   pi-9router/           # TS extension to connect to a 9router AI routing proxy.
+   pi-router/            # TS extension to connect to any OpenAI-compatible AI router.
    pi-chatgpt-web/       # TS extension: ChatGPT web-tier provider via self-hosted chatgpt2api bridge.
   pi-commandcode/       # TS extension for Command Code Provider API.
   pi-budget/            # JS extension for spend-cap enforcement (--budget <usd>).
@@ -149,7 +149,7 @@ cd pi-<name> && npm test
 # pi-rtk:        npm pack --dry-run                    (packaging check)
 # pi-sub:        npm pack --dry-run                    (packaging check)
 # pi-themes:     npm pack --dry-run                    (packaging check; pure-themes, no extension code)
-# pi-9router:    node --import tsx --node test          (node:test + tsx)
+# pi-router:     node --import tsx --test extensions/test/unit.test.ts (node:test + tsx)
 # pi-chatgpt-web: node --import tsx --test extensions/test/unit.test.ts (node:test + tsx)
 # pi-commandcode: node --import tsx --test extensions/test/*.test.ts (node:test + tsx)
 ```

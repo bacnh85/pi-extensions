@@ -51,12 +51,12 @@ The built-in `zai-coding-cn` provider targets the domestic BigModel endpoint (`o
 (Z.ai (CN) key#1a2b3c4d) R:55%/2H W:80%/3D 42 tok/s
 ```
 
-### 9router
+### Router (pi-router — formerly 9router)
 
-9router is a proxy/router with no upstream usage API, so the footer shows the configured endpoint and last response speed:
+The router (9router, omniroute, …) is a proxy with no upstream usage API, so the footer shows the configured endpoint and last response speed. The endpoint URL is read from `~/.pi/agent/settings.json` (`router.baseUrl`) with `ROUTER_BASE_URL` env override:
 
 ```text
-9router (172.30.55.22:20128) 145 tok/s
+Router (172.30.55.22:20128) 145 tok/s
 ```
 
 ### Command Code
