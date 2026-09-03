@@ -86,7 +86,7 @@ Edit `~/.pi/agent/settings.json` under the `a2a` key. Key reference:
 | `server.maxPingpongTurns` | `5` | Anti-loop turn cap per context (max 20) |
 | `server.rateLimitPerMin` | `60` | Requests/minute per identity |
 | `server.skills` | `[]` | Skills advertised on the Agent Card. When empty (default), skills are **self-discovered** from the live session — no config needed |
-| `timeouts.send` | `300000` | Outbound send timeout (ms) |
+| `timeouts.send` | `360000` | Outbound send timeout (ms); kept above the default 300s server reply deadline |
 | `timeouts.async` | `30000` | Async task poll interval (ms) |
 | `timeouts.stream` | `120000` | Streaming timeout (ms) |
 | `retryAttempts` | `2` | Outbound retry count |
@@ -126,7 +126,7 @@ Example:
       // "skills": [...] — optional override; when omitted the card
       // self-discovers the session's loaded skills
     },
-    "timeouts": { "send": 300000, "async": 30000, "stream": 120000 }
+    "timeouts": { "send": 360000, "async": 30000, "stream": 120000 }
   }
 }
 ```

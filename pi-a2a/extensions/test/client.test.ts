@@ -347,6 +347,27 @@ describe("client", () => {
       assert.include(out, "rejected auth");
     });
 
+    it("distinguishes reply timeout from connection failure", async () => {
+      globalThis.fetch = ((_url: string, init?: any) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+        })) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5, capabilities: [] };
+      const out = await a2aCall({ cfg, piDir, agent: "bob", message: "hi" });
+      assert.include(out, "reply timed out after 5ms");
+      assert.include(out, "delivery status unknown");
+      assert.include(out, "requestId=");
+      assert.notInclude(out, "This operation was aborted");
+
+      globalThis.fetch = (async () => {
+        throw new TypeError("fetch failed");
+      }) as any;
+      const connectionOut = await a2aCall({ cfg, piDir, agent: "bob", message: "hi" });
+      assert.include(connectionOut, "connection failed");
+      assert.notInclude(connectionOut, "delivery status unknown");
+    });
+
     it("redacts credentials before sending", async () => {
       let capturedBody = "";
       globalThis.fetch = (async (_url: string, init?: any) => {

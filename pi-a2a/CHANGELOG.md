@@ -46,6 +46,11 @@
   security-relevant keys — honored only from the process env and the
   operator's global Pi dir — and the repo-`.env.local` injection-guard test
   covers them (PR #36 review).
+- `a2a_call` now reports reply timeouts separately from connection failures and
+  warns that delivery status is unknown, preventing blind duplicate sends
+  (fix by @dario-github in #34).
+- The default outbound timeout is now 360s, safely above the server's default
+  300s reply deadline instead of racing it at the same instant.
 
 ## 0.7.6 (2026-09-01)
 

@@ -203,16 +203,26 @@ async function postJsonRpc(
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "A2A-Version": PROTOCOL_VERSION,
-        ...headers,
-      },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    });
+    let resp: Response;
+    try {
+      resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "A2A-Version": PROTOCOL_VERSION,
+          ...headers,
+        },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+    } catch (e: any) {
+      if (ctrl.signal.aborted) {
+        throw new Error(
+          `reply timed out after ${timeoutMs}ms; delivery status unknown (requestId=${String(body.id)})`,
+        );
+      }
+      throw new Error(`connection failed — ${e?.message || String(e)}`);
+    }
     const text = await resp.text();
     let json: any;
     try {

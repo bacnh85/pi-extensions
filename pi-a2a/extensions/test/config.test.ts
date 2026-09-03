@@ -59,7 +59,7 @@ describe("config", () => {
     assert.equal(cfg.server.port, 9910);
     assert.equal(cfg.server.host, "127.0.0.1");
     assert.isFalse(cfg.server.enabled);
-    assert.equal(cfg.timeouts.send, 300000);
+    assert.equal(cfg.timeouts.send, 360000);
   });
 
   it("ignores security-relevant A2A_* keys from repo cwd .env.local (config injection guard)", function () {
