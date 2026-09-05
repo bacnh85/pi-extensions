@@ -59,6 +59,11 @@ import {
 } from "./lib/ds-anchor.ts";
 import { createStrReplaceEditorToolDefinition } from "./lib/str-replace-editor.ts";
 import {
+  registerZaiAnthropicProvider,
+  applyFastModeHeaders,
+  applyFastModeBody,
+} from "./lib/zai-anthropic.ts";
+import {
   deepSeekSelectionGuidance,
   clearGuidanceCache,
   runTaskFirstToolHint,
@@ -222,6 +227,12 @@ function wrapToolDefinition(base: any, factory: (cwd: string) => any, shouldRepa
 }
 
 export default function (pi: ExtensionAPI) {
+  // GLM Coding Plan via the Anthropic endpoint (ZCode parity). Registered
+  // unconditionally — `apiKey: "$ZAI_ANTHROPIC_API_KEY"` makes /login
+  // auto-available; the key resolves from auth.json or env at request time.
+  // Guarded: minimal fake-pi test harnesses don't stub registerProvider.
+  registerZaiAnthropicProvider?.(pi);
+
   let repairThisTurn = false;
   let hasErrorThisTurn = false;
   let lastErrorInfo: ErrorInfo | null = null;
@@ -659,7 +670,16 @@ export default function (pi: ExtensionAPI) {
       const cleaned = stripReasoningContent(payload);
       if (cleaned !== payload) { debugLog("reasoning: stripped"); payload = cleaned; }
     }
+    // Fast mode (speed:"fast") for the zai-anthropic provider — the speed tier
+    // ZCode uses. Header merge happens in before_provider_headers below; here
+    // we add the top-level body field only.
+    payload = applyFastModeBody(payload, { provider: ctx.model?.provider });
     if (payload !== event.payload) return payload;
+  });
+
+  // ── before_provider_headers: fast-mode beta header for zai-anthropic ──
+  pi.on("before_provider_headers", (event, ctx) => {
+    applyFastModeHeaders(event.headers, { provider: ctx.model?.provider });
   });
 
   // ── tool_execution_end: categorize errors ──

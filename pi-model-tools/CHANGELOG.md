@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.0 (2026-09-05)
+
+### Added
+
+- **`zai-anthropic` provider (ZCode parity)** — GLM-5.3 / GLM-5.3-Flash /
+  GLM-5-Turbo via the Z.ai **Anthropic Messages API** coding-plan endpoint
+  (`https://api.z.ai/api/anthropic`), the surface ZCode uses instead of the
+  OpenAI-compatible `paas/v4` path. Gains: explicit `cache_control` prompt
+  caching (live-verified: repeat prompt re-reads 675 → 35 input tokens),
+  effort-based reasoning via `output_config.effort` (`thinkingLevelMap`
+  low/high/max), and a **fast serving tier** (`speed: "fast"` body +
+  `anthropic-beta: fast-mode-2026-02-01` header, on by default —
+  `ZAI_ANTHROPIC_SPEED=standard` to disable; live-measured 63.5 vs 38.6 tok/s
+  on GLM-5.3). Provider registers unconditionally — `apiKey:
+  "$ZAI_ANTHROPIC_API_KEY"` makes `/login zai-anthropic` auto-available; the key
+  resolves from auth.json or env at request time. Endpoint overridable via
+  `ZAI_ANTHROPIC_BASE_URL` (BigModel plan and ZCode Start Plan endpoints
+  documented). Probe script: `extensions/scripts/probe-zai-anthropic.mjs`.
+
 ## 0.6.1 (2026-08-25)
 
 ### Fixes

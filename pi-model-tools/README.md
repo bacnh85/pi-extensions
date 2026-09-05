@@ -88,6 +88,42 @@ warm for both families:
 (`input`/`cached`/`written` tokens + `hitTurns`/`missTurns`) for whichever
 family is active.
 
+### GLM via the Anthropic endpoint (ZCode parity)
+
+ZCode (Z.ai's desktop agent) reaches GLM-5.x through the **Anthropic Messages
+API** (`https://api.z.ai/api/anthropic`), not the OpenAI-compatible
+`/api/coding/paas/v4` endpoint that Pi's built-in `zai`/`zai-coding-cn`
+providers use. The Anthropic surface has three levers the OpenAI surface lacks:
+explicit prompt caching (`cache_control` markers), a fast serving tier
+(`speed: "fast"`), and effort-based reasoning (`output_config.effort`). This
+extension registers a `zai-anthropic` provider using it — measured live:
+prompt re-reads drop from 675 → 35 input tokens (cache_read 640), and fast mode
+streamed 63.5 tok/s vs 38.6 standard.
+
+Setup:
+
+```bash
+export ZAI_ANTHROPIC_API_KEY=<your Z.ai coding-plan key>   # or /login zai-anthropic
+```
+
+Then pick `zai-anthropic/glm-5.3` (or `glm-5.3-flash` — vision-capable — or
+`glm-5-turbo`) in `/model`. The provider registers unconditionally — the key
+resolves from auth.json (`/login zai-anthropic`) or the env var at request
+time. Other plan endpoints: `ZAI_ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/anthropic`
+(BigModel plan) or `https://zcode.z.ai/api/v1/zcode-plan/anthropic` (ZCode Start
+Plan JWT).
+
+| Variable | Default | Purpose |
+|----------|---------|----------|
+| `ZAI_ANTHROPIC_API_KEY` | unset | Z.ai coding-plan key; always visible, enter via `/login zai-anthropic` or env |
+| `ZAI_ANTHROPIC_BASE_URL` | `https://api.z.ai/api/anthropic` | Anthropic-compatible endpoint |
+| `ZAI_ANTHROPIC_SPEED` | `fast` | `standard` to disable the fast serving tier (on pay-per-token plans fast ≈ 6× input price) |
+
+Note: `reasoning strip`/`reasoning_content` handling applies only to the OpenAI
+path — on the Anthropic surface thinking arrives as native thinking blocks and
+Pi replays them correctly. No-code alternative on the existing OpenAI path:
+`zai-coding-cn/glm-5.3-highspeed` (plan-included speed variant).
+
 ### DeepSeek V4 only (verbose steering the Flash model needs)
 
 | Feature | What it does |
