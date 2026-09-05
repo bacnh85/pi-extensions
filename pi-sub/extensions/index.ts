@@ -38,6 +38,13 @@ const ZAI_PROVIDER = "zai";
 const ZAI_USAGE_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
 const ZAI_CODING_CN_PROVIDER = "zai-coding-cn";
 const ZAI_CODING_CN_USAGE_URL = "https://open.bigmodel.cn/api/monitor/usage/quota/limit";
+// GLM via the Anthropic-compatible endpoint (pi-model-tools `zai-anthropic`
+// provider). Same api.z.ai host and quota monitor as the `zai` provider.
+// ponytail: usage URL is fixed to api.z.ai — if ZAI_ANTHROPIC_BASE_URL is
+// overridden to BigModel/zcode-plan, quota still reads from api.z.ai (correct
+// for the z.ai coding-plan key; BigModel-plan keys should use zai-coding-cn).
+const ZAI_ANTHROPIC_PROVIDER = "zai-anthropic";
+const ZAI_ANTHROPIC_USAGE_URL = ZAI_USAGE_URL;
 const ROUTER_PROVIDER = "router";
 const LEGACY_9ROUTER_PROVIDER = "9router";
 // pi-router (formerly pi-9router): URL lives in settings.json `router.baseUrl`
@@ -140,6 +147,10 @@ function isZaiModel(model: ModelLike): boolean {
 
 function isZaiCodingCnModel(model: ModelLike): boolean {
   return (model?.provider?.toLowerCase() ?? "") === ZAI_CODING_CN_PROVIDER;
+}
+
+function isZaiAnthropicModel(model: ModelLike): boolean {
+  return (model?.provider?.toLowerCase() ?? "") === ZAI_ANTHROPIC_PROVIDER;
 }
 
 function isRouterModel(model: ModelLike, provider: string = ROUTER_PROVIDER): boolean {
@@ -991,11 +1002,14 @@ function zaiUsageAdapter(providerId: string, usageUrl: string, displayName: stri
   return { fetchUsage };
 }
 
-function supportedAdapter(model: ModelLike): SubscriptionProviderAdapter | undefined {
+// Exported for the adapter-wiring regression test (provider-id string ↔
+// adapter id ↔ usage URL are exactly what a typo silently breaks).
+export function supportedAdapter(model: ModelLike): SubscriptionProviderAdapter | undefined {
   if (isCodexModel(model)) return { id: CODEX_PROVIDER, displayName: "Codex", fetchUsage: fetchCodexUsage };
   if (isOpenCodeGoModel(model)) return { id: OPC_PROVIDER, displayName: "OpenCode Go", fetchUsage: fetchOpenCodeGoUsage };
   if (isZaiModel(model)) return { id: ZAI_PROVIDER, displayName: "Z.ai", ...zaiUsageAdapter(ZAI_PROVIDER, ZAI_USAGE_URL, "Z.ai") };
   if (isZaiCodingCnModel(model)) return { id: ZAI_CODING_CN_PROVIDER, displayName: "Z.ai (CN)", ...zaiUsageAdapter(ZAI_CODING_CN_PROVIDER, ZAI_CODING_CN_USAGE_URL, "Z.ai (CN)") };
+  if (isZaiAnthropicModel(model)) return { id: ZAI_ANTHROPIC_PROVIDER, displayName: "Z.ai (Anthropic)", ...zaiUsageAdapter(ZAI_ANTHROPIC_PROVIDER, ZAI_ANTHROPIC_USAGE_URL, "Z.ai (Anthropic)") };
   if (isRouterModel(model)) {
     const prefix = routerUpstreamPrefix(model);
     return {

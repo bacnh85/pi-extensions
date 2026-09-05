@@ -1,3 +1,21 @@
+# Changelog
+
+## 0.1.35 (2026-09-05)
+
+### Added
+
+- **`zai-anthropic` provider usage tracking** — GLM through the Anthropic-compatible endpoint (`api.z.ai/api/anthropic`, registered by pi-model-tools) now shows the same quota footer as `zai`/`zai-coding-cn`: 5-hour/weekly windows, MCP monthly allowance, and model/tool breakdowns, keyed by the auth.json `zai-anthropic` credential, labeled `Z.ai (Anthropic)`.
+
+## 0.1.34 (2026-09-05)
+
+- Widen Pi SDK peer range to `>=0.80.8 <0.86.0` for Pi 0.85.0 compatibility (no breaking changes; peer cap widening only).
+
+## 0.1.33 (2026-08-29)
+
+### Added
+
+- `/sub` argument completion offers `refresh`.
+
 ## 0.1.32 (2026-08-22)
 
 - **DeepSeek via OmniRoute now shows the real USD balance** (e.g. `M:$18.25`)

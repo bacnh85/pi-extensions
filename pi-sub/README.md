@@ -51,6 +51,14 @@ The built-in `zai-coding-cn` provider targets the domestic BigModel endpoint (`o
 (Z.ai (CN) key#1a2b3c4d) R:55%/2H W:80%/3D 42 tok/s
 ```
 
+### Z.ai via Anthropic endpoint
+
+The `zai-anthropic` provider (registered by pi-model-tools, GLM through `api.z.ai/api/anthropic`) is tracked the same way — same api.z.ai quota monitor as the international `zai` provider, keyed by the auth.json `zai-anthropic` credential, labeled `Z.ai (Anthropic)`:
+
+```text
+(Z.ai (Anthropic) key#1a2b3c4d) R:55%/2H W:80%/3D 42 tok/s
+```
+
 ### Router (pi-router — formerly 9router)
 
 For **OmniRoute** instances the footer shows real usage: `GET <origin>/api/usage/om-usage`
