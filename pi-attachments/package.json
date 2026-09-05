@@ -1,7 +1,7 @@
 {
   "name": "@bacnh85/pi-attachments",
-  "version": "0.2.0",
-  "description": "Image and file attachments for Pi \u2014 converts pasted/dropped file paths into real image attachments, inlines text files, and pastes clipboard file references.",
+  "version": "0.2.1",
+  "description": "Image and file attachments for Pi — converts pasted/dropped file paths into real image attachments, inlines text files, and pastes clipboard file references.",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
@@ -39,12 +39,13 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.84.3 <0.85.0"
+    "@earendil-works/pi-coding-agent": ">=0.84.3 <0.86.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.3",
-    "@earendil-works/pi-ai": "^0.84.0",
-    "@earendil-works/pi-tui": "^0.84.3",
+    "@earendil-works/pi-ai": "^0.85.0",
+    "@earendil-works/pi-coding-agent": "^0.85.0",
+    "@earendil-works/pi-server": "^0.85.0",
+    "@earendil-works/pi-tui": "^0.85.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.43",
     "chai": "^4.5.0",

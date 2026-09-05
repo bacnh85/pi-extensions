@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.19.3 (2026-09-05)
+
+- Widen Pi SDK peer range to `>=0.80.0 <0.86.0` and bump devDep to `^0.85.0` for Pi 0.85.0 compatibility (no breaking changes; peer cap widening only).
+
 ## 0.19.2 (2026-09-02)
 
 ### Fixed

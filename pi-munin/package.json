@@ -51,6 +51,7 @@
     "typebox": "*"
   },
   "devDependencies": {
+    "@earendil-works/pi-server": "^0.85.0",
     "@types/node": "^20.0.0",
     "chai": "^4.3.0",
     "mocha": "^10.8.2",

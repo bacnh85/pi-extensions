@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-advisor",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Pi extension for an automatic advisor: a second model that reviews each settled turn and injects severity-routed notes, plus an on-demand consult tool.",
   "type": "module",
   "license": "MIT",
@@ -41,15 +41,16 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.80.8 <0.85.0",
-    "@earendil-works/pi-coding-agent": ">=0.84.3 <0.85.0",
-    "@earendil-works/pi-tui": ">=0.80.8 <0.85.0",
+    "@earendil-works/pi-ai": ">=0.80.8 <0.86.0",
+    "@earendil-works/pi-coding-agent": ">=0.84.3 <0.86.0",
+    "@earendil-works/pi-tui": ">=0.80.8 <0.86.0",
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.84.2",
-    "@earendil-works/pi-coding-agent": "^0.84.3",
-    "@earendil-works/pi-tui": "^0.84.3",
+    "@earendil-works/pi-ai": "^0.85.0",
+    "@earendil-works/pi-coding-agent": "^0.85.0",
+    "@earendil-works/pi-server": "^0.85.0",
+    "@earendil-works/pi-tui": "^0.85.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.43",
     "chai": "^4.5.0",
