@@ -309,8 +309,8 @@ describe("cache-stable system prompt (deterministic active-tools source)", () =>
   });
 });
 
-describe("pendingGuidance lifecycle (guidance stable across all rounds of a turn)", () => {
-  it("applies guidance on EVERY provider round of the turn with byte-identical user messages", () => {
+describe("pendingGuidance lifecycle (first provider round of a turn only)", () => {
+  it("injects on round 1, never again once the model has produced output", () => {
     const { handlers } = createFakePi(["bash", "read", "find"]);
     const ctx = { model: { provider: "opencode-go", id: "deepseek-v4-flash" } };
     // before_agent_start with a run-task prompt → bash-first hint fires.
@@ -328,16 +328,40 @@ describe("pendingGuidance lifecycle (guidance stable across all rounds of a turn
     assert.ok(r1, "first provider round receives the guidance");
     assert.match(r1.messages[0].content, /FIRST tool call MUST be bash/i);
 
-    // Round 2 of the SAME turn (tool loop): the payload is rebuilt from canonical
-    // (guidance-free) context.messages, and the SAME guidance is re-appended so the
-    // user message is byte-identical to round 1. Clearing guidance after round 1
-    // would make the user message exist in two byte forms within one turn and
-    // break DeepSeek's prefix cache at that boundary.
-    const payload2 = { messages: [{ role: "user", content: "Run the unit tests." }] };
+    // Round 1 of a LATER turn in the same session: the payload carries prior
+    // assistant history, but the tail is the new plain user prompt → the hint
+    // MUST still fire (gate is tail-based, not any-assistant-message-based).
+    const payloadMulti = { messages: [
+      { role: "user", content: "Run the unit tests." },
+      { role: "assistant", content: "done" },
+      { role: "user", content: "Execute the build now." },
+    ] };
+    const rMulti = handlers.before_provider_request[0]({ payload: payloadMulti }, ctx);
+    assert.ok(rMulti, "later-turn round 1 with plain-prompt tail still gets guidance");
+    assert.match(rMulti.messages[2].content, /FIRST tool call MUST be bash/i);
+    assert.doesNotMatch(rMulti.messages[0].content, /FIRST tool call MUST be bash/i, "prior turns stay guidance-free");
+
+    // Round 2, OpenAI-style payload (tool results are role "tool"): the hint
+    // must NOT be re-appended — re-injecting after the model has complied reads
+    // as a repeated demand and loops strict models into re-running bash.
+    const payload2 = { messages: [
+      { role: "user", content: "Run the unit tests." },
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "bash", arguments: "{}" } }] },
+      { role: "tool", content: "ok", name: "bash" },
+    ] };
     const r2 = handlers.before_provider_request[0]({ payload: payload2 }, ctx);
-    assert.ok(r2, "second provider round also receives guidance");
-    assert.strictEqual(r2.messages[0].content, r1.messages[0].content,
-      "round 2 user message must be byte-identical to round 1 (cache stable)");
+    assert.equal(r2, undefined, "round 2 (OpenAI-style) gets no guidance re-injection");
+
+    // Round 2, anthropic-style payload (tool results live in a user message):
+    // the last user message is the tool-result container — the hint must still
+    // not be appended after it.
+    const payload2a = { messages: [
+      { role: "user", content: "Run the unit tests." },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "bash", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+    ] };
+    const r2a = handlers.before_provider_request[0]({ payload: payload2a }, ctx);
+    assert.equal(r2a, undefined, "round 2 (anthropic-style) gets no guidance re-injection");
 
     // A NEW turn (before_agent_start fires again with a non-matching prompt) must
     // clear pendingGuidance so it does not leak into the next turn.
@@ -348,5 +372,15 @@ describe("pendingGuidance lifecycle (guidance stable across all rounds of a turn
     const payload3 = { messages: [{ role: "user", content: "hello" }] };
     const r3 = handlers.before_provider_request[0]({ payload: payload3 }, ctx);
     assert.equal(r3, undefined, "new turn with no dynamic guidance leaves payload untouched");
+
+    // A new matching turn re-arms the hint for ITS round 1.
+    const beforeStart3 = handlers.before_agent_start[0](
+      { systemPrompt: "base", systemPromptOptions: { selectedTools: ["bash", "read", "find"] }, prompt: "Execute the lint step." },
+      ctx,
+    );
+    assert.ok(beforeStart3);
+    const payload4 = { messages: [{ role: "user", content: "Execute the lint step." }] };
+    const r4 = handlers.before_provider_request[0]({ payload: payload4 }, ctx);
+    assert.ok(r4, "a new matching turn gets guidance on its own round 1");
   });
 });

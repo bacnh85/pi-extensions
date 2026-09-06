@@ -34,7 +34,7 @@ import {
   normalizeToLF,
 } from "./lib/edit-repair.ts";
 import { parsePatch, applyPatchToFiles, PatchParseError } from "./lib/apply-patch.ts";
-import { stripReasoningContent, cleanLeakedContentFromMessages, appendGuidanceToLastUserMessage } from "./lib/reasoning-content.ts";
+import { stripReasoningContent, cleanLeakedContentFromMessages, appendGuidanceToLastUserMessage, tailIsPlainUserPrompt } from "./lib/reasoning-content.ts";
 import {
   looksLikeCodePath,
   isSemanticMissToolCall,
@@ -654,14 +654,13 @@ export default function (pi: ExtensionAPI) {
     // Append per-turn dynamic guidance to the current user message (request
     // tail) so the system-prompt cache head stays byte-identical across turns
     // (both DeepSeek exact-prefix and GLM Z.ai content-similarity caches).
-    // NOT cleared here: each provider round rebuilds the payload from canonical
-    // (guidance-free) context.messages, so re-appending the same guidance string
-    // produces byte-identical user messages every round. Clearing after round 1
-    // would make the user message exist in two byte forms within one turn
-    // (guided round 1, bare round 2+) and break the prefix cache at that
-    // boundary — the gap vs reasonix's >99% hit. pendingGuidance is reset at the
-    // next before_agent_start.
-    if (pendingGuidance) {
+    // FIRST ROUND OF THE TURN ONLY (payload tail is still the plain user
+    // prompt): mid-turn rounds end with tool results, where re-appending the
+    // hint reads as a fresh repeated demand and loops strict models into
+    // re-running bash ("I've been complying") instead of settling. Cache cost
+    // of skipping: a tail-only divergence of ~one user message per round; the
+    // cache head stays byte-stable.
+    if (pendingGuidance && tailIsPlainUserPrompt(payload)) {
       const withGuidance = appendGuidanceToLastUserMessage(payload, pendingGuidance);
       if (withGuidance !== payload) { debugLog("guidance: injected into user message"); payload = withGuidance; }
     }

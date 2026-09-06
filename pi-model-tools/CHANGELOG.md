@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.1 (2026-09-06)
+
+### Fixes
+
+- **First-tool hints no longer re-inject on every provider round** (loop fix).
+  The `⚠️ RUN/BUILD/EXECUTE → FIRST tool call MUST be bash` reminder (and the
+  git-clone / find-first hints) was re-appended to the last user message on
+  every round of a turn for prefix-cache byte-stability. On mid-turn rounds
+  the payload tail is a tool result — on anthropic-style payloads (GLM via
+  `zai-anthropic`) the reminder landed directly after each tool result and read
+  as a fresh repeated demand, so strict instruction-followers re-ran bash /
+  kept acknowledging the reminder instead of settling (observed as a wasted
+  "I've been complying" loop on a remote peer). Hints now fire only while the
+  payload tail is still the plain user prompt (turn's first round, including
+  provider retries). Cache impact is a tail-only divergence of ~one user
+  message per round; the cache head (system prompt) stays byte-stable. New
+  regression tests cover OpenAI-style and anthropic-style mid-turn rounds and
+  later-turn round-1 injection.
+
 ## 0.7.0 (2026-09-05)
 
 ### Added
