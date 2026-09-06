@@ -32,6 +32,7 @@ export const KNOWN_BASE_URLS = [
   DEFAULT_BASE_URL,
   "https://open.bigmodel.cn/api/anthropic", // BigModel Coding Plan
   "https://zcode.z.ai/api/v1/zcode-plan/anthropic", // ZCode Start Plan (JWT)
+  "https://zcode.z.ai/api/v1/ultra-zai/anthropic", // ZCode ultra route (coding-plan, V4-signed)
 ] as const;
 
 /** Beta header enabling the fast serving tier (mirrors ZCode). */

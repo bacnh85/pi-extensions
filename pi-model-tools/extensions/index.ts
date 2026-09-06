@@ -47,6 +47,8 @@ import {
   type ErrorCategory,
 } from "./lib/shell-helpers.ts";
 import { debugLog, logWarn } from "./lib/logger.ts";
+import { readStoredCredential } from "@earendil-works/pi-coding-agent";
+
 import {
   MINIMAL_SYSTEM_PROMPT,
   BOOTSTRAP_TOOLS,
@@ -62,7 +64,15 @@ import {
   registerZaiAnthropicProvider,
   applyFastModeHeaders,
   applyFastModeBody,
+  zaiAnthropicBaseUrl,
+  PROVIDER_ID,
 } from "./lib/zai-anthropic.ts";
+import {
+  applyZcodeSigningHeaders,
+  getZcodeSigningManager,
+  pickZcodeCredential,
+  zcodeSigningEnabled,
+} from "./lib/zcode-signing.ts";
 import {
   deepSeekSelectionGuidance,
   clearGuidanceCache,
@@ -677,8 +687,35 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ── before_provider_headers: fast-mode beta header for zai-anthropic ──
-  pi.on("before_provider_headers", (event, ctx) => {
+  pi.on("before_provider_headers", async (event, ctx) => {
     applyFastModeHeaders(event.headers, { provider: ctx.model?.provider });
+    // ZCode Client-Signing V4 parity — default ON (opt out:
+    // ZAI_ANTHROPIC_SIGNING=0): identity headers + x-session-id + Ed25519/PoW
+    // signature, fail-open on every precondition. Awaited on purpose: the
+    // runner serializes headers right after handlers resolve, so the crypto
+    // must finish inside this hook.
+    if (zcodeSigningEnabled() && family(ctx.model)) {
+      // Header read first (what's on the wire); auth.json only touched when
+      // header and env both miss (avoids a sync read per provider request).
+      const credential = pickZcodeCredential(event.headers, process.env, () => {
+        const stored = readStoredCredential(PROVIDER_ID);
+        return stored?.type === "api_key" ? stored.key : undefined;
+      });
+      await applyZcodeSigningHeaders(event.headers, {
+        provider: ctx.model?.provider,
+        baseUrl: zaiAnthropicBaseUrl(),
+        sessionId:
+          typeof ctx.sessionManager?.getSessionId === "function" ? ctx.sessionManager.getSessionId() : undefined,
+        credential,
+      });
+    }
+  });
+
+  // ── after_provider_response: 401 ladder for the signing state ──
+  pi.on("after_provider_response", (event, ctx) => {
+    if (!zcodeSigningEnabled() || !family(ctx.model)) return;
+    if (event.status === 401) getZcodeSigningManager().noteResponse401();
+    else getZcodeSigningManager().noteResponseOk();
   });
 
   // ── tool_execution_end: categorize errors ──
@@ -699,7 +736,21 @@ export default function (pi: ExtensionAPI) {
   //    normal tool errors (those arrive via tool_execution_end).
   pi.on("message_end", (event, ctx) => {
     if (!family(ctx.model)) return;
-    const msg = event.message as { role?: string; stopReason?: string; errorMessage?: string };
+    const msg = event.message as {
+      role?: string;
+      stopReason?: string;
+      errorMessage?: string;
+      usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
+    };
+    // Cache-visibility aid for the ZCode-parity testing circle: per-response
+    // usage incl. cacheRead, when debug logging is on.
+    if (msg.role === "assistant" && msg.usage && process.env.PI_MODEL_TOOLS_DEBUG) {
+      const u = msg.usage;
+      debugLog(
+        "provider usage:",
+        `in=${u.input ?? "?"} out=${u.output ?? "?"} cacheRead=${u.cacheRead ?? 0} cacheWrite=${u.cacheWrite ?? 0}`,
+      );
+    }
     if (msg.role !== "assistant" || msg.stopReason !== "error") return;
     const errorText = String(msg.errorMessage ?? "");
     if (!detectReasoningRejection(errorText)) return;

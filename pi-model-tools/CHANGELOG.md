@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.0 (2026-09-06)
+
+### Added
+
+- **ZCode parity mode for `zai-anthropic`, ON by default** (opt out:
+  `ZAI_ANTHROPIC_SIGNING=0`): ZCode identity headers + `X-Session-Id` +
+  per-request Client-Signing V4 (Ed25519 signatures + 8-bit PoW) ported from
+  TriDefender/zcode-api (MIT). Signing key is provisioned by Z.ai's
+  `get_sign_key` handshake to the user's own two-part coding-plan key
+  (handshake plane: api.z.ai — 404 on zcode.z.ai); every failure path fails
+  open (unsigned). Live-verified 2026-09-06: signed requests accepted with
+  HTTP 200 on the `zcode.z.ai/api/v1/ultra-zai` route; same-window A/B shows
+  identical billing to the unsigned api route (578k tokens → +2pt both), and
+  a full cache matrix shows prefix caching behaves identically signed vs
+  unsigned (headers/route/TTL/fast-mode/streamed usage all verified).
+  Also: ultra route added to `KNOWN_BASE_URLS`; probe leg L6 (signed
+  ultra-zai quota measurement) and `scripts/bench-zcode-signing.mjs`
+  (landing-proof + TTFT/throughput + cache matrix) added. Review-hardened:
+  z.ai-origin allowlist (no credential egress for other base URLs), env-var
+  credential fallback, 401-ladder success reset, handshake backoff, cached
+  identity resolution. `PI_MODEL_TOOLS_DEBUG=1` now logs per-response usage
+  (incl. cacheRead) for glm-family providers.
+
 ## 0.7.1 (2026-09-06)
 
 ### Fixes

@@ -110,14 +110,37 @@ Then pick `zai-anthropic/glm-5.3` (or `glm-5.3-flash` — vision-capable — or
 `glm-5-turbo`) in `/model`. The provider registers unconditionally — the key
 resolves from auth.json (`/login zai-anthropic`) or the env var at request
 time. Other plan endpoints: `ZAI_ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/anthropic`
-(BigModel plan) or `https://zcode.z.ai/api/v1/zcode-plan/anthropic` (ZCode Start
-Plan JWT).
+(BigModel plan), `https://zcode.z.ai/api/v1/ultra-zai/anthropic` (ZCode ultra
+route), or `https://zcode.z.ai/api/v1/zcode-plan/anthropic` (ZCode Start Plan JWT).
+
+#### ZCode parity mode (Client-Signing V4) — on by default
+
+Every `zai-anthropic` request carries ZCode desktop parity by default: ZCode
+identity headers (`User-Agent: ZCode/…`, `X-Device-Mid`, `X-Title`, …), a
+stable `X-Session-Id`, and per-request **Ed25519 signatures + proof-of-work**
+(`X-Client-*` headers) exactly as ZCode 3.9+ sends them. The signing key is
+provisioned by Z.ai's handshake to your own two-part coding-plan key — no
+separate login. Fail-open everywhere: gate off/unreachable, handshake
+failure, or a legacy single-part key simply sends unsigned. Set
+`ZAI_ANTHROPIC_SIGNING=0` to disable.
+
+For the full ZCode route also point the endpoint at the server-mapped ultra
+upstream (this is the URL the server's `agent/configs` mapping hands ZCode
+today):
+
+```bash
+export ZAI_ANTHROPIC_BASE_URL=https://zcode.z.ai/api/v1/ultra-zai/anthropic
+```
+
+Signing is harmless on the default `api.z.ai` route too (the server ignores
+`X-Client-*` there). Ported from TriDefender/zcode-api (MIT).
 
 | Variable | Default | Purpose |
 |----------|---------|----------|
 | `ZAI_ANTHROPIC_API_KEY` | unset | Z.ai coding-plan key; always visible, enter via `/login zai-anthropic` or env |
 | `ZAI_ANTHROPIC_BASE_URL` | `https://api.z.ai/api/anthropic` | Anthropic-compatible endpoint |
 | `ZAI_ANTHROPIC_SPEED` | `fast` | `standard` to disable the fast serving tier (on pay-per-token plans fast ≈ 6× input price) |
+| `ZAI_ANTHROPIC_SIGNING` | **on** | ZCode parity: identity headers + Client-Signing V4 (Ed25519+PoW) on every request. `0` to disable |
 
 Note: `reasoning strip`/`reasoning_content` handling applies only to the OpenAI
 path — on the Anthropic surface thinking arrives as native thinking blocks and
