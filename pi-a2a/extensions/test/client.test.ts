@@ -7,11 +7,12 @@ import {
   a2aDiscover,
   a2aList,
   a2aOrchestrate,
+  a2aStatus,
   isPrivateHost,
   metrics,
   rpcUrl,
 } from "../lib/client";
-import { buildAgentCard, STATE_COMPLETED } from "../lib/protocol";
+import { buildAgentCard, STATE_COMPLETED, STATE_WORKING } from "../lib/protocol";
 import { setGatewayRegistrationName, setGatewayPeers, gatewayKeyFromUrl } from "../lib/config";
 import type { DiscoveredPeer } from "../lib/discovery";
 
@@ -360,6 +361,234 @@ describe("client", () => {
       await a2aCall({ cfg, piDir, agent: "bob", message: "my key is sk-1234567890abcdefXX" });
       assert.notInclude(capturedBody, "sk-1234567890abcdefXX");
       assert.include(capturedBody, "sk-[redacted]");
+    });
+  });
+
+  describe("non-blocking dispatch (asyncDispatch + a2a_status)", () => {
+    const workingTask = {
+      id: "task-9",
+      contextId: "ctx-async",
+      status: { state: STATE_WORKING },
+    };
+    const completedTask = {
+      id: "task-9",
+      contextId: "ctx-async",
+      status: { state: STATE_COMPLETED },
+      artifacts: [{ parts: [{ text: "late result" }] }],
+    };
+
+    /** Sequential POST-result mock: each POST returns the next entry (last
+     *  one repeats). GETs (card fetch) 404 — non-fatal, rpcUrl falls back to
+     *  the base URL. */
+    function seqMock(results: any[]): { fetch: FetchMock; posts: () => number } {
+      let i = 0;
+      let n = 0;
+      const fetch = async (url: string, init?: any) => {
+        if (init?.method === "POST") {
+          n += 1;
+          const result = results[Math.min(i++, results.length - 1)];
+          return makeResp({ jsonrpc: "2.0", id: 1, result }, 200);
+        }
+        return makeResp(null, 404);
+      };
+      return { fetch, posts: () => n };
+    }
+
+    it("sends configuration.returnImmediately only when asyncDispatch is set", async () => {
+      const bodies: any[] = [];
+      globalThis.fetch = (async (_url: string, init?: any) => {
+        if (init?.method === "POST") bodies.push(JSON.parse(init.body));
+        return makeResp({ jsonrpc: "2.0", id: 1, result: { task: workingTask } }, 200);
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      await a2aCall({ cfg, piDir, agent: "bob", message: "hi", asyncDispatch: true });
+      await a2aCall({ cfg, piDir, agent: "bob", message: "hi" });
+      assert.equal(bodies[0]!.params.configuration?.returnImmediately, true, "asyncDispatch must set the configuration");
+      assert.isUndefined(bodies[1]!.params.configuration, "a blocking call must not send any configuration");
+    });
+
+    it("formats the detached ack with the poll hint", async () => {
+      globalThis.fetch = mockFetch({ rpcResult: { task: workingTask } }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aCall({ cfg, piDir, agent: "bob", message: "hi", asyncDispatch: true });
+      assert.include(out, "detached");
+      assert.include(out, "task-9");
+      assert.include(out, "non-blocking");
+      assert.include(out, 'a2a_status(agent: "bob", task_id: "task-9")');
+      assert.notInclude(out, "late result");
+    });
+
+    it("falls through to normal formatting when the task finished before the ack", async () => {
+      // A fast peer completes before the ack is serialized — the ack carries
+      // the terminal state, so the caller gets the result inline, no poll hint.
+      globalThis.fetch = mockFetch({ rpcResult: { task: completedTask } }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aCall({ cfg, piDir, agent: "bob", message: "hi", asyncDispatch: true });
+      assert.include(out, "completed");
+      assert.include(out, "late result");
+      assert.notInclude(out, "detached");
+      assert.notInclude(out, "a2a_status(");
+    });
+
+    it("persists the dispatch ack marker under the conversation context", async () => {
+      const { loadConversation } = await import("../lib/persistence");
+      globalThis.fetch = mockFetch({ rpcResult: { task: workingTask } }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      await a2aCall({ cfg, piDir, agent: "bob", message: "hi", asyncDispatch: true });
+      // Both sides land under the PEER's context id so a2a_history works.
+      const msgs = loadConversation(piDir, "ctx-async");
+      assert.lengthOf(msgs, 2);
+      assert.equal(msgs[0]!.role, "user");
+      assert.equal(msgs[1]!.role, "agent");
+      assert.include(msgs[1]!.text, "dispatched non-blocking");
+      assert.include(msgs[1]!.text, "task-9");
+    });
+
+    it("a2a_status: single fetch without wait_seconds", async () => {
+      const m = seqMock([{ task: workingTask }]);
+      globalThis.fetch = m.fetch as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-9" });
+      assert.equal(m.posts(), 1, "no wait_seconds → exactly one GetTask");
+      assert.include(out, "task-9");
+      assert.include(out, "working");
+      assert.include(out, "no text yet");
+    });
+
+    it("a2a_status: polls to terminal with wait_seconds", async () => {
+      const m = seqMock([{ task: workingTask }, { task: completedTask }]);
+      globalThis.fetch = m.fetch as any;
+      const cfg = DEFAULTS();
+      cfg.timeouts.async = 250; // min poll interval for a fast test
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-9", waitSeconds: 5 });
+      assert.equal(m.posts(), 2, "WORKING then COMPLETED → exactly two GetTask polls");
+      assert.include(out, "completed");
+      assert.include(out, "late result");
+    });
+
+    it("a2a_status: expires with a clear message at the deadline", async () => {
+      const m = seqMock([{ task: workingTask }]);
+      globalThis.fetch = m.fetch as any;
+      const cfg = DEFAULTS();
+      cfg.timeouts.async = 250;
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-9", waitSeconds: 0.3 });
+      assert.include(out, "Still non-terminal after 0.3s of polling");
+      assert.include(out, "call a2a_status again later");
+    });
+
+    it("a2a_status: non-positive wait_seconds is a single fetch (no nonsense deadline)", async () => {
+      const m = seqMock([{ task: workingTask }]);
+      globalThis.fetch = m.fetch as any;
+      const cfg = DEFAULTS();
+      cfg.timeouts.async = 250;
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-9", waitSeconds: -5 });
+      assert.equal(m.posts(), 1, "negative wait_seconds must not enter the poll loop");
+      assert.notInclude(out, "-5s");
+      assert.include(out, "working");
+    });
+
+    it("a2a_status: maps TaskNotFoundError (-32001) to the unknown/evicted/foreign hint", async () => {
+      globalThis.fetch = mockFetch({ rpcError: { code: -32001, message: "task not found" } }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-ghost" });
+      assert.include(out, "does not know task 'task-ghost'");
+      assert.include(out, "visible only to the identity that sent them");
+    });
+
+    it("a2a_status: maps 401 to the auth error", async () => {
+      globalThis.fetch = mockFetch({ rpcStatus: 401 }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-9" });
+      assert.include(out, "rejected auth");
+    });
+
+    it("a2a_status: errors with candidate URLs for an ambiguous discovered name", async () => {
+      const discoveredPeers: DiscoveredPeer[] = [
+        { name: "pi-s2", url: "http://127.0.0.1:9912", source: "local", alive: true },
+        { name: "pi-s2", url: "http://127.0.0.1:9913", source: "local", alive: true },
+      ];
+      const out = await a2aStatus({ cfg: DEFAULTS(), piDir, agent: "pi-s2", taskId: "task-9", discoveredPeers });
+      assert.include(out, "share the name 'pi-s2'");
+      assert.include(out, "9912");
+      assert.include(out, "9913");
+    });
+
+    it("a2a_status: cancels promptly when the abort signal fires mid-poll", async () => {
+      const m = seqMock([{ task: workingTask }]);
+      globalThis.fetch = m.fetch as any;
+      const cfg = DEFAULTS();
+      cfg.timeouts.async = 250;
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const ctl = new AbortController();
+      setTimeout(() => ctl.abort(), 120);
+      const t0 = Date.now();
+      const out = await a2aStatus({
+        cfg,
+        piDir,
+        agent: "bob",
+        taskId: "task-9",
+        waitSeconds: 30, // would poll ~2min at 250ms without the signal
+        signal: ctl.signal,
+      });
+      const elapsed = Date.now() - t0;
+      assert.isBelow(elapsed, 2000, `abort must end the poll promptly (took ${elapsed}ms)`);
+      assert.include(out, "Status polling canceled");
+      assert.include(out, "call a2a_status");
+      // The last-known state is still reported — the abort only stops polling.
+      assert.include(out, "working");
+    });
+
+    it("a2a_status: returns immediately on a pre-aborted signal (no fetch)", async () => {
+      const m = seqMock([{ task: workingTask }]);
+      globalThis.fetch = m.fetch as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const ctl = new AbortController();
+      ctl.abort();
+      const out = await a2aStatus({
+        cfg,
+        piDir,
+        agent: "bob",
+        taskId: "task-9",
+        waitSeconds: 30,
+        signal: ctl.signal,
+      });
+      assert.equal(m.posts(), 0, "a pre-aborted poll must not fetch at all");
+      assert.include(out, "Status polling canceled");
+      assert.include(out, "task-9");
+    });
+
+    it("carries X-A2A-Identity on SendMessage AND on GetTask polls", async () => {
+      const seen: Array<Record<string, string>> = [];
+      globalThis.fetch = (async (url: string, init?: any) => {
+        if (init?.method === "POST") {
+          seen.push({ ...(init?.headers || {}) });
+          const isGetTask = JSON.parse(init.body).method === "GetTask";
+          return makeResp(
+            { jsonrpc: "2.0", id: 1, result: { task: isGetTask ? completedTask : workingTask } },
+            200,
+          );
+        }
+        return makeResp(null, 404);
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.selfIdentity = "pi-kimchi";
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      await a2aCall({ cfg, piDir, agent: "bob", message: "hi", asyncDispatch: true });
+      await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-9" });
+      assert.equal(seen.length, 2, "one SendMessage + one GetTask");
+      assert.equal(seen[0]!["X-A2A-Identity"], "pi-kimchi", "SendMessage carries the identity");
+      assert.equal(seen[1]!["X-A2A-Identity"], "pi-kimchi", "GetTask polls carry the identity too");
     });
   });
 

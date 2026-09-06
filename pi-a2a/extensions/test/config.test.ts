@@ -1,5 +1,5 @@
 import { assert } from "chai";
-import { buildA2ASettingsPatch, loadConfig, resolvePeer, authHeaders, normUrl, setConfigOverrides, writeSettingsA2A, gatewayEntries, gatewayKeyFromUrl, cleanHostName } from "../lib/config";
+import { buildA2ASettingsPatch, loadConfig, resolvePeer, authHeaders, normUrl, setConfigOverrides, writeSettingsA2A, gatewayEntries, gatewayKeyFromUrl, cleanHostName, SECURITY_ENV_KEYS } from "../lib/config";
 import { DEFAULTS } from "./helpers";
 import { makeTempDir } from "./tmp";
 import * as path from "node:path";
@@ -92,6 +92,12 @@ describe("config", () => {
           "A2A_CHILD_TRANSCRIPT_RETENTION_DAYS=1",
           "A2A_DISCOVERY_MDNS=true",
           "A2A_ENRICH_CARD=true",
+          // Abuse-control parity with sanitizeRepoA2ASettings: the repo must
+          // not raise the concurrency ceiling or stretch either supervision
+          // window (asyncTimeoutSec 0 = unbounded).
+          "A2A_MAX_CONCURRENT=1000",
+          "A2A_REPLY_TIMEOUT=1000000",
+          "A2A_ASYNC_TIMEOUT=1000000",
           // Non-security key must still be honored from the cwd file.
           "A2A_PORT=7777",
         ].join("\n"),
@@ -110,6 +116,9 @@ describe("config", () => {
       assert.equal(cfg.server.maxPingpongTurns, DEFAULTS().server.maxPingpongTurns, "anti-loop cap must not be raised by repo .env.local");
       assert.isTrue(cfg.server.childTranscripts, "childTranscripts must not be disabled by repo .env.local");
       assert.equal(cfg.server.childTranscriptRetentionDays, DEFAULTS().server.childTranscriptRetentionDays, "transcript retention window must not be shrunk by repo .env.local");
+      assert.equal(cfg.server.maxConcurrent, DEFAULTS().server.maxConcurrent, "concurrency cap must not be raised by repo .env.local");
+      assert.equal(cfg.server.replyTimeoutSec, DEFAULTS().server.replyTimeoutSec, "reply window must not be stretched by repo .env.local");
+      assert.equal(cfg.server.asyncTimeoutSec, DEFAULTS().server.asyncTimeoutSec, "detached supervision window must not be stretched by repo .env.local");
       assert.isFalse(cfg.discovery.mdns.enabled, "mDNS must not be force-enabled by repo .env.local");
       assert.equal(cfg.server.port, 7777, "non-security keys still honored from cwd .env.local");
     });
@@ -158,6 +167,25 @@ describe("config", () => {
     });
   });
 
+  it("SECURITY_ENV_KEYS covers the abuse-control server keys (env/settings parity)", () => {
+    // The .env.local fixture tests above cover the walk end-to-end but need
+    // real .env.local READS — machines that sandbox those reads (some coding
+    // agents cannot open dot-env files) mask them. This pins the key-set
+    // directly: every abuse-control env key the maintainer review flagged
+    // (A2A_ASYNC_TIMEOUT, A2A_REPLY_TIMEOUT, A2A_MAX_CONCURRENT) must be
+    // stripped from repo-controlled .env.local files, matching what
+    // sanitizeRepoA2ASettings strips from repo-controlled settings.json.
+    for (const k of [
+      "A2A_MAX_PINGPONG_TURNS",
+      "A2A_RATE_LIMIT",
+      "A2A_MAX_CONCURRENT",
+      "A2A_REPLY_TIMEOUT",
+      "A2A_ASYNC_TIMEOUT",
+    ]) {
+      assert.isTrue(SECURITY_ENV_KEYS.has(k), `${k} must be stripped from repo .env.local files`);
+    }
+  });
+
   it("sanitizes security keys from a REPO-CONTROLLED .pi/settings.json (settings injection guard)", () => {
     withIsolatedPiDir((dir) => {
       const cwd = path.join(dir, "repo");
@@ -181,8 +209,9 @@ describe("config", () => {
               maxConcurrent: 1000,
               maxPingpongTurns: 20,
               replyTimeoutSec: 1000000,
-              childTranscripts: false,
+childTranscripts: false,
               childTranscriptRetentionDays: 1,
+              asyncTimeoutSec: 1000000,
               port: 6001, // non-security key — must survive
             },
             discovery: {
@@ -212,6 +241,8 @@ describe("config", () => {
       assert.equal(cfg.server.maxPingpongTurns, DEFAULTS().server.maxPingpongTurns, "anti-loop cap must not be raised by repo settings.json");
       assert.isTrue(cfg.server.childTranscripts, "childTranscripts must not be disabled by repo settings.json");
       assert.equal(cfg.server.childTranscriptRetentionDays, DEFAULTS().server.childTranscriptRetentionDays, "transcript retention window must not be shrunk by repo settings.json");
+      assert.equal(cfg.server.replyTimeoutSec, DEFAULTS().server.replyTimeoutSec, "reply window must not be stretched by repo settings.json");
+      assert.equal(cfg.server.asyncTimeoutSec, DEFAULTS().server.asyncTimeoutSec, "detached supervision window must not be stretched by repo settings.json");
       assert.isFalse(cfg.discovery.mdns.enabled, "mDNS must not be force-enabled by repo settings.json");
       assert.equal(cfg.discovery.enrichCard, DEFAULTS().discovery.enrichCard, "enrichCard must not be forced on by repo settings.json");
       // Repo-sourced peer: callable, but NEVER auto-attached the shared token.
@@ -243,14 +274,19 @@ describe("config", () => {
 
   it("still honors security-relevant A2A_* from process env", () => {
     withIsolatedPiDir((dir) => {
-      const keys = ["A2A_SERVER_ENABLED", "A2A_BEARER_TOKEN"] as const;
+      const keys = ["A2A_SERVER_ENABLED", "A2A_BEARER_TOKEN", "A2A_ASYNC_TIMEOUT"] as const;
       const saved = keys.map((k) => [k, process.env[k]] as const);
       process.env.A2A_SERVER_ENABLED = "true";
       process.env.A2A_BEARER_TOKEN = "envtok";
+      process.env.A2A_ASYNC_TIMEOUT = "7200";
       try {
         const cfg = loadConfig({ cwd: dir });
         assert.isTrue(cfg.server.enabled);
         assert.equal(cfg.server.sharedToken, "envtok");
+        // The SECURITY_ENV_KEYS guard strips A2A_ASYNC_TIMEOUT only from
+        // repo-controlled .env.local FILES — the operator's own process env
+        // is the trusted path and must keep working.
+        assert.equal(cfg.server.asyncTimeoutSec, 7200);
       } finally {
         for (const [k, v] of saved) {
           if (v === undefined) delete process.env[k];

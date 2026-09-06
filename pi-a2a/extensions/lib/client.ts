@@ -10,6 +10,7 @@
 import {
   PROTOCOL_VERSION,
   STATE_INPUT_REQUIRED,
+  TERMINAL_STATES,
   extractText,
   newContextId,
   newTaskId,
@@ -19,6 +20,7 @@ import {
   unwrapSendMessageResponse,
   type AgentCard,
   type JsonRpcRequest,
+  type Task,
 } from "./protocol";
 import {
   authHeaders,
@@ -327,6 +329,26 @@ export interface SendResult {
   reply: string;
   contextId: string;
   state: string;
+  /** Set when the peer returned a Task (v1.0 wire) — the caller can poll it
+   *  with GetTask (a2a_status). Always present for non-blocking dispatches. */
+  taskId?: string;
+}
+
+/** Auth + asserted-identity headers for an outbound request to a peer.
+ *  X-A2A-Identity (selfIdentity, falling back to server.agentName) names the
+ *  caller for the RECEIVING side's audit log / attribution — behind a reverse
+ *  proxy every caller arrives from the proxy's address, so address-based
+ *  attribution cannot tell agents apart. Advisory display provenance only,
+ *  never authentication: any client can assert any name, so a receiver must
+ *  only use it to refine the display of a caller it has ALREADY admitted.
+ *  Omitted when no identity is configured. Shared by EVERY outbound request
+ *  (SendMessage dispatches AND the GetTask polls of a2a_status) so the
+ *  receiver sees the same caller on dispatch and on every later poll. */
+function peerRequestHeaders(cfg: A2AConfig, peer: Peer): Record<string, string> {
+  const headers = authHeaders(peer);
+  const self = cfg.selfIdentity || cfg.server.agentName;
+  if (self) headers["X-A2A-Identity"] = self;
+  return headers;
 }
 
 async function sendTask(opts: {
@@ -336,18 +358,13 @@ async function sendTask(opts: {
   agentLabel: string;
   message: string;
   contextId?: string;
+  /** Non-blocking dispatch (A2A v1.0 §3.2.2 returnImmediately): the peer
+   *  acks with an in-progress Task and runs the work detached from this
+   *  call — the reply arrives later via GetTask (a2a_status). */
+  asyncDispatch?: boolean;
 }): Promise<SendResult> {
   const { cfg, piDir, peer, agentLabel, message } = opts;
-  const headers = authHeaders(peer);
-  // Asserted sender identity (X-A2A-Identity): lets the receiving peer
-  // attribute this dispatch to a NAME (e.g. "pi-kimchi") instead of the
-  // caller's address — behind a reverse proxy every caller shares the
-  // proxy's loopback address, so address attribution cannot tell agents
-  // apart. Advisory display provenance only, mirroring the "pi/self"
-  // message metadata below: the receiver's own trust gates decide whether
-  // to honor it — never authentication. Unset identity → header omitted.
-  const self = cfg.selfIdentity || cfg.server.agentName;
-  if (self) headers["X-A2A-Identity"] = self;
+  const headers = peerRequestHeaders(cfg, peer);
   // Advisory caller attribution for the gateway's routing log/dashboard.
   // Self-declared display name — stripped by the gateway before forwarding.
   if (peer.viaGateway) {
@@ -395,6 +412,7 @@ async function sendTask(opts: {
     method: "SendMessage",
     params: {
       message: textMessage(ROLE_USER, safe, ctx),
+      ...(opts.asyncDispatch ? { configuration: { returnImmediately: true } } : {}),
     },
   };
 
@@ -427,17 +445,25 @@ async function sendTask(opts: {
     throw new Error(`peer '${agentLabel}' returned an error: ${msg}`);
   }
   const result = resp.result ?? {};
+  const payload = unwrapSendMessageResponse(result);
+  const taskId = payload && typeof payload === "object" && payload.id ? String(payload.id) : undefined;
   const reply = replyTextFromResult(result);
   const replyCtx = contextFromResult(result, ctx);
   const state = stateFromResult(result);
   // Persist BOTH the user message and the agent reply under the SAME contextId
   // (replyCtx) so a2a_history returns the complete conversation, not half.
+  // For a non-blocking dispatch the "reply" side is an ack marker — the real
+  // reply arrives later via GetTask (a2a_status).
+  const agentText =
+    opts.asyncDispatch && taskId && !reply
+      ? `(dispatched non-blocking — task ${taskId} is running on the peer; poll with a2a_status)`
+      : reply;
   persistMessage({ piDir, contextId: replyCtx, role: "user", text: safe, taskId: String(rpcBody.id), peer: agentLabel });
-  persistMessage({ piDir, contextId: replyCtx, role: "agent", text: reply, taskId: String(rpcBody.id), peer: agentLabel });
+  persistMessage({ piDir, contextId: replyCtx, role: "agent", text: agentText, taskId: String(rpcBody.id), peer: agentLabel });
   metrics.inboundTotal += 1;
   if (state === "TASK_STATE_COMPLETED") metrics.tasksCompleted += 1;
   if (state === "TASK_STATE_FAILED") metrics.tasksFailed += 1;
-  return { reply, contextId: replyCtx, state };
+  return { reply, contextId: replyCtx, state, taskId };
 }
 
 // ---------------------------------------------------------------------------
@@ -496,6 +522,45 @@ export async function a2aDiscover(opts: {
   return lines.join("\n");
 }
 
+/** Resolve an agent label (configured name, URL, or discovered name) to a
+ *  peer for an outbound call. Returns an error string instead of a peer when
+ *  the label cannot be resolved. Shared by a2a_call and a2a_status. */
+function resolveCallPeer(opts: {
+  cfg: A2AConfig;
+  piDir: string;
+  agent: string;
+  /** Live discovered peers (listPeers output) — lets local/mDNS peers be called by name. */
+  discoveredPeers?: DiscoveredPeer[];
+}): { peer: Peer } | { error: string } {
+  const agent = opts.agent;
+  const known = knownLoopbackUrls(opts.cfg, opts.piDir);
+  let peer = resolvePeer(opts.cfg, agent, { knownLoopbackUrls: known });
+  if (!peer || !peer.url) {
+    // Discovered-peer name lookup (local registry / mDNS). Ambiguous names
+    // error with the candidate URLs instead of guessing a target.
+    const matches = (opts.discoveredPeers ?? []).filter((d) => d.name === agent && d.url);
+    if (matches.length > 1) {
+      return {
+        error:
+          `Error: ${matches.length} discovered peers share the name '${agent}' — ` +
+          `call by URL: ${matches.map((m) => m.url).join(", ")}`,
+      };
+    }
+    if (matches.length === 1) {
+      // ponytail: re-resolve via the URL branch so loopback-token/SSRF policy is inherited verbatim
+      peer = resolvePeer(opts.cfg, matches[0]!.url, { knownLoopbackUrls: known });
+    }
+  }
+  if (!peer || !peer.url) {
+    return {
+      error:
+        `Error: unknown agent '${agent}'. Configure it under 'a2a.peers' in ` +
+        `settings.json, pass a full http(s):// URL, or use a name from a2a_peers.`,
+    };
+  }
+  return { peer };
+}
+
 export async function a2aCall(opts: {
   cfg: A2AConfig;
   piDir: string;
@@ -504,33 +569,23 @@ export async function a2aCall(opts: {
   contextId?: string;
   /** Live discovered peers (listPeers output) — lets local/mDNS peers be called by name. */
   discoveredPeers?: DiscoveredPeer[];
+  /** Non-blocking dispatch (A2A v1.0 §3.2.2 returnImmediately): return an
+   *  ack with the task id as soon as the peer accepts the task, instead of
+   *  holding this call open until the work finishes. Long jobs keep running
+   *  on the peer no matter how long the caller waits — poll a2a_status. */
+  asyncDispatch?: boolean;
 }): Promise<string> {
   const agent = (opts.agent || "").trim();
   const message = (opts.message || "").trim();
   if (!agent || !message) return "Error: both 'agent' and 'message' are required.";
-  const known = knownLoopbackUrls(opts.cfg, opts.piDir);
-  let peer = resolvePeer(opts.cfg, agent, { knownLoopbackUrls: known });
-  if (!peer || !peer.url) {
-    // Discovered-peer name lookup (local registry / mDNS). Ambiguous names
-    // error with the candidate URLs instead of guessing a target.
-    const matches = (opts.discoveredPeers ?? []).filter((d) => d.name === agent && d.url);
-    if (matches.length > 1) {
-      return (
-        `Error: ${matches.length} discovered peers share the name '${agent}' — ` +
-        `call by URL: ${matches.map((m) => m.url).join(", ")}`
-      );
-    }
-    if (matches.length === 1) {
-      // ponytail: re-resolve via the URL branch so loopback-token/SSRF policy is inherited verbatim
-      peer = resolvePeer(opts.cfg, matches[0]!.url, { knownLoopbackUrls: known });
-    }
-  }
-  if (!peer || !peer.url) {
-    return (
-      `Error: unknown agent '${agent}'. Configure it under 'a2a.peers' in ` +
-      `settings.json, pass a full http(s):// URL, or use a name from a2a_peers.`
-    );
-  }
+  const resolved = resolveCallPeer({
+    cfg: opts.cfg,
+    piDir: opts.piDir,
+    agent,
+    discoveredPeers: opts.discoveredPeers,
+  });
+  if ("error" in resolved) return resolved.error;
+  const peer = resolved.peer;
   let result: SendResult;
   try {
     result = await sendTask({
@@ -540,12 +595,24 @@ export async function a2aCall(opts: {
       agentLabel: agent,
       message,
       contextId: opts.contextId,
+      asyncDispatch: opts.asyncDispatch,
     });
   } catch (e: any) {
     const msg = e?.message || String(e);
     if (/HTTP 401|HTTP 403/.test(msg)) return `Error: peer '${agent}' rejected auth. Check the configured token.`;
     if (/HTTP 429/.test(msg)) return `Error: peer '${agent}' rate limited us (HTTP 429). Retry later.`;
     return `Error: call to '${agent}' failed — ${msg}`;
+  }
+  // Non-blocking ack: the peer accepted the task and is running it detached
+  // from this call. (A peer that does not support returnImmediately simply
+  // blocks and returns a terminal task — fall through to normal formatting.)
+  if (opts.asyncDispatch && result.taskId && !TERMINAL_STATES.has(result.state)) {
+    return (
+      `[A2A → ${agent} · context ${result.contextId} · ${shortState(result.state)} · detached]\n` +
+      `Dispatch accepted — task ${result.taskId} is running on the peer (non-blocking). ` +
+      `This call has already returned; the peer keeps working regardless of how long it takes. ` +
+      `Poll the result with a2a_status(agent: "${agent}", task_id: "${result.taskId}").`
+    );
   }
   let header = `[A2A → ${agent} · context ${result.contextId}`;
   if (result.state) header += ` · ${shortState(result.state)}`;
@@ -557,6 +624,151 @@ export async function a2aCall(opts: {
       `with context_id '${result.contextId}'.)`;
   }
   return `${header}\n${body}`;
+}
+
+// ---------------------------------------------------------------------------
+// Task status / polling (GetTask)
+// ---------------------------------------------------------------------------
+
+/** sleep that also resolves when `signal` aborts, so poll waits do not hold
+ *  a canceled tool call open — a2a_status with wait_seconds=300 must stay
+ *  interruptible. */
+function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const t = setTimeout(done, ms);
+    function done(): void {
+      clearTimeout(t);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    if (signal) {
+      if (signal.aborted) return done();
+      signal.addEventListener("abort", done, { once: true });
+    }
+  });
+}
+
+/** Fetch one task's current state from a peer via GetTask (A2A v1.0). The
+ *  peer's per-identity task ownership applies: only the caller that created
+ *  the task can read it. */
+export async function getTask(opts: {
+  cfg: A2AConfig;
+  peer: Peer;
+  taskId: string;
+}): Promise<Task> {
+  const headers = peerRequestHeaders(opts.cfg, opts.peer);
+  const timeout = opts.peer.timeout || opts.cfg.timeouts.send;
+  // Best-effort card fetch (to learn the rpc URL); non-fatal on failure.
+  let card: AgentCard | null = null;
+  try {
+    card = await fetchCard(opts.peer.url, headers, Math.min(timeout, 30000));
+  } catch {
+    /* tolerate */
+  }
+  const rpcBody: JsonRpcRequest = {
+    jsonrpc: "2.0",
+    id: newTaskId(),
+    method: "GetTask",
+    params: { id: opts.taskId },
+  };
+  const resp = await postJsonRpc(rpcUrl(opts.peer.url, card), rpcBody, headers, timeout);
+  if (resp.error) {
+    const err = new Error(`peer returned an error: ${resp.error.message || JSON.stringify(resp.error)}`);
+    (err as any).code = resp.error.code;
+    throw err;
+  }
+  return unwrapSendMessageResponse(resp.result ?? {}) as Task;
+}
+
+function formatTask(task: Task): string {
+  const header = `[task ${task.id} · context ${task.contextId} · ${shortState(task.status?.state ?? "")}` +
+    (task.status?.timestamp ? ` · ${task.status.timestamp}` : "") + "]";
+  // Artifacts first (final output), then status message — same precedence as
+  // replyTextFromResult.
+  let body = "";
+  if (Array.isArray(task.artifacts)) {
+    for (const a of task.artifacts) {
+      const t = extractText(a);
+      if (t) { body = t; break; }
+    }
+  }
+  if (!body && task.status?.message) body = extractText(task.status.message);
+  if (!body) body = "(no text yet — task is in progress)";
+  return `${header}\n${body}`;
+}
+
+export async function a2aStatus(opts: {
+  cfg: A2AConfig;
+  piDir: string;
+  agent: string;
+  taskId: string;
+  /** When POSITIVE (seconds), poll until the task reaches a terminal state
+   *  or the deadline — polls at cfg.timeouts.async intervals (the documented
+   *  "async task poll interval"). 0, negative, or undefined = a single
+   *  fetch. */
+  waitSeconds?: number;
+  discoveredPeers?: DiscoveredPeer[];
+  /** Aborts the polling loop promptly (tool cancel): checked before each
+   *  fetch, raced into the poll sleep, and re-checked after it — a canceled
+   *  a2a_status with wait_seconds=300 must not hold the tool call open.
+   *  Aborting does NOT affect the task on the peer; it keeps running. */
+  signal?: AbortSignal;
+}): Promise<string> {
+  const agent = (opts.agent || "").trim();
+  const taskId = (opts.taskId || "").trim();
+  if (!agent || !taskId) return "Error: both 'agent' and 'task_id' are required.";
+  const resolved = resolveCallPeer({
+    cfg: opts.cfg,
+    piDir: opts.piDir,
+    agent,
+    discoveredPeers: opts.discoveredPeers,
+  });
+  if ("error" in resolved) return resolved.error;
+  const peer = resolved.peer;
+  // Non-positive wait_seconds is treated as "unset" — a single fetch. A
+  // negative value would otherwise poll once, immediately expire, and print
+  // nonsense like "after -5s of polling".
+  const waitSeconds = typeof opts.waitSeconds === "number" && opts.waitSeconds > 0 ? opts.waitSeconds : undefined;
+  const deadline = waitSeconds !== undefined ? Date.now() + waitSeconds * 1000 : 0;
+  const interval = Math.max(250, opts.cfg.timeouts.async);
+  let lastTask: Task | null = null;
+  for (;;) {
+    if (opts.signal?.aborted) return statusCanceled(agent, taskId, lastTask);
+    let task: Task;
+    try {
+      task = await getTask({ cfg: opts.cfg, peer, taskId });
+    } catch (e: any) {
+      if ((e as any).code === -32001) {
+        return `Error: peer '${agent}' does not know task '${taskId}' (unknown id, already evicted, or created by a different caller — tasks are visible only to the identity that sent them).`;
+      }
+      const msg = e?.message || String(e);
+      if (/HTTP 401|HTTP 403/.test(msg)) return `Error: peer '${agent}' rejected auth. Check the configured token.`;
+      return `Error: status check for '${agent}' task '${taskId}' failed — ${msg}`;
+    }
+    lastTask = task;
+    const state = normalizeState(task.status?.state);
+    if (TERMINAL_STATES.has(state) || waitSeconds === undefined) {
+      return formatTask(task);
+    }
+    if (Date.now() >= deadline) {
+      return (
+        formatTask(task) +
+        `\n\n(Still non-terminal after ${waitSeconds}s of polling — the task keeps running on the peer; call a2a_status again later.)`
+      );
+    }
+    await sleepAbortable(Math.min(interval, Math.max(0, deadline - Date.now())), opts.signal);
+  }
+}
+
+/** a2a_status's abort message: report the last-known state (the task itself
+ *  is untouched — aborting a poll never touches the peer's run) and how to
+ *  pick the poll back up. */
+function statusCanceled(agent: string, taskId: string, lastTask: Task | null): string {
+  const body = lastTask ? formatTask(lastTask) : `task ${taskId}: status not yet fetched.`;
+  return (
+    body +
+    `\n\n(Status polling canceled — the task keeps running on the peer regardless; call a2a_status(agent: "${agent}", task_id: "${taskId}") again later.)`
+  );
 }
 
 /** Build the set of loopback URLs that are KNOWN peers (same-machine, same-user):

@@ -13,6 +13,7 @@ export function DEFAULTS(): A2AConfig {
       workspace: "",
       maxConcurrent: 3,
       replyTimeoutSec: 300,
+      asyncTimeoutSec: 86400,
       agentName: "",
       publicUrl: "",
       sharedToken: "",

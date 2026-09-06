@@ -118,7 +118,16 @@ export interface A2AConfig {
     host: string;
     workspace: string;
     maxConcurrent: number;
+    /** Blocking-send supervision window in seconds — the HTTP request stays
+     *  open at most this long. 0 = no reply-window timer (unbounded): the
+     *  request stays open until the run settles. Deliberate, rare — same 0
+     *  semantics as asyncTimeoutSec. */
     replyTimeoutSec: number;
+    /** Supervision window for detached (returnImmediately) tasks, in seconds.
+     *  The caller's HTTP request already returned an ACK, so the reply window
+     *  does not apply — this bounds a detached run instead. 0 = unbounded
+     *  (caller-supervised via GetTask / CancelTask). */
+    asyncTimeoutSec: number;
     agentName: string;
     publicUrl: string;
     sharedToken: string;
@@ -174,6 +183,7 @@ const DEFAULTS: A2AConfig = {
     workspace: "",
     maxConcurrent: 3,
     replyTimeoutSec: 300,
+    asyncTimeoutSec: 86400,
     agentName: "",
     publicUrl: "",
     sharedToken: "",
@@ -225,8 +235,12 @@ function parseDotEnv(text: string): Record<string, string> {
  * cwd→root `.env.local` walk: a coding agent opens attacker-controlled repos,
  * so repo files must not be able to enable the server, widen the bind,
  * install tokens, or redirect the gateway (see loadEnv).
+ *
+ * Exported for the env/settings parity test: the set must cover the same
+ * server abuse-control surface that sanitizeRepoA2ASettings strips from
+ * repo-controlled settings.json.
  */
-const SECURITY_ENV_KEYS: ReadonlySet<string> = new Set([
+export const SECURITY_ENV_KEYS: ReadonlySet<string> = new Set([
   "A2A_SERVER_ENABLED",
   "A2A_HOST",
   "A2A_BEARER_TOKEN",
@@ -237,6 +251,14 @@ const SECURITY_ENV_KEYS: ReadonlySet<string> = new Set([
   "A2A_RATE_LIMIT",
   "A2A_CHILD_TRANSCRIPTS",
   "A2A_CHILD_TRANSCRIPT_RETENTION_DAYS",
+  // Abuse-control parity with sanitizeRepoA2ASettings ("maxConcurrent",
+  // "replyTimeoutSec", "asyncTimeoutSec"): a repo must not be able to raise
+  // the concurrency ceiling or stretch either supervision window
+  // (asyncTimeoutSec 0 = unbounded; a huge window pins maxConcurrent slots
+  // for the whole window).
+  "A2A_MAX_CONCURRENT",
+  "A2A_REPLY_TIMEOUT",
+  "A2A_ASYNC_TIMEOUT",
   "A2A_VERIFY_SSL",
   "A2A_DISCOVERY_MDNS",
   "A2A_ENRICH_CARD",
@@ -332,6 +354,7 @@ function sanitizeRepoA2ASettings(s: any): any {
       // keep-forever disk-fill when raised).
       "childTranscripts",
       "childTranscriptRetentionDays",
+      "asyncTimeoutSec",
     ])
       delete srv[k];
     c.server = srv;
@@ -452,6 +475,7 @@ export function loadConfig(opts: {
   cfg.server.workspace = String(srv.workspace ?? "");
   cfg.server.maxConcurrent = num(srv.maxConcurrent, DEFAULTS.server.maxConcurrent);
   cfg.server.replyTimeoutSec = num(srv.replyTimeoutSec ?? env.A2A_REPLY_TIMEOUT, DEFAULTS.server.replyTimeoutSec);
+  cfg.server.asyncTimeoutSec = num(srv.asyncTimeoutSec ?? env.A2A_ASYNC_TIMEOUT, DEFAULTS.server.asyncTimeoutSec);
   cfg.server.agentName = String(srv.agentName ?? env.A2A_AGENT_NAME ?? "");
   cfg.server.publicUrl = String(srv.publicUrl ?? env.A2A_PUBLIC_URL ?? "");
   cfg.server.sharedToken = String(srv.sharedToken ?? env.A2A_BEARER_TOKEN ?? "");

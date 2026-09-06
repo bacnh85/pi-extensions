@@ -7,7 +7,7 @@ import { DEFAULTS } from "./helpers";
 import { makeTempDir } from "./tmp";
 import { A2AServer, type SessionRunner } from "../lib/server";
 import type { A2AConfig } from "../lib/config";
-import { STATE_CANCELED, STATE_COMPLETED, STATE_FAILED, STATE_INPUT_REQUIRED, STATE_REJECTED } from "../lib/protocol";
+import { STATE_CANCELED, STATE_COMPLETED, STATE_FAILED, STATE_INPUT_REQUIRED, STATE_REJECTED, STATE_WORKING } from "../lib/protocol";
 import { authenticate } from "../lib/security";
 import { metrics } from "../lib/client";
 import { list as listRegistry } from "../lib/registry";
@@ -82,6 +82,19 @@ async function jsonRpc(url: string, method: string, params: any, headers: Record
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
   return resp.json();
+}
+
+/** Poll tasks/get until the task reaches a terminal state (bounded). */
+async function pollTask(url: string, taskId: string, timeoutMs = 5000): Promise<any> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const r = await jsonRpc(url, "tasks/get", { id: taskId });
+    if (r.error) throw new Error(`tasks/get error: ${JSON.stringify(r.error)}`);
+    const state = r.result?.status?.state;
+    if ([STATE_COMPLETED, STATE_FAILED, STATE_CANCELED, STATE_REJECTED].includes(state)) return r.result;
+    if (Date.now() > deadline) throw new Error(`poll timeout; still ${state}`);
+    await new Promise((res) => setTimeout(res, 50));
+  }
 }
 
 describe("server", () => {
@@ -1111,7 +1124,275 @@ describe("server", () => {
         const r = await jsonRpc(url, "SendMessage", {
           message: { role: "ROLE_USER", parts: [{ text: "slow" }] },
         });
+assert.equal(sendTask(r).status.state, STATE_FAILED);
+        // Classification comes from the abort reason (the supervision ground
+        // truth), not the runner's own "timeout" rejection above.
+        assert.match(sendTask(r).status.message?.parts?.[0]?.text ?? "", /reply timeout/);
+      } finally {
+        await stop();
+      }
+    });
+  });
+
+  describe("non-blocking dispatch (SendMessageConfiguration.returnImmediately)", () => {
+    it("acks WORKING immediately and completes in the background (GetTask)", async () => {
+      const runner: SessionRunner = async () => {
+        await new Promise((res) => setTimeout(res, 300));
+        return { reply: "done eventually", inputRequired: false };
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner });
+      try {
+        const t0 = Date.now();
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "long job" }] },
+          configuration: { returnImmediately: true },
+        });
+        const ackMs = Date.now() - t0;
+        // The ack must NOT wait for the 300ms runner — that is the whole point
+        // of non-blocking dispatch (the caller envelope stops bounding the run).
+        assert.isBelow(ackMs, 200, `ack took ${ackMs}ms; runner should still be pending`);
+        assert.equal(sendTask(r).status.state, STATE_WORKING);
+        assert.match(sendTask(r).id, /^task-/);
+        const task = await pollTask(url, sendTask(r).id);
+        assert.equal(task.status.state, STATE_COMPLETED);
+        assert.equal(task.artifacts?.[0]?.parts?.[0]?.text, "done eventually");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("accepts the snake_case return_immediately spelling", async () => {
+      // Delayed runner: with an instant one the run settles before the HTTP
+      // layer serializes the ack, so the ack legitimately carries the terminal
+      // state (the client handles that — fast tasks just return their result).
+      // A pending runner makes the WORKING assertion meaningful: it only holds
+      // if the server truly returned before the run finished.
+      const runner: SessionRunner = async () => {
+        await new Promise((res) => setTimeout(res, 150));
+        return { reply: "snake ok", inputRequired: false };
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+          configuration: { return_immediately: true },
+        });
+        assert.equal(sendTask(r).status.state, STATE_WORKING);
+        const task = await pollTask(url, sendTask(r).id);
+        assert.equal(task.status.state, STATE_COMPLETED);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("a detached run is NOT bounded by the reply window", async () => {
+      // Same config that FAILS a blocking task after 1s (see the reply-timeout
+      // suite above): detached, with the async window disabled (0), the run
+      // must outlive the reply window and complete.
+      const cfg = DEFAULTS();
+      cfg.server.replyTimeoutSec = 1;
+      cfg.server.asyncTimeoutSec = 0;
+      const runner: SessionRunner = async () => {
+        await new Promise((res) => setTimeout(res, 1600));
+        return { reply: "survived the reply window", inputRequired: false };
+      };
+      const { url, stop } = await startServer({ cfg, runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "outlive the window" }] },
+          configuration: { returnImmediately: true },
+        });
+        assert.equal(sendTask(r).status.state, STATE_WORKING);
+        const task = await pollTask(url, sendTask(r).id, 6000);
+        assert.equal(task.status.state, STATE_COMPLETED);
+        assert.equal(task.artifacts?.[0]?.parts?.[0]?.text, "survived the reply window");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("server.asyncTimeoutSec bounds a detached run and classifies it FAILED", async () => {
+      const cfg = DEFAULTS();
+      cfg.server.asyncTimeoutSec = 1;
+      // The runner rejects with its OWN error on abort (like a session runner
+      // whose prompt rejects with an SDK error) — the server must still
+      // classify by the abort REASON, which carries the descriptive window
+      // message. If it used the runner's error, a dispatcher could not tell a
+      // supervision kill from a worker crash.
+      const runner: SessionRunner = ({ signal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("async window hit")));
+        });
+      const { url, stop } = await startServer({ cfg, runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hang" }] },
+          configuration: { returnImmediately: true },
+        });
+        assert.equal(sendTask(r).status.state, STATE_WORKING);
+        const task = await pollTask(url, sendTask(r).id, 4000);
+        assert.equal(task.status.state, STATE_FAILED);
+        assert.match(task.status.message?.parts?.[0]?.text ?? "", /async timeout.*detached-task window/);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("tasks/cancel cancels a detached run", async () => {
+      const runner: SessionRunner = ({ signal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("canceled")));
+        });
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "cancel me" }] },
+          configuration: { returnImmediately: true },
+        });
+        assert.equal(sendTask(r).status.state, STATE_WORKING);
+        const c = await jsonRpc(url, "tasks/cancel", { id: sendTask(r).id });
+        assert.equal(c.result.status.state, STATE_CANCELED);
+        const task = await pollTask(url, sendTask(r).id);
+        assert.equal(task.status.state, STATE_CANCELED);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("a detached runner failure is visible via GetTask as FAILED with the message", async () => {
+      const runner: SessionRunner = async () => {
+        throw new Error("worker exploded");
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "will fail" }] },
+          configuration: { returnImmediately: true },
+        });
+        const task = await pollTask(url, sendTask(r).id);
+        assert.equal(task.status.state, STATE_FAILED);
+        assert.match(task.status.message?.parts?.[0]?.text ?? "", /worker exploded/);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("contains an unexpected throw on the detached path (no unhandled rejection; task FAILED)", async () => {
+      // A failing runner + an onActivity sink that throws on the "failed"
+      // event makes executeTask reject AFTER the ack already returned — the
+      // floating-promise path. The detached observer must contain it: the
+      // task still lands FAILED with the runner's message (set before the
+      // sink threw), and the process must not die of an unhandled rejection.
+      const runner: SessionRunner = async () => {
+        // Fail AFTER the ack is serialized, so the rejection genuinely lands
+        // on the detached path (an instantly-throwing runner can lose the
+        // race and mutate the task before the HTTP layer serializes the ack).
+        await new Promise((res) => setTimeout(res, 150));
+        throw new Error("worker exploded");
+      };
+      const onActivity = (a: any) => {
+        if (a.type === "failed") throw new Error("activity sink exploded");
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner, onActivity });
+      // Observe process-level unhandled rejections for the duration of the
+      // scenario: the detached `execution` promise must never surface as one.
+      // (A bare test would not discriminate — mocha installs its own
+      // unhandledRejection handler that swallows detached rejections.)
+      let unhandled: unknown = null;
+      const onUnhandled = (e: unknown) => {
+        unhandled = e ?? new Error("unhandled rejection");
+      };
+      process.on("unhandledRejection", onUnhandled);
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "will fail" }] },
+          configuration: { returnImmediately: true },
+        });
+        assert.equal(sendTask(r).status.state, STATE_WORKING);
+        const task = await pollTask(url, sendTask(r).id);
+        assert.equal(task.status.state, STATE_FAILED);
+        assert.match(task.status.message?.parts?.[0]?.text ?? "", /worker exploded/);
+        // The poll above let the event loop turn; any unhandled rejection
+        // from the detached path has fired by now.
+        assert.isNull(unhandled, `detached path must not produce an unhandled rejection (got: ${String(unhandled)})`);
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+        await stop();
+      }
+    });
+
+    it("classification is keyed to the supervision timer, not the abort-reason text", async () => {
+      // No supervision timer fires here (replyTimeoutSec is large); the
+      // runner rejects with its own "reply timeout:"-prefixed error. The
+      // task must be FAILED with the runner's message PASSED THROUGH VERBATIM
+      // — supervision wording ("…window") may only ever come from OUR timer,
+      // so a lying runner cannot pose as a supervision kill.
+      const cfg = DEFAULTS();
+      cfg.server.replyTimeoutSec = 60;
+      const runner: SessionRunner = async () => {
+        throw new Error("reply timeout: this text lies");
+      };
+      const { url, stop } = await startServer({ cfg, runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "spoof attempt" }] },
+        });
         assert.equal(sendTask(r).status.state, STATE_FAILED);
+        const msg = sendTask(r).status.message?.parts?.[0]?.text ?? "";
+        assert.equal(msg, "reply timeout: this text lies");
+        assert.notInclude(msg, "window");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("replyTimeoutSec 0 means NO reply-window timer (unbounded), not instant timeout", async () => {
+      // Pre-async-dispatch, replyTimeoutSec 0 armed setTimeout(…, 0) = an
+      // instant timeout. The >0 guard redefined 0 to "no timer"; this pins
+      // the documented reading (0 = unbounded, same as asyncTimeoutSec).
+      const cfg = DEFAULTS();
+      cfg.server.replyTimeoutSec = 0;
+      const runner: SessionRunner = async () => {
+        await new Promise((res) => setTimeout(res, 400));
+        return { reply: "outlived a zero window", inputRequired: false };
+      };
+      const { url, stop } = await startServer({ cfg, runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "slow but allowed" }] },
+        });
+        assert.equal(sendTask(r).status.state, STATE_COMPLETED);
+        assert.equal(sendTask(r).artifacts?.[0]?.parts?.[0]?.text, "outlived a zero window");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("returnImmediately has no effect on message/stream (spec §3.2.2)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("streamed reply") });
+      try {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: "sse-async",
+            method: "message/stream",
+            params: {
+              message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+              configuration: { returnImmediately: true },
+            },
+          }),
+        });
+        const text = await resp.text();
+        const frames = text
+          .split("\n")
+          .filter((l) => l.startsWith("data:"))
+          .map((l) => JSON.parse(l.replace(/^data:\s*/, "")));
+        const statusFrame = frames.find((f) => f.result?.statusUpdate);
+        // Streaming keeps its blocking semantics: the final statusUpdate is the
+        // COMPLETED task, not an early WORKING ack.
+        assert.equal(statusFrame?.result?.statusUpdate?.status?.state, STATE_COMPLETED);
       } finally {
         await stop();
       }

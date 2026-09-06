@@ -78,10 +78,11 @@ Edit `~/.pi/agent/settings.json` under the `a2a` key. Key reference:
 | `server.peerTokens` | `{}` | Per-peer token directory `name → token` (unique identities) |
 | `server.trustedPeers` | `[]` | Allow-list of authenticated identities |
 | `server.allowAllUsers` | `false` | Allow any authenticated peer (dev only) |
-| `server.maxConcurrent` | `3` | Max concurrent inbound tasks |
-| `server.replyTimeoutSec` | `300` | Seconds to wait for the agent's reply |
 | `server.childTranscripts` | `true` | Persist each dispatched child session's transcript to `<agentDir>/a2a_sessions/<timestamp>_<taskId>.jsonl` (a real pi session file, openable with pi's session tooling) so stalled/killed workers leave a forensic step history. Off = stock in-memory children |
 | `server.childTranscriptRetentionDays` | `30` | Delete child transcripts older than N days on server start. `0` = keep forever. Transcripts carry everything the worker read — keep the window bounded |
+| `server.maxConcurrent` | `3` | Max concurrent inbound tasks (blocking **and** detached — see the operator note under [Non-blocking dispatch](#non-blocking-dispatch-returnimmediately)) |
+| `server.replyTimeoutSec` | `300` | Seconds to wait for the agent's reply on a blocking send. `0` = no reply-window timer (unbounded — the request stays open until the run settles; deliberate, rare) |
+| `server.asyncTimeoutSec` | `86400` | Supervision window (seconds) for **detached** tasks sent with `returnImmediately` — the caller's request already returned an ack, so this bound replaces the reply window. `0` = unbounded (caller-supervised via `tasks/get` / `tasks/cancel`) |
 | `server.maxPingpongTurns` | `5` | Anti-loop turn cap per context (max 20) |
 | `server.rateLimitPerMin` | `60` | Requests/minute per identity |
 | `server.skills` | `[]` | Skills advertised on the Agent Card. When empty (default), skills are **self-discovered** from the live session — no config needed |
@@ -171,7 +172,8 @@ on an inbound agent server on whoever opens it. (`portFallback: 0` means
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authenticated peer (dev only) |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20) |
-| `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply |
+| `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply (`0` = unbounded: no reply-window timer) |
+| `A2A_ASYNC_TIMEOUT` | `86400` | Detached-task supervision window in seconds (`0` = unbounded) — see [Non-blocking dispatch](#non-blocking-dispatch-returnimmediately) |
 | `A2A_SERVER_ENABLED` | `false` | Auto-start the inbound server on session start |
 | `A2A_SELF_IDENTITY` | _(unset)_ | Outbound caller identity: a key in `server.peerTokens`. When set, this session presents its OWN per-peer token (not the shared token) so receivers attribute calls to it uniquely. Empty = use the shared token (anonymous caller). |
 | `A2A_DISCOVERY_LOCAL` | `true` | Enable the local file registry |
@@ -389,7 +391,8 @@ and **UI** (transcript toggle).
 
 | Tool | What it does |
 |------|--------------|
-| `a2a_call(agent, message, context_id?)` | Send a task to a peer, return its reply; multi-turn via `context_id` |
+| `a2a_call(agent, message, context_id?, async_dispatch?)` | Send a task to a peer, return its reply; multi-turn via `context_id`. `async_dispatch: true` returns an ack with the task id immediately (see [Non-blocking dispatch](#non-blocking-dispatch-returnimmediately)) |
+| `a2a_status(agent, task_id, wait_seconds?)` | Poll a previously dispatched task by id (GetTask); with `wait_seconds`, poll until terminal or deadline |
 | `a2a_discover(url)` | Fetch and summarize a peer's Agent Card |
 | `a2a_list()` | Configured peers, persisted conversations, metrics |
 | `a2a_history(context_id, limit?)` | Recall a persisted conversation |
@@ -464,6 +467,73 @@ no text, and the task would otherwise complete with the *previous* turn's
 stale reply. Such a turn now fails the task (`FAILED`, status message
 "no usable reply was produced") instead of masquerading as success.
 
+## Non-blocking dispatch (returnImmediately)
+
+A blocking `message/send` holds the HTTP request open until the agent finishes
+— so the caller's reply window bounds the **worker's** runtime: a long job
+(reindex, multi-file refactor, an ops run) gets killed when the caller stops
+waiting, even though the caller only wanted to submit it.
+
+A2A v1.0 §3.2.2 `SendMessageConfiguration.returnImmediately` decouples the
+two. On the wire it is one extra field:
+
+```jsonc
+{
+  "jsonrpc": "2.0", "id": 1, "method": "message/send",
+  "params": {
+    "message": { "role": "ROLE_USER", "parts": [{ "text": "long job" }] },
+    "configuration": { "returnImmediately": true }
+  }
+}
+```
+
+The server acks immediately with the Task in `TASK_STATE_WORKING` and keeps
+running it **detached** from the request. The ack no longer waits for the
+work; the work no longer dies with the caller's patience. The caller then
+polls `tasks/get` (or cancels via `tasks/cancel`) by task id.
+
+From Pi's tools this is `async_dispatch` + `a2a_status`:
+
+```text
+a2a_call(agent="worker", message="reindex everything", async_dispatch=true)
+# → [A2A → worker · context … · working · detached]
+#   Dispatch accepted — task task-1b4f… is running on the peer (non-blocking).
+#   Poll the result with a2a_status(agent: "worker", task_id: "task-1b4f…").
+
+a2a_status(agent="worker", task_id="task-1b4f…")          # one fetch
+a2a_status(agent="worker", task_id="task-1b4f…", wait_seconds=300)  # poll until terminal
+```
+
+- A peer that does not understand `returnImmediately` simply blocks and
+  returns the finished task — `a2a_call` falls through to the normal reply
+  formatting, so the flag is always safe to send.
+- A **fast** task may complete before the ack is serialized; the ack then
+  carries the terminal state and artifacts (the client treats it as a normal
+  reply — no polling needed).
+- Detached runs count against `server.maxConcurrent` exactly like blocking
+  ones, and overflow is supervised by `server.asyncTimeoutSec` (default
+  24h, `0` = unbounded/caller-supervised) → `TASK_STATE_FAILED` with a
+  descriptive status message, mirroring the reply-window semantics.
+- **Operator note — a detached run pins a concurrency slot for its whole
+  lifetime.** The gate runs *before* the blocking/detached split, and a
+  detached run holds its `maxConcurrent` slot from the ack until it reaches
+  a terminal state — up to `asyncTimeoutSec` (24h by default) each. Three
+  slow or hung detached dispatches at the default `maxConcurrent: 3`
+  therefore block **all** inbound work — blocking `message/send` included
+  (`server busy`) — until they drain. Levers: keep `asyncTimeoutSec` as low
+  as your longest legitimate detached job (it is the kill switch that frees
+  the slot), raise `maxConcurrent` if you routinely dispatch long jobs, and
+  `tasks/cancel` a stuck task to free its slot immediately. (A separate
+  `maxDetached` budget is a plausible follow-up.)
+- `returnImmediately` has **no effect on `message/stream`** (per §3.2.2) —
+  streaming keeps its blocking semantics.
+- The snake_case spelling `return_immediately` is accepted for early
+  v1.0-draft clients.
+
+For fleet agents: the natural completion signal is still the shared queue
+(knowfleet) — poll `a2a_status` only to surface progress or fetch artifacts,
+not as the source of truth for whether the worker finished its bookkeeping.
+
 ## Hermes interop
 
 The primary interop target. Hermes (`~/.hermes/hermes-agent`, A2A platform
@@ -493,6 +563,7 @@ results, `{id, state}` list stubs) so existing peers see no change.
 |---------|--------|
 | Agent Card (`/.well-known/agent-card.json`) | ✅ + legacy `agent.json` |
 | `message/send` (sync) | ✅ |
+| `message/send` non-blocking (`configuration.returnImmediately`) | ✅ (see [Non-blocking dispatch](#non-blocking-dispatch-returnimmediately)) |
 | `message/stream` (SSE) | ✅ |
 | `tasks/get`, `tasks/list`, `tasks/cancel`, `tasks/subscribe` | ✅ |
 | Part types (text, file, data) | ✅ (v1.0 + v0.3 tolerant) |

@@ -25,6 +25,7 @@ import {
   a2aHistory,
   a2aList,
   a2aOrchestrate,
+  a2aStatus,
   metrics,
 } from "./lib/client";
 import { A2AServer, type SessionRunner } from "./lib/server";
@@ -480,16 +481,29 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     description:
       "Call a remote A2A (Agent2Agent) agent with a task message and return its reply. " +
       "Use to delegate work to other agents (Hermes, ADK, LangChain, CrewAI, any A2A peer). " +
-      "Pass context_id to continue a multi-turn conversation.",
+      "Pass context_id to continue a multi-turn conversation. Set async_dispatch true for " +
+      "long-running work: the call returns an ack with a task id immediately and the peer " +
+      "keeps working — poll it with a2a_status.",
     promptSnippet: "delegate a task to a remote A2A agent and get its reply",
     promptGuidelines: [
       "Use for cross-agent task distribution and specialist delegation.",
       "The agent param is a configured peer name OR a full URL.",
+      "For jobs that may run long, set async_dispatch true — you get a task id back " +
+      "immediately instead of holding the call open; check a2a_status for the result.",
     ],
     parameters: Type.Object({
       agent: agentParam,
       message: messageParam,
       context_id: contextIdParam,
+      async_dispatch: Type.Optional(
+        Type.Boolean({
+          description:
+            "Non-blocking dispatch (A2A v1.0 returnImmediately): return an ack with the task id " +
+            "as soon as the peer accepts, instead of waiting for the work to finish. " +
+            "The peer runs the task detached — poll a2a_status for the result.",
+          default: false,
+        }),
+      ),
     }),
     execute: async (_id, args, _signal, _onUpdate, ctx) => {
       const cfg = cfgFor(ctx);
@@ -503,7 +517,56 @@ export default function a2aExtension(pi: ExtensionAPI): void {
               agent: String(args.agent ?? ""),
               message: String(args.message ?? ""),
               contextId: args.context_id ? String(args.context_id) : undefined,
+              asyncDispatch: args.async_dispatch === true,
               discoveredPeers: listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "", gatewayPeers: getGatewayPeers() }),
+            }),
+          },
+        ],
+        details: {},
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "a2a_status",
+    label: "A2A Status",
+    description:
+      "Check the status of a task previously dispatched to a remote A2A agent (by task id — " +
+      "see the ack from an async_dispatch a2a_call). Returns the task state, and the reply " +
+      "text once the task is completed/failed. Optionally wait (wait_seconds) and poll until " +
+      "the task reaches a terminal state.",
+    promptSnippet: "poll the status of a task dispatched to a remote A2A agent",
+    promptGuidelines: [
+      "Use after an async_dispatch a2a_call to fetch the result of a long-running task.",
+      "Without wait_seconds it fetches once; with it, the tool polls until the task is " +
+      "terminal or the deadline passes (the task keeps running on the peer either way).",
+    ],
+    parameters: Type.Object({
+      agent: agentParam,
+      task_id: Type.String({
+        description: "Task id from the dispatch ack (e.g. task-1b4f8d1c30d54819).",
+      }),
+      wait_seconds: Type.Optional(
+        Type.Number({
+          description: "If positive, poll until the task is terminal or this many seconds pass. " +
+          "Omit (or 0/negative) for a single status fetch.",
+        }),
+      ),
+    }),
+    execute: async (_id, args, signal, _onUpdate, ctx) => {
+      const cfg = cfgFor(ctx);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: await a2aStatus({
+              cfg,
+              piDir: piDir(),
+              agent: String(args.agent ?? ""),
+              taskId: String(args.task_id ?? ""),
+              waitSeconds: typeof args.wait_seconds === "number" ? args.wait_seconds : undefined,
+              discoveredPeers: listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "", gatewayPeers: getGatewayPeers() }),
+              signal: signal ?? undefined,
             }),
           },
         ],
@@ -1032,7 +1095,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
           "  /a2a-config show             Show config summary",
           "  /a2a-server start|stop|status  Manage inbound server",
           "",
-          "Tools: a2a_call, a2a_discover, a2a_list, a2a_history, a2a_orchestrate",
+          "Tools: a2a_call, a2a_status, a2a_discover, a2a_list, a2a_history, a2a_orchestrate",
         ].join("\n"),
         "info",
       );

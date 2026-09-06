@@ -55,6 +55,9 @@ export function buildRows(
     row("server.replyTimeoutSec", "Reply timeout (s)", "number", cfg.server.replyTimeoutSec, (v) => {
       cfg.server.replyTimeoutSec = toInt(v, cfg.server.replyTimeoutSec);
     }),
+    row("server.asyncTimeoutSec", "Async timeout (s)", "number", cfg.server.asyncTimeoutSec, (v) => {
+      cfg.server.asyncTimeoutSec = toInt(v, cfg.server.asyncTimeoutSec);
+    }),
     row("server.maxConcurrent", "Max concurrent", "number", cfg.server.maxConcurrent, (v) => {
       cfg.server.maxConcurrent = toInt(v, cfg.server.maxConcurrent);
     }),

@@ -370,7 +370,7 @@ describe("config-panel", () => {
       // appears must be followed by ALL of its rows before the next header
       // or the footer — i.e. no split group with a detached header.
       const expected: Record<string, number> = {
-        SERVER: 10, DISCOVERY: 6, GATEWAY: 7, IDENTITY: 1, PEERS: 1, UI: 1,
+        SERVER: 11, DISCOVERY: 6, GATEWAY: 7, IDENTITY: 1, PEERS: 1, UI: 1,
       };
       const steps = 8; // render + scroll several times to hit every window
       for (let step = 0; step < steps; step++) {
@@ -399,15 +399,35 @@ describe("config-panel", () => {
       }
     });
 
-    it("initial view shows SERVER + DISCOVERY together (no split)", () => {
+    it("initial view shows SERVER whole; DISCOVERY follows whole (no split)", () => {
+      // Since asyncTimeoutSec joined the SERVER group (#340), SERVER is 12
+      // lines (header + 11 rows) and SERVER+DISCOVERY no longer fit the panel
+      // kernel's 18-row budget together — screen 1 is SERVER alone, and the
+      // next scroll step brings DISCOVERY whole. The property under test is
+      // the 0.5.1 invariant: whole groups only, never a split group.
       const cfg = DEFAULTS();
       const model = new ConfigPanelModel(buildRows(cfg), null);
       const out = model.render(80).join("\n");
       assert.ok(out.includes("SERVER"), "SERVER header present");
-      assert.ok(out.includes("DISCOVERY"), "DISCOVERY header present on first screen");
+      // Every SERVER row is on screen (group not truncated mid-way).
+      for (const label of [
+        "Server enabled", "Port", "Port fallback", "Bind host", "Agent name",
+        "Reply timeout (s)", "Async timeout (s)", "Max concurrent",
+        "Allow all users", "Max ping-pong turns", "Rate limit /min",
+      ]) {
+        assert.ok(out.includes(label), `SERVER row '${label}' visible on first screen`);
+      }
+      // Navigate until the window slides to DISCOVERY (the window follows the
+      // selection; it slides once the cursor leaves the SERVER group).
+      let out2 = "";
+      for (let i = 0; i < 40 && !out2.includes("DISCOVERY"); i++) {
+        model.handleInput("\u001b[B");
+        out2 = model.render(80).join("\n");
+      }
+      assert.ok(out2.includes("DISCOVERY"), "DISCOVERY header reachable by scrolling");
       // Every discovery row is on screen (group not truncated mid-way).
       for (const label of ["Local registry", "Heartbeat (s)", "Registry TTL (s)", "mDNS broadcast", "mDNS service type", "Enrich Agent Card"]) {
-        assert.ok(out.includes(label), `DISCOVERY row '${label}' visible on first screen`);
+        assert.ok(out2.includes(label), `DISCOVERY row '${label}' visible on the next screen`);
       }
     });
   });
