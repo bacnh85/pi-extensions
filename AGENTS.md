@@ -185,7 +185,20 @@ After each Pi minor release, verify extensions against the new SDK:
 2. Widen peer caps `<0.x.0` → `<0.(x+1).0` in every package with a bounded peer — keep the existing floor, change only the cap. Find them with: `grep -l 'pi-coding-agent": "[^"]*<' pi-*/package.json` (currently `pi-advisor`, `pi-attachments`, `pi-plan`, `pi-sub`, `pi-subagent`).
 3. Bump their devDeps from `^0.x.0` to `^0.(x+1).0` (also `pi-review`'s devDep).
 4. Patch-version-bump + CHANGELOG the three capped packages; `pi-review` is devDep-only — no version bump needed.
-5. Refresh lockfiles in all packages so `npm ci` installs the new SDK.
+5. Refresh lockfiles in all packages so `npm ci` installs the new SDK — then
+   backfill nested integrity hashes. npm quirk: `npm install` re-idealization
+   strips `integrity` from nested
+   `node_modules/@earendil-works/pi-coding-agent/node_modules/*` entries, which
+   fails CI's "Verify lockfile integrity coverage" guard (bit us on 0.85.0 and
+   0.85.1). For every entry with `resolved` but no `integrity`, inject the
+   authoritative hash and assert the resolved URL matches the registry tarball:
+
+   ```bash
+   npm view @earendil-works/<pkg>@<version> dist.integrity
+   ```
+
+   `npm ci` accepts and preserves hand-added hashes; `npm install` strips them
+   again — re-run the backfill after any install in this repo.
 6. Run tests and typecheck; verify the installed SDK version per package.
 
 ## Development discipline (ponytail)
