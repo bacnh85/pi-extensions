@@ -76,7 +76,10 @@ async function landing() {
   const N = Number(process.env.N || 10);
   const WORDS = Number(process.env.WORDS || 12000);
   const signed = process.env.SIGNED !== "0";
-  const route = signed ? "ultra+signed" : "api-bare (SIGNED=0 A/B control)";
+  // Default = ultra (the proven ZCode route); ROUTE=api tests stock-0.8.0's
+  // default route (api.z.ai, signed) for the default-config zero-quota claim.
+  const routeUrl = process.env.ROUTE === "api" ? `${API}/api/anthropic/v1/messages` : ULTRA;
+  const route = `${signed ? (routeUrl === ULTRA ? "ultra+signed" : "api+signed (stock default route)") : "api-bare (SIGNED=0 A/B control)"}`;
   const send = async (prompt) => {
     if (!signed) {
       return await fetch(`${API}/api/anthropic/v1/messages`, {
@@ -86,7 +89,7 @@ async function landing() {
       });
     }
     const h = await signedHeaders(`pi-landing-${randomUUID()}`);
-    return await fetch(ULTRA, { method: "POST", headers: h, body: JSON.stringify({ model: MODEL, max_tokens: 64, temperature: 0.2, stream: false, messages: [{ role: "user", content: prompt }] }) });
+    return await fetch(routeUrl, { method: "POST", headers: h, body: JSON.stringify({ model: MODEL, max_tokens: 64, temperature: 0.2, stream: false, messages: [{ role: "user", content: prompt }] }) });
   };
   const q0 = await quotaPct();
   const mu0 = await flashTokens24h();
