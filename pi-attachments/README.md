@@ -81,7 +81,9 @@ pi install @bacnh85/pi-attachments
   dropped file — no dead tokens.
 - Conservative matching: prose like "see main.rs" or "the .jpg extension" never
   triggers anything — images require an existing file with an image extension,
-  text inlining requires an absolute existing path.
+  text inlining requires an absolute existing path. Pasted/dropped paths that
+  are not existing regular files (directories, typos) pass through as plain
+  text — no chip, no token.
 - pi core auto-resizes attached images (see the `images.autoResize` setting).
 - kitty's OSC 72 drag-drop protocol is not supported (requires raw stdin access
   that extensions don't have); kitty <0.47 drops paths, which work.

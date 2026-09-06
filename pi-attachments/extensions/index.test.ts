@@ -299,12 +299,77 @@ describe("input transform", () => {
   it("path-only bracketed paste is rewritten to attachment tokens", () => {
     const h = harness();
     const onPaste = harnessWithPaste(h);
-    const result = onPaste("\x1b[200~/tmp/a.png /tmp/b.md\x1b[201~") as any;
+    const result = onPaste(`\x1b[200~${img} ${path.join(TMP, "notes.md")}\x1b[201~`) as any;
     assert.ok(result?.data);
     const tokens = result.data.split(" ");
     assert.equal(tokens.length, 2);
     assert.match(tokens[0], /^\[\[attach:[^\]]+\]\]$/);
     // tokens expand back to real paths at submit → images/text inline as usual
+  });
+
+  it("directory paste passes through untouched (no token, no chip)", () => {
+    const dir = path.join(TMP, "dropped-dir");
+    mkdirSync(dir, { recursive: true });
+    const spacedDir = path.join(TMP, "spaced dir");
+    mkdirSync(spacedDir, { recursive: true });
+    const h = harness();
+    const onPaste = harnessWithPaste(h);
+    assert.equal(onPaste(`\x1b[200~${dir}\x1b[201~`), undefined);
+    assert.equal(
+      onPaste(`\x1b[200~${spacedDir.replace(/ /g, "\\ ")}\x1b[201~`),
+      undefined,
+      "escaped-space directory passes through",
+    );
+  });
+
+  it("mixed file + directory paste tokenizes only the file", () => {
+    const dir = path.join(TMP, "mixed-dir");
+    mkdirSync(dir, { recursive: true });
+    const h = harness();
+    const onPaste = harnessWithPaste(h);
+    const result = onPaste(`\x1b[200~${img} ${dir}\x1b[201~`) as any;
+    assert.ok(result?.data);
+    const [token, literal] = result.data.split(" ");
+    assert.match(token, /^\[\[attach:shot\.png\]\]$/);
+    assert.equal(literal, dir, "directory stays literal text");
+  });
+
+  it("mixed paste with an escaped-space directory keeps the escaped literal", () => {
+    const spacedDir = path.join(TMP, "mixed spaced dir");
+    mkdirSync(spacedDir, { recursive: true });
+    const escaped = spacedDir.replace(/ /g, "\\ ");
+    const h = harness();
+    const onPaste = harnessWithPaste(h);
+    const result = onPaste(`\x1b[200~${img} ${escaped}\x1b[201~`) as any;
+    assert.ok(result?.data);
+    assert.ok(result.data.startsWith("[[attach:shot.png]] "), "file tokenized");
+    assert.ok(result.data.endsWith(escaped), "escaped directory kept verbatim");
+  });
+
+  it("mixed file + directory paste survives submit: dir literal, file attached", async () => {
+    const dir = path.join(TMP, "submit-dir");
+    mkdirSync(dir, { recursive: true });
+    const h = harness();
+    const onPaste = harnessWithPaste(h);
+    const pasted = onPaste(`\x1b[200~${img} ${dir}\x1b[201~`) as any;
+    const result = await run(h, pasted.data);
+    assert.equal(result.action, "transform");
+    assert.equal(result.images.length, 1, "file attached as image");
+    assert.ok(result.text.includes(dir), "directory stays literal text");
+    assert.ok(!result.text.includes("[[attach:"), "no dead token left");
+  });
+
+  it("inline mode: mixed paste submits to exactly one <file> block + literal dir", async () => {
+    const dir = path.join(TMP, "inline-mixed-dir");
+    mkdirSync(dir, { recursive: true });
+    const h = inlineHarness();
+    const onPaste = harnessWithPaste(h);
+    const pasted = onPaste(`\x1b[200~${path.join(TMP, "notes.md")} ${dir}\x1b[201~`) as any;
+    const result = await run(h, pasted.data);
+    assert.equal(result.action, "transform");
+    assert.equal((result.text.match(/<file name="/g) ?? []).length, 1, "exactly one <file> block");
+    assert.ok(!result.text.includes('<file name="<file'), "no nested <file> block");
+    assert.ok(result.text.includes(dir), "directory stays literal");
   });
 
   it("mixed text paste passes through untouched", () => {
@@ -324,6 +389,19 @@ describe("input transform", () => {
     assert.equal(result.images.length, 1);
     assert.ok(result.text.includes(img), "expanded to the real path");
     assert.ok(!result.text.includes(token), "token replaced");
+  });
+
+  it("basename containing ] is attached on submit (no dead token)", async () => {
+    const weird = path.join(TMP, "we]ird.png");
+    writeFileSync(weird, PNG_BYTES);
+    const h = harness();
+    const onPaste = harnessWithPaste(h);
+    const pasted = onPaste(`\x1b[200~${weird}\x1b[201~`) as any;
+    const result = await run(h, pasted.data.trim());
+    assert.equal(result.action, "transform");
+    assert.equal(result.images.length, 1, "image attached");
+    assert.ok(result.text.includes(weird), "resolved to the real path");
+    assert.ok(!result.text.includes("[[attach:"), "no dead token left");
   });
 
   it("escaped-space path drop becomes a token and resolves to the real path", async () => {
@@ -368,6 +446,16 @@ describe("input transform", () => {
     const result = await run(inlineHarness(), `summarize ${escaped}`);
     assert.equal(result.action, "transform");
     assert.ok(result.text.includes(`<file name="${spaced}">\nspaced content\n</file>`));
+  });
+
+  it("inline mode: dropped text-file token inlines exactly once (no nested <file>)", async () => {
+    const h = inlineHarness();
+    const onPaste = harnessWithPaste(h);
+    const pasted = onPaste(`\x1b[200~${path.join(TMP, "notes.md")}\x1b[201~`) as any;
+    const result = await run(h, pasted.data.trim());
+    assert.equal(result.action, "transform");
+    assert.equal((result.text.match(/<file name="/g) ?? []).length, 1, "exactly one <file> block");
+    assert.ok(!result.text.includes('<file name="<file'), "no nested <file> block");
   });
 });
 

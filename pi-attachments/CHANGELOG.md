@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.2
+
+- **Directories are not attachments.** Pasting/dropping a path that is not an
+  existing regular file (a directory, a typo) no longer becomes an
+  `[[attach:...]]` token + 📎 chip — it stays plain text in the prompt. The
+  model still sees the path and can `ls`/`read` it. The clipboard shortcut
+  (alt+shift+v) likewise skips folder copies; a folder-only clipboard reports
+  "No files in clipboard".
+- Fixed: a dropped/pasted file whose name contains `]` (e.g. `we]ird.png`) now
+  attaches on submit instead of silently leaking a dead `[[attach:...]]` token;
+  inline mode no longer nests `<file>` blocks when a dropped token and typed
+  paths are combined.
+
 ## 0.2.1 (2026-09-05)
 
 - Widen Pi SDK peer range to `>=0.85.0 <0.86.0` and bump devDep to `^0.85.0` for Pi 0.85.0 compatibility (no breaking changes; peer cap widening only).

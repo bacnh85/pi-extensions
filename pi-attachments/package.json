@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-attachments",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Image and file attachments for Pi — converts pasted/dropped file paths into real image attachments, inlines text files, and pastes clipboard file references.",
   "license": "MIT",
   "publishConfig": {

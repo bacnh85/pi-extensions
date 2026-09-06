@@ -63,7 +63,7 @@ function unescape(p: string): string {
   return p.replace(/\\ /g, " ");
 }
 
-function isFile(p: string): boolean {
+export function isFile(p: string): boolean {
   try {
     return statSync(p).isFile();
   } catch {

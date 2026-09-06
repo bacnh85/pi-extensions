@@ -2,9 +2,10 @@
  * pi-attachments — real attachments from pasted/dropped file paths.
  *
  * Drag-drop / clipboard-paste flow:
- * 1. onTerminalInput intercepts the bracketed paste BEFORE the editor and,
- *    when the payload is file paths only, swaps it for [[attach:name]] tokens
- *    and shows a 📎 chip list above the editor (widget).
+ * 1. onTerminalInput intercepts path-only bracketed pastes BEFORE the editor:
+ *    each existing regular file becomes an [[attach:name]] token and a 📎 chip
+ *    list shows above the editor (widget); non-file paths (directories, typos)
+ *    stay literal text, and an all-non-file payload passes through untouched.
  * 2. On submit, the input hook resolves tokens:
  *    - images → 📎 path text + real ImageContent parts
  *    - text files → 📎 path text (default; model reads on demand via read)
@@ -16,7 +17,7 @@ import type { ExtensionAPI, InputEvent, TerminalInputHandler } from "@earendil-w
 import { detectSupportedImageMimeTypeFromFile } from "@earendil-works/pi-coding-agent";
 import { readFile, stat } from "node:fs/promises";
 import { readClipboardFilePaths } from "./lib/clipboard-files";
-import { absolutePathSpans, extractImagePaths } from "./lib/paths";
+import { absolutePathSpans, extractImagePaths, isFile } from "./lib/paths";
 import { lookup, remember } from "./lib/registry";
 import { loadSettings } from "./lib/settings";
 import { AttachmentTray } from "./lib/tray";
@@ -57,10 +58,18 @@ export default function piAttachments(pi: ExtensionAPI): void {
     if (!m || !looksLikePathPayload(m[1])) return undefined;
     const tokens: string[] = [];
     for (const raw of splitPathTokens(m[1])) {
-      const item = tray.add(raw.replace(/\\ /g, " "));
+      const path = raw.replace(/\\ /g, " ");
+      if (!isFile(path)) {
+        // ponytail: directories/nonexistent paths stay literal text — the model
+        // reads or lists them itself; upgrade to 📁 chips if dir drops matter
+        tokens.push(raw);
+        continue;
+      }
+      const item = tray.add(path);
       remember(item.name, item.path); // survive session restarts
       tokens.push(item.token);
     }
+    if (tokens.every((t) => !t.startsWith("[[attach:"))) return undefined;
     updateWidget();
     return { data: tokens.join(" ") };
   };
@@ -88,13 +97,18 @@ export default function piAttachments(pi: ExtensionAPI): void {
 
     const images: Array<{ type: "image"; data: string; mimeType: string }> = [...(event.images ?? [])];
     const attachedImages = new Set<string>(); // paths already attached via tokens
-    let text = raw;
+    // All replacements are spans in `raw` coordinates (tokens + typed paths are
+    // disjoint by construction), applied right-to-left at the end — so generated
+    // blocks are never re-scanned (no nested <file> inlining).
+    const replacements: Array<{ start: number; end: number; block: string }> = [];
 
     // a. Resolve [[attach:name]] tokens (tray first, then persistent registry).
-    for (const m of raw.matchAll(/\[\[attach:([^\]]+)\]\]/g)) {
+    //    `]` in a basename is allowed when not followed by the closing `]]`
+    //    (e.g. a dropped file named "we]ird.png").
+    for (const m of raw.matchAll(/\[\[attach:((?:[^\]]|\](?!\]))+)\]\]/g)) {
       const token = m[0];
       const name = m[1];
-      if (!text.includes(token)) continue; // duplicate token already replaced
+      const start = m.index;
       const trayItem = tray.resolve(raw).find((i) => i.token === token);
       const path = trayItem?.path ?? lookup(name);
       if (!path) continue; // unknown token — leave as-is for the model
@@ -111,29 +125,29 @@ export default function piAttachments(pi: ExtensionAPI): void {
             /* unreadable → skip */
           }
         }
-        text = text.split(token).join(`📎 ${path}`);
+        replacements.push({ start, end: start + token.length, block: `📎 ${path}` });
         continue;
       }
 
       // Non-image: inline as <file> only when inlineTextFiles is on and size allows;
       // otherwise resolve to a 📎 path the model reads on demand.
+      let block = `📎 ${path}`;
       if (settings.inlineTextFiles) {
         try {
           const s = await stat(path);
           if (s.size <= settings.maxInlineBytes) {
             const content = (await readFile(path, "utf-8")).replace(/^\uFEFF/, "").replace(/\n$/, "");
-            text = text.split(token).join(`<file name="${path}">\n${content}\n</file>`);
-            continue;
+            block = `<file name="${path}">\n${content}\n</file>`;
           }
         } catch {
-          /* fall through to 📎 path */
+          /* keep 📎 path */
         }
       }
-      text = text.split(token).join(`📎 ${path}`);
+      replacements.push({ start, end: start + token.length, block });
     }
 
     // b. Existing image paths typed elsewhere in the message → attach too.
-    for (const p of extractImagePaths(text)) {
+    for (const p of extractImagePaths(raw)) {
       if (attachedImages.has(p)) continue;
       try {
         const mimeType = await detectSupportedImageMimeTypeFromFile(p);
@@ -146,11 +160,10 @@ export default function piAttachments(pi: ExtensionAPI): void {
     }
 
     // c. Text-path inlining (opt-in old behavior): absolute text-file paths in
-    //    the message → <file> blocks. Spans come from one greedy regex pass
-    //    (disjoint matches), applied right-to-left so earlier spans stay valid.
+    //    the message → <file> blocks. One greedy regex pass yields disjoint
+    //    spans that never overlap the token spans above.
     if (settings.inlineTextFiles) {
-      const replacements: Array<{ start: number; end: number; block: string }> = [];
-      for (const span of absolutePathSpans(text)) {
+      for (const span of absolutePathSpans(raw)) {
         try {
           const s = await stat(span.path);
           if (s.size > settings.maxInlineBytes) continue;
@@ -160,11 +173,13 @@ export default function piAttachments(pi: ExtensionAPI): void {
           /* unreadable file → skip */
         }
       }
-      if (replacements.length) {
-        replacements.sort((a, b) => b.start - a.start);
-        for (const r of replacements) {
-          text = text.slice(0, r.start) + r.block + text.slice(r.end);
-        }
+    }
+
+    let text = raw;
+    if (replacements.length) {
+      replacements.sort((a, b) => b.start - a.start);
+      for (const r of replacements) {
+        text = text.slice(0, r.start) + r.block + text.slice(r.end);
       }
     }
 
@@ -181,7 +196,8 @@ export default function piAttachments(pi: ExtensionAPI): void {
   pi.registerShortcut(settings.pasteFileShortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
     description: "Paste file(s) from clipboard as attachments",
     handler: async (ctx) => {
-      const paths = await readClipboardFilePaths();
+      // only existing regular files are attachable — Finder/Explorer folder copies pass through
+      const paths = (await readClipboardFilePaths()).filter(isFile);
       if (paths.length === 0) {
         ctx.ui.notify("No files in clipboard", "info");
         return;
