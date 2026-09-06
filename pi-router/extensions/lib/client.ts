@@ -165,6 +165,39 @@ function lookupContextOverride(modelId: string): { contextWindow?: number; maxTo
   return {};
 }
 
+// Transport-verified vision routes. OmniRoute's /v1/models omits
+// capabilities.vision on most non-openrouter connections, and the flag lies in
+// BOTH directions — some flagged routes strip image parts outbound, some
+// unflagged routes pass them. Entries here are proven end-to-end with
+// extensions/scripts/probe-vision.mjs (PASS = image tokens counted / large
+// prompt-token delta + correct image-only answer); re-probe when the router
+// image updates. 2026-09-06 probe: gemini-3.7-flash prompt 21→1092 (Δ1071);
+// deepseek-v4-flash-vision-exp 104→319 (Δ215). combo/glm-5.3-flash also
+// passed (Δ1060) but is excluded — combo failover can land on a stripping
+// member.
+const VISION_OVERRIDES: RegExp[] = [
+  // Anchored + explicit effort-tier suffix group: -low…-max are 9router's
+  // thinking-level variants of the probed base (same upstream + executor, so
+  // same image transport). Sibling models (-preview, -lite, future versions)
+  // stay unverified — mirroring CONTEXT_OVERRIDES lookahead discipline.
+  /^(cmd|command-code)\/google\/gemini-3\.7-flash(?:-(?:low|medium|high|xhigh|max))?$/i,
+  /^(cmd|command-code)\/deepseek\/deepseek-v4-flash-vision-exp(?:-(?:low|medium|high|xhigh|max))?$/i,
+];
+// Inverse lie, verified 2026-09-06: openrouter entries stamp vision:true but
+// the openrouter upstream strips image parts (glm-5.3-flash probe: Δ16, model
+// replied NOIMAGE). Surgical list — other vision:true rows are untouched.
+const VISION_DOWNGRADES: RegExp[] = [
+  /^openrouter\/z-ai\/glm-5\.3-flash/i,
+];
+
+/** Net vision for a model id given the router's metadata claim. Also applied
+ *  to the persisted offline catalog (provider.ts) so stale models-store.json
+ *  entries self-heal at restore. */
+export function resolveVision(id: string, metadataVision: boolean): boolean {
+  if (VISION_DOWNGRADES.some((re) => re.test(id))) return false;
+  return metadataVision || VISION_OVERRIDES.some((re) => re.test(id));
+}
+
 // Upstream connection slugs (OmniRoute ids are "<connection>/<model>") whose
 // reasoning_effort schema rejects "none" and "minimal". The `cmd` slug is an alias
 // pi-sub memory maps to the same upstream.
@@ -282,7 +315,9 @@ export function mapModel(raw: RouterModelRaw, enableReasoning: boolean): PiModel
     (useOverride ? override.maxTokens : undefined) ??
     parsePositiveInt(caps?.maxOutput) ??
     FALLBACK_MAX_TOKENS;
-  const inputTypes: ("text" | "image")[] = caps?.vision ? ["text", "image"] : ["text"];
+  const inputTypes: ("text" | "image")[] = resolveVision(raw.id, caps?.vision === true)
+    ? ["text", "image"]
+    : ["text"];
 
   const compat = {
     supportsStore: false,

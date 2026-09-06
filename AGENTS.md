@@ -7,7 +7,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| **pi-router** | 1.1.3 | Connect to any OpenAI-compatible AI router (9router, omniroute, …) via its /v1 API; API key via built-in /login, URL in settings.json (`/router-config` panel), models auto-cached in models-store.json. |
+| **pi-router** | 1.1.5 | Connect to any OpenAI-compatible AI router (9router, omniroute, …) via its /v1 API; API key via built-in /login, URL in settings.json (`/router-config` panel), models auto-cached in models-store.json. |
 | **pi-chatgpt-web** | 0.2.0 | ChatGPT web-tier providers via self-hosted OpenAI-compatible bridges — chat-only `chatgpt-web` (chatgpt2api) + agentic `codex-web` (codex-proxy, tool-capable). No Plus subscription. |
 | **pi-commandcode** | 0.2.0 | Connect to Command Code's OpenAI-compatible Provider API; API key via built-in `/login`, base URL in settings.json (`/commandcode-config` panel), models auto-cached. |
 | **pi-checkpoint** | 0.1.0 | Git-backed undo/redo — snapshots file state per turn into a dedicated ref namespace so `/undo` rolls back a message AND its file changes. |

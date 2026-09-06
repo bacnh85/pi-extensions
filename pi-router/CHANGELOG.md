@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.1.5 (2026-09-06)
+
+### Fixed
+
+- **Router models reported `images: no` even when image content actually
+  passes through, and `images: yes` on a route that silently strips it.**
+  OmniRoute's `/v1/models` omits `capabilities.vision` on most non-openrouter
+  connections and stamps it on openrouter entries regardless of upstream
+  behavior — and `mapModel` trusted that flag verbatim. Live probes
+  (`extensions/scripts/probe-vision.mjs`, sends a real image and checks the
+  prompt-token delta + image-only answer) showed the metadata lies in both
+  directions: `cmd/google/gemini-3.7-flash` and
+  `cmd|command-code/deepseek/deepseek-v4-flash-vision-exp` pass images
+  (Δ1071 / Δ215 prompt tokens) with no vision flag, while
+  `openrouter/z-ai/glm-5.3-flash` (all effort/batch variants) claims
+  `vision: true` but strips image parts (Δ16, model replied NOIMAGE).
+  New `VISION_OVERRIDES` / `VISION_DOWNGRADES` tables + `resolveVision()` in
+  `client.ts`: verified-passing routes gain `["text","image"]`, verified
+  stripping routes are forced back to `["text"]`, everything else keeps
+  router metadata. The offline restore path (`provider.ts`) re-resolves
+  vision for persisted `models-store.json` entries, so stale caches self-heal
+  without a network refresh.
+
+### Added
+
+- `extensions/scripts/probe-vision.mjs` — transport-verifies image passing
+  per router model (PASS/STRIP/ERROR verdict from usage deltas). VISION
+  table entries must be probe-backed; re-run when the router image updates.
+  Probe findings 2026-09-06: glm-5.3-flash via glm-cn/glmcn/cmd/command-code/
+  opencode/opencode-go/opencode-zen all STRIP (the old `images: no` listing
+  was accidentally correct for them); `combo/glm-5.3-flash` PASSED (Δ1060)
+  but is excluded from overrides — combo failover can land on a stripping
+  member. `oc/*` returned 402 (missing opencode key in router config).
+
 ## 1.1.4 (2026-08-29)
 
 ### Added
