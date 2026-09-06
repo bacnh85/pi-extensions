@@ -42,6 +42,5 @@
     "@earendil-works/pi-coding-agent": ">=0.80.8 <0.86.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-server": "^0.85.1"
   }
 }

@@ -24,7 +24,7 @@ before(() => {
     try { writeFileSync(f + ".bak", readFileSync(f)); } catch { /* none */ }
     try { unlinkSync(f); } catch { /* none */ }
   }
-  for (const k of ["CHATGPT_WEB_BASE_URL", "CHATGPT_WEB_AUTH_KEY"]) {
+  for (const k of ["CHATGPT_WEB_BASE_URL", "CHATGPT_WEB_AUTH_KEY", "CODEX_WEB_BASE_URL", "CODEX_WEB_AUTH_KEY"]) {
     if (process.env[k] !== undefined) (process.env as Record<string, string | undefined>)[k + "__BAK"] = process.env[k]!;
     delete process.env[k];
   }
@@ -42,7 +42,7 @@ after(() => {
       try { unlinkSync(f + ".bak"); } catch { /* ignore */ }
     }
   }
-  for (const k of ["CHATGPT_WEB_BASE_URL", "CHATGPT_WEB_AUTH_KEY"]) {
+  for (const k of ["CHATGPT_WEB_BASE_URL", "CHATGPT_WEB_AUTH_KEY", "CODEX_WEB_BASE_URL", "CODEX_WEB_AUTH_KEY"]) {
     const bak = (process.env as Record<string, string | undefined>)[k + "__BAK"];
     if (bak !== undefined) process.env[k] = bak;
     delete (process.env as Record<string, string | undefined>)[k + "__BAK"];

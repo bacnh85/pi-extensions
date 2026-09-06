@@ -53,7 +53,6 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-server": "^0.85.0",
     "@types/node": "^20.19.43",
     "tsx": "^4.23.1",
     "typescript": "^5.9.3"
