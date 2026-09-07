@@ -6,14 +6,14 @@
 
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "mocha";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { extractImagePaths, extractTextFilePaths } from "./lib/paths";
 import { parseUriList } from "./lib/clipboard-files";
 import { DEFAULTS, loadSettings } from "./lib/settings";
 import { lookup, remember, registryPath } from "./lib/registry";
+import { savePaste } from "./lib/pastes";
 import { AttachmentTray } from "./lib/tray";
 import piAttachments from "./index";
 
@@ -45,6 +45,41 @@ after(() => {
 const img = path.join(TMP, "shot.png");
 const md = path.join(TMP, "notes.md");
 const big = path.join(TMP, "big.md");
+
+/** Minimal ExtensionAPI double capturing the registered input handler. */
+function harness() {
+  const handlers: Record<string, Function> = {};
+  const shortcuts: Array<{ shortcut: string; options: any }> = [];
+  const fake = {
+    on: (event: string, handler: Function) => {
+      handlers[event] = handler;
+    },
+    registerShortcut: (shortcut: string, options: any) => shortcuts.push({ shortcut, options }),
+  } as any;
+  piAttachments(fake);
+  return { input: handlers["input"], start: handlers["session_start"], shortcuts };
+}
+
+/** Wire session_start (registers terminal-input listener) and capture it. */
+function harnessWithPaste(h: ReturnType<typeof harness>) {
+  let terminalHandler: Function | undefined;
+  h.start({}, { ui: { onTerminalInput: (fn: Function) => (terminalHandler = fn), setWidget: () => {} } });
+  return (data: string) => terminalHandler?.(data);
+}
+
+const run = async (
+  h: ReturnType<typeof harness>,
+  text: string,
+  source = "interactive",
+  images?: Array<{ type: "image"; data: string; mimeType: string }>,
+) =>
+  (
+    (await h.input(
+      { type: "input", text, source, ...(images ? { images } : {}) },
+      { ui: { getEditorText: () => text, setWidget: () => {} } },
+    )) ?? { action: "continue" }
+  );
+
 
 describe("extractImagePaths", () => {
   it("finds existing image paths, deduped", () => {
@@ -167,58 +202,27 @@ describe("AttachmentTray", () => {
   });
 });
 
+let inlineDirCounter = 0;
+
+/** Harness whose piAttachments() sees inlineTextFiles: true via a temp settings dir. */
+function inlineHarness() {
+  const dir = path.join(TMP, `inline-${inlineDirCounter++}`);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    path.join(dir, "settings.json"),
+    JSON.stringify({ attachments: { inlineTextFiles: true, pasteCollapseLines: 10 } }),
+  );
+  const saved = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  try {
+    return harness();
+  } finally {
+    if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = saved;
+  }
+}
+
 describe("input transform", () => {
-  /** Minimal ExtensionAPI double capturing the registered input handler. */
-  function harness() {
-    const handlers: Record<string, Function> = {};
-    const shortcuts: Array<{ shortcut: string; options: any }> = [];
-    const fake = {
-      on: (event: string, handler: Function) => {
-        handlers[event] = handler;
-      },
-      registerShortcut: (shortcut: string, options: any) => shortcuts.push({ shortcut, options }),
-    } as any;
-    piAttachments(fake);
-    return { input: handlers["input"], start: handlers["session_start"], shortcuts };
-  }
-
-  /** Wire session_start (registers terminal-input listener) and capture it. */
-  function harnessWithPaste(h: ReturnType<typeof harness>) {
-    let terminalHandler: Function | undefined;
-    h.start({}, { ui: { onTerminalInput: (fn: Function) => (terminalHandler = fn), setWidget: () => {} } });
-    return (data: string) => terminalHandler?.(data);
-  }
-
-  let inlineDirCounter = 0;
-
-  /** Harness whose piAttachments() sees inlineTextFiles: true via a temp settings dir. */
-  function inlineHarness() {
-    const dir = path.join(TMP, `inline-${inlineDirCounter++}`);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ attachments: { inlineTextFiles: true } }));
-    const saved = process.env.PI_CODING_AGENT_DIR;
-    process.env.PI_CODING_AGENT_DIR = dir;
-    try {
-      return harness();
-    } finally {
-      if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
-      else process.env.PI_CODING_AGENT_DIR = saved;
-    }
-  }
-
-  const run = async (
-    h: ReturnType<typeof harness>,
-    text: string,
-    source = "interactive",
-    images?: Array<{ type: "image"; data: string; mimeType: string }>,
-  ) =>
-    (
-      (await h.input(
-        { type: "input", text, source, ...(images ? { images } : {}) },
-        { ui: { getEditorText: () => text, setWidget: () => {} } },
-      )) ?? { action: "continue" }
-    );
-
   it("converts an existing image path into an ImageContent part", async () => {
     const result = await run(harness(), `what is in ${img}?`);
     assert.equal(result.action, "transform");
@@ -502,5 +506,169 @@ describe("attachment removal flow", () => {
     assert.equal(result.images.length, 1);
     assert.ok(!result.text.includes("rm-b"), "removed file is not attached");
     assert.ok(!result.text.includes(tokenB), "removed token is gone");
+  });
+});
+
+describe("paste collapse", () => {
+  const wrap = (payload: string) => `\x1b[200~${payload}\x1b[201~`;
+  const logWall = (n: number) => Array.from({ length: n }, (_, i) => `log line ${i}`).join("\n");
+
+  it("large multi-line paste collapses to a paste file + token, resolved read-on-demand", async () => {
+    const h = harness();
+    const onPaste = harnessWithPaste(h);
+    const payload = logWall(15);
+    const pasted: any = onPaste(wrap(payload));
+    assert.ok(pasted?.data?.startsWith("[[attach:paste_"), "editor receives one paste token");
+    assert.ok(!pasted.data.includes("log line"), "payload not inlined into the editor");
+
+    const result: any = await run(h, pasted.data);
+    assert.equal(result.action, "transform");
+    const m = result.text.match(/📎 (\S*paste_\d+_\d{6}_\d+\.txt) \(pasted text, 15 lines\)/);
+    assert.ok(m, "resolves to the paste path with line-count hint");
+    assert.ok(!result.text.includes("log line 3"), "content is not re-inlined");
+    assert.equal(readFileSync(m![1], "utf-8"), payload, "paste file holds the payload");
+  });
+
+  it("short paste passes through untouched", () => {
+    const onPaste = harnessWithPaste(harness());
+    assert.equal(onPaste(wrap("just one line")), undefined);
+  });
+
+  it("char threshold collapses one-line walls (minified JSON)", () => {
+    const onPaste = harnessWithPaste(harness());
+    const pasted: any = onPaste(wrap(JSON.stringify({ pad: "x".repeat(2500) })));
+    assert.ok(pasted?.data?.startsWith("[[attach:paste_"));
+  });
+
+  it("slash-command editor text passes through", () => {
+    const h = harness();
+    let pasteHandler: Function | undefined;
+    h.start({}, { ui: { onTerminalInput: (fn: Function) => (pasteHandler = fn), setWidget: () => {}, getEditorText: () => "/review " } });
+    assert.equal(pasteHandler?.(wrap(logWall(15))), undefined);
+  });
+
+  it("pasteCollapseLines/pasteCollapseChars: 0 disables collapse", () => {
+    const dir = path.join(TMP, "collapse-off");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ attachments: { pasteCollapseLines: 0, pasteCollapseChars: 0 } }));
+    const saved = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = dir;
+    const h = harness();
+    if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = saved;
+    const onPaste = harnessWithPaste(h);
+    assert.equal(onPaste(wrap(logWall(15))), undefined);
+  });
+
+  it("savePaste sweeps oldest files beyond the cap", () => {
+    const saved = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = path.join(TMP, "sweep-agent");
+    try {
+      const a = savePaste("a");
+      utimesSync(a, new Date(1000), new Date(1000)); // force oldest mtime
+      const b = savePaste("b");
+      const c = savePaste("c", 2);
+      assert.ok(!existsSync(a), "oldest swept");
+      assert.ok(existsSync(b) && existsSync(c), "newer pastes kept");
+      const dir = path.join(TMP, "sweep-agent", "pastes");
+      assert.equal(readdirSync(dir).filter((f) => /^paste_\d+_\d{6}_\d+\.txt$/.test(f)).length, 2);
+    } finally {
+      if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = saved;
+    }
+  });
+
+  it("pid-suffixed filenames: two saves in the same second never collide", () => {
+    const saved = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = path.join(TMP, "pid-agent");
+    try {
+      const a = savePaste("first payload");
+      const b = savePaste("second payload");
+      assert.equal(statSync(a).mode & 0o777, 0o600, "paste files are owner-only");
+      assert.notEqual(a, b, "distinct paths");
+      assert.equal(readFileSync(a, "utf-8"), "first payload");
+      assert.equal(readFileSync(b, "utf-8"), "second payload");
+    } finally {
+      if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = saved;
+    }
+  });
+
+  it("inlineTextFiles does not re-inline a collapsed paste (read-on-demand kept)", async () => {
+    const h = inlineHarness();
+    const onPaste = harnessWithPaste(h);
+    const pasted: any = onPaste(wrap(logWall(15)));
+    assert.ok(pasted?.data?.startsWith("[[attach:paste_"));
+    const result: any = await run(h, pasted.data);
+    assert.equal(result.action, "transform");
+    assert.match(result.text, /📎 \S*paste_\d+_\d{6}_\d+\.txt \(pasted text, 15 lines\)/);
+    assert.ok(!result.text.includes("<file"), "no <file> block — paste stays read-on-demand");
+  });
+
+  it("CRLF paste is normalized to LF on disk and in the line-count hint", async () => {
+    const h = harness();
+    const onPaste = harnessWithPaste(h);
+    const lf = Array.from({ length: 15 }, (_, i) => `line${i + 1}`).join("\n");
+    const pasted: any = onPaste(wrap(lf.replace(/\n/g, "\r\n")));
+    assert.ok(pasted?.data?.startsWith("[[attach:paste_"));
+    const result: any = await run(h, pasted.data);
+    const m = result.text.match(/📎 (\S*paste_\d+_\d{6}_\d+\.txt) \(pasted text, 15 lines\)/);
+    assert.ok(m, "hint counts normalized lines");
+    const saved = readFileSync(m![1], "utf-8");
+    assert.equal(saved, lf, "file content is LF-normalized");
+    assert.ok(!saved.includes("\r"), "no stray \\r anywhere");
+  });
+
+  it("disk failure degrades gracefully: no throw, paste passes through untouched", () => {
+    // TMP/not-a-dir is a regular FILE, so <agentDir>/pastes mkdirSync throws
+    // ENOTDIR deterministically (even as root).
+    writeFileSync(path.join(TMP, "not-a-dir"), "i am a file");
+    const saved = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = path.join(TMP, "not-a-dir", "sub");
+    try {
+      const h = harness(); // settings load at registration
+      const onPaste = harnessWithPaste(h);
+      let result: any;
+      assert.doesNotThrow(() => {
+        result = onPaste(wrap(logWall(15)));
+      });
+      assert.equal(result, undefined, "paste passes through to the editor");
+    } finally {
+      if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = saved;
+    }
+  });
+
+  it("unwritable agent dir: file drop degrades gracefully, no crash", () => {
+    // remember() in the path-drop branch must not throw either — pi-tui has no
+    // try/catch around terminal-input listeners.
+    writeFileSync(path.join(TMP, "not-a-dir"), "i am a file");
+    const saved = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = path.join(TMP, "not-a-dir", "sub");
+    try {
+      const onPaste = harnessWithPaste(harness());
+      let result: any;
+      assert.doesNotThrow(() => {
+        result = onPaste(wrap(img));
+      });
+      assert.ok(result?.data?.startsWith("[[attach:"), "token still produced, just not persisted");
+    } finally {
+      if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = saved;
+    }
+  });
+
+  it("inlineTextFiles does not re-inline a prior-session paste token", async () => {
+    const h = inlineHarness();
+    // Simulate a paste registered in an earlier session: the paste file persists
+    // on disk, the registry maps token name → path, the tray is session-local
+    // (empty here).
+    const priorPaste = path.join(TMP, "paste_1_120000_999.txt");
+    writeFileSync(priorPaste, "old paste body\n");
+    remember("paste_1_120000_999.txt", priorPaste);
+    const result: any = await run(h, "[[attach:paste_1_120000_999.txt]]");
+    assert.equal(result.action, "transform");
+    assert.match(result.text, /📎 \S*paste_1_120000_999\.txt/);
+    assert.ok(!result.text.includes("<file"), "paste stays read-on-demand across restarts");
   });
 });

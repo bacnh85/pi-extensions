@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.0
+
+- **Large text-paste collapse** (Hermes-inspired). Pasting ≥ 10 lines or ≥
+  2000 chars of plain text (logs, stack traces, minified JSON) now saves the
+  payload to `~/.pi/agent/pastes/paste_<n>_<time>.txt` and inserts one tidy
+  `[[attach:paste_….txt]]` token + 📎 chip instead of a wall of text. On
+  submit the model sees `📎 /path (pasted text, N lines)` and reads the file
+  on demand — unlike Hermes, which re-inlines the full content, this keeps
+  the pasted bulk out of the chat text. Below the thresholds pastes pass
+  through untouched (pi's built-in `[paste #N]` marker may still apply to
+  pass-through pastes >1000 chars / >10 lines); slash-command arguments
+  (`/review <big paste>`) never collapse; path-only pastes keep the existing
+  per-file token flow.
+- New settings: `attachments.pasteCollapseLines` (default 10) and
+  `attachments.pasteCollapseChars` (default 2000); `0` disables either.
+- Paste files are swept to the newest 50 (Hermes keeps them forever).
+
 ## 0.2.2
 
 - **Directories are not attachments.** Pasting/dropping a path that is not an

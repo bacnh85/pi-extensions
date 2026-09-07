@@ -12,14 +12,17 @@ export interface PendingAttachment {
   path: string;
   /** Display name used inside the token (unique across the tray). */
   name: string;
+  /** Optional detail appended to the 📎 chip at submit (e.g. paste line count). */
+  hint?: string;
 }
 
 export class AttachmentTray {
   private items: PendingAttachment[] = [];
 
-  add(path: string): PendingAttachment {
+  add(path: string, hint?: string): PendingAttachment {
     const name = this.uniqueName(basename(path));
-    const item = { token: `[[attach:${name}]]`, path, name };
+    const item: PendingAttachment = { token: `[[attach:${name}]]`, path, name };
+    if (hint) item.hint = hint;
     this.items.push(item);
     return item;
   }

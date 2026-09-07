@@ -46,10 +46,17 @@ function save(reg: Registry): void {
 }
 
 export function remember(name: string, path: string): void {
-  const reg = load();
-  delete reg[name]; // re-insert at the end (most recent)
-  reg[name] = path;
-  save(reg);
+  // Best-effort persistence: pi-tui invokes terminal-input listeners without
+  // try/catch, so an unwritable agent dir (EACCES/ENOSPC/ENOTDIR) would crash
+  // pi on a plain file drag-drop. Degrade gracefully like lookup() does.
+  try {
+    const reg = load();
+    delete reg[name]; // re-insert at the end (most recent)
+    reg[name] = path;
+    save(reg);
+  } catch {
+    /* keep session-local tray only */
+  }
 }
 
 export function lookup(name: string): string | undefined {

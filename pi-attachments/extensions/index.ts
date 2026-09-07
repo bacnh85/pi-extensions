@@ -6,6 +6,8 @@
  *    each existing regular file becomes an [[attach:name]] token and a 📎 chip
  *    list shows above the editor (widget); non-file paths (directories, typos)
  *    stay literal text, and an all-non-file payload passes through untouched.
+ *    Large plain-text pastes (≥ pasteCollapseLines / pasteCollapseChars) are
+ *    saved to <agentDir>/pastes/ and collapse to one [[attach:]] token.
  * 2. On submit, the input hook resolves tokens:
  *    - images → 📎 path text + real ImageContent parts
  *    - text files → 📎 path text (default; model reads on demand via read)
@@ -16,8 +18,10 @@
 import type { ExtensionAPI, InputEvent, TerminalInputHandler } from "@earendil-works/pi-coding-agent";
 import { detectSupportedImageMimeTypeFromFile } from "@earendil-works/pi-coding-agent";
 import { readFile, stat } from "node:fs/promises";
+import { basename } from "node:path";
 import { readClipboardFilePaths } from "./lib/clipboard-files";
 import { absolutePathSpans, extractImagePaths, isFile } from "./lib/paths";
+import { PASTE_NAME_RE, savePaste } from "./lib/pastes";
 import { lookup, remember } from "./lib/registry";
 import { loadSettings } from "./lib/settings";
 import { AttachmentTray } from "./lib/tray";
@@ -44,7 +48,12 @@ export default function piAttachments(pi: ExtensionAPI): void {
     trayUi?.setWidget("pi-attachments", tray.render());
   };
 
-  // 1. Intercept path-only bracketed pastes → tokens + chip widget.
+  // Captured at session_start — lets onPaste read the editor for prune-sync.
+  let editorText: (() => string) | undefined;
+
+  // 1. Intercept bracketed pastes BEFORE the editor:
+  //    - path-only payloads → [[attach:]] tokens + chip widget (existing flow)
+  //    - large plain-text payloads → paste file + one [[attach:]] token
   //    onTerminalInput fires for EVERY keystroke, so we also keep the chip
   //    list in sync for free: if the user deletes a [[attach:N]] token from
   //    the prompt, its chip disappears immediately (and the file is not sent).
@@ -55,7 +64,8 @@ export default function piAttachments(pi: ExtensionAPI): void {
       if (tray.size !== before) updateWidget();
     }
     const m = data.match(BRACKETED_PASTE);
-    if (!m || !looksLikePathPayload(m[1])) return undefined;
+    if (!m) return undefined;
+    if (!looksLikePathPayload(m[1])) return collapseTextPaste(m[1]);
     const tokens: string[] = [];
     for (const raw of splitPathTokens(m[1])) {
       const path = raw.replace(/\\ /g, " ");
@@ -73,8 +83,31 @@ export default function piAttachments(pi: ExtensionAPI): void {
     updateWidget();
     return { data: tokens.join(" ") };
   };
-  // Captured at session_start — lets onPaste read the editor for prune-sync.
-  let editorText: (() => string) | undefined;
+
+  // Large plain-text paste → paste file + token (Hermes-style collapse). Unlike
+  // Hermes, which re-inlines the full content at submit, the token resolves to
+  // a 📎 path — the paste stays isolated from the chat text and is read on demand.
+  const collapseTextPaste = (payload: string): { data: string } | undefined => {
+    const text = payload.replace(/\r\n?/g, "\n").replace(/^\n+|\n+$/g, "");
+    const lines = text.split("\n").length;
+    const linesHit = settings.pasteCollapseLines > 0 && lines >= settings.pasteCollapseLines;
+    const charsHit = settings.pasteCollapseChars > 0 && text.length >= settings.pasteCollapseChars;
+    if (!linesHit && !charsHit) return undefined;
+    if (editorText?.()?.startsWith("/")) return undefined; // slash-command args pass through
+    // pi-tui invokes onTerminalInput listeners without try/catch — a disk failure
+    // here (EACCES/ENOSPC/ENOTDIR) would crash the agent. Degrade gracefully:
+    // the paste passes through to the editor untouched.
+    try {
+      const pastePath = savePaste(text);
+      const item = tray.add(pastePath, `pasted text, ${lines} lines`);
+      remember(item.name, pastePath); // survive session restarts
+      updateWidget();
+      return { data: item.token };
+    } catch {
+      return undefined;
+    }
+  };
+
   pi.on("session_start", async (_event, ctx) => {
     trayUi = ctx.ui;
     editorText = (ctx.ui as any).getEditorText?.bind(ctx.ui);
@@ -132,7 +165,10 @@ export default function piAttachments(pi: ExtensionAPI): void {
       // Non-image: inline as <file> only when inlineTextFiles is on and size allows;
       // otherwise resolve to a 📎 path the model reads on demand.
       let block = `📎 ${path}`;
-      if (settings.inlineTextFiles) {
+      if (trayItem?.hint) block += ` (${trayItem.hint})`;
+      // Collapsed pastes keep read-on-demand even in inline mode — re-inlining
+      // would defeat the whole point of the collapse.
+      if (settings.inlineTextFiles && !trayItem?.hint && !PASTE_NAME_RE.test(basename(path))) {
         try {
           const s = await stat(path);
           if (s.size <= settings.maxInlineBytes) {

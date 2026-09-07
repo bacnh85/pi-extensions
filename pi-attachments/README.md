@@ -47,6 +47,15 @@ pi install @bacnh85/pi-attachments
 4. **Paste files from the clipboard.** `alt+shift+v` reads file references
    copied in Finder / Explorer / a Linux file manager and queues them as
    chips; the input hook does the rest.
+5. **Large text-paste collapse.** Pasting a wall of text (logs, stack traces,
+   minified JSON — ≥ 10 lines or ≥ 2000 chars) no longer wrecks the prompt:
+   the payload is saved to `~/.pi/agent/pastes/paste_<n>_<time>.txt` and your
+   prompt gets one tidy `[[attach:paste_….txt]]` token + chip instead. On
+   submit the model sees `📎 /path (pasted text, N lines)` and reads the file
+   on demand — your chat text stays isolated from the pasted bulk. Below the
+   thresholds pastes pass through untouched; set either threshold to `0` to
+   disable (pi's built-in `[paste #N]` marker may still apply to pass-through
+   pastes >1000 chars / >10 lines). Only the newest 50 paste files are kept.
 
 ## Configuration
 
@@ -57,7 +66,9 @@ pi install @bacnh85/pi-attachments
   "attachments": {
     "inlineTextFiles": false,
     "maxInlineBytes": 100000,
-    "pasteFileShortcut": "alt+shift+v"
+    "pasteFileShortcut": "alt+shift+v",
+    "pasteCollapseLines": 10,
+    "pasteCollapseChars": 2000
   }
 }
 ```
@@ -67,6 +78,8 @@ pi install @bacnh85/pi-attachments
 | `inlineTextFiles` | `false` | Inline text files as `<file>` blocks instead of 📎 path chips |
 | `maxInlineBytes` | `100000` | Max file size for text inlining (`inlineTextFiles` mode) |
 | `pasteFileShortcut` | `"alt+shift+v"` | Keybinding for paste-file-from-clipboard |
+| `pasteCollapseLines` | `10` | Pastes with ≥ this many lines collapse to a paste file + token (`0` disables) |
+| `pasteCollapseChars` | `2000` | Pastes with ≥ this many chars collapse even below the line threshold (`0` disables) |
 
 ## Notes
 
@@ -79,6 +92,11 @@ pi install @bacnh85/pi-attachments
   `~/.pi/agent/pi-attachments.json` (name → absolute path, newest 200 kept),
   so referencing `[[attach:foo.ts]]` in a later session still resolves to the
   dropped file — no dead tokens.
+- **Pasted text persists on disk**: collapsed paste files live under
+  `~/.pi/agent/pastes/` (newest 50 kept). Don't paste secrets you don't want
+  on disk — or delete the file after submit. Collapsed pastes are not scanned
+  for image/file paths (only your typed message is), so a path inside a
+  collapsed paste won't attach — paste file paths separately.
 - Conservative matching: prose like "see main.rs" or "the .jpg extension" never
   triggers anything — images require an existing file with an image extension,
   text inlining requires an absolute existing path. Pasted/dropped paths that
