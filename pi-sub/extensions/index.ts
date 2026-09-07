@@ -29,7 +29,7 @@ loadEnvFiles();
 const STATUS_KEY = "pi-sub";
 const MESSAGE_TYPE = "pi-sub-status";
 const USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
-const REFRESH_INTERVAL_MS = 60_000;
+export const REFRESH_INTERVAL_MS = 60_000;
 const REFRESH_TTL_MS = 30_000;
 export const REFRESH_DEBOUNCE_MS = 2_000;
 const CODEX_PROVIDER = "openai-codex";
@@ -1140,10 +1140,38 @@ export function renderSubscriptionLine(state: State): void {
   ctx.ui.setStatus(STATUS_KEY, theme.fg(color, line));
 }
 
+function isStaleCtxError(error: unknown): boolean {
+  // pi 0.85.1's wording is "This extension ctx is stale after session
+  // replacement or reload." (verified in the host bundle); "invalidated" is
+  // matched too so wording drift degrades to a harmless extra disarm instead
+  // of silently disabling recovery.
+  return error instanceof Error && /\bctx is stale\b|invalidated/i.test(error.message);
+}
+
+function selfDisarm(state: State): void {
+  stopTimer(state);
+  state.inFlight = undefined;
+  state.refreshGeneration++;
+  state.ctx = undefined;
+}
+
+/** pi can invalidate state.ctx without ever delivering a matching
+ *  session_shutdown (pi 0.85.1 orphaned-runtime teardown; instances are shared
+ *  across sessions), so a deferred refresh can hit a stale ctx. refreshUsage
+ *  is async — its throw becomes a rejected promise, and a void-discarded
+ *  rejection exits pi (unhandledRejection -> uncaughtException). Catch it and
+ *  self-disarm; session_start re-arms with the fresh ctx. Non-stale
+ *  rejections are swallowed: adapters already resolve error snapshots. */
+function deferRefresh(state: State, force: boolean): void {
+  refreshUsage(state, force).catch((error) => {
+    if (isStaleCtxError(error)) selfDisarm(state);
+  });
+}
+
 function startTimer(state: State): void {
   if (state.refreshTimer || !state.adapter) return;
   state.refreshTimer = setInterval(() => {
-    void refreshUsage(state, false);
+    deferRefresh(state, false);
   }, REFRESH_INTERVAL_MS);
 }
 
@@ -1208,7 +1236,7 @@ export function scheduleRefresh(state: State): void {
   if (state.debounceTimer) clearTimeout(state.debounceTimer);
   state.debounceTimer = setTimeout(() => {
     state.debounceTimer = undefined;
-    void refreshUsage(state, true);
+    deferRefresh(state, true);
   }, REFRESH_DEBOUNCE_MS);
 }
 
@@ -1298,12 +1326,12 @@ export default function (pi: ExtensionAPI) {
     // need to — and a late old-session event must not reinstall a stale ctx.
     state.ctx = ctx;
     updateActiveAdapter(state, ctx.model);
-    if (state.adapter) void refreshUsage(state, true);
+    if (state.adapter) deferRefresh(state, true);
   });
 
   pi.on("model_select", async (event, _ctx) => {
     updateActiveAdapter(state, event.model);
-    if (state.adapter) void refreshUsage(state, true);
+    if (state.adapter) deferRefresh(state, true);
   });
 
   pi.on("before_provider_request", async (_event, _ctx) => {
@@ -1364,16 +1392,23 @@ export default function (pi: ExtensionAPI) {
       return items.length > 0 ? items : null;
     },
     handler: async (args, ctx) => {
-      updateActiveAdapter(state, ctx.model);
-      const command = args.trim().toLowerCase();
-      const force = command === "refresh";
-      const snapshot = state.adapter ? await refreshUsage(state, force || !state.snapshot) : undefined;
-      const details = buildDetails(snapshot ?? state.snapshot, state);
-      pi.sendMessage({ customType: MESSAGE_TYPE, content: details, display: true });
-      // state.ctx (not captured ctx): the session could be replaced during the
-      // await above; if it was, skip the notification instead of touching a
-      // stale ctx.
-      if (force) state.ctx?.ui.notify("Subscription usage refreshed", "info");
+      try {
+        updateActiveAdapter(state, ctx.model);
+        const command = args.trim().toLowerCase();
+        const force = command === "refresh";
+        const snapshot = state.adapter ? await refreshUsage(state, force || !state.snapshot) : undefined;
+        const details = buildDetails(snapshot ?? state.snapshot, state);
+        pi.sendMessage({ customType: MESSAGE_TYPE, content: details, display: true });
+        // state.ctx (not captured ctx): the session could be replaced during the
+        // await above; if it was, skip the notification instead of touching a
+        // stale ctx.
+        if (force) state.ctx?.ui.notify("Subscription usage refreshed", "info");
+      } catch (error) {
+        // Orphaned stale ctx (invalidated without shutdown): disarm like the
+        // deferred paths instead of throwing into pi's dispatcher.
+        if (!isStaleCtxError(error)) throw error;
+        selfDisarm(state);
+      }
     },
   });
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.38 (2026-09-07)
+
+### Fixed
+
+- **Crash (pi exits) — third arm of the stale-ctx class**: pi 0.85.1 can
+  invalidate the extension ctx without ever delivering a matching
+  `session_shutdown` (orphaned/replaced runtime teardown; extension instances
+  are shared across sessions), so the 60s usage-refresh interval can fire with
+  `state.ctx` still installed but stale — the 0.1.18/0.1.37 guards (fire-time
+  ctx resolution, identity-guarded shutdown) never see it. `refreshUsage` is
+  async, so its throw became a rejected promise discarded by `void` →
+  `unhandledRejection` → pi's `uncaughtException` handler → exit. All deferred
+  refresh call sites now go through `deferRefresh`, which catches the
+  rejection and self-disarms (stops timers, drops in-flight state and the
+  stale ctx); `session_start` re-arms with the fresh ctx. Same crash class as
+  pi-messenger#25. The `/sub` command path disarms the same way when run
+  against an orphaned stale ctx, and regression tests now cover the 60s
+  interval arm, the command arm, and matcher independence from pi's exact
+  error wording.
+
 ## 0.1.37 (2026-09-07)
 
 ### Fixed
