@@ -64,6 +64,11 @@ import { type SubagentThread, threadStore } from "./threads.ts";
 import { SUBAGENT_REQUEST_EVENT, runNamedAgent, type SubagentRunRequest } from "./service.ts";
 import { resolveModel, runWithModelFallback } from "./model.ts";
 import { DEFAULT_ROLES, describeAgentModels, readSubagentRoles, readSubagentRolesGlobal, resolveAgentModelChain, type RolesConfig } from "./roles.ts";
+import {
+  createAutoReviewState,
+  handleAutoReviewSettle,
+  latestEntryId,
+} from "./auto-review.ts";
 import { ThreadViewer, type ThreadViewerCallbacks } from "./thread-viewer.ts";
 import { createTaskWidgetController, renderLiveThreadLine, type TaskWidgetController } from "./widget.ts";
 import {
@@ -185,6 +190,7 @@ interface SubagentDetails {
 
 export default function (pi: ExtensionAPI) {
   let currentCtx: ExtensionContext | undefined;
+  let autoReviewState = createAutoReviewState();
 
   // Live progress widget — fed by threadStore subscriptions (per SDK event).
   const widget: TaskWidgetController = createTaskWidgetController(
@@ -198,6 +204,12 @@ export default function (pi: ExtensionAPI) {
     if (event.reason === "reload") invalidateAgentCache();
     threadStore.clear();
     trustedProjectAgentDirs.clear();
+    autoReviewState = createAutoReviewState();
+    // Reseed before any turn runs so the session's FIRST coding turn is
+    // reviewed too (reseed-on-first-settle would silently consume it).
+    try {
+      if (ctx) autoReviewState.cursor = latestEntryId(ctx.sessionManager.getEntries() as any[]);
+    } catch { /* no session yet — analyzeTurn handles undefined cursor */ }
     // Clear any widget from a prior session.
     widget.clearWidgetIfIdle();
     // Mark prior-session running tasks as interrupted (we can't resume them),
@@ -252,6 +264,7 @@ export default function (pi: ExtensionAPI) {
         "Prefer **scout** and **tester** for cheap routine work. " +
         "Prefer **worker** or **general-purpose** for normal coding. " +
         "Prefer **planner** and **reviewer** for consequential reasoning. " +
+        "Delegate only when isolation/parallelism/specialization pays off — do NOT delegate single-file small edits or quick greps; do those inline. " +
         "Modes: single, parallel (max 8 tasks, 4 concurrent), chain.",
     };
   });
@@ -296,6 +309,24 @@ export default function (pi: ExtensionAPI) {
         request.respond({ id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) });
       } catch { /* respond channel closed */ }
     });
+  });
+
+  // Auto-review: after a user-initiated turn that mutated files, dispatch the
+  // read-only reviewer on the current uncommitted diff of the turn's touched
+  // files as a background task. Config: `subagent.autoReview`.
+  pi.on("agent_settled", async (_event, ctx) => {
+    if (!ctx) return;
+    const dispatched = await handleAutoReviewSettle({
+      pi,
+      ctx,
+      state: autoReviewState,
+      bundledAgentsDir,
+      threadStore,
+      agentColor: agentToThemeColor("reviewer"),
+      dispatch: startBackgroundTask,
+      isRunning: () => getAllBackgroundTasks().some((t) => t.status === "running"),
+    });
+    if (dispatched && ctx.mode === "tui") widget.ensureWidget(ctx);
   });
 
   // Register renderer for background-task completion (follow-up turn).

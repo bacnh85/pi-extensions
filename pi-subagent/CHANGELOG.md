@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.20.0 (2026-09-07)
+
+### Added
+
+- **Auto-review** (`subagent.autoReview: true` in settings.json, default off) —
+  after a user-initiated turn that made ≥3 file-mutation tool calls
+  (`edit`/`write`/`apply_patch`/`str_replace_editor`) in an interactive (TUI)
+  session, the read-only `reviewer` agent is dispatched automatically as a
+  background task reviewing the current uncommitted diff of the files the turn
+  touched (new/untracked files are read directly); its findings wake the parent
+  via the normal background follow-up turn, so an independent review happens
+  after every real coding turn without asking. Precedence: global
+  settings.json → trusted repo `.pi/settings.json` overlay. Guards keep it
+  bounded: turns woken by auto-injected messages are
+  skipped (custom wake-ups by role, and pi-advisor blocker/concern steers by
+  their fixed `Advisor review (` content prefixes since those are plain user
+  messages), max 3 dispatches per session, never while another background task
+  runs, cursor tracked while the setting is off so enabling mid-session never
+  replays history, `session_start` (startup and reload) reseeds it, and a
+  fresh session's first coding turn is reviewed from entry zero. Subagent
+  catalog prompt now also states when NOT to delegate (single-file small
+  edits, quick greps → inline).
+
 ## 0.19.3 (2026-09-05)
 
 - Widen Pi SDK peer range to `>=0.80.0 <0.86.0` and bump devDep to `^0.85.0` for Pi 0.85.0 compatibility (no breaking changes; peer cap widening only).

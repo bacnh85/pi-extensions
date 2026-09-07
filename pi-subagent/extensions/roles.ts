@@ -140,6 +140,16 @@ export function readSubagentRoles(ctx?: ExtensionContext): RolesConfig {
   return cfg;
 }
 
+/** Read the `subagent` section of the user's global settings.json (empty when absent). */
+export function readSubagentSection(): Record<string, unknown> {
+  return readSubagentSectionFrom(join(agentDir(), "settings.json"));
+}
+
+/** Read the `subagent` section of an arbitrary settings.json (empty when absent). */
+export function readSubagentSectionFrom(settingsPath: string): Record<string, unknown> {
+  return subagentSection(readJson(settingsPath));
+}
+
 /** Global-only variant used by the panel so a save never persists repo
  *  `.pi/settings.json` overlay values into the user's global settings. */
 export function readSubagentRolesGlobal(): RolesConfig {

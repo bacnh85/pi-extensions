@@ -66,6 +66,31 @@ subagent({ operation: "cancel", taskId: "bg-..." })   // abort a running task
 
 You will be notified on completion — do not poll or sleep.
 
+## Auto-review
+
+Opt-in workflow automation (`subagent.autoReview: true` in settings.json,
+default off): after a **user-initiated** turn that made ≥3 file-mutation tool
+calls (`edit`, `write`, `apply_patch`, `str_replace_editor`) in an interactive
+(TUI) session, the read-only `reviewer` agent is dispatched automatically as a
+background task reviewing the current uncommitted diff of the files the turn
+touched (new/untracked files are read directly by the reviewer). Its findings
+arrive as a background follow-up turn, so an independent review follows every
+real coding turn without asking. Precedence: global settings.json → trusted
+repo `.pi/settings.json` overlay.
+
+Guards keep it bounded:
+
+- Turns woken by auto-injected messages never trigger a review — custom
+  wake-ups (`pi-subagent-complete`) by role, and pi-advisor blocker/concern
+  steers by their fixed `Advisor review (` content prefixes (those are plain
+  user messages) — so review→fix→review ping-pong can't start.
+- Max 3 auto-reviews per session; never while another background task runs.
+- The cursor tracks the transcript tail while the setting is off, so enabling
+  mid-session never replays accumulated history; `session_start` (startup and
+  reload) reseeds it, and a fresh session's first coding turn is reviewed from
+  entry zero. Reviewer timeout is 10 minutes; failures are non-blocking. Set
+  `PI_SUBAGENT_AUTOREVIEW_DEBUG=1` to trace dispatch decisions on stderr.
+
 ## History
 
 Every completed task (foreground and background) is recorded to
