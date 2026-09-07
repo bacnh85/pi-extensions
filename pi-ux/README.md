@@ -49,7 +49,10 @@ The injected skill enforces **Constraint-First Design Generation**:
 1. **5-field brief per screen** — user job, inventory, token constraints, required states, one reference.
 2. **Generate fast, converge early** — text-only models inside the locked system; 2-loop convergence trigger.
 3. **Normalise** the draft back into tokens/elevation/spacing.
-4. **Slop-audit gate** — run `ux_audit` (measurable): APCA contrast, token coverage, state coverage, slop tells.
+4. **Render & Inspect** (multimodal models) — reference-first capture, then screenshot your own build and LOOK. Default: local headless-Chrome capture read back inline (offline, no daemon); alternative: `web_screenshot` (pi-web 0.6.2+, PNG returned inline) at a daemon-reachable address (LAN IP / host.docker.internal — SSRF-protected daemons block private ranges; cloudflared tunnel as last resort). Judge at viewer resolution (1×–3×); never chase sub-visible precision. Skip when text-only — the deterministic gates are the whole loop.
+5. **Slop-audit gate** — run `ux_audit` (measurable): APCA contrast, token coverage, state coverage, slop tells, tracked-eyebrow/near-black taste tells, reduced-motion coverage.
+
+Taste rules ship in the skill: named cliché clusters (the cream/terracotta "Claude look", acid-on-black, broadsheet kit, SaaS-card kit, template chrome), typography-as-personality, one-orchestrated-motion, design-writing rules, and the generic-default check ("would I produce this plan for any similar brief?").
 
 ## The `ux_audit` tool
 
@@ -63,8 +66,8 @@ ux_audit css="..." pairs=[{fg:"#111",bg:"#fff",label:"body",weight:400,size:16,m
 |------|----------------|
 | **Contrast (APCA)** | Perceptual APCA Lc per fg/bg pair (Lc ≥75 body, ≥45 large-bold, ≥30 non-text). hex or `oklch()`. Optional `weight`/`size` set the threshold. WCAG 2.x ratio shown as a compliance sidecar. |
 | **Tokens** | Hardcoded hex outside `:root` token defs; `box-shadow` not built from `var(--…)` tokens |
-| **States** | Interactive selectors (`button`/`a`/`input`/…/`[role=button]`) missing `:focus-visible` or `:disabled` |
-| **Slop tells** | Named AI signatures: glassmorphism (`backdrop-filter`), gradient orbs, neon glow, the shadcn default-card reflex (`rounded-2xl`+`shadow-lg`+`p-6`), 1px gray card borders |
+| **States** | Interactive selectors (`button`/`a`/`input`/…/`[role=button]`) missing `:focus-visible` or `:disabled`; any transition/animation missing a `prefers-reduced-motion` fallback |
+| **Slop tells** | Named AI signatures: glassmorphism (`backdrop-filter`), gradient orbs, neon glow, the shadcn default-card reflex (`rounded-2xl`+`shadow-lg`+`p-6`), 1px gray card borders, tracked-out eyebrows, tinted near-black backgrounds |
 
 Returns pass/fail per gate + a formatted report. In `strict` mode this is the gate that blocks handoff.
 
@@ -90,6 +93,7 @@ The skill tells the agent which model to use for each step. The gate is mechanic
 
 - **`ux-design`** — the Constraint-First method + deterministic-first model routing (auto-injected by the hook when active).
 - **`ux-presets`** — reference design-system presets for Step 0: a lintable DESIGN.md starter, the shadcn/Material/Radix reuse table, and a CSS-only `:root` fallback. Reference only — no bundled CSS.
+- **`ux-capture`** — the Step 4 render-and-inspect capture playbook: local headless-Chrome capture read inline vs daemon-rendered `web_screenshot`, LAN IP/host.docker.internal addressing, SSRF-blocked daemons, cloudflared tunnel as last resort.
 
 ## Configuration
 

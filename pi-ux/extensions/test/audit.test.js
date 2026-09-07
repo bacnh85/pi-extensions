@@ -129,6 +129,98 @@ test("scanStates returns empty when no interactive selectors present", () => {
   assert.deepEqual(states.missingDisabled, []);
 });
 
+test("scanStates: motion without prefers-reduced-motion fails, with it passes", () => {
+  const base = `button { transition: opacity 120ms; } button:focus-visible { outline: none; } button:disabled { opacity: 0.5; }`;
+  const without = scanStates(base);
+  assert.deepEqual(without.missingReducedMotion, [
+    'motion (transition/animation) with no prefers-reduced-motion fallback',
+  ]);
+  const with_ = scanStates(base + `\n@media (prefers-reduced-motion: reduce) { button { transition: none; } }`);
+  assert.deepEqual(with_.missingReducedMotion, []);
+});
+
+test("scanStates: no motion → no reduced-motion finding, even with no interactive elements", () => {
+  const states = scanStates(`.hero { padding: 24px; }`);
+  assert.deepEqual(states.missingReducedMotion, []);
+});
+
+test("scanStates: transition longhands and scroll-behavior count as motion", () => {
+  const longhand = scanStates(`.a { transition-property: opacity; transition-duration: 200ms; }`);
+  assert.equal(longhand.missingReducedMotion.length, 1);
+  const fixed = scanStates(`.a { transition-property: opacity; transition-duration: 200ms; }\n@media (prefers-reduced-motion: reduce) { .a { transition: none; } }`);
+  assert.equal(fixed.missingReducedMotion.length, 0);
+  const smooth = scanStates(`html { scroll-behavior: smooth; }`);
+  assert.equal(smooth.missingReducedMotion.length, 1);
+  const inert = scanStates(`.a { transition-behavior: allow-discrete; }`);
+  assert.equal(inert.missingReducedMotion.length, 0);
+});
+
+test("scanStates: a commented-out prefers-reduced-motion block does not satisfy the check", () => {
+  const r = scanStates(`button { transition: opacity 120ms; } /* @media (prefers-reduced-motion: reduce) { button { transition: none; } } */`);
+  assert.equal(r.missingReducedMotion.length, 1);
+});
+
+test("slop tells: eyebrow label (tracked-out uppercase at ≤13px)", () => {
+  const hit = scanSlopTells(`.eyebrow { text-transform: uppercase; font-size: 11px; letter-spacing: 0.1em; }`);
+  assert.equal(hit.tells.length, 1);
+  assert.match(hit.tells[0], /eyebrow/);
+  // 0.8125rem = 13px with wide tracking → still hits
+  assert.equal(scanSlopTells(`.k { text-transform: uppercase; font-size: 0.8125rem; letter-spacing: 0.12em; }`).tells.length, 1);
+  // normal-tracking uppercase labels are a legitimate table/label style
+  assert.equal(scanSlopTells(`.h { text-transform: uppercase; font-size: 12px; letter-spacing: 0.05em; }`).tells.length, 0);
+  assert.equal(scanSlopTells(`.display { text-transform: uppercase; font-size: 16px; letter-spacing: 0.1em; }`).tells.length, 0);
+  // uppercase without an explicit size could be a display treatment → pass
+  assert.equal(scanSlopTells(`.display { text-transform: uppercase; letter-spacing: 0.1em; }`).tells.length, 0);
+  // em tracking scales with the element's own font-size: 13px × 0.07em = 0.07em < 0.08 → pass
+  assert.equal(scanSlopTells(`.h { text-transform: uppercase; font-size: 13px; letter-spacing: 0.07em; }`).tells.length, 0);
+  // 11px × 0.09em = 0.99px — below a naive 1px threshold but ≥0.08em → hit
+  assert.equal(scanSlopTells(`.h { text-transform: uppercase; font-size: 11px; letter-spacing: 0.09em; }`).tells.length, 1);
+});
+
+test("slop tells: tinted near-black background", () => {
+  assert.ok(scanSlopTells(`.card { background: #0B0B0B; }`).tells.some((t) => /near-black/.test(t)));
+  assert.ok(scanSlopTells(`.card { background-color: #111111; }`).tells.some((t) => /near-black/.test(t)));
+  // pure #000 is a deliberate choice; near-black *text* is fine
+  assert.equal(scanSlopTells(`.card { background: #000; }`).tells.some((t) => /near-black/.test(t)), false);
+  assert.equal(scanSlopTells(`.card { color: #111111; background: var(--surface); }`).tells.some((t) => /near-black/.test(t)), false);
+  assert.ok(scanSlopTells(`.card { background: #0b0b0bcc; }`).tells.some((t) => /near-black/.test(t)));
+  // #RGBA nibbles double: #0b0b = rgba(0,187,0,.73) — translucent green, correctly NOT near-black
+  assert.equal(scanSlopTells(`.card { background: #0b0b; }`).tells.some((t) => /near-black/.test(t)), false);
+  assert.ok(scanSlopTells(`.card { background: #1112; }`).tells.some((t) => /near-black/.test(t))); // dark 4-digit alpha form
+});
+
+test("slop tells: commented-out CSS produces zero tells", () => {
+  const commented = scanSlopTells(`/* .eyebrow { text-transform: uppercase; font-size: 11px; letter-spacing: 0.1em; } */ /* .hero { background: #0B0B0B } */`);
+  assert.equal(commented.tells.length, 0);
+});
+
+test("audit: auto-extracts colour/background pairs when none are provided", () => {
+  const css = `:root { --surface: #FFFFFF; --surface-alt: #fff; --text: #0F172A; --muted: #57534E; }
+    .card { color: var(--text); background: var(--surface); }
+    .muted { color: var(--muted); }
+    .dup { color: var(--text); background: var(--surface-alt); }`;
+  const r = audit({ css, pairs: [] });
+  assert.equal(r.autoPairs, true);
+  assert.equal(r.gates.contrast.results.length, 1); // .card + .dup dedupe to one resolved pair; .muted skipped (no bg in block)
+  assert.equal(r.gates.contrast.results[0].label.startsWith("auto: "), true);
+  assert.equal(r.pass, true);
+});
+
+test("audit: keeps provided pairs and skips extraction", () => {
+  const r = audit({
+    css: ".a { color: #fff; background: #000; }",
+    pairs: [{ fg: "#579F9A", bg: "#FFFFFF", label: "graphic", min: 3 }],
+  });
+  assert.equal(r.autoPairs, false);
+  assert.equal(r.gates.contrast.results.length, 1);
+});
+
+test("audit: auto-extracted failing pair fails the gate", () => {
+  const r = audit({ css: ".bad { color: #9ca3af; background: #f9fafb; }" });
+  assert.equal(r.autoPairs, true);
+  assert.equal(r.pass, false);
+});
+
 // --- aggregate gate -------------------------------------------------------
 
 test("audit.pass is true for a clean, token-compliant stylesheet", () => {
@@ -273,6 +365,30 @@ test("apcaThreshold scales by weight and size", () => {
   assert.equal(apcaThreshold(400, 24), 45, "large non-bold relaxes to 45");
   assert.equal(apcaThreshold(400, 18), 60, "regular ≥18px = 60");
   assert.equal(apcaThreshold(500, 18), 60, "medium weight + 18px = 60");
+});
+
+test("apcaThreshold: non-text pairs gate at Lc 30", () => {
+  assert.equal(apcaThreshold(undefined, undefined, true), 30, "non-text = 30");
+  assert.equal(apcaThreshold(400, 12, false), 75, "text path unaffected");
+});
+
+test("audit: non-text pair (min 3, no size/weight) passes at Lc >= 30", () => {
+  // #579F9A on white ≈ Lc 57.5 — passes the non-text floor, would fail body 75
+  const result = audit({
+    css: ".col { background: #579F9A; }",
+    pairs: [{ fg: "#579F9A", bg: "#FFFFFF", label: "graphic", min: 3 }],
+  });
+  assert.equal(result.gates.contrast.results[0].apcaMin, 30);
+  assert.equal(result.gates.contrast.results[0].pass, true);
+});
+
+test("audit: min 3 WITH size stays a text pair (body threshold)", () => {
+  const result = audit({
+    css: ".x { color: #579F9A; }",
+    pairs: [{ fg: "#579F9A", bg: "#FFFFFF", label: "small text", min: 3, size: 12 }],
+  });
+  assert.equal(result.gates.contrast.results[0].apcaMin, 75);
+  assert.equal(result.gates.contrast.results[0].pass, false);
 });
 
 // --- audit with APCA + WCAG sidecar ---------------------------------------

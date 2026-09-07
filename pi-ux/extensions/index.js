@@ -79,7 +79,7 @@ function auditParametersSchema() {
             fg: { type: "string", description: "Foreground colour, e.g. '#111111' or 'oklch(60% 0.18 250)'." },
             bg: { type: "string", description: "Background colour, e.g. '#ffffff'." },
             label: { type: "string", description: "Human label for this text style (e.g. 'body')." },
-            min: { type: "number", description: "WCAG compliance floor (4.5 body, 3.0 large/UI). Shown as a sidecar; the primary gate is APCA. Defaults to 4.5." },
+            min: { type: "number", description: "WCAG compliance floor (4.5 body, 3.0 large/UI). Shown as a sidecar; the primary gate is APCA. Defaults to 4.5. Pairs with min 3 and NO size/weight are treated as non-text graphics (APCA Lc 30 per the gate table)." },
             weight: { type: "number", description: "Font weight (400/500/700). With size, sets the APCA threshold. Defaults to 400." },
             size: { type: "number", description: "Font size in px. With weight, sets the APCA threshold. Defaults to 16." },
           },
@@ -112,6 +112,7 @@ function formatAuditResult(result) {
   lines.push(s.pass ? "✓ States" : "✗ States");
   for (const m of s.missingFocusVisible) lines.push(`  ✗ ${m}`);
   for (const m of s.missingDisabled) lines.push(`  ✗ ${m}`);
+  for (const m of s.missingReducedMotion || []) lines.push(`  ✗ ${m}`);
 
   const st = result.gates.slopTells;
   lines.push(st.pass ? "✓ Slop tells" : "✗ Slop tells");
@@ -156,12 +157,13 @@ export default function uxExtension(pi) {
     name: "ux_audit",
     label: "UX Slop Audit",
     description:
-      "Run deterministic slop-audit gates on CSS: APCA contrast (perceptual; WCAG sidecar), off-system token values (hardcoded hex / ad-hoc shadows), missing interaction states (:focus-visible / :disabled), and named AI slop tells (glassmorphism, gradient orbs, neon glow, default-card). No model needed — all gates are computable. In strict mode, block handoff until this passes.",
+      "Run deterministic slop-audit gates on CSS: APCA contrast (perceptual; WCAG sidecar), off-system token values (hardcoded hex / ad-hoc shadows), missing interaction states (:focus-visible / :disabled + prefers-reduced-motion), and named AI slop tells (glassmorphism, gradient orbs, neon glow, default-card, tracked-out eyebrows, tinted near-black). No model needed — all gates are computable. In strict mode, block handoff until this fails to pass. AUDIT THE COMPLETE STYLESHEET, not fragments. If no contrast pairs are supplied, they are auto-extracted from rules that declare both colour and background.",
     promptSnippet: "Run deterministic UX slop-audit (APCA contrast + tokens + states + slop tells)",
     promptGuidelines: [
       "Contrast, token-coverage, and slop-tells are computable, not judgement — use this tool instead of eyeballing or calling a vision model.",
-      "Pass fg/bg colour pairs (hex or oklch()) + optional weight/size to set the APCA threshold; the WCAG ratio is shown as a compliance sidecar.",
-      "Pass the CSS string to scan for hardcoded hex, ad-hoc box-shadow, and named AI tells (glassmorphism, gradient orbs, neon glow, the shadcn default-card reflex, 1px gray borders).",
+      "Pass fg/bg colour pairs (hex or oklch()) + optional weight/size to set the APCA threshold; the WCAG ratio is shown as a compliance sidecar. Omit pairs and they are auto-extracted from colour+background rules — but hand-picking catches text-on-inherited-backgrounds that auto-extraction misses.",
+      "Audit the COMPLETE stylesheet — fragment input falsely fails the States gate (no interactive selectors present) and misses off-system values elsewhere.",
+      "Pass the CSS string to scan for hardcoded hex, ad-hoc box-shadow, and named AI tells (glassmorphism, gradient orbs, neon glow, the shadcn default-card reflex, 1px gray borders, tracked-out eyebrows, tinted near-black). Transition/animation CSS must ship a prefers-reduced-motion fallback.",
       "State coverage flags interactive elements (button/a/input/...) missing :focus-visible or :disabled rules.",
     ],
     parameters: auditParametersSchema(),

@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.4.6 (2026-09-06)
+
+### Added
+
+- **Step 4 — Render & Inspect** in the ux-design skill: a vision verify loop
+  for multimodal models (GLM-5.3, Claude, Gemini). Reference-first
+  capture with `web_screenshot` (now returned inline as an image block by
+  pi-web 0.6.2), inspect your own rendered build at a daemon-reachable address
+  (LAN IP / host.docker.internal; localhost only for a native same-host daemon), visibility
+  baseline (judge at 1×–3×, never sub-visible precision), deterministic
+  `ux_audit` stays the blocking gate. The single biggest quality lever for
+  flash-tier models: eyes on output beat rules in a prompt. Inspired by
+  zcode-plugins video2code. Slop-audit gate renumbered to Step 5; text-only
+  fallback unchanged. Live-tested end-to-end; hardened with SSRF-blocked
+  daemon fallbacks (local headless chrome capture read back inline — fast,
+  offline; LAN IP or cloudflared tunnel only when the remote daemon must
+  render the page).
+- `ux_audit`: pairs declared `min: 3` **without** size/weight are now
+  treated as non-text graphics (APCA Lc ≥ 30, per the documented gate
+  table) instead of the body-text Lc ≥ 75 floor. Found auditing a real
+  dashboard chart (accent-70% column on white: Lc 57.5 / WCAG 3.07:1 —
+  legal for graphics, wrongly failed as body copy). Text pairs with
+  size/weight are unchanged.
+- **Taste layer** (from anthropics/skills `frontend-design`): the ux-design
+  skill now carries the five named cliché clusters (cream/terracotta "Claude
+  look", acid-on-black, broadsheet kit, SaaS-card kit, template chrome),
+  taste rules (typography-as-personality, one-orchestrated-motion, design
+  writing, spend boldness in one place), the generic-default check before
+  building, variant-branching as files (`.ux/drafts/`), BEFORE-state capture
+  when redesigning, and design-DNA extraction from reference sites into
+  DESIGN.md.
+- `ux_audit` taste tells: flags **tracked-out uppercase eyebrows**
+  (uppercase + ≤13px + letter-spacing ≥0.08em in one rule) and **tinted
+  near-black backgrounds** (`#0B0B0B`/`#111` standing in for black; pure
+  `#000` allowed). The States gate now also fails CSS with
+  transitions/animations but no `prefers-reduced-motion` fallback.
+- New **`ux-capture`** skill: the render-and-inspect capture playbook
+  (local headless-Chrome vs daemon-rendered `web_screenshot`, daemon
+  addressing, SSRF blocks, tunnel last resort) split out of the always-
+  injected ux-design body to keep per-turn prompt overhead down.
+- **`ux_audit` auto-extracts contrast pairs** from rules that declare both
+  colour and background when no pairs are supplied (rgb-normalised dedupe,
+  24-pair cap) — closing the #1 silent gap where unchecked pairs meant
+  unchecked contrast. Fragment input now prints a hint to audit the complete
+  stylesheet instead of silently blocking on missing selectors.
+- **Data-viz rules + scale-to-task** in the ux-design skill: chart
+  fill-on-track contrast, categorical ramp limits, secondary-series opacity,
+  tabular numerics, empty-chart states, dense-table patterns; one-line brief
+  + single draft is now legitimate for small internal tools.
+  (Feedback implemented from a field review by a glm-5.3-flash agent that
+  designed with pi-ux under A2A peer review.)
+
 ## 0.4.5 (2026-08-29)
 
 ### Added

@@ -109,7 +109,10 @@ function apcaContrastLc(textColor, bgColor) {
 
 // APCA threshold for a text/bg pair by font weight + size (px).
 // Spec guidance: Lc 75 body, 60 for 400@18px+, 45 large/bold, 30 non-text.
-function apcaThreshold(weight, size) {
+// Non-text pairs (min: 3 = WCAG "large/UI" floor, no size/weight given) are
+// graphics, not copy — they gate at Lc 30 per the gate table.
+function apcaThreshold(weight, size, isNonText = false) {
+  if (isNonText) return 30;
   const w = typeof weight === 'number' ? weight : 400;
   const s = typeof size === 'number' ? size : 16;
   const bold = w >= 700;
@@ -202,7 +205,16 @@ function scanOffSystem(css, tokens) {
 // ponytail: presence check, not a CSS parser. Stateful /g regexes with
 // .test() flake across calls, so use plain includes().
 function scanStates(css) {
-  const findings = { missingFocusVisible: [], missingDisabled: [] };
+  css = css.replace(/\/\*[\s\S]*?\*\//g, ' '); // dead code must not fail the gate
+  const findings = { missingFocusVisible: [], missingDisabled: [], missingReducedMotion: [] };
+
+  // Motion needs a reduced-motion fallback regardless of interactive elements
+  // (a hero fade-in on a page with no buttons still needs one).
+  // ponytail: deliberately excludes transition-behavior — inert alone.
+  const hasMotion = /transition(?:-(?:property|duration|delay|timing-function))?\s*:|animation(?:-(?:name|duration|delay|timing-function|iteration-count|direction|fill-mode|play-state))?\s*:|@keyframes|scroll-behavior\s*:\s*smooth/i.test(css);
+  if (hasMotion && !css.includes('prefers-reduced-motion')) {
+    findings.missingReducedMotion.push('motion (transition/animation) with no prefers-reduced-motion fallback');
+  }
 
   const hasInteractive =
     /\b(?:button|a|input|select|textarea)\b/i.test(css) || /\[role\s*=\s*"?button"?\]/i.test(css);
@@ -220,6 +232,7 @@ function scanStates(css) {
 // catches and the conservative pattern that must all match.
 
 function scanSlopTells(css) {
+  css = css.replace(/\/\*[\s\S]*?\*\//g, ' '); // dead code must not fail the gate
   const tells = [];
   const lower = css.toLowerCase();
 
@@ -295,23 +308,125 @@ function scanSlopTells(css) {
     tells.push('1px gray card border (border-zinc/gray default or near-gray 1px solid) — the most reliable AI tell');
   }
 
+  // 6. Eyebrow labels — tracked-out ALL-CAPS micro-labels above headings are
+  //    template chrome (anthropics/skills frontend-design). Conservative: only
+  //    flag when text-transform: uppercase, font-size ≤13px AND wide tracking
+  //    (letter-spacing ≥ 0.08em) co-occur in the same block — the "tracked-out"
+  //    part is the slop signature; plain uppercase labels with normal tracking
+  //    are a legitimate table/label style.
+  const ruleRe = /([^{}]+)\{([^}]*)\}/g;
+  let rm2;
+  while ((rm2 = ruleRe.exec(css)) !== null) {
+    const decls = rm2[2].toLowerCase();
+    if (!/text-transform\s*:\s*uppercase/.test(decls)) continue;
+    const fs = decls.match(/font-size\s*:\s*([0-9.]+)(px|rem|em|pt)/);
+    if (!fs) continue;
+    const px = parseFloat(fs[1]) * { px: 1, rem: 16, em: 16, pt: 16 / 12 }[fs[2]];
+    if (px > 13) continue;
+    const ls = decls.match(/letter-spacing\s*:\s*([0-9.]+)(px|rem|em)/);
+    // Threshold is documented in em (≥0.08em) and em scales with the element's
+    // OWN font-size — so normalise every unit to em before comparing.
+    const lsEm = ls
+      ? parseFloat(ls[1]) * (ls[2] === 'em' ? 1 : ls[2] === 'rem' ? 16 / px : 1 / px)
+      : 0;
+    if (lsEm >= 0.08) {
+      tells.push('eyebrow label (tracked-out uppercase at ≤13px, letter-spacing ≥0.08em) — template chrome; try sentence-case micro-labels or weight/colour instead');
+      break;
+    }
+  }
+
+  // 7. Tinted near-black backgrounds — #0B0B0B/#111 standing in for black is
+  //    template chrome. Flag background hex where every channel ≤ 0x14 and the
+  //    channel spread ≤ 3 (a near-neutral tint, not a real colour); pure #000
+  //    is a deliberate choice and stays allowed. colour: declarations are
+  //    exempt — near-black copy text is fine.
+  const bgRe = /background(?:-color)?\s*:\s*[^;}]*#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})(?![0-9a-f])/gi;
+  let bm;
+  while ((bm = bgRe.exec(css)) !== null) {
+    const rgb = parseHex('#' + bm[1]);
+    if (!rgb) continue;
+    const max = Math.max(rgb[0], rgb[1], rgb[2]);
+    const spread = max - Math.min(rgb[0], rgb[1], rgb[2]);
+    if (max > 0 && max <= 0x14 && spread <= 3) {
+      tells.push('tinted near-black background (#0B0B0B/#111 standing in for black) — template chrome tell');
+      break;
+    }
+  }
+
   return { tells };
+}
+
+// Contrast pairs auto-extracted from rules that declare both a colour and a
+// background. Var() references resolve through the :root token map. Blocks
+// without an explicit background are skipped — no inherited-bg guessing.
+function extractContrastPairs(css) {
+  const nameToValue = new Map();
+  const rootBlock = /:root\b[^{]*\{([^}]*)\}/g;
+  let rootMatch;
+  while ((rootMatch = rootBlock.exec(css)) !== null) {
+    const declRe = /--([a-zA-Z0-9-]+)\s*:\s*([^;]+);/g;
+    let decl;
+    while ((decl = declRe.exec(rootMatch[1])) !== null) {
+      nameToValue.set('--' + decl[1].trim(), decl[2].trim());
+    }
+  }
+  const resolve = (value) => {
+    let v = value.trim();
+    const varMatch = v.match(/^var\((--[^,)]+)(?:,\s*([^)]*))?\)$/);
+    if (varMatch) v = nameToValue.get(varMatch[1]) || (varMatch[2] || '').trim();
+    return /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$|^(?:rgb|hsl)a?\(/i.test(v) ? v : null;
+  };
+
+  const pairs = [];
+  const seen = new Set();
+  const ruleRe = /([^{}]+)\{([^}]*)\}/g;
+  let rm;
+  while ((rm = ruleRe.exec(css)) !== null && pairs.length < 24) {
+    const decls = rm[2];
+    const colorMatch = decls.match(/(?:^|;)\s*color\s*:\s*([^;]+)/);
+    const bgMatch = decls.match(/(?:^|;)\s*(?:background|background-color)\s*:\s*([^;]+)/);
+    if (!colorMatch || !bgMatch) continue;
+    const fg = resolve(colorMatch[1]);
+    const bg = resolve(bgMatch[1].split(' ')[0]);
+    if (!fg || !bg || fg.toLowerCase() === bg.toLowerCase()) continue;
+    // Normalise to rgb triples so #FFFFFF and #fff dedupe to one pair.
+    const keyOf = (c) => { const p = parseColor(c); return p ? `${p[0]},${p[1]},${p[2]}` : c.toLowerCase(); };
+    const key = keyOf(fg) + '|' + keyOf(bg);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const selector = rm[1].trim().replace(/\s+/g, ' ').slice(0, 40);
+    pairs.push({ fg, bg, label: `auto: ${selector}` });
+  }
+  return pairs;
 }
 
 // --- aggregate gate -------------------------------------------------------
 
 function audit({ css = '', pairs = [] }) {
   const safeCss = typeof css === 'string' ? css : '';
-  const safePairs = Array.isArray(pairs) ? pairs : [];
+  let safePairs = Array.isArray(pairs) ? pairs : [];
   const tokens = extractTokens(safeCss);
   const off = scanOffSystem(safeCss, tokens);
   const states = scanStates(safeCss);
   const tells = scanSlopTells(safeCss);
 
+  // Silent-gap fix: contrast is only checked for hand-supplied pairs, which
+  // callers routinely forget. When none are provided, extract pairs from rules
+  // that declare BOTH a colour and a background (resolved via :root tokens).
+  // Conservative: no inherited-background guessing.
+  let autoPairs = false;
+  if (safePairs.length === 0) {
+    safePairs = extractContrastPairs(safeCss);
+    autoPairs = safePairs.length > 0;
+  }
+
   const contrastResults = safePairs.map((p) => {
     const lc = apcaContrastLc(p.fg, p.bg);
     const ratio = contrastRatio(p.fg, p.bg);
-    const apcaMin = apcaThreshold(p.weight, p.size);
+    // min: 3 with no size/weight signals a non-text graphic (WCAG 3:1 floor);
+    // anything carrying size/weight is copy and uses the text thresholds.
+    const isNonText = p.min === 3 && p.size === undefined && p.weight === undefined;
+    const apcaMin = apcaThreshold(p.weight, p.size, isNonText);
     // pass follows APCA (primary). A pair passes if APCA is present and meets
     // its threshold; if APCA is null (unparseable colour), fail on WCAG.
     let pass;
@@ -332,15 +447,17 @@ function audit({ css = '', pairs = [] }) {
   const contrastPass = contrastResults.every((r) => r.pass);
 
   return {
+    autoPairs,
     gates: {
       contrast: { pass: contrastPass, results: contrastResults },
       tokens: { pass: off.hardcodedHex.length === 0 && off.adhocShadow.length === 0, ...off },
-      states: { pass: states.missingFocusVisible.length === 0 && states.missingDisabled.length === 0, ...states },
+      states: { pass: states.missingFocusVisible.length === 0 && states.missingDisabled.length === 0 && states.missingReducedMotion.length === 0, ...states },
       slopTells: { pass: tells.tells.length === 0, ...tells },
     },
     pass: contrastPass
       && off.hardcodedHex.length === 0 && off.adhocShadow.length === 0
       && states.missingFocusVisible.length === 0 && states.missingDisabled.length === 0
+      && states.missingReducedMotion.length === 0
       && tells.tells.length === 0,
   };
 }
