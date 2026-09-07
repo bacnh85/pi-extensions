@@ -127,6 +127,7 @@ interface State {
   debounceTimer?: NodeJS.Timeout;
   responseStartTime?: number;
   lastTokPerSec?: number;
+  lastTokPerSecLabel?: string;
   cumulativeOutput: number;
   cumulativeDurationMs: number;
   cumulativeCost: number;
@@ -462,6 +463,9 @@ if (process.env.PI_SUB_SELF_CHECK === "1") {
   assert(p.personalWeekly?.remaining === 90, "personal weekly 90");
   assert(p.session?.remaining === 47, "session 47");
   assert(p.providerWeekly?.remaining === 28, "provider weekly 28");
+  // tok/s split label: usage.reasoning ⊂ usage.output, never summed.
+  assert(tokPerSecLabel(3200, 2500, 70_000) === "46 tok/s (36 think + 10 answer)", "tok/s split label");
+  assert(tokPerSecLabel(200, 0, 10_000) === "20 tok/s", "tok/s plain label");
   assert(p.personalDaily?.resetLabel?.includes("15h") === true, "daily reset label");
   const disabled = parseOmniUsageText("Usage command is disabled for this API key.");
   assert(Object.keys(disabled).length === 0, "disabled text parses empty");
@@ -1193,11 +1197,21 @@ function pad(value: string, width: number): string {
   return value.length >= width ? value : value + " ".repeat(width - value.length);
 }
 
+/** "46 tok/s (36 think + 10 answer)" — split shown only when the model
+ *  reasoned. usage.reasoning is a subset of usage.output (Pi SDK contract),
+ *  so answer speed = (output − reasoning)/s, never output + reasoning. */
+function tokPerSecLabel(output: number, thinking: number, elapsedMs: number): string {
+  const total = Math.round(output / (elapsedMs / 1000));
+  if (thinking <= 0) return `${total} tok/s`;
+  const secs = elapsedMs / 1000;
+  return `${total} tok/s (${Math.round(thinking / secs)} think + ${Math.round((output - thinking) / secs)} answer)`;
+}
+
 function buildDetails(snapshot: SubscriptionUsageSnapshot | undefined, state: State): string {
   if (!state.adapter) {
     const header = `Provider: ${state.model?.provider ?? "unknown"}${state.model?.id ? ` · Model: ${state.model.id}` : ""}`;
     if (state.lastTokPerSec === undefined) return `${header}\nSubscription tracking inactive for this provider.`;
-    const tokPerSecLine = `Last response: ${state.lastTokPerSec} tok/s` +
+    const tokPerSecLine = `Last response: ${state.lastTokPerSecLabel}` +
       (state.cumulativeDurationMs > 0
         ? ` · Session avg: ${Math.round(state.cumulativeOutput / (state.cumulativeDurationMs / 1000))} tok/s`
         : "");
@@ -1240,7 +1254,7 @@ function buildDetails(snapshot: SubscriptionUsageSnapshot | undefined, state: St
 
   const costLine = state.cumulativeCost > 0 ? `\nSession cost: $${state.cumulativeCost.toFixed(2)}` : "";
   const tokPerSecLine = state.lastTokPerSec !== undefined
-    ? `\nLast response: ${state.lastTokPerSec} tok/s` +
+    ? `\nLast response: ${state.lastTokPerSecLabel}` +
       (state.cumulativeDurationMs > 0
         ? ` · Session avg: ${Math.round(state.cumulativeOutput / (state.cumulativeDurationMs / 1000))} tok/s`
         : "")
@@ -1277,11 +1291,15 @@ export default function (pi: ExtensionAPI) {
     if (event.message.role === "assistant") {
       state.cumulativeCost += (event.message.usage as any)?.cost?.total ?? 0;
       if (state.responseStartTime) {
+        // usage.output already includes reasoning tokens (Pi SDK contract) —
+        // this is total tok/s in both thinking and normal mode.
         const output = (event.message.usage as any)?.output ?? 0;
+        const reasoning = (event.message.usage as any)?.reasoning ?? 0;
         const elapsed = Date.now() - state.responseStartTime;
         state.responseStartTime = undefined;
         if (elapsed > 0 && output > 0) {
           state.lastTokPerSec = Math.round(output / (elapsed / 1000));
+          state.lastTokPerSecLabel = tokPerSecLabel(output, reasoning, elapsed);
           state.cumulativeOutput += output;
           state.cumulativeDurationMs += elapsed;
         }

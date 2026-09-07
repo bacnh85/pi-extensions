@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.36 (2026-09-07)
+
+### Fixed
+
+- **Removed the incorrect dead `tok-per-sec` module** (added in 0.1.35, never
+  wired in): its `withThinking` formula summed `reasoning` on top of `output`,
+  but Pi's `usage.output` already includes reasoning tokens (`reasoning` is a
+  subset), which would have inflated thinking-mode tok/s up to ~2×. The live
+  footer/footer tok/s math (`output / elapsed`) was and remains correct in both
+  thinking and normal mode.
+
+### Added
+
+- **`/sub` thinking/answer split** — when the model reasoned, the details line
+  now reads e.g. `Last response: 46 tok/s (36 think + 10 answer)` instead of a
+  bare total, using the correct subset math (`answer = output − reasoning`).
+  Footer keeps the single total number.
+
 ## 0.1.35 (2026-09-05)
 
 ### Added
