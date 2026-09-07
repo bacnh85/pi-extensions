@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.2 (2026-09-06)
+
+### Changed
+
+- `web_screenshot` now returns the PNG **inline as an image block**
+  (`ImageContent`) alongside the text summary, so multimodal models (GLM-5.3,
+  Claude, Gemini) actually see the screenshot instead of a base64 char
+  count. The "Data: base64 PNG (N chars)" line is gone; artifact/MIME/size
+  summary unchanged. Inspired by zcode-plugins video2code's vision-in-the-loop.
+  Regression-tested in `test/unit/screenshot.test.ts` (fetch stubbed — no
+  daemon needed): image block present + base64-text line absent; text-only
+  fallback when the daemon returns no screenshot.
+
+  Daemon `success:false` responses (HTTP 200) now surface `error_message` as
+  a tool error instead of returning a silently empty screenshot result.
+
 ## 0.6.1 (2026-08-30)
 
 ### Changed

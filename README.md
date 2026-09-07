@@ -38,8 +38,8 @@ Each package lives in its own directory and can be installed independently — e
 | [`@bacnh85/pi-sub`](./pi-sub) | 0.1.35 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | [`@bacnh85/pi-subagent`](./pi-subagent) | 0.19.3 | Isolated in-process subagents with parallel/chain modes, inspectable threads, and git worktree isolation (`sandbox: worktree`). |
 | [`@bacnh85/pi-themes`](./pi-themes) | 0.1.1 | Ayu-based theme collection (dark, mirage, light) for the Pi TUI — pure-themes package (no extension code). |
-| [`@bacnh85/pi-ux`](./pi-ux) | 0.4.4 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, ships medium-tuned presets (Web/Mobile) so the agent stays unblocked when DESIGN.md is missing, runs deterministic slop-audit gates (APCA contrast + tokens + states + slop tells), works with text-only models. |
-| [`@bacnh85/pi-web`](./pi-web) | 0.6.0 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs. |
+| [`@bacnh85/pi-ux`](./pi-ux) | 0.4.6 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, ships medium-tuned presets (Web/Mobile), runs deterministic slop-audit gates (APCA contrast + tokens + states + slop/taste tells + reduced-motion), taste rules (named cliché clusters, typography/motion/copy), vision render-inspect loop for multimodal models, works with text-only models. |
+| [`@bacnh85/pi-web`](./pi-web) | 0.6.2 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots (returned inline for multimodal models)/PDFs. |
 | [`@bacnh85/pi-windows-tools`](./pi-windows-tools) | 0.5.3 | Windows-specific tools for Pi. |
 
 ## Install

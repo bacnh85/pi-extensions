@@ -142,7 +142,7 @@ web_crawl url="https://example.com" mode=light poll=true    # Poll for completio
 
 ### `web_screenshot` — Page screenshot
 
-Captures a full-page PNG screenshot using Crawl4AI. Returns base64-encoded PNG.
+Captures a full-page PNG screenshot using Crawl4AI. Returns the PNG inline as an image block (multimodal models see it); text summary includes artifact/MIME/size.
 
 ```
 web_screenshot url="https://example.com"

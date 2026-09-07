@@ -286,9 +286,9 @@ export default function piWebExtension(pi: ExtensionAPI) {
     name: "web_screenshot",
     label: "Web Page Screenshot",
     description:
-      "Full-page PNG screenshot via Crawl4AI.",
+      "Full-page PNG screenshot via Crawl4AI. The PNG is returned inline as an image block.",
     promptSnippet: "Screenshot a webpage",
-    promptGuidelines: ["Full-page PNG; use when web_extract fails on JS-heavy pages."],
+    promptGuidelines: ["Full-page PNG returned inline (multimodal models see it); use when web_extract fails on JS-heavy pages, or to visually inspect a built UI."],
     parameters: Type.Object({
       url: Type.String(),
       wait_for: Type.Optional(Type.Number({ default: 2, description: "Seconds to wait before capture." })),
@@ -305,16 +305,23 @@ export default function piWebExtension(pi: ExtensionAPI) {
         params.wait_for_images as boolean | undefined,
         signal,
       );
+      if (result.success === false) {
+        throw new Error(String(result.error_message ?? "Crawl4AI screenshot failed"));
+      }
       const screenshot = result.screenshot as string | undefined;
       const artifactUrl = result.url as string | undefined;
       const mime = result.mime as string | undefined;
       const size = result.size as number | undefined;
       let text = `Screenshot: ${params.url}\n`;
-      if (screenshot) text += `Data: base64 PNG (${screenshot.length} chars)\n`;
       if (artifactUrl) text += `Artifact: ${artifactUrl}\n`;
       if (mime) text += `MIME: ${mime}\n`;
       if (size) text += `Size: ${size} bytes\n`;
-      return { content: [{ type: "text" as const, text: truncateText(text) }], details: { ...result, url: params.url } };
+      // Return the PNG as a real image block so multimodal models see it.
+      const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
+        { type: "text", text: truncateText(text) },
+      ];
+      if (screenshot) content.push({ type: "image", data: screenshot, mimeType: mime || "image/png" });
+      return { content, details: { ...result, url: params.url } };
     },
   });
 
