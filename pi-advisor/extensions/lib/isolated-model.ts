@@ -18,6 +18,8 @@ export async function runIsolated(
   onDelta?: (delta: string) => void,
   signal?: AbortSignal,
   reasoning?: string,
+  /** Progress hook — every stream event (incl. non-text deltas) resets the caller's idle deadline. */
+  onEvent?: () => void,
 ): Promise<string> {
   const parsed = modelId ? parseModel(modelId) : undefined;
   if (modelId && !parsed) throw new Error(`Invalid model: ${modelId}`);
@@ -32,16 +34,46 @@ export async function runIsolated(
   const response = provider?.streamSimple
     ? provider.streamSimple(model, context, streamOptions)
     : streamSimple(model, context, streamOptions);
-  for await (const event of response) if (event.type === "text_delta") onDelta?.(event.delta);
+  for await (const event of response) {
+    onEvent?.();
+    if (event.type === "text_delta") onDelta?.(event.delta);
+  }
   const result = await response.result();
   if (result.stopReason !== "stop") throw new Error(result.errorMessage ?? `Model stopped: ${result.stopReason}`);
   return text(result);
 }
 
+/** Idle deadline per candidate: a candidate is aborted only after timeoutMs
+ *  with NO stream events — healthy slow streams (reasoning models, large
+ *  transcripts) keep resetting it, so progress is never killed. Caller abort
+ *  propagates immediately. streamSimple honors the signal (same mechanism as
+ *  tool-call abort). */
+const CANDIDATE_TIMEOUT_MS = 90_000;
+
+function idleSignal(signal: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; touch(): void; dispose(): void } {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const arm = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+  };
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  arm();
+  return {
+    signal: controller.signal,
+    touch: arm,
+    dispose() {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    },
+  };
+}
+
 /**
  * Try each model in priority order: unresolvable candidates are skipped;
- * any call error (rate limit, quota, unavailable, network) advances to the
- * next candidate — for a best-effort reviewer any dead candidate should
+ * any call error (rate limit, quota, unavailable, network, timeout) advances
+ * to the next candidate — for a best-effort reviewer any dead candidate should
  * yield to the next. All exhausted → the last error is rethrown.
  * No parent-model fallback: the advisor must never use the primary model.
  */
@@ -56,16 +88,21 @@ export async function runIsolatedChain(
   onDelta?: ChainOnDelta,
   signal?: AbortSignal,
   reasoning?: string,
+  // ponytail: test seam — production callers use the 90s default
+  timeoutMs: number = CANDIDATE_TIMEOUT_MS,
 ): Promise<{ text: string; model: string }> {
   let lastError: unknown;
   for (const [attempt, modelId] of models.entries()) {
     if (signal?.aborted) throw new Error("Advisor call aborted");
+    const idle = idleSignal(signal, timeoutMs);
     try {
-      return { text: await runIsolated(ctx, modelId, context, (delta) => onDelta?.(delta, attempt), signal, reasoning), model: modelId };
+      return { text: await runIsolated(ctx, modelId, context, (delta) => onDelta?.(delta, attempt), idle.signal, reasoning, idle.touch), model: modelId };
     } catch (error) {
       // An abort is a caller decision, not a dead model — do not fall through.
       if (signal?.aborted) throw error;
       lastError = error;
+    } finally {
+      idle.dispose();
     }
   }
   throw lastError instanceof Error ? lastError : new Error(`All advisor models failed: ${models.join(", ") || "none configured"}`);

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.2 (2026-09-07)
+
+- **Fix TUI hang on stalled reviewer provider**: every chain candidate now
+  runs under a 90s **idle** deadline — a candidate is treated as dead only
+  after 90s with no stream events, so a hung provider (accepts the
+  connection, never streams) advances the chain to the next model, while
+  healthy slow streams (reasoning models, large transcripts) are never
+  killed: any event resets the deadline. Previously a hung provider stalled
+  the awaited `agent_settled` review forever, blocking the prompt so
+  slash commands (e.g. `/plan-approve` after write_plan) could not run.
+  Caller abort (`/advisor` consult tool) still aborts without fall-through.
+
 ## 0.2.1 (2026-09-05)
 
 - Widen Pi SDK peer range to `>=0.85.0 <0.86.0` and bump devDep to `^0.85.0` for Pi 0.85.0 compatibility (no breaking changes; peer cap widening only).
