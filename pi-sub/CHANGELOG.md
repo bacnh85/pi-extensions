@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.1.37 (2026-09-07)
+
+### Fixed
+
+- **Legible provider API errors**: structured API failures (e.g. Z.ai's
+  `500 Internal service error` returned by `api.z.ai/api/monitor/usage/quota/limit`
+  during its 2026-09-07 outage) no longer masquerade as a generic
+  "usage unavailable" — the footer shows the server's own message
+  (`Sub Z.ai (Anthropic) API error: Internal service error`), with
+  credential-shaped material (`sk-…`, `Bearer …`, JWTs) scrubbed and length
+  capped; auth-looking messages stay redacted.
+- **Crash (pi exits) on session replacement (`/new`, fork, switch, `/reload`)**:
+  a usage-refresh debounce timer armed by a late `after_provider_response` event
+  — delivered after `session_shutdown` had already cleared the previous timers —
+  captured the old extension ctx; ~2s later the timer fired, touched the now
+  stale `ctx.ui`, and the uncaught error killed pi. Deferred helpers
+  (`renderSubscriptionLine`, `refreshUsage`, `startTimer`, `scheduleRefresh`,
+  `updateActiveAdapter`) no longer take a captured ctx: they resolve `state.ctx`
+  at execution time. `state.ctx` is installed only by `session_start` (fires
+  before a session's other events, always fresh) and cleared by
+  `session_shutdown`, so mid-session handlers can never reinstall a stale ctx
+  and timers firing in the teardown window safely no-op. `session_shutdown`
+  now no-ops entirely unless it belongs to the installed session
+  (`state.ctx === ctx`), so a late old-session shutdown delivered after the
+  next `session_start` can neither touch an invalidated ctx nor stop the live
+  session's refresh timer / drop its in-flight fetch. Regression tests in
+  `extensions/test/stale-ctx-regression.test.ts`.
+
+### Changed
+
+- **Tests are now gated**: `npm test` runs both test files via
+  `node --import tsx --test` (new `tsx` devDependency), and CI runs
+  `npm ci && npm test` for pi-sub instead of only `npm pack --dry-run` — the
+  stale-ctx regression tests can no longer be bypassed by a refactor.
+
 ## 0.1.36 (2026-09-07)
 
 ### Fixed

@@ -101,7 +101,7 @@ jobs:
               { pkg: 'pi-fff', cmd: 'npm ci && npm test' },
               { pkg: 'pi-notebooklm', cmd: 'npm ci && npm test' },
               { pkg: 'pi-rtk', cmd: 'npm pack --dry-run' },
-              { pkg: 'pi-sub', cmd: 'npm pack --dry-run' },
+              { pkg: 'pi-sub', cmd: 'npm ci && npm test' },
               { pkg: 'pi-model-tools', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-obsidian', cmd: 'npm ci && npm test' },
               { pkg: 'pi-windows-tools', cmd: 'npm ci && npm test && npm run typecheck' },

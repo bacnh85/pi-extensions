@@ -31,7 +31,7 @@ const MESSAGE_TYPE = "pi-sub-status";
 const USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
 const REFRESH_INTERVAL_MS = 60_000;
 const REFRESH_TTL_MS = 30_000;
-const REFRESH_DEBOUNCE_MS = 2_000;
+export const REFRESH_DEBOUNCE_MS = 2_000;
 const CODEX_PROVIDER = "openai-codex";
 const OPC_PROVIDER = "opencode-go";
 const ZAI_PROVIDER = "zai";
@@ -115,10 +115,11 @@ type SubscriptionProviderAdapter = {
   fetchUsage(signal?: AbortSignal): Promise<SubscriptionUsageSnapshot>;
 };
 
-interface State {
+export interface State {
   model?: ModelLike;
   adapter?: SubscriptionProviderAdapter;
   adapterId?: string;
+  ctx?: ExtensionContext;
   snapshot?: SubscriptionUsageSnapshot;
   lastRefreshAt: number;
   refreshGeneration: number;
@@ -507,7 +508,11 @@ async function fetchUsageFromPiAuth(entry: PiAuthEntry, signal?: AbortSignal): P
   return parseUsageResponse(await response.json());
 }
 
-function redactedError(error: unknown, provider = "Codex"): string {
+// ponytail: shared redaction — show provider + failure class, never leak keys.
+// Structured API errors carry the server's own message (e.g. Z.ai's
+// "Internal service error" outage); auth-looking messages were already
+// redacted above, so surface the rest verbatim for diagnosability.
+export function redactedError(error: unknown, provider = "Codex"): string {
   const message = error instanceof Error ? error.message : String(error || "Unknown error");
   if (/ENOENT|no such file/i.test(message)) return "Pi auth not found";
   if (/missing openai-codex/i.test(message)) return "openai-codex auth not found";
@@ -516,7 +521,14 @@ function redactedError(error: unknown, provider = "Codex"): string {
   if (/missing commandcode/i.test(message)) return "commandcode auth not found";
   if (/timed out|timeout|aborted/i.test(message)) return `${provider} usage refresh timed out`;
   if (/401|403|auth|token|unauthorized|forbidden/i.test(message)) return `${provider} auth unavailable`;
-  return `${provider} usage unavailable`;
+  const apiMatch = / API error: (.+)$/.exec(message);
+  if (!apiMatch) return `${provider} usage unavailable`;
+  // Trust boundary: the msg is remote-controlled — scrub credential-shaped
+  // material and cap length before it reaches the status bar.
+  const scrubbed = apiMatch[1]
+    .replace(/sk-[A-Za-z0-9_-]+|Bearer\s+\S+|eyJ[A-Za-z0-9._-]+/g, "[REDACTED]")
+    .slice(0, 120);
+  return scrubbed ? `${provider} API error: ${scrubbed}` : `${provider} usage unavailable`;
 }
 
 async function fetchCodexUsage(signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> {
@@ -1085,7 +1097,11 @@ function windowSegments(account: SubscriptionAccountSnapshot | undefined): strin
   return segments;
 }
 
-function renderSubscriptionLine(ctx: ExtensionContext, state: State): void {
+export function renderSubscriptionLine(state: State): void {
+  // ponytail: resolve ctx at render time — any captured ctx goes stale on
+  // session replacement (new/fork/switch/reload) and ctx.ui then throws.
+  const ctx = state.ctx;
+  if (!ctx) return;
   const theme = ctx.ui.theme;
   if (!state.adapter) {
     // Unsupported provider (e.g. Ollama): still show the last response speed.
@@ -1124,10 +1140,10 @@ function renderSubscriptionLine(ctx: ExtensionContext, state: State): void {
   ctx.ui.setStatus(STATUS_KEY, theme.fg(color, line));
 }
 
-function startTimer(ctx: ExtensionContext, state: State): void {
+function startTimer(state: State): void {
   if (state.refreshTimer || !state.adapter) return;
   state.refreshTimer = setInterval(() => {
-    void refreshUsage(ctx, state, false);
+    void refreshUsage(state, false);
   }, REFRESH_INTERVAL_MS);
 }
 
@@ -1138,7 +1154,7 @@ function stopTimer(state: State): void {
   state.debounceTimer = undefined;
 }
 
-function updateActiveAdapter(ctx: ExtensionContext, state: State, model: ModelLike): void {
+function updateActiveAdapter(state: State, model: ModelLike): void {
   const nextAdapter = supportedAdapter(model);
   const adapterChanged = state.adapterId !== nextAdapter?.id;
 
@@ -1156,25 +1172,28 @@ function updateActiveAdapter(ctx: ExtensionContext, state: State, model: ModelLi
   if (!state.adapter) {
     stopTimer(state);
   }
-  renderSubscriptionLine(ctx, state);
-  if (state.adapter) startTimer(ctx, state);
+  renderSubscriptionLine(state);
+  if (state.adapter) startTimer(state);
 }
 
-async function refreshUsage(ctx: ExtensionContext, state: State, force: boolean): Promise<SubscriptionUsageSnapshot | undefined> {
+async function refreshUsage(state: State, force: boolean): Promise<SubscriptionUsageSnapshot | undefined> {
   const adapter = state.adapter;
-  if (!adapter) {
-    renderSubscriptionLine(ctx, state);
+  // ponytail: resolve ctx at call time, never capture it across the fetch —
+  // the session can be replaced while the promise is in flight.
+  const ctx = state.ctx;
+  if (!adapter || !ctx) {
+    renderSubscriptionLine(state);
     return undefined;
   }
   if (!force && state.snapshot && Date.now() - state.lastRefreshAt < REFRESH_TTL_MS) return state.snapshot;
   if (state.inFlight) return state.inFlight;
   const generation = state.refreshGeneration;
-  renderSubscriptionLine(ctx, state);
+  renderSubscriptionLine(state);
   state.inFlight = adapter.fetchUsage(ctx.signal).then((snapshot) => {
     if (state.refreshGeneration !== generation) return snapshot;
     state.snapshot = snapshot;
     state.lastRefreshAt = Date.now();
-    renderSubscriptionLine(ctx, state);
+    renderSubscriptionLine(state);
     return snapshot;
   }).finally(() => {
     if (state.refreshGeneration === generation) {
@@ -1184,12 +1203,12 @@ async function refreshUsage(ctx: ExtensionContext, state: State, force: boolean)
   return state.inFlight;
 }
 
-function scheduleRefresh(ctx: ExtensionContext, state: State): void {
+export function scheduleRefresh(state: State): void {
   if (!state.adapter) return;
   if (state.debounceTimer) clearTimeout(state.debounceTimer);
   state.debounceTimer = setTimeout(() => {
     state.debounceTimer = undefined;
-    void refreshUsage(ctx, state, true);
+    void refreshUsage(state, true);
   }, REFRESH_DEBOUNCE_MS);
 }
 
@@ -1274,20 +1293,24 @@ export default function (pi: ExtensionAPI) {
   const state: State = { lastRefreshAt: 0, refreshGeneration: 0, cumulativeOutput: 0, cumulativeDurationMs: 0, cumulativeCost: 0 };
 
   pi.on("session_start", async (_event, ctx) => {
-    updateActiveAdapter(ctx, state, ctx.model);
-    if (state.adapter) void refreshUsage(ctx, state, true);
+    // Only session_start installs state.ctx: it fires (startup/new/fork/switch/
+    // reload) before the session's other events, so mid-session handlers never
+    // need to — and a late old-session event must not reinstall a stale ctx.
+    state.ctx = ctx;
+    updateActiveAdapter(state, ctx.model);
+    if (state.adapter) void refreshUsage(state, true);
   });
 
-  pi.on("model_select", async (event, ctx) => {
-    updateActiveAdapter(ctx, state, event.model);
-    if (state.adapter) void refreshUsage(ctx, state, true);
+  pi.on("model_select", async (event, _ctx) => {
+    updateActiveAdapter(state, event.model);
+    if (state.adapter) void refreshUsage(state, true);
   });
 
   pi.on("before_provider_request", async (_event, _ctx) => {
     state.responseStartTime = Date.now();
   });
 
-  pi.on("message_end", async (event, ctx) => {
+  pi.on("message_end", async (event, _ctx) => {
     if (event.message.role === "assistant") {
       state.cumulativeCost += (event.message.usage as any)?.cost?.total ?? 0;
       if (state.responseStartTime) {
@@ -1304,18 +1327,24 @@ export default function (pi: ExtensionAPI) {
           state.cumulativeDurationMs += elapsed;
         }
       }
-      renderSubscriptionLine(ctx, state);
+      renderSubscriptionLine(state);
     }
   });
 
-  pi.on("after_provider_response", async (event, ctx) => {
+  pi.on("after_provider_response", async (event, _ctx) => {
     if (event.status >= 400) {
       state.responseStartTime = undefined;
     }
-    if (state.adapter) scheduleRefresh(ctx, state);
+    if (state.adapter) scheduleRefresh(state);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    // Only tear down if this shutdown belongs to the installed session: a late
+    // old-session shutdown (delivered after the next session_start) must not
+    // stop the live refresh timer, drop the live in-flight fetch, or touch a
+    // ctx that may already be invalidated. Normal flow: session_start installed
+    // this ctx, so the identity always matches for the session being torn down.
+    if (state.ctx !== ctx) return;
     stopTimer(state);
     // ponytail: session is being torn down (new/fork/switch/reload). Pi invalidates
     // this ctx next; no-op any in-flight fetch .then that captured it, and drop the
@@ -1323,6 +1352,7 @@ export default function (pi: ExtensionAPI) {
     state.inFlight = undefined;
     state.refreshGeneration++;
     ctx.ui.setStatus(STATUS_KEY, undefined);
+    state.ctx = undefined;
   });
 
   pi.registerCommand("sub", {
@@ -1334,13 +1364,19 @@ export default function (pi: ExtensionAPI) {
       return items.length > 0 ? items : null;
     },
     handler: async (args, ctx) => {
-      updateActiveAdapter(ctx, state, ctx.model);
+      updateActiveAdapter(state, ctx.model);
       const command = args.trim().toLowerCase();
       const force = command === "refresh";
-      const snapshot = state.adapter ? await refreshUsage(ctx, state, force || !state.snapshot) : undefined;
+      const snapshot = state.adapter ? await refreshUsage(state, force || !state.snapshot) : undefined;
       const details = buildDetails(snapshot ?? state.snapshot, state);
       pi.sendMessage({ customType: MESSAGE_TYPE, content: details, display: true });
-      if (force) ctx.ui.notify("Subscription usage refreshed", "info");
+      // state.ctx (not captured ctx): the session could be replaced during the
+      // await above; if it was, skip the notification instead of touching a
+      // stale ctx.
+      if (force) state.ctx?.ui.notify("Subscription usage refreshed", "info");
     },
   });
+
+  // Returned for tests only — Pi ignores the extension setup return value.
+  return state;
 }
