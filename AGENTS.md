@@ -34,7 +34,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-review** | 0.2.9 | Isolated read-only code review with corrected same-session fallback. |
 | **pi-rtk** | 0.1.12 | Bash command token rewriting through RTK. |
 | **pi-serena** | 0.9.13 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
-| **pi-sub** | 0.1.37 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
+| **pi-sub** | 0.1.38 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | **pi-themes** | 0.1.1 | Ayu-based theme collection (dark, mirage, light) for the Pi TUI — pure-themes package (no extension code). |
 | **pi-subagent** | 0.20.0 | Isolated in-process subagents with parallel/chain modes, inspectable threads, git worktree isolation (`sandbox: worktree`), live progress widget, background mode, role-based model routing (`@fast`/`@coder`/`@smart` + `subagent.roles` settings, `/subagent roles` editor), and opt-in auto-review after coding turns (`subagent.autoReview`). |
 | **pi-web** | 0.6.2 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots (returned inline for multimodal models)/PDFs. |
