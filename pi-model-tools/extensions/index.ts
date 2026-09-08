@@ -586,15 +586,14 @@ export default function (pi: ExtensionAPI) {
 
     let systemPrompt = event.systemPrompt;
 
-    // apply_patch preference — all DeepSeek V4 (flash+pro); GLM excluded per
-    // eval. Eval (2026-07-29, 15 trials, 3 targets) showed all models use edit
-    // with zero edit_mismatch errors. DeepSeek keeps guidance as a safety net
-    // for real-world multi-file/frontmatter edits beyond the eval's scope; GLM
-    // excluded because it doesn't receive the suite of DeepSeek-specific
-    // steering (Super Power, selection guidance, semantic-miss blocking) and
-    // thus doesn't need the companion hint. Static per session (depends only
-    // on the active-tool set).
-    if (activeFamily === "deepseek-v4") {
+    // apply_patch preference — DeepSeek V4 (flash+pro) + GLM. DeepSeek keeps
+    // it as a safety net for real-world multi-file/frontmatter edits; GLM was
+    // excluded per the 2026-07-29 eval (edit-only usage), but 2026-09 session
+    // evidence showed GLM flash models falling back to bash heredocs
+    // (cat/python) for file creation without any steering — the hint (now
+    // with a create→write line) covers both families. Static per session
+    // (depends only on the active-tool set), so the prefix cache is unaffected.
+    if (activeFamily === "deepseek-v4" || activeFamily === "glm") {
       const patchHint = applyPatchPreferenceGuidance(activeForHint);
       if (patchHint) systemPrompt = `${systemPrompt}\n\n${patchHint}`;
     }

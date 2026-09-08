@@ -138,7 +138,7 @@ describe("prompt-aware hints apply to ALL families (not DeepSeek-only)", () => {
     );
     // Hints are per-turn dynamic → injected into the current user message by
     // before_provider_request, NOT the system prompt (cache-head stability).
-    assert.equal(beforeStart, undefined, "GLM has no static system-prompt content");
+    assert.equal(beforeStart, undefined, "no static system-prompt content for this tool set (no apply_patch → no patch hint)");
     const payload = { messages: [{ role: "user", content: "Analyze the codebase at https://github.com/octocat/Hello-World." }] };
     const result = handlers.before_provider_request[0]({ payload }, { model: { provider: "zai-coding-cn", id: "glm-5.2" } });
     assert.ok(result, "GLM should receive prompt-aware hints via the user message");
@@ -154,11 +154,25 @@ describe("prompt-aware hints apply to ALL families (not DeepSeek-only)", () => {
       { systemPrompt: "base", systemPromptOptions: { selectedTools: ["find", "read"] }, prompt: "Read the first 20 lines of guidance.ts under pi-model-tools." },
       { model: { provider: "zai-coding-cn", id: "glm-5.2" } },
     );
-    assert.equal(beforeStart, undefined, "no static content for GLM");
+    assert.equal(beforeStart, undefined, "no DeepSeek selection-guidance block for this tool set");
     const payload = { messages: [{ role: "user", content: "Read the first 20 lines of guidance.ts under pi-model-tools." }] };
     const result = handlers.before_provider_request[0]({ payload }, { model: { provider: "zai-coding-cn", id: "glm-5.2" } });
     assert.ok(result);
     assert.match(result.messages[0].content, /Call find FIRST/i);
+  });
+
+  it("GLM + apply_patch active → patch-hint guidance is appended to the system prompt", () => {
+    const { handlers } = createFakePi(["edit", "apply_patch", "read"]);
+    const beforeStart = handlers.before_agent_start[0](
+      { systemPrompt: "base", systemPromptOptions: { selectedTools: ["edit", "apply_patch", "read"] }, prompt: "Refactor the auth module." },
+      { model: { provider: "zai-coding-cn", id: "glm-5.2" } },
+    );
+    assert.ok(beforeStart, "GLM should receive the static patch-hint block (un-gated 2026-09)");
+    assert.match(beforeStart.systemPrompt, /apply_patch \(preferred for non-trivial edits\)/);
+    assert.match(beforeStart.systemPrompt, /Create a new file .* write .*never create files from bash/i);
+    // DeepSeek-only blocks stay absent for GLM.
+    assert.doesNotMatch(beforeStart.systemPrompt, /DeepSeek V4 — pick the right tool/);
+    assert.doesNotMatch(beforeStart.systemPrompt, /DEEPSEEK-V4-SUPERPOWER/);
   });
 });
 
@@ -269,6 +283,7 @@ describe("applyPatchPreferenceGuidance", () => {
     assert.match(out!, /apply_patch/);
     assert.match(out!, /UNIQUELY/i);
     assert.match(out!, /frontmatter/i, "should mention YAML frontmatter");
+    assert.match(out!, /Create a new file .* write .*never create files from bash/i, "should steer file creation away from bash writes");
     assert.match(out!, /one-strike/i, "should mention one-strike-switch rule");
     assert.match(out!, /\≤3 lines/, "should mention ~3-line threshold for edit");
   });

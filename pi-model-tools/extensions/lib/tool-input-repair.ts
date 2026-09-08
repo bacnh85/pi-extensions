@@ -9,7 +9,7 @@
 import { Compile } from "typebox/compile";
 import { isRecord } from "./model-detection.ts";
 
-export type RepairKind = "path-markdown-autolink" | "optional-null" | "json-string" | "empty-object-array" | "bare-string-array" | "json-object-wrapped-array" | "top-level-json-string" | "truncated-json-closed" | "read-notice-stripped" | "trim-match-retry";
+export type RepairKind = "path-markdown-autolink" | "optional-null" | "json-string" | "empty-object-array" | "bare-string-array" | "json-object-wrapped-array" | "top-level-json-string" | "truncated-json-closed" | "read-notice-stripped" | "trim-match-retry" | "param-alias";
 
 export type RepairResult = {
   args: unknown;
@@ -18,6 +18,24 @@ export type RepairResult = {
 };
 
 const PATH_FIELD_NAMES = new Set(["path", "filePath", "absolutePath", "relativePath", "relative_path"]);
+
+// Cross-harness param-name aliases: models trained on Claude Code
+// (`Write{file_path, content}`) or generic completions (`text`, `body`)
+// hallucinate property names Pi's built-ins don't use. Only applied to the
+// wrapped built-in tools, only top-level, only when the aliased target is a
+// REQUIRED schema property that is missing while the alias key is present.
+// A rename is only applied when the value's type matches the target property's
+// schema type — renaming a wrong-typed value would just relocate the
+// validation error onto a key the model never sent.
+const PARAM_ALIASES: Readonly<Record<string, string>> = {
+  file_path: "path",
+  filename: "path",
+  file_text: "content",
+  text: "content",
+  body: "content",
+};
+
+const ALIASABLE_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls", "bash"]);
 
 const compiledCache = new WeakMap<object, ReturnType<typeof Compile>>();
 
@@ -188,6 +206,23 @@ function tryRepairPath(rootSchema: unknown, args: unknown, path: readonly string
   return undefined;
 }
 
+function tryParamAliases(toolName: string, schema: unknown, args: unknown): RepairKind | undefined {
+  if (!ALIASABLE_TOOLS.has(toolName) || !isRecord(args) || !isRecord(schema) || !isRecord(schema.properties)) return undefined;
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  let applied: RepairKind | undefined;
+  for (const [wrong, right] of Object.entries(PARAM_ALIASES)) {
+    if (!required.includes(right) || right in args || !(wrong in args)) continue;
+    const types = schemaTypes(schema.properties[right]);
+    const value = args[wrong];
+    const valueType = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+    if (types.length > 0 && !types.includes(valueType)) continue;
+    args[right] = value;
+    delete args[wrong];
+    applied = "param-alias";
+  }
+  return applied;
+}
+
 function normalizedLinkTarget(value: string): string { return value.replace(/^https?:\/\//i, "").replace(/\s+/g, "").replace(/^\/+/, ""); }
 
 export function unwrapDegenerateMarkdownAutolink(value: string): string {
@@ -224,7 +259,7 @@ function cleanPathFields(value: unknown): { value: unknown; changed: boolean } {
  * DeepSeek + GLM repairs are the same logic — GLM adds top-level-json-string
  * as a safe superset. One function, no family branching needed.
  */
-export function repairToolArguments(_toolName: string, schema: unknown, args: unknown): RepairResult {
+export function repairToolArguments(toolName: string, schema: unknown, args: unknown): RepairResult {
   const pathCleaned = cleanPathFields(args);
   if (compileCheck(schema, pathCleaned.value)) {
     return { args: pathCleaned.value, repaired: pathCleaned.changed, repairs: pathCleaned.changed ? ["path-markdown-autolink"] : [] };
@@ -232,6 +267,8 @@ export function repairToolArguments(_toolName: string, schema: unknown, args: un
 
   const candidate = structuredClone(pathCleaned.value);
   const repairs: RepairKind[] = pathCleaned.changed ? ["path-markdown-autolink"] : [];
+  const aliased = tryParamAliases(toolName, schema, candidate);
+  if (aliased) repairs.push(aliased);
   for (const error of validationErrors(schema, candidate)) {
     const repaired = tryRepairPath(schema, candidate, errorPath(error));
     if (repaired) repairs.push(repaired);

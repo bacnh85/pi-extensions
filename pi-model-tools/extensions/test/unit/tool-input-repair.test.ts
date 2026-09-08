@@ -135,6 +135,49 @@ describe("repairToolArguments — truncated JSON auto-close (DeepSeek)", () => {
   });
 });
 
+describe("repairToolArguments — param-name aliases (cross-harness)", () => {
+  const writeSchema = Type.Object({ path: Type.String(), content: Type.String() });
+
+  it("repairs Claude-Code-style file_path → path", () => {
+    const result = repairToolArguments("write", writeSchema, { file_path: "src/new.ts", content: "export {}\n" });
+    assert.strictEqual(result.repaired, true);
+    assert.ok(result.repairs.includes("param-alias"));
+    assert.deepStrictEqual(result.args, { path: "src/new.ts", content: "export {}\n" });
+  });
+
+  it("repairs file_text → content", () => {
+    const result = repairToolArguments("write", writeSchema, { path: "a.txt", file_text: "hello" });
+    assert.strictEqual(result.repaired, true);
+    assert.ok(result.repairs.includes("param-alias"));
+    assert.deepStrictEqual(result.args, { path: "a.txt", content: "hello" });
+  });
+
+  it("does not repair when both alias and target are present", () => {
+    const strict = Type.Object({ path: Type.String(), content: Type.String() }, { additionalProperties: false });
+    const result = repairToolArguments("write", strict, { path: "a.txt", file_path: "b.txt", content: "x" });
+    assert.strictEqual(result.repaired, false);
+    assert.deepStrictEqual(result.args, { path: "a.txt", file_path: "b.txt", content: "x" });
+  });
+
+  it("does not rename wrong-typed alias values (repaired stays false, args unchanged)", () => {
+    const args = { file_path: 123, content: "x" };
+    const result = repairToolArguments("write", writeSchema, args);
+    assert.strictEqual(result.repaired, false);
+    assert.deepStrictEqual(result.args, args);
+  });
+
+  it("does not alias for non-built-in tools", () => {
+    const result = repairToolArguments("some_extension_tool", writeSchema, { file_path: "a.txt", content: "x" });
+    assert.strictEqual(result.repaired, false);
+  });
+
+  it("does not alias when the target is not a required schema property", () => {
+    // `content` absent from schema entirely → alias map is schema-guarded
+    const result = repairToolArguments("write", Type.Object({ path: Type.String() }), { file_text: "x", path: "a" });
+    assert.strictEqual(result.repaired, false);
+  });
+});
+
 describe("unwrapDegenerateMarkdownAutolink", () => {
   it("unwraps when text and normalized url match", () => {
     assert.strictEqual(unwrapDegenerateMarkdownAutolink("[readme.md](https://readme.md)"), "readme.md");
