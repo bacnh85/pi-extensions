@@ -286,7 +286,7 @@ describe("agent discovery", () => {
     assert.deepEqual(getModelCandidates(tester), ["@fast"]);
     assert.equal(tester.thinking, "off");
     assert.equal(tester.timeout, undefined, "agents without a timeout field stay undefined");
-    assert.deepEqual(tester.tools, ["read", "bash", "grep", "find", "ls"]);
+    assert.deepEqual(tester.tools, ["read", "write", "bash", "grep", "find", "ls"]);
   });
 
   it("parses the timeout frontmatter field with bounds + diagnostics", () => {
