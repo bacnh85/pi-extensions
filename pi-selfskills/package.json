@@ -1,0 +1,56 @@
+{
+  "name": "@bacnh85/pi-selfskills",
+  "version": "0.2.0",
+  "description": "Pi extension for skill self-improvement — one skill_manage tool (list/read/patch/create/restore) to patch gaps in loaded skills and create new ones, with a writable-root allowlist, SDK validation, and content-addressed backups.",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-selfskills",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git",
+    "directory": "pi-selfskills"
+  },
+  "bugs": {
+    "url": "https://github.com/bacnh85/pi-extensions/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "self-improvement",
+    "skills"
+  ],
+  "scripts": {
+    "test": "cd extensions && npx mocha"
+  },
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "extensions/package.json",
+    "extensions/index.ts",
+    "extensions/lib/",
+    "skills/"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "chai": "^4.3.0",
+    "mocha": "^10.8.2",
+    "tsx": "^4.0.0"
+  },
+  "overrides": {
+    "serialize-javascript": "7.0.7"
+  }
+}

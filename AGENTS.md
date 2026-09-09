@@ -22,6 +22,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-model-tools** | 0.7.0 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, and a Codex-style apply_patch diff tool. |
 | **pi-munin** | 0.5.3 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and confirmed cross-project sharing. |
 | **pi-evolve** | 0.3.2 | Trajectory-based self-learning loop — captures tool-call trajectories, reflects to extract learnings, persists to Munin or local JSONL, injects recent learnings into future sessions. |
+| **pi-selfskills** | 0.1.0 | Skill self-improvement — one `skill_manage` tool (list/read/patch/create/restore) to patch loaded skills and create new ones, with a writable-root allowlist, SDK validation, and content-addressed backups. |
 | **pi-a2a** | 0.7.6 | A2A Protocol v1.0 bidirectional — Pi distributes tasks to remote agents (Hermes, ADK, LangChain, any A2A peer), exposes itself as an A2A-callable agent, self-declares for local session discovery (file registry + enriched Agent Card + mDNS), registers with **multiple a2a-switchboard gateways** (`discovery.gateways`), shows inbound task activity in the host TUI, and has an interactive config panel. |
 | **pi-config-panel** | 0.1.4 | Shared interactive config-panel kernel (library) — arrow-key toggle/edit overlay panels (`PanelRow`/`PanelGroup` + `ConfigPanelModel` TUI shell) via `ctx.ui.custom`; powers `/a2a-config`, `/commandcode-config`, `/router-config`. |
 | **pi-hub** | 0.1.3 | Interactive installer CLI — `npx @bacnh85/pi-hub` browses the @bacnh85 catalog, searches npm `keywords:pi-package`, multi-selects, and shells out to `pi install`. |
@@ -52,6 +53,7 @@ pi-extensions/
   pi-ux/                # JS extension + hook + skill for anti-slop UI/UX design discipline
   pi-munin/             # TS extension + lib/helpers + skill + references
   pi-evolve/            # TS extension + lib/buffer+store+inject + skill for trajectory self-learning
+  pi-selfskills/        # TS extension + lib (config/paths/skillfile/backup) + skill for skill self-improvement
   pi-a2a/               # TS extension + lib (protocol/client/server/config/security/persistence/registry/mdns/discovery/activity/config-panel rows) for A2A Protocol v1.0
 pi-config-panel/      # TS library package — shared config-panel kernel (no pi field; consumed as a dependency)
   pi-attachments/       # TS extension — paste/drag files → 📎 path references + real image attachments
@@ -147,6 +149,7 @@ cd pi-<name> && npm test
 # pi-notify:     node --test extensions/test/*.test.js (no framework, plain JS)
 # pi-references: node --test extensions/test/*.test.js (no framework, plain JS)
 # pi-evolve:     cd extensions && npx mocha                (mocha + tsx)
+# pi-selfskills:  cd extensions && npx mocha                (mocha + tsx)
 # pi-a2a:        cd extensions && mocha                    (mocha + tsx)
 # pi-serena:     cd extensions && mocha                (mocha + tsx)
 # pi-web:        cd extensions && mocha                (mocha + tsx, ESM)
