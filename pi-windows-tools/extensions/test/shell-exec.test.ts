@@ -164,7 +164,9 @@ describe("shell-exec", function () {
 });
 
 // ponytail: spawn node (cross-platform, always present) to exercise onChunk end-to-end
-describe("onChunk streaming", () => {
+// shell: "cmd" below only exists on Windows (CI runs this package on windows-latest)
+const describeWin32 = process.platform === "win32" ? describe : describe.skip;
+describeWin32("onChunk streaming", () => {
   const nodeOut = "node -e process.stdout.write(JSON.stringify('hello'))";
   const nodeErr = "node -e process.stderr.write(JSON.stringify('boom'))";
 
