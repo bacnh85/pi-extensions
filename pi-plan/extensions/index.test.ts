@@ -1212,6 +1212,7 @@ describe("tool gating in plan mode", () => {
     ["sed backup", "sed -i.bak 's/foo/bar/g' file.txt"],
     ["sed long option", "sed --in-place 's/foo/bar/g' file.txt"],
     ["sed write", "sed -n '1w output.txt' input.txt"],
+    ["sed glued w write", "sed -n '1wout' input.txt"],
     ["tee", "echo data | tee output.txt"],
     ["find delete", "find . -delete"],
     ["find exec", "find . -exec touch marker +"],
@@ -1249,6 +1250,11 @@ describe("tool gating in plan mode", () => {
     ["awk print redirect", "awk '{print $1 > \"out.txt\"}' file"],
     ["sort combined -no", "sort -no output.txt input.txt"],
     ["sort combined -on", "sort -on output.txt input.txt"],
+    // 0.12.0: a raw newline is a separator, not a write — each line still classifies
+    ["newline-separated writer", "echo hi\nrm -rf x"],
+    ["assignment-prefixed writer", "VAR=x rm -rf x"],
+    ["xargs writer payload", "grep -rl foo . | xargs rm -rf"],
+    ["writer after flow keyword", "while read -r f; do rm -rf $f; done"],
   ];
 
   for (const [label, cmd] of WRITE_CASES) {
@@ -1287,6 +1293,14 @@ describe("tool gating in plan mode", () => {
       "git -C /Volumes/Dev/agents/pi-extensions status --short", "git -C repo log --oneline -8", "git -C repo remote get-url origin", "git -c color.ui=always diff", "find . -name '*.ts' 2>/dev/null | head -20", "grep -rn foo src/ 2>&1 | head -10", "ls /tmp 2>/dev/null", "command -v pi", "command -V pi", "which pi", "type node",
       // regression: chained git + fd-dup across separators (segment split must use the stripped string)
       "git ls-remote origin 2>&1 | head -20; git remote -v", "git remote -v && git ls-remote origin 2>&1 | head -20", "ls .agents/plans/ 2>/dev/null; git log --oneline -3; grep -n 'X' src/a.rs | head -4",
+      // regression: 0.12.0 session analysis — top confirm sources now read-classified
+      "sed -n 140,200p src/index.ts", "sed -n 's/foo/bar/gp' file.txt", "cd /tmp && grep -n x file.txt",
+      "sed -n '/twelve/p' notes.txt",
+      "D=/tmp; ls $D", "S=/tmp/x.json; jq -r '.type' $S", "jq -r '.type' file.json",
+      "grep -rl foo . | xargs grep -l bar", "find . -name '*.ts' -print0 | xargs -0 grep -l foo",
+      "tar -tzf archive.tgz", "tar -xzOf archive.tgz package/dist/index.js | diff - dist/index.js",
+      "ls -la\ngrep -n foo file.txt",
+      "jq -r 'if .type==\"x\"\n  then .a\n  else empty\n  end' file.json",
       // regression: reviewer findings (0.11.3) — anchored null target, append-to-null, quoted -C, --no-pager, fd dups
       "grep foo src 2>>/dev/null", "git -C \"my repo\" status", "git --no-pager diff", "echo err 1>&2", "grep x f >&2", "cat f 2>&-"]) {
       assert.equal(await tc({ toolName: "bash", input: { command: cmd } }, ctx), undefined, `${cmd} auto-allowed`);
@@ -1314,6 +1328,50 @@ describe("tool gating in plan mode", () => {
       assert.equal(await tc({ toolName: "bash", input: { command: cmd } }, ctx), undefined, `${cmd} confirmed then allowed`);
     }
     assert.equal(confirmations, 3, "every awk command required confirmation");
+  });
+
+  it("requires confirmation for ambiguous sed forms, xargs interpreters, and one-off scripts", async () => {
+    let confirmations = 0;
+    const { handlers } = createFakePi(["read", "bash"], { plan: true });
+    const ctx = fakeCtx({
+      hasUI: true,
+      ui: {
+        confirm: async () => { confirmations++; return true; },
+        select: async () => { confirmations++; return "Allow once"; }, editor: async () => "",
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+    // These must neither hard-block (write tier) nor auto-run — they confirm first.
+    // Includes the session-analysis pipeline shape that transiently hard-blocked
+    // before 0.12.0 (multi-line command with quoted jq + awk program).
+    for (const cmd of [
+      "sed -f gen.sed input.txt",
+      "sed 's/x/y/e' input.txt",
+      "sed 's/x/y/ge' input.txt",
+      "sed 's/x/y/gw out.txt' input.txt",
+      "sed 's|x|y|pew' input.txt",
+      "sed 's/x/y/e;p' input.txt",
+      "sed 's/a/b/ew out.txt' input.txt",
+      "sed 'e;p' input.txt",
+      "tar -xzOf a.tgz --to-command=sh",
+      "tar -tf a.tar -I sh",
+      "tar -tzf a.tgz --use-compress-program=sh",
+      "xargs sh -c 'echo hi'",
+      "find . -name '*.log' | xargs sh -c 'cat'",
+      "python3 -c \"print(1)\"",
+      "node -e \"console.log(1)\"",
+      "for f in *; do echo $f; done",
+      "curl https://example.com",
+      "tar -xzf archive.tgz",
+      "cd /tmp && find . -name '*.jsonl' -print0 | xargs -0 grep -l pattern | while IFS= read -r f; do jq -r '.id' \"$f\" | awk '/^id/{print}'; done | sort | uniq -c",
+    ]) {
+      assert.equal(await tc({ toolName: "bash", input: { command: cmd } }, ctx), undefined, `${cmd} confirmed then allowed`);
+    }
+    assert.equal(confirmations, 19, "every ambiguous command required confirmation");
   });
 
   it("auto-allows read-only pipelines and chains (segment-level classification)", async () => {

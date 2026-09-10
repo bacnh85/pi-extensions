@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.12.0 (2026-09-09)
+
+### Changed
+
+Plan-mode Allow prompts cut by ~80% (analysis of 33 plan-mode sessions / 14 days:
+~370 confirms, ~135 hard-blocks):
+
+- Bash classifier additions (session-analysis-driven):
+  - Env-assignment prefixes (`D=/path; ls $D`, `FOO=a BAR=b cmd`) are stripped
+    before classification — each unique path no longer re-prompts (~68 confirms).
+  - `cd dir && <read cmd>` chains auto-run (`cd` is read-classified, ~103 confirms).
+  - Print-only `sed` auto-runs via a deny-probe gate: `-i`/`--in-place`/`w`/
+    `e`/`-f`/`--file` forms stay behind confirmation or hard-block — including
+    s-command flag tails (`s/x/y/ge` executes shell, `s/x/y/gw out` writes),
+    `e;p` command separators, and glued `1wout`-style writes (GNU sed needs no
+    space); word-interior w/e ("twelve") still read. Everything else is
+    stdout-only (~87 confirms).
+  - tar execute-class options always confirm: `--to-command=CMD` (runs CMD per
+    extracted member) and `-I`/`--use-compress-program=CMD` (runs CMD as the
+    compress/decompress program — `tar -tf a.tar -I sh` looks like a read).
+  - `jq`, `strings`, `stat`, `file`, `du`, `tree`, `lsof`, `basename`,
+    `dirname`, `realpath`, `read`, `diff`, `cmp` added to the read list.
+  - `xargs` classifies its payload command (`… | xargs grep` reads;
+    `… | xargs rm` still hard-blocks; `xargs sh -c` confirms).
+  - `tar -t`/`--list` and stdout-extract (`-x…O`, `--to-stdout`) read; other
+    tar forms confirm.
+  - Flow keywords `while`/`until`/`do`/`done` are transparent — body segments
+    still classify individually (`while read -r f; do rm -rf $f; done` blocks).
+- Raw line breaks are command separators, not writes: quoted multi-line jq/awk
+  programs no longer false-block; each line still classifies individually
+  (`echo hi⏎rm -rf x` stays hard-blocked; heredocs/redirects untouched).
+- `READ_ONLY_TOOLS` += `ux_audit`, `a2a_peers`, `a2a_list`, `a2a_discover`,
+  `a2a_status`, `a2a_history`, `unfold`, `recall`.
+- `BLOCKED_TOOLS` += `apply_patch` (diff-style file mutator — same treatment as
+  `edit`/`write`; a plan-mode model should never patch files).
+- Plan-mode guidance now names the auto-run shell forms and the prompt/block
+  forms so models stop emitting dead commands.
+
 ## 0.11.4 (2026-09-05)
 
 - Widen Pi SDK peer range to `>=0.85.0 <0.86.0` and bump devDep to `^0.85.0` for Pi 0.85.0 compatibility (no breaking changes; peer cap widening only).

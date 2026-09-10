@@ -64,14 +64,14 @@ Fresh-session replacement is intentionally initiated by `/plan-approve`: extensi
 
 | Tool category | Behavior |
 |---|---|
-| Known read/research tools (built-in `read`/`ls`/`grep`/`find`, Serena, FFF, web, Munin) | Auto-allowed without prompt |
+| Known read/research tools (built-in `read`/`ls`/`grep`/`find`, Serena, FFF, web, Munin, ux_audit, A2A discovery/polling, `unfold`/`recall`) | Auto-allowed without prompt |
 | `write_plan`, `ask_user_question` | Always available |
-| `bash` (write commands: redirects, heredocs, `sed -i`, `tee`, `cp`/`mv`/`rm`, `touch`, `mkdir`) | Hard-blocked — no filesystem mutations via bash in plan mode |
-| `bash` (strict single read commands: `ls`, `grep`, `find`, `git status`, `cat`) | Auto-allowed without prompt |
+| `bash` (write commands: redirects, heredocs, `sed -i`/`w`/`e`/`-f`, `tee`, `cp`/`mv`/`rm`, `touch`, `mkdir`) | Hard-blocked — no filesystem mutations via bash in plan mode |
+| `bash` (read commands incl. pipelines/chains: `ls`, `grep`, `find`, `git status`, `cat`, `jq`, print-only `sed`, `xargs` over read tools, `tar -t`/`-xO`, `cd &&`, `VAR=` prefixes, multi-line) | Auto-allowed without prompt |
 | `bash` (unknown executables, including test/build/package scripts) | Requires approval (**Allow once / Allow for this session / Deny**) warning about possible side effects; denied without UI. "Allow for this session" remembers the executable (first token) until plan mode toggles |
 | Baseline custom tools not on the known-read list | Requires approval (same options; "Allow for this session" remembers the tool) |
 | Unknown tools (not in original baseline) | Requires approval (same options) |
-| Direct source mutators (`edit`, `write`, Serena/Munin mutations) | Hard-blocked with error message |
+| Direct source mutators (`edit`, `write`, `apply_patch`, Serena/Munin mutations) | Hard-blocked with error message |
 | `multi_tool_use.parallel` | Each nested call independently gated |
 
 ## Utility command configuration

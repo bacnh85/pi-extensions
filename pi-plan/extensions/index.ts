@@ -255,7 +255,7 @@ function modelKey(model: { provider?: string; id?: string } | undefined): string
 type CommandDisposition = "read" | "write" | "confirm";
 
 /** Classify one shell command for plan mode without attempting to interpret arbitrary executables. */
-/** Split a shell command on separators (; & |) that are OUTSIDE quotes. */
+/** Split a shell command on separators (; & | and raw line breaks) that are OUTSIDE quotes. */
 function splitShellSegments(cmd: string): string[] {
   const segments: string[] = [];
   let cur = "";
@@ -268,7 +268,7 @@ function splitShellSegments(cmd: string): string[] {
     } else if (ch === "'" || ch === '"') {
       quote = ch;
       cur += ch;
-    } else if (/[;&|]/.test(ch)) {
+    } else if (/[;&|\r\n]/.test(ch)) {
       if (cur.trim()) segments.push(cur.trim());
       cur = "";
     } else {
@@ -363,10 +363,14 @@ function classifyCommand(cmd: string): CommandDisposition {
   // Discarding forms are read-safe: n>/dev/null and append n>>/dev/null (exact
   // null-device target, anchored so >/dev/null2 keeps its `>` → stays write)
   // and fd dups/close (2>&1, 2>&-). Top false-block from session analysis:
-  // `find … 2>/dev/null | head`. Command substitution and heredocs are always writes.
+  // `find … 2>/dev/null | head`. Command substitution and heredocs are always
+  // writes; bare `<`/`>` still block (heredoc `<<`, redirects). A raw line break
+  // is only a command separator — segment splitting below classifies each line,
+  // so quoted multi-line jq/awk programs no longer false-block (session analysis:
+  // multi-line commands were the top remaining false "write").
   // ponytail: < input redirect stays conservative (blocked) — rare in practice.
   const cNoDiscard = c.replace(/\d*>+\s*\/dev\/null(?![\w.\/-])|\d*>&[\d-]/g, "");
-  if (/[\r\n<>]/.test(cNoDiscard) || /\$\(|`/.test(c) || /--output(?:=|\s)/i.test(c)) return "write";
+  if (/[<>]/.test(cNoDiscard) || /\$\(|`/.test(c) || /--output(?:=|\s)/i.test(c)) return "write";
   // Split on command separators OUTSIDE quotes so read-only pipelines (grep ... | head)
   // and chains (ls -la; echo done) classify per segment, while quoted alternation
   // patterns like "sqi_manager_task\|SYS_Tasks" stay one segment. The whole command
@@ -381,23 +385,116 @@ function classifyCommand(cmd: string): CommandDisposition {
   return classifySegment(c);
 }
 
+// Env-assignment prefixes (`S=<file>; jq …`, `FOO=a BAR=b cmd`) set shell/env
+// variables and write nothing — strip them and classify the real command.
+// Session analysis: ~68 confirms/14d, each unique path re-prompting even with
+// "Allow for this session". Values with spaces must be quoted; a bare
+// assignment with no command classifies as read.
+// ponytail: segments never contain `;|&` (split upstream), so value chars may exclude them.
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s;&|])*(?:\s+|$)/;
+
+// Pure flow-control keywords carry no side effects; loop/body segments still
+// classify individually, so skipping them (like env assignments) keeps
+// `while IFS= read -r f; do jq …` session-analysis loops readable. A writer
+// inside the body (`do rm -rf x`) still hits the writer tier after the skip.
+const FLOW_KEYWORD = /^(?:while|until|do|done)(?:\s+|$)/;
+
+// sed read-only gate. sed writes to stdout unless: -i/--in-place (in-place
+// edit, caught earlier as write), the `w` command/flag (writes a file), the
+// `e` command or s-flag (EXECUTES the pattern space as a shell command), or
+// -f/--file (script from a file the classifier cannot inspect — a
+// repo-controlled script can carry `w`). Everything else is stdout-only.
+// The `e` probe skips `-e` (script flag) by requiring a non-letter, non-dash
+// char before `e`; patterns like `/end/`, `s/a/e/` (replacement `e` between
+// slashes) and words containing `e` don't match.
+// s-command flag tails: s<delim>…<delim>…<delim><flags>. The `e` flag EXECUTES
+// the pattern space as a shell command and `w` writes to a file — both dangerous
+// even when adjacent to other flags (`ge`, `gw`), which the letter-anchored
+// e/w probes miss. Same-delimiter backreference keeps unrelated `s` words
+// ("else", "set") out; `\\.` skips escaped delimiters.
+const S_COMMAND_FLAGS = /s([^\w\s])(?:\\.|(?!\1)[\s\S])*?\1(?:\\.|(?!\1)[\s\S])*?\1([a-z0-9]*)/gi;
+
+function isSedReadOnly(inspection: string): boolean {
+  if (/(?:^|\s)-[a-zA-Z]*[if][a-zA-Z]*\b|--in-place\b|--file\b/i.test(inspection)) return false;
+  // w at ANY letter boundary: `w file`, glued `1wout` (GNU sed needs no space),
+  // flag-cluster `gw`/`ew`, patterns like `/web/` — all confirm; only
+  // word-interior w ("twelve") is provably not the w command/flag.
+  if (/(?<![A-Za-z])w|w(?![A-Za-z])/i.test(inspection)) return false;
+  // e probe: command separators `;` and `}` are valid followers (`e;p` executes).
+  if (/(?:^|[^A-Za-z-])e(?:[\s;}]|$|['"])/i.test(inspection)) return false;
+  for (const m of inspection.matchAll(S_COMMAND_FLAGS)) {
+    if (/[ew]/i.test(m[2])) return false;
+  }
+  return true;
+}
+
+// Strip xargs's own flags so the payload command can be classified:
+// separate-value shorts (-I {}, -n 2, -a f, -L k, -P p, -s c, -E e), long opts
+// with separate values (--arg-file in), attached clusters (-0 -r -n2 -I{}),
+// and long opts attached or with =value (--null, --arg-file=in). A valueless
+// long opt followed by the payload (--null grep) may eat one payload token →
+// falls to confirm. Conservative either way.
+function xargsPayload(inspection: string): string {
+  let rest = inspection.replace(/^xargs\b/i, "").trim();
+  for (;;) {
+    const next = rest
+      .replace(/^-[ILnPsaE]\s+(?:"[^"]*"|'[^']*'|\S+)\s*/i, "")
+      .replace(/^--[a-z-]+\s+(?:"[^"]*"|'[^']*'|\S+)\s*/i, "")
+      .replace(/^--?[0-9A-Za-z?{}=]+\s*/, "")
+      .replace(/^--[a-z-]+(?:=\S*)?\s*/i, "");
+    if (next === rest) break;
+    rest = next;
+  }
+  return rest.trim();
+}
+
 function classifySegment(seg: string): CommandDisposition {
-  const inspection = seg.replace(/^\S*\/(?=[^/\s]+(?:\s|$))/, "");
+  let inspection = seg;
+  for (;;) {
+    const stripped = inspection.replace(ENV_ASSIGNMENT, "").replace(FLOW_KEYWORD, "");
+    if (stripped === inspection) break;
+    inspection = stripped;
+  }
+  inspection = inspection.replace(/^\S*\/(?=[^/\s]+(?:\s|$))/, "").trim();
+  if (!inspection) return "read"; // bare env assignment — sets a variable, writes nothing
   if (/^git\s+/i.test(inspection)) {
     return isGitReadOnly(inspection) ? "read" : "write";
+  }
+  // xargs executes a payload command — classify the payload, not xargs itself:
+  // `grep -l x | xargs grep y` reads, `| xargs rm` still hits the writer tier,
+  // `xargs sh -c …` confirms.
+  if (/^xargs\b/i.test(inspection)) {
+    const payload = xargsPayload(inspection);
+    if (!payload) return "read";
+    return classifySegment(payload);
   }
   // command/type/which: only pure executable lookups are reads. POSIX `command NAME`
   // EXECUTES NAME, so bare `command` stays a writer wrapper (`command rm x` must block);
   // only `command -v/-V` is a lookup (reviewer critical finding, 0.11.3).
   if (/^(?:type|which)\b/i.test(inspection) || /^command\s+-[vV]\b/i.test(inspection)) return "read";
   if (/^(?:(?:rm|rmdir|mv|cp|mkdir|touch|chmod|chown|ln|install|truncate|dd|mktemp|command)|sudo|env|nohup|time)\b/i.test(inspection)) return "write";
-  if (/^sed\b/i.test(inspection) && (/\s(?:-i\S*|--in-place(?:=\S*)?)(?:\s|$)/i.test(inspection) || /\b(?:\d+)?w\s+/i.test(inspection) || /\/w\s/i.test(inspection))) return "write";
+  if (/^sed\b/i.test(inspection)) {
+    if (/\s(?:-i\S*|--in-place(?:=\S*)?)(?:\s|$)/i.test(inspection) || /\b(?:\d+)?w\s+/i.test(inspection) || /\/w\s/i.test(inspection) || /(?:^|[^A-Za-z-])\d+w[a-zA-Z0-9.]/i.test(inspection)) return "write";
+    return isSedReadOnly(inspection) ? "read" : "confirm";
+  }
   if (/^tee\b/i.test(inspection)) return "write";
+  // tar: list (-t, --list) and stdout-extract (-x…O, -O, --to-stdout) only read.
+  // Bare -x extracts to the filesystem → confirm; writers (-c) → confirm.
+  if (/^tar\b/i.test(inspection)) {
+    // Execute-class options — never auto-run: --to-command=CMD runs CMD per
+    // extracted member; -I/--use-compress-program=CMD runs CMD as the
+    // compress/decompress program (`tar -tf a.tar -I sh` looks like a read).
+    if (/--to-command\b/i.test(inspection) || /--use-compress-program\b/i.test(inspection) || /(?:^|\s)-\S*I/i.test(inspection)) return "confirm";
+    const letters = inspection.match(/^tar\s+(?:--\S+\s+)*-?([a-zA-Z]+)/i)?.[1]?.toLowerCase() ?? "";
+    const toStdout = /(?:^|\s)-(?:o\b|--to-stdout\b)/i.test(inspection);
+    if (letters.includes("t") || /--list\b/i.test(inspection) || (letters.includes("x") && (letters.includes("o") || toStdout))) return "read";
+    return "confirm";
+  }
   if (/^find\b/i.test(inspection) && /-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)\b/i.test(inspection)) return "write";
   // Catch sort -o in any short-option form: standalone -o, combined -no/-on, and --output=.
   if (/^sort\b/i.test(inspection) && (/(?:^|\s)-[a-zA-Z]*o[a-zA-Z]*(?:\s|=|$)/i.test(inspection) || /--output(?:=|\s)/i.test(inspection))) return "write";
   // awk is a Turing-complete interpreter (system(), | getline, print>redirect) — never auto-allow.
-  return /^(?:rg|grep|find|fd|ls|pwd|cat|head|tail|wc|sort|uniq|cut|echo|printf)\b/i.test(inspection) ? "read" : "confirm";
+  return /^(?:rg|grep|find|fd|ls|pwd|cat|head|tail|wc|sort|uniq|cut|echo|printf|jq|strings|stat|file|du|tree|lsof|basename|dirname|realpath|cd|read|diff|cmp)\b/i.test(inspection) ? "read" : "confirm";
 }
 
 function getEffectiveThinking(prefs: PlanPreferences, model: { provider?: string; id?: string } | undefined): { plan: ThinkingLevel; normal: ThinkingLevel } {

@@ -27,6 +27,13 @@ export const READ_ONLY_TOOLS = new Set([
   "write_plan",
   // Advisor returns guidance only; it has no filesystem tools.
   "advisor",
+  // pi-ux: ux_audit is pure computation over a CSS string — no fs/network side effects.
+  "ux_audit",
+  // A2A read-only discovery/polling; a2a_call/a2a_orchestrate can trigger remote
+  // work and stay behind confirmation.
+  "a2a_peers", "a2a_list", "a2a_discover", "a2a_status", "a2a_history",
+  // Accordion context folding — reads/restores the agent's own context, no repo mutation.
+  "unfold", "recall",
 ]);
 
 /**
@@ -35,6 +42,9 @@ export const READ_ONLY_TOOLS = new Set([
 export const BLOCKED_TOOLS = new Set([
   // File mutation
   "edit", "write",
+  // pi-model-tools diff-style file mutation — same treatment as edit/write;
+  // a plan-mode model should never patch files (9 pointless confirm prompts/14d).
+  "apply_patch",
   // Serena file mutation
   "serena_replace_symbol_body", "serena_insert_before_symbol",
   "serena_insert_after_symbol", "serena_rename_symbol",
