@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+- `enable` / `disable` actions — jobs can finally be paused/resumed without hand-editing `jobs.json` (the `DISABLED` list state was previously unreachable from the tool). `disable` keeps the schedule and skips ticks/export; `enable` recomputes `nextRun` from now, which also fixes a latent trap: a parked job (`markFired` sets `nextRun=MAX_SAFE_INTEGER` on dead schedules) would never fire again after a flag-only enable, and a long-disabled job would catch-up-fire once instead of resuming at its next occurrence.
+- `add` accepts `enabled: false` to create a job already disabled.
+- Both new actions are mutating (loop guard + headless `PI_CRON_DISABLED` refusal cover them); `run` on a disabled job now hints at the `enable` action.
+
 ## 0.2.0
 
 - Model & thinking pins per job (`model`, `thinking`) — pinned jobs run headless in their own `pi -p` process (10-min cap), output logged under `<agentDir>/cron/logs/`, result delivered back as a follow-up. Hermes-style per-job model/reasoning pin.

@@ -36,6 +36,9 @@ write job prompts that schedule further jobs.
 
 - `cron action:"list"` — name, schedule, next/last fire, enabled.
 - `cron action:"run" name:"..."` — manual fire (result arrives as a follow-up turn).
+- `cron action:"disable" name:"..."` — pause a job (schedule kept; skipped by ticks and export).
+- `cron action:"enable" name:"..."` — resume; the next fire is recomputed from now (no surprise catch-up fire).
+- `cron action:"add" ... enabled:false` — create the job already disabled.
 - `cron action:"remove" name:"..."`.
 - `cron action:"export"` — crontab lines for 24/7 coverage while pi is closed;
   hand the block to the user to install (`crontab -l | cat - cron.txt | crontab -`).

@@ -32,12 +32,13 @@ import {
   markFired,
   removeJob,
   saveJobs,
+  setJobEnabled,
   setJobResult,
   type CronJob,
 } from "./lib/jobs.ts";
 
 const DEFAULT_TICK_MS = 30_000;
-const MUTATING_ACTIONS = new Set(["add", "remove", "run"]);
+const MUTATING_ACTIONS = new Set(["add", "remove", "run", "enable", "disable"]);
 /** Loop guard is purely time-based: mutations are refused within this window
  * after the last armed fire. SDK events carry no turn identity (AgentSettledEvent
  * is payload-free; message_start fires at custom-message DELIVERY), so a settle-
@@ -331,14 +332,14 @@ export interface CronActionArgs {
   childMode: boolean;
   send: (...args: Parameters<ExtensionAPI["sendMessage"]>) => void;
   fire: (job: CronJob) => void;
-  params: { action: string; name?: string; schedule?: string; prompt?: string; cwd?: string; model?: string; thinking?: string };
+  params: { action: string; name?: string; schedule?: string; prompt?: string; cwd?: string; model?: string; thinking?: string; enabled?: boolean };
   cwd: string;
 }
 
 /** The cron tool's action dispatch. Exported for tests; throws on refused/failed actions. */
 export function runCronAction(args: CronActionArgs): { content: { type: "text"; text: string }[]; details: unknown } {
   const { dir, state, childMode, send, fire, cwd } = args;
-  const { action, name, schedule, prompt, cwd: paramCwd, model, thinking } = args.params;
+  const { action, name, schedule, prompt, cwd: paramCwd, model, thinking, enabled } = args.params;
 
   if (childMode && MUTATING_ACTIONS.has(action)) {
     throw new Error(
@@ -353,7 +354,7 @@ export function runCronAction(args: CronActionArgs): { content: { type: "text"; 
 
   switch (action) {
     case "add": {
-      const job = addJob(dir, { name, schedule, prompt, cwd: paramCwd ?? cwd, model, thinking }, Date.now());
+      const job = addJob(dir, { name, schedule, prompt, cwd: paramCwd ?? cwd, model, thinking, enabled }, Date.now());
       const pin = isPinned(job) ? ` Runs headless (${[job.model, job.thinking].filter(Boolean).join(", thinking ")}) — result arrives as a follow-up.` : "";
       return {
         content: [
@@ -379,7 +380,7 @@ export function runCronAction(args: CronActionArgs): { content: { type: "text"; 
       const jobs = loadJobs(dir);
       const job = findJob(jobs, name);
       if (!job) throw new Error(`No job named '${name}'.`);
-      if (!job.enabled) throw new Error(`Job '${name}' is disabled.`);
+      if (!job.enabled) throw new Error(`Job '${name}' is disabled (enable with cron action:"enable" name:"${name}").`);
       markFired(job, Date.now());
       saveJobs(dir, jobs);
       fire(job);
@@ -387,6 +388,16 @@ export function runCronAction(args: CronActionArgs): { content: { type: "text"; 
         content: [{ type: "text" as const, text: `Job '${job.name}' fired manually — result arrives as a follow-up turn.` }],
         details: { action: "run", name },
       };
+    }
+    case "enable":
+    case "disable": {
+      if (!name) throw new Error(`name is required for action:"${action}".`);
+      const job = setJobEnabled(dir, name, action === "enable", Date.now());
+      const text =
+        action === "enable"
+          ? `Job '${job.name}' enabled. Next fire: ${fmt(job.nextRun)}.`
+          : `Job '${job.name}' disabled — schedule kept; enable to resume.`;
+      return { content: [{ type: "text" as const, text }], details: { action, name, job } };
     }
     case "test": {
       if (!schedule) throw new Error('schedule is required for action:"test".');
@@ -463,8 +474,8 @@ export default function cronExtension(pi: ExtensionAPI) {
     name: "cron",
     label: "Cron",
     description:
-      "Schedule recurring jobs (cron) that fire a prompt into this session while pi is running. Actions: add, remove, list, run (manual fire), test (preview fire times), logs (tail a job's newest log), export (crontab lines for 24/7).",
-    promptSnippet: "Schedule cron jobs: add/remove/list/run/test/export.",
+      "Schedule recurring jobs (cron) that fire a prompt into this session while pi is running. Actions: add, remove, list, run (manual fire), enable/disable (toggle a job), test (preview fire times), logs (tail a job's newest log), export (crontab lines for 24/7).",
+    promptSnippet: "Schedule cron jobs: add/remove/list/run/enable/disable/test/logs/export.",
     promptGuidelines: [
       'Convert natural-language schedules to 5-field cron and verify with action:"test" before add.',
       "Job prompts must be self-contained — fired turns have no conversation context.",
@@ -473,10 +484,13 @@ export default function cronExtension(pi: ExtensionAPI) {
     ],
     parameters: Type.Object({
       action: Type.Union(
-        ["add", "remove", "list", "run", "test", "logs", "export"].map((a) => Type.Literal(a)),
+        ["add", "remove", "list", "run", "enable", "disable", "test", "logs", "export"].map((a) => Type.Literal(a)),
         { description: "Operation to perform." },
       ),
-      name: Type.Optional(Type.String({ description: "Job name (add/remove/run)." })),
+      name: Type.Optional(Type.String({ description: "Job name (add/remove/run/enable/disable)." })),
+      enabled: Type.Optional(
+        Type.Boolean({ description: 'Create the job disabled (add, default true). Re-enable later with action:"enable".' }),
+      ),
       schedule: Type.Optional(
         Type.String({ description: '5-field cron expression (add/test), e.g. "0 9 * * mon".' }),
       ),

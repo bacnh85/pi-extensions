@@ -21,6 +21,7 @@ The `cron` tool (and `/cron` command) manages jobs stored in
 | `remove` | Delete a job by `name`. |
 | `list` | Show name, schedule, next/last fire, enabled, last run status (`[ok]` / `[FAIL: reason]`), model pin. |
 | `run` | Fire a job manually right now (also the retry for a failed job). |
+| `enable` / `disable` | Toggle a job. `disable` pauses (schedule kept; skipped by ticks and export); `enable` recomputes the next fire from now — no surprise catch-up fire. `add` also accepts `enabled:false` to create a disabled job. |
 | `test` | Preview the next 5 fire times of a schedule. |
 | `logs` | Tail the newest run log of a job — see what a failed run printed. |
 | `export` | Print crontab lines so jobs also run while pi is closed (headless `pi -p --no-session`, logs under `<agentDir>/cron/logs/`). |
@@ -42,11 +43,12 @@ useful for cheap/fast models or isolated runs. Output is logged under
 back into the session as a follow-up. `export` includes the pins in crontab
 lines. Headless children run with `PI_CRON_DISABLED=1`: the cron scheduler is
 off inside them (no parent/child races on `jobs.json`) and job mutations
-(`add`/`remove`/`run`) are refused — a fired run can never schedule more jobs.
+(`add`/`remove`/`run`/`enable`/`disable`) are refused — a fired run can never
+schedule more jobs.
 
 **Loop guard:** while a cron-fired turn is in flight (and for 30s after the
-last fire), `add`/`remove`/`run` are refused — fired jobs can never schedule
-further jobs.
+last fire), `add`/`remove`/`run`/`enable`/`disable` are refused — fired jobs
+can never schedule further jobs.
 
 **Single session per agent dir:** the jobs store has no cross-process lock.
 Running multiple pi sessions that share an agent dir can double-fire jobs or

@@ -152,6 +152,28 @@ export function dueJobs(jobs: CronJob[], now: number): CronJob[] {
   return jobs.filter((j) => j.enabled && now >= j.nextRun);
 }
 
+/**
+ * Enable/disable a job (reload-modify-save). Enabling recomputes nextRun from
+ * now: a parked job (markFired sets nextRun=MAX_SAFE_INTEGER) would otherwise
+ * never fire again, and a long-disabled job would catch-up-fire once on the
+ * next tick instead of resuming at its next future occurrence.
+ */
+export function setJobEnabled(dir: string, name: string, enabled: boolean, now: number): CronJob {
+  const jobs = loadJobs(dir);
+  const job = findJob(jobs, name);
+  if (!job) throw new Error(`No job named '${name}'.`);
+  if (enabled && !job.enabled) {
+    const nf = nextFire(job.schedule, new Date(now));
+    if (!nf) {
+      throw new Error(`Job '${name}' cannot be enabled — schedule '${job.schedule}' has no future fire time.`);
+    }
+    job.nextRun = nf.getTime();
+  }
+  job.enabled = enabled;
+  saveJobs(dir, jobs);
+  return job;
+}
+
 /** Persist the outcome of a job's most recent fire (reload-modify-save). */
 export function setJobResult(dir: string, name: string, status: "ok" | "fail", error?: string): void {
   const jobs = loadJobs(dir);

@@ -16,6 +16,7 @@ import {
   markFired,
   removeJob,
   saveJobs,
+  setJobEnabled,
   setJobResult,
   type CronJob,
 } from "./lib/jobs.ts";
@@ -166,6 +167,59 @@ describe("jobs store", () => {
     assert.ok(!renderExport(jobs, join(tmpAgentDir(), "logs")).includes("evil"));
   });
 
+  it("enable/disable: recomputes nextRun, unknown name throws, roundtrips", () => {
+    const dir = tmpAgentDir();
+    const now = Date.now();
+
+    // unknown name
+    assert.throws(() => setJobEnabled(dir, "nope", true, now), /No job named/);
+
+    // parked job (markFired-style) → enable recomputes a real future nextRun
+    addJob(dir, { name: "parked", schedule: "0 9 * * mon", prompt: "p" }, now);
+    const jobs1 = loadJobs(dir);
+    const parked = findJob(jobs1, "parked")!;
+    parked.enabled = false;
+    parked.nextRun = Number.MAX_SAFE_INTEGER;
+    saveJobs(dir, jobs1);
+    const reenabled = setJobEnabled(dir, "parked", true, now);
+    assert.equal(reenabled.enabled, true);
+    assert.ok(reenabled.nextRun > now, "nextRun recomputed to the future");
+    assert.ok(reenabled.nextRun < Number.MAX_SAFE_INTEGER);
+
+    // long-disabled job with stale past nextRun → next future occurrence, not immediate catch-up
+    const staleAt = now - 21 * 24 * 3600_000; // disabled 3 weeks ago
+    setJobEnabled(dir, "parked", false, now);
+    const jobs2 = loadJobs(dir);
+    findJob(jobs2, "parked")!.nextRun = staleAt;
+    saveJobs(dir, jobs2);
+    const resumed = setJobEnabled(dir, "parked", true, now);
+    assert.ok(resumed.nextRun > now, "stale past nextRun not kept");
+    // and it is not due right now (no surprise catch-up fire)
+    assert.equal(dueJobs(loadJobs(dir), now).length, 0);
+
+    // disable → excluded from dueJobs even when nextRun is in the past
+    const jobs3 = loadJobs(dir);
+    findJob(jobs3, "parked")!.nextRun = now - 1000;
+    saveJobs(dir, jobs3);
+    setJobEnabled(dir, "parked", false, now);
+    assert.equal(dueJobs(loadJobs(dir), now).length, 0);
+    assert.equal(loadJobs(dir)[0]!.enabled, false);
+    // disable is idempotent-safe, enable of an enabled job is a no-op flag-wise
+    const again = setJobEnabled(dir, "parked", true, now);
+    assert.equal(again.enabled, true);
+  });
+
+  it("enable refuses schedules with no future fire time and stays disabled", () => {
+    const dir = tmpAgentDir();
+    // Feb 31 never exists → nextFire null (addJob would reject, so hand-craft
+    // the parked job the way markFired parks a dead schedule)
+    saveJobs(dir, [makeJob({ name: "never", schedule: "0 9 31 2 *", enabled: false, nextRun: Number.MAX_SAFE_INTEGER })]);
+    assert.throws(() => setJobEnabled(dir, "never", true, Date.now()), /no future fire time/);
+    const job = loadJobs(dir)[0]!;
+    assert.equal(job.enabled, false);
+    assert.equal(job.nextRun, Number.MAX_SAFE_INTEGER, "nextRun untouched on refused enable");
+  });
+
   it("removes jobs and reports misses", () => {
     const dir = tmpAgentDir();
     addJob(dir, { name: "a", schedule: "* * * * *", prompt: "p" }, 0);
@@ -244,7 +298,7 @@ describe("jobs store", () => {
 describe("guards and rendering", () => {
   it("refuses mutating actions within the linger window only", () => {
     const now = Date.now();
-    for (const a of ["add", "remove", "run"]) {
+    for (const a of ["add", "remove", "run", "enable", "disable"]) {
       assert.equal(isMutationRefused(now, a, now), true);
       assert.equal(isMutationRefused(now - 1_000, a, now), true);
       assert.equal(isMutationRefused(now - GUARD_LINGER_MS, a, now), false, "window expired");
@@ -568,14 +622,14 @@ describe("runCronAction (tool wiring)", () => {
     send?: (...a: unknown[]) => void;
     fire?: (j: CronJob) => void;
   }
-  function action(dir: string, state: { lastFireArmAt: number }, params: Record<string, string>, over: ActionOver = {}) {
+  function action(dir: string, state: { lastFireArmAt: number }, params: Record<string, unknown>, over: ActionOver = {}) {
     return runCronAction({
       dir,
       state,
       childMode: over.childMode ?? false,
       send: (over.send as never) ?? (() => {}),
       fire: over.fire ?? (() => {}),
-      params: params as { action: string; name?: string; schedule?: string; prompt?: string; cwd?: string; model?: string; thinking?: string },
+      params: params as { action: string; name?: string; schedule?: string; prompt?: string; cwd?: string; model?: string; thinking?: string; enabled?: boolean },
       cwd: "/tmp",
     });
   }
@@ -584,6 +638,8 @@ describe("runCronAction (tool wiring)", () => {
     const dir = tmpAgentDir();
     assert.throws(() => action(dir, { lastFireArmAt: 0 }, { action: "add", name: "x", schedule: "* * * * *", prompt: "p" }, { childMode: true }), /disabled in headless cron runs/);
     assert.throws(() => action(dir, { lastFireArmAt: 0 }, { action: "run", name: "x" }, { childMode: true }), /disabled in headless cron runs/);
+    assert.throws(() => action(dir, { lastFireArmAt: 0 }, { action: "enable", name: "x" }, { childMode: true }), /disabled in headless cron runs/);
+    assert.throws(() => action(dir, { lastFireArmAt: 0 }, { action: "disable", name: "x" }, { childMode: true }), /disabled in headless cron runs/);
     assert.ok(action(dir, { lastFireArmAt: 0 }, { action: "list" }, { childMode: true }).content[0]!.text.includes("No cron jobs"));
   });
 
@@ -595,6 +651,37 @@ describe("runCronAction (tool wiring)", () => {
     );
     const text = action(dir, { lastFireArmAt: Date.now() - GUARD_LINGER_MS - 1 }, { action: "add", name: "x", schedule: "* * * * *", prompt: "p" }).content[0]!.text;
     assert.ok(text.includes("'x' added"));
+  });
+
+  it("add enabled:false stores disabled; run hints enable; export skips; enable resumes", () => {
+    const dir = tmpAgentDir();
+    action(dir, { lastFireArmAt: 0 }, { action: "add", name: "d", schedule: "* * * * *", prompt: "p", enabled: false });
+    const stored = loadJobs(dir)[0]!;
+    assert.equal(stored.enabled, false);
+
+    // run refused with an enable hint
+    assert.throws(() => action(dir, { lastFireArmAt: 0 }, { action: "run", name: "d" }), /is disabled \(enable with/);
+
+    // export skips disabled jobs
+    const exportText = action(dir, { lastFireArmAt: 0 }, { action: "export" }).content[0]!.text;
+    assert.ok(exportText.includes("(no enabled jobs)"));
+
+    // enable → next fire reported, job runs
+    const enableText = action(dir, { lastFireArmAt: 0 }, { action: "enable", name: "d" }).content[0]!.text;
+    assert.ok(enableText.includes("'d' enabled. Next fire:"));
+    assert.equal(loadJobs(dir)[0]!.enabled, true);
+    const runText = action(dir, { lastFireArmAt: 0 }, { action: "run", name: "d" }).content[0]!.text;
+    assert.ok(runText.includes("fired manually"));
+
+    // disable again → run refused
+    action(dir, { lastFireArmAt: 0 }, { action: "disable", name: "d" });
+    assert.equal(loadJobs(dir)[0]!.enabled, false);
+    assert.throws(() => action(dir, { lastFireArmAt: 0 }, { action: "run", name: "d" }), /is disabled/);
+
+    // missing name
+    assert.throws(() => action(dir, { lastFireArmAt: 0 }, { action: "enable" }), /name is required/);
+    // unknown name
+    assert.throws(() => action(dir, { lastFireArmAt: 0 }, { action: "enable", name: "nope" }), /No job named/);
   });
 
   it("add persists the job; run delivers and records ok/fail by delivery", () => {
