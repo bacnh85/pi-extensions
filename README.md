@@ -8,15 +8,15 @@ Each package lives in its own directory and can be installed independently — e
 
 | Package | Version | What it adds |
 | --- | ---: | --- |
-| [`@bacnh85/pi-router`](./pi-router) | 1.1.3 | Connect to any OpenAI-compatible AI router (9router, omniroute, …) — API key via built-in /login, URL in settings.json (`/router-config` panel), cached model discovery. |
+| [`@bacnh85/pi-router`](./pi-router) | 1.1.5 | Connect to any OpenAI-compatible AI router (9router, omniroute, …) — API key via built-in /login, URL in settings.json (`/router-config` panel), cached model discovery. |
 | [`@bacnh85/pi-chatgpt-web`](./pi-chatgpt-web) | 0.2.0 | ChatGPT web-tier providers via self-hosted OpenAI-compatible bridges — chat-only `chatgpt-web` (chatgpt2api) + agentic `codex-web` (codex-proxy, tool-capable). No Plus subscription. |
 | [`@bacnh85/pi-commandcode`](./pi-commandcode) | 0.2.0 | Connect to Command Code's OpenAI-compatible Provider API; API key via built-in `/login`, base URL in settings.json (`/commandcode-config` panel). |
-| [`@bacnh85/pi-agy`](./pi-agy) | 0.3.2 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
+| [`@bacnh85/pi-agy`](./pi-agy) | 0.3.3 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
 | [`@bacnh85/pi-budget`](./pi-budget) | 0.1.2 | Spend cap enforcement — `--budget <usd>` aborts the agent at the cap. |
-| [`@bacnh85/pi-checkpoint`](./pi-checkpoint) | 0.1.0 | Git-backed undo/redo — snapshots file state per turn so `/undo` rolls back a message AND its file changes. |
-| [`@bacnh85/pi-cron`](./pi-cron) | 0.2.0 | Scheduled jobs — cron-style jobs fire a prompt into the live session while pi is running, with past-due catch-up, per-job model/thinking pins (headless runs), and crontab export for 24/7 coverage. |
+| [`@bacnh85/pi-checkpoint`](./pi-checkpoint) | 0.1.1 | Git-backed undo/redo — snapshots file state per turn so `/undo` rolls back a message AND its file changes. |
+| [`@bacnh85/pi-cron`](./pi-cron) | 0.3.1 | Scheduled jobs — cron-style jobs fire a prompt into the live session while pi is running, with past-due catch-up, per-job model/thinking pins (headless runs), and crontab export for 24/7 coverage. |
 | [`@bacnh85/pi-evolve`](./pi-evolve) | 0.3.2 | Trajectory-based self-learning loop — captures tool-call trajectories, reflects to extract learnings, persists to Munin or local JSONL, injects recent learnings into future sessions. |
-| [`@bacnh85/pi-selfskills`](./pi-selfskills) | 0.1.0 | Skill self-improvement — one `skill_manage` tool (list/read/patch/create/restore) to patch loaded skills and create new ones, with a writable-root allowlist, SDK validation, and content-addressed backups. |
+| [`@bacnh85/pi-selfskills`](./pi-selfskills) | 0.2.0 | Skill self-improvement — one `skill_manage` tool (list/read/patch/create/restore) to patch loaded skills and create new ones, with a writable-root allowlist, SDK validation, and content-addressed backups. |
 | [`@bacnh85/pi-a2a`](./pi-a2a) | 0.7.6 | A2A Protocol v1.0 bidirectional — Pi distributes tasks to remote agents (Hermes, ADK, LangChain, any A2A peer), exposes itself as an A2A-callable agent, self-declares for local session discovery (file registry + enriched Agent Card + mDNS), registers with **multiple a2a-switchboard gateways** (`discovery.gateways`), shows inbound task activity in the host TUI, and has an interactive config panel. |
 | [`@bacnh85/pi-config-panel`](./pi-config-panel) | 0.1.4 | Shared config-panel kernel (library) — arrow-key toggle/edit overlay panels for extensions; powers `/a2a-config`, `/commandcode-config`, `/router-config`. |
 | [`@bacnh85/pi-hub`](./pi-hub) | 0.1.3 | Interactive installer CLI — `npx @bacnh85/pi-hub` browses the @bacnh85 catalog, searches npm `keywords:pi-package`, multi-selects, and installs via `pi install`. |
@@ -24,19 +24,19 @@ Each package lives in its own directory and can be installed independently — e
 | [`@bacnh85/pi-fff`](./pi-fff) | 0.8.0 | FFF-powered fuzzy file and content search for Pi. |
 | [`@bacnh85/pi-init`](./pi-init) | 0.1.0 | Guided AGENTS.md generation — `/init` scans the repo and generates/updates AGENTS.md with build/test/lint commands, architecture, and conventions. |
 | [`@bacnh85/pi-kicad`](./pi-kicad) | 0.1.3 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon. |
-| [`@bacnh85/pi-model-tools`](./pi-model-tools) | 0.7.0 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, and a Codex-style `apply_patch` diff tool. |
+| [`@bacnh85/pi-model-tools`](./pi-model-tools) | 0.8.0 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, and a Codex-style `apply_patch` diff tool. |
 | [`@bacnh85/pi-munin`](./pi-munin) | 0.5.3 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and cross-project sharing. |
 | [`@bacnh85/pi-notebooklm`](./pi-notebooklm) | 0.1.8 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | [`@bacnh85/pi-notify`](./pi-notify) | 0.1.1 | Desktop notifications and sounds — fires on task completion, errors, and questions; cross-platform (macOS/Linux/Windows + terminal OSC). |
 | [`@bacnh85/pi-obsidian`](./pi-obsidian) | 0.8.14 | Obsidian vault integration for Pi. |
 | [`@bacnh85/pi-permission`](./pi-permission) | 0.2.0 | Granular permission system — config-driven allow/ask/deny rules per tool with wildcard patterns, external-directory boundary, and a doom-loop guard. |
-| [`@bacnh85/pi-plan`](./pi-plan) | 0.11.4 | Plan mode with read-only gating and plan → implement → verify → review workflow; fallback model chain on overload. |
-| [`@bacnh85/pi-advisor`](./pi-advisor) | 0.2.1 | OMP-style automatic advisor — second model reviews each settled turn, injects severity-routed notes (nit card / concern steer with immune cooldown + emission guard); ordered multi-model fallback chain (`pi-advisor.models`, `/advisor models` panel editor); on-demand advisor consult. |
-| [`@bacnh85/pi-ponytail`](./pi-ponytail) | 0.1.11 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
+| [`@bacnh85/pi-plan`](./pi-plan) | 0.12.0 | Plan mode with read-only gating and plan → implement → verify → review workflow; fallback model chain on overload. |
+| [`@bacnh85/pi-advisor`](./pi-advisor) | 0.2.2 | OMP-style automatic advisor — second model reviews each settled turn, injects severity-routed notes (nit card / concern steer with immune cooldown + emission guard); ordered multi-model fallback chain (`pi-advisor.models`, `/advisor models` panel editor); on-demand advisor consult. |
+| [`@bacnh85/pi-ponytail`](./pi-ponytail) | 0.1.13 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
 | [`@bacnh85/pi-references`](./pi-references) | 0.1.1 | External context roots — alias sibling dirs or git repos as `@docs`/`@sdk`; auto-clones repos and injects descriptions into agent context. |
 | [`@bacnh85/pi-review`](./pi-review) | 0.2.9 | Isolated read-only code review with corrected same-session fallback. |
-| [`@bacnh85/pi-rtk`](./pi-rtk) | 0.1.12 | Bash command token rewriting through RTK. |
-| [`@bacnh85/pi-serena`](./pi-serena) | 0.9.13 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
+| [`@bacnh85/pi-rtk`](./pi-rtk) | 0.2.0 | Bash command token rewriting through RTK. |
+| [`@bacnh85/pi-serena`](./pi-serena) | 0.9.14 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
 | [`@bacnh85/pi-sub`](./pi-sub) | 0.1.38 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | [`@bacnh85/pi-subagent`](./pi-subagent) | 0.20.0 | Isolated in-process subagents with parallel/chain modes, inspectable threads, git worktree isolation (`sandbox: worktree`), and opt-in auto-review after coding turns. |
 | [`@bacnh85/pi-themes`](./pi-themes) | 0.2.0 | Pi TUI theme collection — Ayu variants (dark, mirage, light) + Catppuccin Mocha; pure-themes package (no extension code). |
