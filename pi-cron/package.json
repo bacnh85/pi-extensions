@@ -1,0 +1,66 @@
+{
+  "name": "@bacnh85/pi-cron",
+  "version": "0.2.0",
+  "description": "Scheduled jobs for Pi — cron-style jobs that fire a prompt into the live session while pi is running, with past-due catch-up and crontab export for 24/7 needs.",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-cron",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git",
+    "directory": "pi-cron"
+  },
+  "bugs": {
+    "url": "https://github.com/bacnh85/pi-extensions/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "cron",
+    "scheduler",
+    "automation"
+  ],
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "extensions/index.ts",
+    "extensions/lib/",
+    "extensions/package.json",
+    "skills/"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "test": "cd extensions && npx mocha",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "cron-parser": "^5.10.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.84.3 <0.86.0",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.85.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.19.43",
+    "mocha": "^11.8.0",
+    "tsx": "^4.22.4",
+    "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "serialize-javascript@>=5.0.0 <7.0.5": "^7.0.5",
+    "js-yaml@>=4.0.0 <4.3.1": "^4.3.1",
+    "brace-expansion@>=2.0.0 <2.1.4": "^2.1.4",
+    "diff": "^8.0.3"
+  }
+}

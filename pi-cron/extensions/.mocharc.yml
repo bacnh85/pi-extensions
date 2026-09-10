@@ -1,0 +1,5 @@
+spec:
+  - "index.test.ts"
+require:
+  - tsx
+timeout: 10000

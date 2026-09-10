@@ -11,6 +11,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-chatgpt-web** | 0.2.0 | ChatGPT web-tier providers via self-hosted OpenAI-compatible bridges — chat-only `chatgpt-web` (chatgpt2api) + agentic `codex-web` (codex-proxy, tool-capable). No Plus subscription. |
 | **pi-commandcode** | 0.2.0 | Connect to Command Code's OpenAI-compatible Provider API; API key via built-in `/login`, base URL in settings.json (`/commandcode-config` panel), models auto-cached. |
 | **pi-checkpoint** | 0.1.0 | Git-backed undo/redo — snapshots file state per turn into a dedicated ref namespace so `/undo` rolls back a message AND its file changes. |
+| **pi-cron** | 0.2.0 | Scheduled jobs — cron-style jobs fire a prompt into the live session while pi is running (30s timer, past-due catch-up, loop guard); per-job model/thinking pins run headless; `cron export` emits crontab lines for 24/7 coverage. |
 | **pi-notify** | 0.1.1 | Desktop notifications and sounds — fires on task completion, errors, and questions; cross-platform (macOS/Linux/Windows + terminal OSC). |
 | **pi-references** | 0.1.1 | External context roots — alias sibling dirs or git repos as `@docs`/`@sdk`; auto-clones repos and injects descriptions into agent context. |
 | **pi-budget** | 0.1.2 | Spend cap enforcement — `--budget <usd>` aborts the agent at the cap; companion to pi-sub (render vs enforce). |
@@ -57,6 +58,7 @@ pi-extensions/
   pi-a2a/               # TS extension + lib (protocol/client/server/config/security/persistence/registry/mdns/discovery/activity/config-panel rows) for A2A Protocol v1.0
 pi-config-panel/      # TS library package — shared config-panel kernel (no pi field; consumed as a dependency)
   pi-attachments/       # TS extension — paste/drag files → 📎 path references + real image attachments
+  pi-cron/              # TS extension — scheduled jobs (cron) firing into the live session; crontab export
   pi-hub/               # standalone zero-dep CLI (npx @bacnh85/pi-hub) — interactive pi package installer, not loaded by pi
   pi-plan/              # TS extension for plan mode + workflow integration
   pi-advisor/            # TS extension — OMP-style automatic advisor (turn-end reviewer + consult tool)
@@ -148,6 +150,7 @@ cd pi-<name> && npm test
 # pi-checkpoint: node --test extensions/test/*.test.js (no framework, plain JS)
 # pi-notify:     node --test extensions/test/*.test.js (no framework, plain JS)
 # pi-references: node --test extensions/test/*.test.js (no framework, plain JS)
+# pi-cron:       cd extensions && npx mocha                (mocha + tsx)
 # pi-evolve:     cd extensions && npx mocha                (mocha + tsx)
 # pi-selfskills:  cd extensions && npx mocha                (mocha + tsx)
 # pi-a2a:        cd extensions && mocha                    (mocha + tsx)

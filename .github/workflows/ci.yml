@@ -83,6 +83,7 @@ jobs:
             pi-hub: pi-hub/**
             pi-attachments: pi-attachments/**
             pi-selfskills: pi-selfskills/**
+            pi-cron: pi-cron/**
 
       - name: Build matrix
         id: set-matrix
@@ -124,6 +125,7 @@ jobs:
               { pkg: 'pi-hub', cmd: 'node --test extensions/test/*.test.js' },
               { pkg: 'pi-attachments', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-selfskills', cmd: 'npm ci && npm test' },
+            { pkg: 'pi-cron', cmd: 'npm ci && npm test && npm run typecheck' },
             ];
 
             const selected = '${{ github.event_name }}' === 'workflow_dispatch'
