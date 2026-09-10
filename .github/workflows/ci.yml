@@ -113,7 +113,7 @@ jobs:
               { pkg: 'pi-kicad', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-ux', cmd: 'node --test extensions/test/*.test.js' },
               { pkg: 'pi-budget', cmd: 'node --test extensions/test/*.test.js' },
-              { pkg: 'pi-themes', cmd: 'npm pack --dry-run' },
+              { pkg: 'pi-themes', cmd: 'npm test' },
               { pkg: 'pi-init', cmd: 'node --test extensions/test/*.test.js' },
               { pkg: 'pi-permission', cmd: 'node --test extensions/test/*.test.js' },
               { pkg: 'pi-checkpoint', cmd: 'node --test extensions/test/*.test.js' },

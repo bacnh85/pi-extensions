@@ -39,7 +39,7 @@ Each package lives in its own directory and can be installed independently — e
 | [`@bacnh85/pi-serena`](./pi-serena) | 0.9.13 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
 | [`@bacnh85/pi-sub`](./pi-sub) | 0.1.38 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | [`@bacnh85/pi-subagent`](./pi-subagent) | 0.20.0 | Isolated in-process subagents with parallel/chain modes, inspectable threads, git worktree isolation (`sandbox: worktree`), and opt-in auto-review after coding turns. |
-| [`@bacnh85/pi-themes`](./pi-themes) | 0.1.1 | Ayu-based theme collection (dark, mirage, light) for the Pi TUI — pure-themes package (no extension code). |
+| [`@bacnh85/pi-themes`](./pi-themes) | 0.2.0 | Pi TUI theme collection — Ayu variants (dark, mirage, light) + Catppuccin Mocha; pure-themes package (no extension code). |
 | [`@bacnh85/pi-ux`](./pi-ux) | 0.4.6 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, ships medium-tuned presets (Web/Mobile), runs deterministic slop-audit gates (APCA contrast + tokens + states + slop/taste tells + reduced-motion), taste rules (named cliché clusters, typography/motion/copy), vision render-inspect loop for multimodal models, works with text-only models. |
 | [`@bacnh85/pi-web`](./pi-web) | 0.6.2 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots (returned inline for multimodal models)/PDFs. |
 | [`@bacnh85/pi-windows-tools`](./pi-windows-tools) | 0.5.3 | Windows-specific tools for Pi. |

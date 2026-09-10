@@ -37,7 +37,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-rtk** | 0.1.12 | Bash command token rewriting through RTK. |
 | **pi-serena** | 0.9.13 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
 | **pi-sub** | 0.1.38 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
-| **pi-themes** | 0.1.1 | Ayu-based theme collection (dark, mirage, light) for the Pi TUI — pure-themes package (no extension code). |
+| **pi-themes** | 0.2.0 | Pi TUI theme collection — Ayu variants (dark, mirage, light) + Catppuccin Mocha; pure-themes package (no extension code). |
 | **pi-subagent** | 0.20.0 | Isolated in-process subagents with parallel/chain modes, inspectable threads, git worktree isolation (`sandbox: worktree`), live progress widget, background mode, role-based model routing (`@fast`/`@coder`/`@smart` + `subagent.roles` settings, `/subagent roles` editor), and opt-in auto-review after coding turns (`subagent.autoReview`). |
 | **pi-web** | 0.6.2 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots (returned inline for multimodal models)/PDFs. |
 | **pi-ux** | 0.4.6 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, ships medium-tuned presets (Web/Mobile), runs deterministic slop-audit gates (APCA contrast + tokens + states + slop/taste tells + reduced-motion), taste rules (named cliché clusters, typography/motion/copy), vision render-inspect loop for multimodal models, works with text-only models. |
@@ -163,7 +163,7 @@ cd pi-<name> && npm test
 # pi-review:     cd extensions && mocha                (mocha + tsx)
 # pi-rtk:        npm pack --dry-run                    (packaging check)
 # pi-sub:        cd pi-sub && npm test            (node --import tsx --test; npm ci auto-installs SDK peer)
-# pi-themes:     npm pack --dry-run                    (packaging check; pure-themes, no extension code)
+# pi-themes:     npm test                               (theme validator + packaging check; pure-themes, no extension code)
 # pi-router:     node --import tsx --test extensions/test/unit.test.ts (node:test + tsx)
 # pi-chatgpt-web: node --import tsx --test extensions/test/unit.test.ts (node:test + tsx)
 # pi-commandcode: node --import tsx --test extensions/test/*.test.ts (node:test + tsx)
