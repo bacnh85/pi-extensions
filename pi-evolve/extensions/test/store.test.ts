@@ -49,12 +49,14 @@ describe("store config", () => {
 
   it("activeBackend falls back to local when Munin is not configured", () => {
     const cwd = tmpCwd();
+    const saved = saveEnv(); // isolate from host MUNIN_* env (dev machines often have it)
     try {
       expect(activeBackend({}, resolveStoreConfig({ store: "auto" }), cwd)).to.equal("local");
       expect(activeBackend({}, resolveStoreConfig({ store: "local" }), cwd)).to.equal("local");
       // forced munin without config still falls back (graceful)
       expect(activeBackend({}, resolveStoreConfig({ store: "munin" }), cwd)).to.equal("local");
     } finally {
+      restoreEnv(saved);
       rmSync(cwd, { recursive: true, force: true });
     }
   });
