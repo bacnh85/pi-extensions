@@ -30,6 +30,7 @@ import {
   isMutationRefused,
   isPinned,
   latestLog,
+  readCronSettings,
   renderExport,
   renderList,
   runCronAction,
@@ -707,5 +708,32 @@ describe("runCronAction (tool wiring)", () => {
     const job = loadJobs(dir)[0]!;
     assert.equal(job.lastStatus, "fail");
     assert.equal(job.lastError, "delivery failed");
+  });
+});
+
+describe("settings", () => {
+  it("parses and clamps cron.timeoutMs for headless caps", () => {
+    // isolate from the user's real settings (~/.pi/agent is a fallback dir)
+    const empty = tmpAgentDir();
+    const saved = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = empty;
+    try {
+      assert.equal(readCronSettings(tmpAgentDir()).timeoutMs, 600_000); // no settings file → default
+    } finally {
+      if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = saved;
+    }
+    const dir = tmpAgentDir();
+    mkdirSync(join(dir, ".pi"), { recursive: true });
+    const write = (timeoutMs: unknown) =>
+      writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ cron: { timeoutMs } }));
+    write(7_200_000);
+    assert.equal(readCronSettings(dir).timeoutMs, 7_200_000);
+    write("junk");
+    assert.equal(readCronSettings(dir).timeoutMs, 600_000); // non-numeric → default
+    write(1_000);
+    assert.equal(readCronSettings(dir).timeoutMs, 60_000); // clamped to 1 min floor
+    write(99_999_999_999);
+    assert.equal(readCronSettings(dir).timeoutMs, 86_400_000); // clamped to 24 h ceiling
   });
 });

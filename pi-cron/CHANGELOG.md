@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- `cron.timeoutMs` setting — the headless (pinned-job) child run cap is now configurable instead of hardwired at 10min (clamped 1min–24h, default unchanged). A pinned nightly review job was getting SIGTERM'd at exactly 10min (exit 143, empty log) because reviewing/upgrading a 30-package monorepo can't finish in 10 minutes. Set e.g. `{ "cron": { "timeoutMs": 10800000 } }` for a 3h leash.
+
 ## 0.3.0
 
 - `enable` / `disable` actions — jobs can finally be paused/resumed without hand-editing `jobs.json` (the `DISABLED` list state was previously unreachable from the tool). `disable` keeps the schedule and skips ticks/export; `enable` recomputes `nextRun` from now, which also fixes a latent trap: a parked job (`markFired` sets `nextRun=MAX_SAFE_INTEGER` on dead schedules) would never fire again after a flag-only enable, and a long-disabled job would catch-up-fire once instead of resuming at its next occurrence.

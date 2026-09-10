@@ -52,6 +52,8 @@ export { GUARD_LINGER_MS };
 export interface CronSettings {
   enabled: boolean;
   tickMs: number;
+  /** Hard cap for headless child runs. Default 10 min. */
+  timeoutMs: number;
 }
 
 /** Read the `cron` settings key (cwd/.pi → PI_CODING_AGENT_DIR|~/.pi/agent → ~/.pi/agents). */
@@ -63,16 +65,18 @@ export function readCronSettings(cwd = process.cwd()): CronSettings {
       const v = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"))?.cron;
       if (v && typeof v === "object") {
         const tickMs = Number(v.tickMs);
+        const timeoutMs = Number(v.timeoutMs);
         return {
           enabled: v.enabled !== false,
           tickMs: Math.min(Math.max(Number.isFinite(tickMs) && tickMs > 0 ? tickMs : DEFAULT_TICK_MS, 5_000), 600_000),
+          timeoutMs: Math.min(Math.max(Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 600_000, 60_000), 86_400_000),
         };
       }
     } catch {
       // missing/unreadable settings.json — try next location
     }
   }
-  return { enabled: true, tickMs: DEFAULT_TICK_MS };
+  return { enabled: true, tickMs: DEFAULT_TICK_MS, timeoutMs: 600_000 };
 }
 
 /**
@@ -452,7 +456,7 @@ export default function cronExtension(pi: ExtensionAPI) {
 
   function fire(job: CronJob): void {
     if (isPinned(job)) {
-      runHeadless(job, { spawnFn: spawn, send, state, logsDir: join(dir, "logs"), jobsDir: dir });
+      runHeadless(job, { spawnFn: spawn, send, state, logsDir: join(dir, "logs"), jobsDir: dir, timeoutMs: settings.timeoutMs });
     } else {
       const delivered = deliverFire(send, state, job);
       setJobResult(dir, job.name, delivered ? "ok" : "fail", delivered ? undefined : "delivery failed");

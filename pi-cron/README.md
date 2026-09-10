@@ -60,11 +60,12 @@ each session its own `PI_CODING_AGENT_DIR`.
 `settings.json`:
 
 ```json
-{ "cron": { "enabled": true, "tickMs": 30000 } }
+{ "cron": { "enabled": true, "tickMs": 30000, "timeoutMs": 10800000 } }
 ```
 
 - `enabled` — global kill switch for the scheduler.
 - `tickMs` — tick interval (clamped 5s–10min).
+- `timeoutMs` — hard cap for headless (pinned) child runs — SIGTERM at the cap, SIGKILL after a 5s grace (clamped 1min–24h, default 10min). Raise it for long pinned jobs.
 
 ## Notes
 

@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-cron",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Scheduled jobs for Pi — cron-style jobs that fire a prompt into the live session while pi is running, with past-due catch-up and crontab export for 24/7 needs.",
   "license": "MIT",
   "publishConfig": {
