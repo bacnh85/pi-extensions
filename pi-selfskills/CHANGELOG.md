@@ -5,6 +5,7 @@
 - **`create` root placement**: new optional `root` param places a new skill in any writable root (path shown by `list`) — e.g. a project's `.agents/skills` — instead of only `~/.pi/agent/skills`/skillsDir. Previously the only way to get a project-local new skill was raw `write`, bypassing validation + backups (observed live in session 01a08bcc). Relative roots anchor to the session cwd; root matching canonicalizes both sides (macOS /var↔/private/var aliasing can't cause a refusal); the cwd-level `.agents/skills` is listed and creatable even when it doesn't exist yet (bootstrap), and create mkdir -p's the target.
 - `list` now shows the writable roots (`user`/`project`/`project-agents`/`skillsDir`/`package`) so `root=` values are discoverable.
 - Docs truth: `LIST_NOTE` and the tool description now state that project `.agents/skills` roots are patchable (true since 0.2.0 `patchProjectAgents`) and where `create` lands; the discipline block tells the model to use `root=` instead of bypassing with raw write/sed.
+- **Guard fix**: the user-level `~/.agents/skills` can never become a writable project root — even when the session cwd is `$HOME` (non-git), whose boundary would otherwise swallow it. Closes a 0.2.x hole where a trusted `$HOME` cwd made an existing `~/.agents/skills` patchable, and keeps the new bootstrap root from inheriting the same edge.
 
 ## 0.2.0
 
