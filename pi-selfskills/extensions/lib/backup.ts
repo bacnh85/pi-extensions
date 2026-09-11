@@ -169,9 +169,14 @@ export function snapshotDir(
 ): DirSnapshotResult {
   const root = deletedRoot(skillName, agentDirPath);
   // Same-stamp collisions (back-to-back calls within one millisecond) get a
-  // -N counter — distinct deletions must never overwrite each other.
-  let dir = path.join(root, stamp());
-  for (let n = 2; existsSync(dir); n++) dir = path.join(root, `${stamp()}-${n}`);
+  // -N counter — distinct deletions must never overwrite each other. stamp()
+  // is evaluated ONCE: re-evaluating per iteration could tick to a new ms and
+  // emit "T2-2" while bare "T2" stays free, so a later snapshot claims a name
+  // that sorts BEFORE an earlier one (cap prune + latest then lie — seen live
+  // on CI).
+  const base = stamp();
+  let dir = path.join(root, base);
+  for (let n = 2; existsSync(dir); n++) dir = path.join(root, `${base}-${n}`);
   for (const f of files) {
     if (!isValidRelpath(f.relpath)) throw new Error(`invalid backup relpath: ${f.relpath}`);
     const target = path.join(dir, f.relpath);
