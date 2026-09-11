@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4
+
+- Windows: shell out to `pi` via `cmd` (npm shims are `pi.cmd`, which `spawnSync` can't PATHEXT-resolve without a shell — `pi --version` reported "not found" with pi installed). Applies to the installability check, `add`/`remove`, and `update`.
+- Windows: `list`/`remove` fell back to `/.pi/agent/settings.json` because `HOME` is unset; settings now resolve via `HOME` → `USERPROFILE` → `os.homedir()`.
+- Windows: `find` intermittently exited 127 (libuv teardown assert) because the bin called `process.exit()` while searchNpm's pooled socket was mid-close; success paths now exit by draining the event loop instead.
+- Catalog: drop `pi-hub` and `pi-config-panel` — neither is installable into pi (standalone CLI / shared library dependency). Removed the `pi-package` keyword from pi-hub so npm `keywords:pi-package` discovery stops listing it too (pi-config-panel unlisted likewise).
+
 ## 0.1.3
 
 - Fix hang after install: the picker left stdin resumed/raw, keeping the event loop alive after `main()` resolved. Now pauses stdin in cleanup and exits explicitly once pending stdout flushes.

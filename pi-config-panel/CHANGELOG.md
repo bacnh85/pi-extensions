@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.5 (2026-09-11)
+
+### Changed
+
+- Dropped the `pi-package` npm keyword: pi-config-panel is a library dependency
+  of other extensions (no `pi` field), not a user-installable pi package, and
+  should not surface in pi-hub / `keywords:pi-package` discovery.
+
 ## 0.1.4 (2026-08-29)
 
 ### Changed

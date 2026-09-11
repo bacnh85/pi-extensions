@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { main } from "../cli.js";
 
-// stdin stays open/raw after the picker — exit explicitly once pending stdout is flushed.
+// No process.exit() on success: picker cleanup already pauses stdin, so the event loop
+// drains on its own — an explicit exit() races libuv handle teardown on Windows
+// (UV_HANDLE_CLOSING assert, exit code 127) whenever searchNpm's socket was in flight.
 main(process.argv.slice(2))
   .then((code) => {
     process.exitCode = typeof code === "number" ? code : (process.exitCode ?? 0);
-    process.stdout.write("", () => process.exit());
   })
   .catch((err) => {
     console.error(err?.message ?? err);
-    process.exit(1);
+    process.exit(1); // error path: never risk hanging on a resumed/raw stdin
   });

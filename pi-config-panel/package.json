@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-config-panel",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Shared interactive config-panel kernel for Pi extensions — arrow-key toggle/edit overlay panels (PanelRow/PanelGroup/PanelAction row model + ConfigPanelModel TUI shell) rendered via ctx.ui.custom.",
   "type": "module",
   "license": "MIT",
@@ -17,7 +17,6 @@
     "url": "https://github.com/bacnh85/pi-extensions/issues"
   },
   "keywords": [
-    "pi-package",
     "pi-extension",
     "config",
     "tui",

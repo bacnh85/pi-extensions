@@ -35,11 +35,6 @@
     "description": "Pi extension that connects to Command Code's OpenAI-compatible Provider API."
   },
   {
-    "name": "@bacnh85/pi-config-panel",
-    "dir": "pi-config-panel",
-    "description": "Shared interactive config-panel kernel for Pi extensions — arrow-key toggle/edit overlay panels (PanelRow/PanelGroup/PanelAction row model + ConfigPanelModel TUI shell) rendered via ctx.ui.custom."
-  },
-  {
     "name": "@bacnh85/pi-evolve",
     "dir": "pi-evolve",
     "description": "Pi extension that adds a trajectory-based self-learning loop — automatic capture, reflection, and contextual injection of learnings."
@@ -48,11 +43,6 @@
     "name": "@bacnh85/pi-fff",
     "dir": "pi-fff",
     "description": "Pi extension: FFF-powered fuzzy file and content search."
-  },
-  {
-    "name": "@bacnh85/pi-hub",
-    "dir": "pi-hub",
-    "description": "Interactive installer for Pi coding agent packages — browse, search, and install pi extensions via npx pi-hub"
   },
   {
     "name": "@bacnh85/pi-init",

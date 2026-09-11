@@ -24,7 +24,7 @@ Requirements: Node ≥ 20 and the [`pi` CLI](https://github.com/earendil-works/p
 npx @bacnh85/pi-hub
 ```
 
-- Lists all 32 curated `@bacnh85` packages with full-width descriptions
+- Lists all 30 curated `@bacnh85` packages with full-width descriptions
 - `↑`/`↓` move · `space` toggle · `a` toggle all · `enter` confirm · `q` quit
 - The detail line under the list shows the full npm name + description of the highlighted package
 - On confirm, prints what will be installed, then runs `pi install` per package (passes through pi's own output)
@@ -89,7 +89,7 @@ npx @bacnh85/pi-hub update                   # runs pi update --extensions
 | `--json` | machine-readable output (`find`) |
 | `-h, --help` | help |
 
-## Curated catalog (32 packages)
+## Curated catalog (30 packages)
 
 | Package | Description |
 |---|---|
@@ -100,10 +100,8 @@ npx @bacnh85/pi-hub update                   # runs pi update --extensions
 | `pi-chatgpt-web` | ChatGPT web-tier provider via self-hosted OpenAI-compatible bridge |
 | `pi-checkpoint` | Git-backed undo/redo — `/undo` rolls back a message AND its file changes |
 | `pi-commandcode` | Connect to Command Code's OpenAI-compatible Provider API |
-| `pi-config-panel` | Shared interactive config-panel kernel for Pi extensions (library) |
 | `pi-evolve` | Trajectory-based self-learning loop — captures tool calls, extracts and injects learnings |
 | `pi-fff` | FFF-powered fuzzy file and content search |
-| `pi-hub` | This installer (listed for completeness — you're already using it) |
 | `pi-init` | Guided AGENTS.md generation — `/init` scans the repo and generates/updates AGENTS.md |
 | `pi-kicad` | KiCad CAD-design extension — drive schematic capture and PCB layout |
 | `pi-model-tools` | Unified tool-wrapping, argument repair, DeepSeek V4 guidance, apply_patch diff tool |
