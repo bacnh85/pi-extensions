@@ -30,7 +30,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-attachments** | 0.3.0 | Image and file attachments — drops/pastes become `[[attach:name]]` chips resolving to readable `📎` path references (images attach as real ImageContent parts; text read on demand). Large text pastes (logs, JSON ≥ 10 lines / 2000 chars) collapse to a paste file + chip. Paste clipboard files with `alt+shift+v`. |
 | **pi-notebooklm** | 0.1.8 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | **pi-obsidian** | 0.8.14 | Obsidian vault integration for Pi. |
-| **pi-advisor** | 0.2.3 | OMP-style automatic advisor — a second model reviews each settled turn and injects severity-routed notes (nit card / concern steer, immune-turn cooldown, emission guard), ordered multi-model fallback chain (`pi-advisor.models`, `/advisor models` panel editor); plus the on-demand advisor consult moved from pi-plan. |
+| **pi-advisor** | 0.2.3 | OMP-style automatic advisor — a second model reviews each settled turn and injects severity-routed steering notes (all notes steer as a follow-up turn; cooldown nits defer to a next-turn card, immune-turn cooldown, emission guard), ordered multi-model fallback chain (`pi-advisor.models`, `/advisor models` panel editor); plus the on-demand advisor consult moved from pi-plan. |
 | **pi-plan** | 0.12.0 | Plan mode with read-only gating and plan → implement → verify → review workflow; fallback model chain on overload. |
 | **pi-ponytail** | 0.1.13 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
 | **pi-review** | 0.2.9 | Isolated read-only code review with corrected same-session fallback. |

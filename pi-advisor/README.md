@@ -14,10 +14,10 @@ consult tool. Inspired by the advisor subsystem in
     turn during the post-steer calm-down window. The severity sets the note's
     authority wording (“nit — consider” vs “concern — address this” vs
     “blocker — fix before continuing”).
-  - Post-steer cooldown: after a note steers, non-blocker notes within the
-    next `immuneTurns` settled turns are deferred (LLM-visible next turn)
-    instead of waking the agent again — bounds ping-pong. Blockers always
-    steer immediately.
+  - Post-steer cooldown: after a note steers, nit notes within the next
+    `immuneTurns` settled turns are deferred (LLM-visible next turn)
+    instead of waking the agent again — bounds ping-pong. Concerns and
+    blockers always steer immediately.
 - **Emission guard** (noise control): content-free phrases ("lgtm", "done", …)
   are dropped, identical notes are deduped (severity escalation still passes),
   and at most one note is delivered per review cycle.

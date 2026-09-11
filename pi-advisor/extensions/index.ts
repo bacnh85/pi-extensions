@@ -94,10 +94,6 @@ export default function piAdvisor(pi: ExtensionAPI): void {
       if (legacy) {
         models = [legacy];
         ctx.ui.notify(`Advisor model migrated from pi-plan: ${legacy}`, "info");
-        // If we migrated on top of a pi-plan that had legacyMigrated:true already,
-        // the user config may still lack migrationVersion. Backfill it idempotently
-        // so no future manual patch is needed (code writes, agent never touches
-        // the real global config directly).
       }
     }
     runtime = createRuntime(config, models);

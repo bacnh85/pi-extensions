@@ -323,8 +323,10 @@ describe("index wiring", () => {
     const cmd = state.commands.get("advisor");
     await cmd.handler("off", ctx);
 
-    // restart: session_start again — must NOT re-migrate
-    await fire(pi, state, "session_start", fakeCtx([]));
+    // restart: session_start in a NEW session (fresh sessionId so the
+    // runtime-reuse early-return doesn't skip the migration branch) — must
+    // NOT re-migrate
+    await fire(pi, state, "session_start", fakeCtx([], "restart"));
     const rt = state.commands.get("advisor");
     void rt;
     // observable: settled turn with a configured-but-cleared chain must not review
