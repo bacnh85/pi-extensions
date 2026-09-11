@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.2.3 (2026-09-11)
+
+- **Fix 20–30s+ TUI freeze after every settled turn**: pi core awaits
+  `agent_settled` handlers before the prompt regains input, and the advisor
+  review (a full model call — measured median ~11s, p90 ~96s) ran inside that
+  awaited barrier, freezing the TUI — most visibly after `write_plan`, where
+  the prefilled `/plan-approve` was dead until the review finished. The review
+  now runs fire-and-forget: notes deliver via `sendUserMessage`, which the SDK
+  queues as a steer when a run is already active or fires as a follow-up turn
+  when idle. A still-running review makes the next settle skip (bounded loss).
+- **Watch is skipped in headless modes** (print/rpc/json): a floating review
+  would die at process exit, and a note there fired an unrequested follow-up
+  agent run. The on-demand `/advisor` consult tool is unaffected.
+- **Hardened against stale/edge contexts** (review follow-up): a review still
+  in flight when a new session starts is silently discarded instead of
+  steering the new session; the in-flight guard moved to per-runtime state so
+  a draining old review can't suppress the new session's first review; a
+  mode-less context is treated as headless (fail-safe skip).
+- **Delivery-time liveness + teardown self-disarm** (final review round): a
+  review in flight across `/new`, `/resume`, `/fork`, `/reload`, or quit is
+  discarded silently — `session_shutdown` disarms the watch before the runner
+  invalidates, so no stale-ctx error toast lands in the replaced session; the
+  pause toast routes through the same liveness gate; the watch-disabled state
+  mid-review (`/advisor off`, `watch-off`) also suppresses delivery.
+
 ## 0.2.2 (2026-09-07)
 
 - **Fix TUI hang on stalled reviewer provider**: every chain candidate now

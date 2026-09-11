@@ -70,7 +70,9 @@ export default function piAdvisor(pi: ExtensionAPI): void {
   }
 
   pi.on("before_agent_start", (event, ctx: ExtensionContext): any => {
-    if (!watchEnabled || !runtime || runtime.models.length === 0 || runtime.stats.paused) return;
+    // Headless runs can't receive watch notes anymore — don't make them pay
+    // dead prompt text claiming otherwise.
+    if (ctx.mode !== "tui" || !watchEnabled || !runtime || runtime.models.length === 0 || runtime.stats.paused) return;
     // Every turn the agent sees the authority line (static per session,
     // cache-safe): messages starting 'Advisor review' are reviewer findings.
     const line = "Advisor notes: messages starting 'Advisor review' are authoritative reviewer findings. Fix or explicitly justify ignoring each finding.";
@@ -108,13 +110,39 @@ export default function piAdvisor(pi: ExtensionAPI): void {
     runtime.cursor = entries.length ? entries[entries.length - 1].id : undefined;
   });
 
+  // Self-disarm on session teardown: session_shutdown is emitted and awaited
+  // BEFORE the runner invalidates (agent-session-runtime teardownCurrent), so
+  // flipping the flag here makes live() false in this (about-to-be-orphaned)
+  // closure — an in-flight fire-and-forget review is discarded silently
+  // instead of throwing the stale-ctx error into the .catch and toasting the
+  // NEW session. The factory re-runs per session, so this never touches a
+  // live session's flag.
+  pi.on("session_shutdown", () => { watchEnabled = false; });
+
   pi.on("agent_settled", async (_event, ctx) => {
     if (!runtime || !watchEnabled || runtime.stats.paused) return;
-    await reviewTurn(runtime, ctx, {
-      sendMessage: (message, options) => pi.sendMessage(message, options as never),
-      sendUserMessage: (content, options) => pi.sendUserMessage(content, options),
-      appendEntry: (customType, data) => pi.appendEntry(customType, data),
-    }, testIsolated);
+    // Only TUI: a floating review would die at process exit in headless
+    // modes, and a note there fired an unrequested follow-up run. Fail-safe:
+    // unknown/mode-less contexts skip too (missed review < surprise run).
+    if (ctx.mode !== "tui") return;
+    // ponytail: fire-and-forget — pi core awaits agent_settled handlers before
+    // the TUI regains input, so awaiting the 10-90s+ review here froze the UI
+    // after every turn. Notes deliver via sendUserMessage, which the SDK
+    // queues as a steer when a run is active or fires as a follow-up turn
+    // when idle. A still-running review makes the next settle skip (rt
+    // reviewing flag) — bounded loss, not queued.
+    const rt = runtime;
+    // Liveness guard evaluated at delivery time (not just settle time): a
+    // fresh session (/new) replaces runtime, /advisor off clears the chain,
+    // watch-off flips the flag, repeated failures pause — a review in flight
+    // across any of these must deliver nothing.
+    const live = () => runtime === rt && watchEnabled && rt.models.length > 0 && !rt.stats.paused;
+    void reviewTurn(rt, ctx, {
+      sendMessage: (message, options) => { if (live()) pi.sendMessage(message, options as never); },
+      sendUserMessage: (content, options) => { if (live()) pi.sendUserMessage(content, options); },
+      appendEntry: (customType, data) => { if (live()) pi.appendEntry(customType, data); },
+      notify: (message) => { if (live()) ctx.ui.notify(message, "error"); },
+    }, testIsolated).catch((err) => { if (live()) ctx.ui.notify(`Advisor review failed: ${String(err)}`, "error"); });
   });
 
   registerAdvisor(pi, {

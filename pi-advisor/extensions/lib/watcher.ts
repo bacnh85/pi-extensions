@@ -49,13 +49,16 @@ export interface WatcherRuntime {
   guard: GuardState;
   stats: WatcherStats;
   failures: number;
+  /** Set while a review is in flight — per-runtime so a stale session's
+   *  draining review never blocks the new session's first review. */
+  reviewing: boolean;
   /** OMP-parity post-steer cooldown: remaining settled turns during which
    *  non-blocker notes are deferred to next-turn asides instead of steering. */
   steerCooldownTurns: number;
 }
 
 export function createRuntime(config: AdvisorConfig, models: string[]): WatcherRuntime {
-  return { config, models, cursor: undefined, guard: createGuard(), stats: createStats(), failures: 0, steerCooldownTurns: 0 };
+  return { config, models, cursor: undefined, guard: createGuard(), stats: createStats(), failures: 0, steerCooldownTurns: 0, reviewing: false };
 }
 
 /**
@@ -133,17 +136,16 @@ export interface WatcherHost {
   sendUserMessage(content: string, options?: { deliverAs?: "steer" | "followUp" }): void;
   /** Display-only immediate card (session entry; never enters LLM context). */
   appendEntry<T = unknown>(customType: string, data?: T): void;
+  /** Error/status toast, liveness-gated by the caller (never leaks into a replaced session). */
+  notify(message: string): void;
 }
 
 /** Injectable isolated-model call — defaults to the chain runner; tests pass a fake. */
 export type IsolatedCall = typeof runIsolatedChain;
 
 /** One review step, called from the agent_settled handler while watching is active. */
-// ponytail: module-level guard — one review at a time across the single session
-let reviewing = false;
-
 export async function reviewTurn(rt: WatcherRuntime, ctx: ExtensionContext, host: WatcherHost, isolated: IsolatedCall = runIsolatedChain): Promise<void> {
-  if (rt.stats.paused || reviewing) return;
+  if (rt.stats.paused || rt.reviewing) return;
   // No advisor models → no watching: never let the primary model review its own turns.
   if (rt.models.length === 0) return;
   const config = rt.config.watch;
@@ -158,7 +160,7 @@ export async function reviewTurn(rt: WatcherRuntime, ctx: ExtensionContext, host
   if (calls < config.minToolCalls) { rt.stats.skippedTrivial++; return; }
 
   rt.guard.reviewIndex++;
-  reviewing = true;
+  rt.reviewing = true;
   try {
     const transcript = buildSessionContext(entries, ctx.sessionManager.getLeafId());
     const evidence = buildEvidence(ctx, rt.models, transcript.messages, SYSTEM);
@@ -181,7 +183,7 @@ export async function reviewTurn(rt: WatcherRuntime, ctx: ExtensionContext, host
       rt.failures++;
       if (rt.failures >= MAX_CONSECUTIVE_FAILURES && !rt.stats.paused) {
         rt.stats.paused = true;
-        ctx.ui.notify(`Advisor watch paused after ${MAX_CONSECUTIVE_FAILURES} consecutive review failures (${String(error)}). Run /advisor on to retry.`, "error");
+        host.notify(`Advisor watch paused after ${MAX_CONSECUTIVE_FAILURES} consecutive review failures (${String(error)}). Run /advisor on to retry.`);
       }
       return;
     }
@@ -236,6 +238,6 @@ export async function reviewTurn(rt: WatcherRuntime, ctx: ExtensionContext, host
     host.sendUserMessage(templates[verdict.severity], { deliverAs: "followUp" });
     rt.steerCooldownTurns = config.immuneTurns;
   } finally {
-    reviewing = false;
+    rt.reviewing = false;
   }
 }

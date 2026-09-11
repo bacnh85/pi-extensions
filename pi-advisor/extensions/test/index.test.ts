@@ -71,6 +71,10 @@ function fakeCtx(entries: any[], sessionId = "test-session"): any {
 async function fire(pi: any, state: any, channel: string, ctx: any): Promise<void> {
   const handlers = state.eventHandlers.get(channel) ?? [];
   for (const h of handlers) await h({}, ctx);
+  // agent_settled schedules the review fire-and-forget (never blocks the
+  // settle) — drain the event loop so a floating review settles before
+  // assertions.
+  await new Promise((r) => setImmediate(r));
 }
 
 describe("index wiring", () => {
@@ -104,7 +108,7 @@ describe("index wiring", () => {
     let isolatedCalled = false;
     __setIsolatedForTest(async (_ctx, models) => { isolatedCalled = true; return { text: '{"severity":"nit","note":"unused import in foo.ts"}', model: models[0] }; });
     await fire(pi, state, "session_start", fakeCtx([]));
-    await fire(pi, state, "agent_settled", fakeCtx(toolCalls(4)));
+    await fire(pi, state, "agent_settled", { ...fakeCtx(toolCalls(4)), mode: "tui" });
     assert.ok(isolatedCalled, "review executed");
     assert.equal(state.sendMessageCalls, 0, "nit no longer goes through a non-interrupting sendMessage aside at settle");
     assert.equal(state.entries.length, 0, "nit is NOT a display-only appendEntry card");
@@ -120,10 +124,174 @@ describe("index wiring", () => {
     }));
     __setIsolatedForTest(async (_ctx, models) => ({ text: '{"severity":"concern","note":"edit went to the wrong file"}', model: models[0] }));
     await fire(pi, state, "session_start", fakeCtx([]));
-    await fire(pi, state, "agent_settled", fakeCtx(toolCalls(4)));
+    await fire(pi, state, "agent_settled", { ...fakeCtx(toolCalls(4)), mode: "tui" });
     assert.equal(state.userMessages.length, 1);
     assert.equal(state.userMessages[0].options.deliverAs, "followUp");
     assert.equal(state.entries.length, 0, "concern is a steer, not a card");
+  });
+
+  it("agent_settled does not block on the review (fire-and-forget)", async () => {
+    const { pi, state } = createFakePi();
+    piAdvisor(pi);
+    await mkdir(path.join(TMP, ".pi", "agent"), { recursive: true });
+    await writeFile(path.join(TMP, ".pi", "agent", "settings.json"), JSON.stringify({
+      "pi-advisor": { model: "test/advisor-model" },
+    }));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    __setIsolatedForTest(async (_ctx, models) => { await gate; return { text: '{"severity":"nit","note":"pending note"}', model: models[0] }; });
+    await fire(pi, state, "session_start", fakeCtx([]));
+    await fire(pi, state, "agent_settled", { ...fakeCtx(toolCalls(4)), mode: "tui" });
+    assert.equal(state.userMessages.length, 0, "handler returned while the review is still in flight");
+    release();
+    await new Promise((r) => setImmediate(r)); // drain the floating review
+    assert.equal(state.userMessages.length, 1, "note delivered once the review finishes");
+  });
+
+  it("headless mode (print) skips the watch review entirely", async () => {
+    const { pi, state } = createFakePi();
+    piAdvisor(pi);
+    await mkdir(path.join(TMP, ".pi", "agent"), { recursive: true });
+    await writeFile(path.join(TMP, ".pi", "agent", "settings.json"), JSON.stringify({
+      "pi-advisor": { model: "test/advisor-model" },
+    }));
+    let calls = 0;
+    __setIsolatedForTest(async (_ctx, models) => { calls++; return { text: "", model: models[0] }; });
+    await fire(pi, state, "session_start", fakeCtx([]));
+    await fire(pi, state, "agent_settled", fakeCtx(toolCalls(4))); // default fake mode is "print"
+    assert.equal(calls, 0, "no review dispatched in print mode");
+  });
+
+  it("mode-less ctx is treated as headless (fail-safe skip)", async () => {
+    const { pi, state } = createFakePi();
+    piAdvisor(pi);
+    await mkdir(path.join(TMP, ".pi", "agent"), { recursive: true });
+    await writeFile(path.join(TMP, ".pi", "agent", "settings.json"), JSON.stringify({
+      "pi-advisor": { model: "test/advisor-model" },
+    }));
+    let calls = 0;
+    __setIsolatedForTest(async (_ctx, models) => { calls++; return { text: "", model: models[0] }; });
+    await fire(pi, state, "session_start", fakeCtx([]));
+    const ctx = fakeCtx(toolCalls(4));
+    delete ctx.mode;
+    await fire(pi, state, "agent_settled", ctx);
+    assert.equal(calls, 0, "no review dispatched without a known mode");
+  });
+
+  it("a review in flight across /new delivers nothing into the new session", async () => {
+    const { pi, state } = createFakePi();
+    piAdvisor(pi);
+    await mkdir(path.join(TMP, ".pi", "agent"), { recursive: true });
+    await writeFile(path.join(TMP, ".pi", "agent", "settings.json"), JSON.stringify({
+      "pi-advisor": { model: "test/advisor-model" },
+    }));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    __setIsolatedForTest(async (_ctx, models) => { await gate; return { text: '{"severity":"nit","note":"stale note"}', model: models[0] }; });
+    await fire(pi, state, "session_start", fakeCtx([], "s1"));
+    await fire(pi, state, "agent_settled", { ...fakeCtx(toolCalls(4), "s1"), mode: "tui" });
+    assert.equal(state.userMessages.length, 0, "review still in flight");
+    await fire(pi, state, "session_start", fakeCtx([], "s2")); // /new — runtime replaced
+    release();
+    await fire(pi, state, "agent_settled", { ...fakeCtx(toolCalls(4), "s2"), mode: "tui" });
+    assert.equal(state.userMessages.length, 1, "stale note dropped; new session's own review delivered");
+  });
+
+  it("before_agent_start injects the authority line only in tui", async () => {
+    const { pi, state } = createFakePi();
+    piAdvisor(pi);
+    await mkdir(path.join(TMP, ".pi", "agent"), { recursive: true });
+    await writeFile(path.join(TMP, ".pi", "agent", "settings.json"), JSON.stringify({
+      "pi-advisor": { model: "test/advisor-model" },
+    }));
+    await fire(pi, state, "session_start", fakeCtx([]));
+    const handler = state.eventHandlers.get("before_agent_start")[0];
+    const evt = { systemPrompt: "base" };
+    assert.equal(handler(evt, fakeCtx([])), undefined, "no authority line in headless modes");
+    const out = handler(evt, { ...fakeCtx([]), mode: "tui" });
+    assert.ok(out && out.systemPrompt.includes("Advisor notes:"), "authority line injected in tui");
+  });
+
+  it("session_shutdown disarms an in-flight review (silent discard, no toast)", async () => {
+    const { pi, state } = createFakePi();
+    piAdvisor(pi);
+    await mkdir(path.join(TMP, ".pi", "agent"), { recursive: true });
+    await writeFile(path.join(TMP, ".pi", "agent", "settings.json"), JSON.stringify({
+      "pi-advisor": { model: "test/advisor-model" },
+    }));
+    const notifies: string[] = [];
+    const ctx: any = { ...fakeCtx(toolCalls(4)), mode: "tui", ui: { notify: (m: string) => notifies.push(m) } };
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    __setIsolatedForTest(async (_c, models) => { await gate; return { text: '{"severity":"nit","note":"late note"}', model: models[0] }; });
+    await fire(pi, state, "session_start", fakeCtx([]));
+    await fire(pi, state, "agent_settled", ctx);
+    await fire(pi, state, "session_shutdown", ctx); // SDK teardown — awaited before invalidation
+    release();
+    await new Promise((r) => setImmediate(r));
+    assert.equal(state.userMessages.length, 0, "no delivery after teardown");
+    assert.equal(notifies.length, 0, "no spurious error toast in the replaced session");
+  });
+
+  it("a delivery-time throw while live is caught and reported (no unhandled rejection)", async () => {
+    const { pi, state } = createFakePi();
+    piAdvisor(pi);
+    await mkdir(path.join(TMP, ".pi", "agent"), { recursive: true });
+    await writeFile(path.join(TMP, ".pi", "agent", "settings.json"), JSON.stringify({
+      "pi-advisor": { model: "test/advisor-model" },
+    }));
+    const notifies: string[] = [];
+    pi.sendUserMessage = () => { throw new Error("This extension ctx is stale"); };
+    __setIsolatedForTest(async (_c, models) => ({ text: '{"severity":"nit","note":"boom note"}', model: models[0] }));
+    await fire(pi, state, "session_start", fakeCtx([]));
+    await fire(pi, state, "agent_settled", { ...fakeCtx(toolCalls(4)), mode: "tui", ui: { notify: (m: string) => notifies.push(m) } });
+    assert.equal(state.userMessages.length, 0, "throwing delivery never recorded");
+    assert.ok(notifies.some((m) => m.includes("Advisor review failed")), "failure reported via notify while live");
+  });
+
+  it("/advisor off during an in-flight review suppresses delivery", async () => {
+    const { pi, state } = createFakePi();
+    piAdvisor(pi);
+    await mkdir(path.join(TMP, ".pi", "agent"), { recursive: true });
+    await writeFile(path.join(TMP, ".pi", "agent", "settings.json"), JSON.stringify({
+      "pi-advisor": { model: "test/advisor-model" },
+    }));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    __setIsolatedForTest(async (_ctx, models) => { await gate; return { text: '{"severity":"nit","note":"late note"}', model: models[0] }; });
+    await fire(pi, state, "session_start", fakeCtx([]));
+    await fire(pi, state, "agent_settled", { ...fakeCtx(toolCalls(4)), mode: "tui" });
+    const cmd = state.commands.get("advisor");
+    await cmd.handler("off", fakeCtx([])); // clears rt.models mid-flight
+    release();
+    await new Promise((r) => setImmediate(r));
+    assert.equal(state.userMessages.length, 0, "a disabled watch must not fire a follow-up run");
+    assert.equal(state.entries.length, 0, "and must not append a card");
+  });
+
+  it("skipped overlap returns before cursor advance (next review still counts those calls)", async () => {
+    const { pi, state } = createFakePi();
+    piAdvisor(pi);
+    await mkdir(path.join(TMP, ".pi", "agent"), { recursive: true });
+    await writeFile(path.join(TMP, ".pi", "agent", "settings.json"), JSON.stringify({
+      "pi-advisor": { model: "test/advisor-model" },
+    }));
+    const base = toolCalls(4);
+    const extra = [1, 2, 3, 4].map((i) => ({ type: "message", id: `x${i}`, parentId: "a4", timestamp: `${i}x`, message: { role: "assistant", content: [{ type: "toolCall", id: `xc${i}`, name: "read", arguments: {} }], timestamp: i } }));
+    const extended = [...base, ...extra];
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    __setIsolatedForTest(async (_ctx, models) => { calls++; await gate; return { text: '{"severity":"nit","note":"n"}', model: models[0] }; });
+    await fire(pi, state, "session_start", fakeCtx([]));
+    await fire(pi, state, "agent_settled", { ...fakeCtx(base), mode: "tui" });
+    assert.equal(calls, 1, "first review dispatched");
+    await fire(pi, state, "agent_settled", { ...fakeCtx(extended), mode: "tui" });
+    assert.equal(calls, 1, "overlapped settle skipped while the first review is in flight");
+    release();
+    await new Promise((r) => setImmediate(r));
+    await fire(pi, state, "agent_settled", { ...fakeCtx(extended), mode: "tui" });
+    assert.equal(calls, 2, "cursor untouched by the skipped settle — the +4 calls still trigger a review");
   });
 
   it("no advisor model → no review call at all", async () => {
@@ -135,7 +303,7 @@ describe("index wiring", () => {
     __setIsolatedForTest(async () => { calls++; return { text: '{"severity":"nit","note":"x"}', model: "" }; });
     const ctx = fakeCtx(toolCalls(4));
     await fire(pi, state, "session_start", ctx);
-    await fire(pi, state, "agent_settled", ctx);
+    await fire(pi, state, "agent_settled", { ...ctx, mode: "tui" });
     assert.equal(calls, 0, "no isolated call without a model");
     assert.equal(state.entries.length, 0);
   });
@@ -162,7 +330,7 @@ describe("index wiring", () => {
     // observable: settled turn with a configured-but-cleared chain must not review
     let calls = 0;
     __setIsolatedForTest(async () => { calls++; return { text: '{"severity":"nit","note":"x"}', model: "" }; });
-    await fire(pi, state, "agent_settled", fakeCtx(toolCalls(4)));
+    await fire(pi, state, "agent_settled", { ...fakeCtx(toolCalls(4)), mode: "tui" });
     assert.equal(calls, 0, "legacy model not resurrected after explicit disable");
   });
 

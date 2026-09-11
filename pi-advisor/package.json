@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-advisor",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Pi extension for an automatic advisor: a second model that reviews each settled turn and injects severity-routed notes, plus an on-demand consult tool.",
   "type": "module",
   "license": "MIT",

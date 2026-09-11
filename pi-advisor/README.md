@@ -68,7 +68,7 @@ Settings live in `~/.pi/agent/settings.json` (global) and `.pi/settings.json`
   time, the next candidate serves automatically; a whole-chain failure counts
   as one review failure (the 3-strike pause still applies). The advisor never
   falls back to the primary model — it must never review its own turns.
-- `watch.enabled` (default `true`) — turn-end reviewing on session start
+- `watch.enabled` (default `true`) — turn-end reviewing on session start (TUI only — print/rpc/json runs skip the watch; the on-demand advisor tool still works)
 - `watch.minToolCalls` (default `3`, `0` = every turn) — skip trivial turns
 - `watch.immuneTurns` (default `3`) — review window during which the same
   normalized note is not re-delivered (loop protection); distinct concerns and

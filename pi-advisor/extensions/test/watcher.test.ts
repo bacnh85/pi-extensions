@@ -20,9 +20,11 @@ function makeHost(): any {
     cards: [] as any[],
     asides: [] as any[],
     userMessages: [] as any[],
+    notifications: [] as string[],
     appendEntry: (customType: string, data: any) => h.cards.push({ customType, data }),
     sendMessage: (message: { customType: string; content: string; display: boolean; details?: unknown }, options?: any) => h.asides.push({ message, options }),
     sendUserMessage: (content: string, options?: any) => h.userMessages.push({ content, options }),
+    notify: (message: string) => h.notifications.push(message),
   };
   return h;
 }
@@ -217,15 +219,14 @@ describe("reviewTurn", () => {
   it("pauses after 3 consecutive model failures and notifies once", async () => {
     failWith = new Error("boom");
     const { rt, e } = setup(5);
-    const notes = { count: 0 };
     let list = e;
     for (let turn = 1; turn <= 4; turn++) {
-      await reviewTurn(rt, ctx(list, notes), asHost(host), fake);
+      await reviewTurn(rt, ctx(list), asHost(host), fake);
       if (turn < 4) list = [...list, ...entries(4, turn + 1)];
     }
     assert.equal(rt.stats.modelFailures, 3, "third failure pauses; fourth skipped");
     assert.equal(rt.stats.paused, true);
-    assert.equal(notes.count, 1, "one pause notification");
+    assert.equal(host.notifications.length, 1, "one pause notification via the liveness-gated host");
   });
 
   it("resumes after enableWatch clears pause", async () => {
