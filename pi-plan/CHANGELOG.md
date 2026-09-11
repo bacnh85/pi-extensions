@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.13.0 (2026-09-11)
+
+### Changed
+
+**Plan mode has its own model + thinking; normal mode is stock Pi.** pi-plan no
+longer manages normal-mode model/thinking at all:
+
+- Normal mode follows stock Pi: `/model` (or `Ctrl+P`) is a session pick,
+  `Ctrl+S` in the picker saves the startup default (`settings.json`),
+  `/thinking` (or `Shift+Tab`) adjusts the level. pi-plan never overrides the
+  normal-mode model or thinking — including `--model`, session resume, and
+  branch switches.
+- New `/plan-model [<provider/model>|clear]` (no `-g`): sets the **plan-mode
+  model**, persisted globally under the `pi-plan` key in `settings.json`.
+  Applied immediately while plan mode is active. Without a ref, opens a
+  `/model`-style picker in the TUI (Ctrl+S inert); refs complete inline with
+  fuzzy search, and a failed picker falls back to a visible warning with the
+  typed-ref usage. Fuzzy ref matching (exact `provider/id`, unique bare id,
+  unique substring; ambiguous → error listing candidates).
+- New `/plan-thinking [<level>|clear]` (no `-g`): sets the **plan-mode thinking
+  level**, persisted globally. Applied immediately while plan mode is active.
+- **Smooth toggling.** Entering plan mode remembers the model + thinking active
+  at that moment and applies the plan config; leaving plan mode restores them.
+  Model/thinking changes made *while planning* (stock `/model` or `/thinking`)
+  are session-temporary and reverted on leave — the plan config never leaks
+  into normal mode. The snapshot survives resume, so leaving plan mode after a
+  resume still restores correctly.
+- Thinking-level clamp/echo protection: a `thinking_level_select` fired by pi
+  core because the model clamped or re-set a level is never persisted as config
+  (previously a clamp could silently overwrite `/plan-thinking xhigh` with
+  `max`).
+- **Config moved to `settings.json`.** Non-secret pi-plan config now lives under the
+  `pi-plan` key in Pi's global `settings.json` (per the repo config-placement rule) instead
+  of `~/.pi/agent/pi-plan/preferences.json`. The legacy file is migrated automatically on
+  first load and renamed to `preferences.json.migrated`; a `pi-plan` block already present in
+  `settings.json` takes precedence and leaves the legacy file untouched. `goalModel` (the
+  `/goal` evaluator model) is now loaded back on start — previously it was written but never
+  restored.
+- Legacy `normalModel` / `defaults.normalThinking` / `perModel` entries are dropped —
+  normal mode follows stock Pi now (set your normal default with `Ctrl+S` in `/model`).
+  The plan-side values (`planModel`, `defaults.planThinking`) carry over.
+
+**Migration:** existing `~/.pi/agent/pi-plan/preferences.json` plan-side values are carried
+  into `settings.json` automatically — no manual edit needed. Your normal-mode model default
+  is now Pi's own startup default (`Ctrl+S` in `/model`), which stock Pi saves in
+  `settings.json`.
+
 ## 0.12.0 (2026-09-09)
 
 ### Changed

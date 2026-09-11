@@ -30,7 +30,7 @@ Each package lives in its own directory and can be installed independently — e
 | [`@bacnh85/pi-notify`](./pi-notify) | 0.1.1 | Desktop notifications and sounds — fires on task completion, errors, and questions; cross-platform (macOS/Linux/Windows + terminal OSC). |
 | [`@bacnh85/pi-obsidian`](./pi-obsidian) | 0.8.14 | Obsidian vault integration for Pi. |
 | [`@bacnh85/pi-permission`](./pi-permission) | 0.2.0 | Granular permission system — config-driven allow/ask/deny rules per tool with wildcard patterns, external-directory boundary, and a doom-loop guard. |
-| [`@bacnh85/pi-plan`](./pi-plan) | 0.12.0 | Plan mode with read-only gating and plan → implement → verify → review workflow; fallback model chain on overload. |
+| [`@bacnh85/pi-plan`](./pi-plan) | 0.13.0 | Plan mode with read-only gating and plan → implement → verify → review workflow; global plan-mode model/thinking (`/plan-model`, `/plan-thinking` — normal mode stays stock Pi); fallback model chain on overload. |
 | [`@bacnh85/pi-advisor`](./pi-advisor) | 0.2.2 | OMP-style automatic advisor — second model reviews each settled turn, injects severity-routed notes (nit card / concern steer with immune cooldown + emission guard); ordered multi-model fallback chain (`pi-advisor.models`, `/advisor models` panel editor); on-demand advisor consult. |
 | [`@bacnh85/pi-ponytail`](./pi-ponytail) | 0.1.13 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
 | [`@bacnh85/pi-references`](./pi-references) | 0.1.1 | External context roots — alias sibling dirs or git repos as `@docs`/`@sdk`; auto-clones repos and injects descriptions into agent context. |
