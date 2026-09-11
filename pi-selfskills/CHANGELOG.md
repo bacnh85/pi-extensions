@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- **Fix: deletion-snapshot ordering** — `snapshotDir` re-evaluated its millisecond stamp inside the collision loop, so a mid-loop tick could emit `T2-2` while bare `T2` stayed free; the next snapshot claimed `T2`, sorting **before** `T2-2`. Consequences: cap-pruning could delete the *newest* snapshot and `latestDeletedSnapshot`/restore could resolve a stale one (seen live as a CI test flake). The stamp is now evaluated once per call — names are strictly monotonic with creation order.
+
 ## 0.3.0
 
 - **`create` root placement**: new optional `root` param places a new skill in any writable root (path shown by `list`) — e.g. a project's `.agents/skills` — instead of only `~/.pi/agent/skills`/skillsDir. Previously the only way to get a project-local new skill was raw `write`, bypassing validation + backups (observed live in session 01a08bcc). Relative roots anchor to the session cwd; root matching canonicalizes both sides (macOS /var↔/private/var aliasing can't cause a refusal); the cwd-level `.agents/skills` is listed and creatable even when it doesn't exist yet (bootstrap), and create mkdir -p's the target.
