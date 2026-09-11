@@ -12,7 +12,18 @@ description: >
 
 Judge captures at viewer resolution (1×–3×); never chase sub-visible precision.
 
-## Default — local capture (offline, no daemon)
+## Default — web_screenshot (pi-web ≥0.7.0, auto local detection)
+
+`web_screenshot` auto-routes localhost/LAN/file URLs to the locally installed
+headless Chrome and returns the PNG inline — no daemon, no manual commands:
+
+- `web_screenshot url="http://localhost:PORT"` — done; the model sees the render.
+- `full_page=true` captures a tall 8000px window; `wait_for` settles JS via
+  `--virtual-time-budget`; `engine="local"` forces local on a public URL.
+- `web_pdf` works the same way (`--print-to-pdf`) for full-content archival.
+- If Chrome is missing: `web_status` shows `localChrome.path`; set `CHROME_PATH`.
+
+## Fallback — manual headless Chrome (pi-web <0.7.0 or if the tool errors)
 
 Headless Chrome writes the PNG; the `read` tool shows it inline (multimodal models see it).
 

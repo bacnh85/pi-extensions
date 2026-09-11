@@ -29,6 +29,13 @@ import {
   fetchCrawl4aiPdf,
   fetchCrawl4aiHealth,
 } from "./lib/crawl4ai";
+import {
+  capturePdf as captureLocalPdf,
+  captureScreenshot as captureLocalScreenshot,
+  findChromeBinary,
+  isSsrfBlocked,
+  resolveEngine,
+} from "./lib/chrome";
 
 // ---------------------------------------------------------------------------
 // Shared schema fragment
@@ -46,6 +53,14 @@ const firecrawlControlSchema = {
 const crawl4aiControlSchema = {
   crawl4ai_api_url: Type.Optional(Type.String({ description: "Override $CRAWL4AI_API_URL." })),
   crawl4ai_api_token: Type.Optional(Type.String({ description: "Override $CRAWL4AI_API_TOKEN." })),
+};
+
+const engineSchema = {
+  engine: Type.Optional(Type.Union([
+    Type.Literal("auto"),
+    Type.Literal("local"),
+    Type.Literal("daemon"),
+  ], { default: "auto", description: "auto routes localhost/private/file URLs to local Chrome, the rest to the Crawl4AI daemon; local/daemon force one." })),
 };
 
 // ---------------------------------------------------------------------------
@@ -286,33 +301,80 @@ export default function piWebExtension(pi: ExtensionAPI) {
     name: "web_screenshot",
     label: "Web Page Screenshot",
     description:
-      "Full-page PNG screenshot via Crawl4AI. The PNG is returned inline as an image block.",
+      "Full-page PNG screenshot via the Crawl4AI daemon, or via local headless Chrome for localhost/private/file URLs (auto-detected, engine overridable). The PNG is returned inline as an image block.",
     promptSnippet: "Screenshot a webpage",
-    promptGuidelines: ["Full-page PNG returned inline (multimodal models see it); use when web_extract fails on JS-heavy pages, or to visually inspect a built UI."],
+    promptGuidelines: ["PNG returned inline (multimodal models see it); use when web_extract fails on JS-heavy pages, or to visually inspect a built UI. Local dev servers (localhost/LAN/file://) capture automatically via local Chrome."],
     parameters: Type.Object({
       url: Type.String(),
       wait_for: Type.Optional(Type.Number({ default: 2, description: "Seconds to wait before capture." })),
       wait_for_images: Type.Optional(Type.Boolean({ default: false })),
+      engine: Type.Optional(engineSchema.engine),
+      width: Type.Optional(Type.Number({ default: 1280, description: "Local engine: viewport width." })),
+      height: Type.Optional(Type.Number({ default: 800, description: "Local engine: viewport height (full_page uses 8000)." })),
+      full_page: Type.Optional(Type.Boolean({ default: false, description: "Local engine: capture a tall 8000px window to approximate full page." })),
       ...crawl4aiControlSchema,
       ...sharedControlSchema,
     }),
     async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
-      const config = loadCrawl4aiConfig(params as Record<string, unknown>, cwdFromContext(ctx), includeProjectEnv(ctx));
-      const result = await fetchCrawl4aiScreenshot(
-        config,
-        params.url as string,
-        params.wait_for as number | undefined,
-        params.wait_for_images as boolean | undefined,
-        signal,
-      );
-      if (result.success === false) {
-        throw new Error(String(result.error_message ?? "Crawl4AI screenshot failed"));
+      const url = params.url as string;
+      let engine = resolveEngine(params.engine as string | undefined, url);
+      let screenshot: string | undefined;
+      let mime: string | undefined;
+      let size: number | undefined;
+      let artifactUrl: string | undefined;
+      let details: Record<string, unknown> = {};
+
+      if (engine === "local") {
+        const cap = await captureLocalScreenshot({
+          url,
+          width: params.width as number | undefined,
+          height: params.height as number | undefined,
+          fullPage: params.full_page as boolean | undefined,
+          waitForSec: params.wait_for as number | undefined,
+          signal,
+        });
+        screenshot = cap.base64;
+        mime = cap.mime;
+        size = cap.size;
+        details = { mime: cap.mime, size: cap.size };
+      } else {
+        const config = loadCrawl4aiConfig(params as Record<string, unknown>, cwdFromContext(ctx), includeProjectEnv(ctx));
+        try {
+          const result = await fetchCrawl4aiScreenshot(
+            config,
+            url,
+            params.wait_for as number | undefined,
+            params.wait_for_images as boolean | undefined,
+            signal,
+          );
+          if (result.success === false) {
+            throw new Error(String(result.error_message ?? "Crawl4AI screenshot failed"));
+          }
+          screenshot = result.screenshot as string | undefined;
+          artifactUrl = result.url as string | undefined;
+          mime = result.mime as string | undefined;
+          size = result.size as number | undefined;
+          details = { ...result };
+        } catch (err) {
+          // Daemon can't render this URL (SSRF-blocked); retry via local Chrome.
+          if (!isSsrfBlocked(err) || !findChromeBinary()) throw err;
+          engine = "local";
+          const cap = await captureLocalScreenshot({
+            url,
+            width: params.width as number | undefined,
+            height: params.height as number | undefined,
+            fullPage: params.full_page as boolean | undefined,
+            waitForSec: params.wait_for as number | undefined,
+            signal,
+          });
+          screenshot = cap.base64;
+          mime = cap.mime;
+          size = cap.size;
+          details = { mime: cap.mime, size: cap.size, fallback: "daemon SSRF-blocked this URL" };
+        }
       }
-      const screenshot = result.screenshot as string | undefined;
-      const artifactUrl = result.url as string | undefined;
-      const mime = result.mime as string | undefined;
-      const size = result.size as number | undefined;
-      let text = `Screenshot: ${params.url}\n`;
+
+      let text = `Screenshot: ${url}\nEngine: ${engine === "local" ? "local-chrome" : "crawl4ai"}\n`;
       if (artifactUrl) text += `Artifact: ${artifactUrl}\n`;
       if (mime) text += `MIME: ${mime}\n`;
       if (size) text += `Size: ${size} bytes\n`;
@@ -321,7 +383,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
         { type: "text", text: truncateText(text) },
       ];
       if (screenshot) content.push({ type: "image", data: screenshot, mimeType: mime || "image/png" });
-      return { content, details: { ...result, url: params.url } };
+      return { content, details: { ...details, url, engine } };
     },
   });
 
@@ -330,25 +392,51 @@ export default function piWebExtension(pi: ExtensionAPI) {
     name: "web_pdf",
     label: "Web Page PDF",
     description:
-      "PDF document via Crawl4AI.",
+      "PDF document via the Crawl4AI daemon, or via local headless Chrome for localhost/private/file URLs (auto-detected, engine overridable).",
     promptSnippet: "PDF a webpage",
-    promptGuidelines: ["Printable/archivable page snapshot; returns base64 PDF."],
+    promptGuidelines: ["Printable/archivable page snapshot; returns base64 PDF. Local dev servers capture automatically via local Chrome."],
     parameters: Type.Object({
       url: Type.String(),
+      engine: Type.Optional(engineSchema.engine),
       ...crawl4aiControlSchema,
       ...sharedControlSchema,
     }),
     async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
-      const config = loadCrawl4aiConfig(params as Record<string, unknown>, cwdFromContext(ctx), includeProjectEnv(ctx));
-      const result = await fetchCrawl4aiPdf(config, params.url as string, signal);
-      const pdf = result.pdf as string | undefined;
-      const artifactUrl = result.url as string | undefined;
-      const size = result.size as number | undefined;
-      let text = `PDF: ${params.url}\n`;
+      const url = params.url as string;
+      let engine = resolveEngine(params.engine as string | undefined, url);
+      let pdf: string | undefined;
+      let artifactUrl: string | undefined;
+      let size: number | undefined;
+      let details: Record<string, unknown> = {};
+
+      if (engine === "local") {
+        const cap = await captureLocalPdf({ url, signal });
+        pdf = cap.base64;
+        size = cap.size;
+        details = { mime: cap.mime, size: cap.size };
+      } else {
+        const config = loadCrawl4aiConfig(params as Record<string, unknown>, cwdFromContext(ctx), includeProjectEnv(ctx));
+        try {
+          const result = await fetchCrawl4aiPdf(config, url, signal);
+          pdf = result.pdf as string | undefined;
+          artifactUrl = result.url as string | undefined;
+          size = result.size as number | undefined;
+          details = { ...result };
+        } catch (err) {
+          if (!isSsrfBlocked(err) || !findChromeBinary()) throw err;
+          engine = "local";
+          const cap = await captureLocalPdf({ url, signal });
+          pdf = cap.base64;
+          size = cap.size;
+          details = { mime: cap.mime, size: cap.size, fallback: "daemon SSRF-blocked this URL" };
+        }
+      }
+
+      let text = `PDF: ${url}\nEngine: ${engine === "local" ? "local-chrome" : "crawl4ai"}\n`;
       if (pdf) text += `Data: base64 PDF (${pdf.length} chars)\n`;
       if (artifactUrl) text += `Artifact: ${artifactUrl}\n`;
       if (size) text += `Size: ${size} bytes\n`;
-      return { content: [{ type: "text" as const, text: truncateText(text) }], details: { ...result, url: params.url } };
+      return { content: [{ type: "text" as const, text: truncateText(text) }], details: { ...details, url, engine } };
     },
   });
 
@@ -396,6 +484,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
           apiTokenSource: c4aiToken.value ? c4aiToken.source : "not set",
         },
         agy: { installed: isAgyInstalled() },
+        localChrome: { path: findChromeBinary() ?? "not found" },
       };
 
       // Crawl4AI health check

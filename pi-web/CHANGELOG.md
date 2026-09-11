@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.7.0 (2026-09-11)
+
+### Added
+
+- **Local capture engine** — `web_screenshot` and `web_pdf` now capture
+  `localhost`/LAN/`file://` URLs via the locally installed Chrome/Chromium
+  (headless CLI, zero dependencies). The Crawl4AI daemon's browser runs on the
+  daemon host and SSRF-blocks private addresses, so local dev servers were
+  uncapturable before. Routing is automatic (`engine="auto"` default):
+  private URLs → local Chrome, public URLs → daemon, and a daemon SSRF-block
+  on an otherwise-public URL falls back to local Chrome automatically.
+  `engine="local"`/`"daemon"` forces one. New `web_screenshot` params:
+  `width` (1280), `height` (800), `full_page` (tall 8000px window — the
+  Chrome CLI has no true full-page flag). Binary discovery: `CHROME_PATH` env
+  → standard per-OS paths (Edge as Windows fallback). Captures run in an
+  isolated temp profile with a 30s timeout; `wait_for` maps to
+  `--virtual-time-budget`. Chrome versions that write the capture but never
+  exit (fresh `--user-data-dir` on macOS) are handled by polling for a
+  size-stable output file instead of requiring a clean exit. Review-hardened:
+  capture URLs are scheme-validated (http/https/file) before spawn so
+  switch-like strings can't be injected as Chrome flags; IPv6 loopback/ULA/
+  link-local (`[::1]`, `fc00::/7`, `fe80::/10`) route to local Chrome (Node
+  `URL.hostname` keeps brackets); daemon `details` payloads are preserved
+  (mime/artifact/full result) alongside the new `engine` key; timeout is
+  always a failure (a complete capture is caught by the stability poll first).
+  `web_status` reports the discovered local Chrome path.
+- New `extensions/lib/chrome.ts` (engine + `isLocalUrl`/`resolveEngine`/
+  `isSsrfBlocked` helpers) with unit tests in `test/unit/chrome.test.ts`;
+  live-verified against a local `http.server` (PNG magic, PDF magic, inline
+  image block, tmp cleanup, no orphan processes).
+
 ## 0.6.2 (2026-09-06)
 
 ### Changed

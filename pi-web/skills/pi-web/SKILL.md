@@ -15,8 +15,8 @@ Use the **7 unified tools** from the `pi-web` extension for all web-related task
 | `web_extract` | Extract readable content from a URL | Static (JSDOM) → Dynamic (Firecrawl) → Full (Crawl4AI) → agy (model-backed) |
 | `web_map` | Discover URLs from a site | Firecrawl Map (only option) |
 | `web_crawl` | Crawl multiple pages from a site | Light (Firecrawl) or Full (Crawl4AI) |
-| `web_screenshot` | Capture page screenshot as PNG | Crawl4AI (only option) |
-| `web_pdf` | Generate page PDF | Crawl4AI (only option) |
+| `web_screenshot` | Capture page screenshot as PNG | Crawl4AI daemon (public URLs) or local headless Chrome (localhost/LAN/file URLs — auto-detected) |
+| `web_pdf` | Generate page PDF | Crawl4AI daemon (public URLs) or local headless Chrome (localhost/LAN/file URLs — auto-detected) |
 | `web_status` | Check provider configuration and health | — |
 
 ## Decision Tree

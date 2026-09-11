@@ -142,20 +142,38 @@ web_crawl url="https://example.com" mode=light poll=true    # Poll for completio
 
 ### `web_screenshot` — Page screenshot
 
-Captures a full-page PNG screenshot using Crawl4AI. Returns the PNG inline as an image block (multimodal models see it); text summary includes artifact/MIME/size.
+Captures a full-page PNG screenshot using the Crawl4AI daemon, or **local headless Chrome for localhost/LAN/file URLs** (auto-detected; see [Local capture](#local-capture)). Returns the PNG inline as an image block (multimodal models see it); text summary includes engine/MIME/size.
 
 ```
 web_screenshot url="https://example.com"
 web_screenshot url="https://example.com" wait_for=5 wait_for_images=true
+web_screenshot url="http://localhost:3000"           # local Chrome, auto-detected
+web_screenshot url="http://localhost:3000" full_page=true width=1280
+web_screenshot url="https://example.com" engine="daemon"  # force the daemon
 ```
+
+Local-engine params: `width` (default 1280), `height` (default 800), `full_page` (captures a tall 8000px window — the Chrome CLI has no true full-page flag).
 
 ### `web_pdf` — Page PDF
 
-Generates a PDF document using Crawl4AI. Returns base64-encoded PDF.
+Generates a PDF document using the Crawl4AI daemon, or **local headless Chrome** for localhost/LAN/file URLs (auto-detected). Returns base64-encoded PDF.
 
 ```
 web_pdf url="https://example.com/article"
+web_pdf url="http://localhost:3000"   # local Chrome, auto-detected
 ```
+
+### Local capture
+
+The Crawl4AI daemon's browser runs on the daemon host — it cannot reach (and SSRF-blocks) your `localhost`. pi-web therefore routes private URLs to a **locally installed Chrome/Chromium** in headless mode:
+
+| URL | Engine |
+|-----|--------|
+| `localhost`, `127.0.0.1`, LAN IPs (10/8, 172.16/12, 192.168/16, 169.254/16), `file://` | local Chrome |
+| public URLs | Crawl4AI daemon |
+| daemon SSRF-blocks a URL | automatic local-Chrome retry |
+
+Override with `engine="local"` / `engine="daemon"`. Binary discovery: `CHROME_PATH` env, then standard Chrome/Chromium paths per OS (Edge as a Windows fallback). Captures use an isolated temp profile, a 30s timeout, and `--virtual-time-budget` for `wait_for`.
 
 ### `web_status` — Provider status
 
@@ -177,7 +195,8 @@ Typical output:
     ...
     "health": { "status": "healthy", "version": "0.5.0", ... }
   },
-  "agy": { "installed": true }
+  "agy": { "installed": true },
+  "localChrome": { "path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" }
 }
 ```
 
