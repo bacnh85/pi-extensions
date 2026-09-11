@@ -961,6 +961,69 @@ describe("pi-selfskills extension", () => {
     expect(readFileSync(join(overrideDir, "ovr-skill", "SKILL.md"), "utf8")).to.include("Imperative.");
   });
 
+  it("create root= places project-local skills: relative-root bootstrap, realpath alias, bogus refused, default unchanged", async () => {
+    // No .agents/skills pre-created — the would-be root must be listed and
+    // creatable into (bootstrap) in a fresh trusted project.
+    const agentsSkills = join(cwd, ".agents", "skills");
+    const { tools, ctx } = harness(cwd, {}, true);
+    // list exposes the writable roots — including the absent would-be project root
+    const list0 = await tools.skill_manage.execute("id", { action: "list" }, undefined, undefined, ctx);
+    expect(list0.content[0].text).to.include("Writable roots (create root=");
+    expect(list0.content[0].text).to.include("project-agents");
+    expect(list0.content[0].text).to.include(agentsSkills);
+    // bogus root refused, valid roots enumerated
+    const bad = await tools.skill_manage.execute(
+      "id",
+      { action: "create", name: "nope-skill", description: "Use when nothing. Fails.", body: "X.", root: "/elsewhere/skills" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(bad.details.error).to.equal(true);
+    expect(bad.content[0].text).to.include("must exactly match");
+    expect(bad.content[0].text).to.include("project-agents");
+    // RELATIVE root anchors to the session cwd (not process.cwd) and bootstraps the absent dir
+    const res = await tools.skill_manage.execute(
+      "id",
+      { action: "create", name: "proj-skill", description: "Use when projecting. Lands project-local.", body: "Imperative.", root: ".agents/skills" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(res.content[0].text).to.include("Created skill `proj-skill`");
+    expect(readFileSync(join(agentsSkills, "proj-skill", "SKILL.md"), "utf8")).to.include("Imperative.");
+    // realpath-alias form of the root is accepted, not refused (macOS /var↔/private/var)
+    const alias = realpathSync(agentsSkills);
+    const res2 = await tools.skill_manage.execute(
+      "id",
+      { action: "create", name: "proj-skill-2", description: "Use when aliasing. Lands project-local too.", body: "B.", root: alias },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(res2.content[0].text).to.include("Created skill `proj-skill-2`");
+    // the created project skill is readable + patchable end-to-end
+    const read = await tools.skill_manage.execute("id", { action: "read", skill: "proj-skill" }, undefined, undefined, ctx);
+    expect(read.content[0].text).to.include("Imperative.");
+    const patched = await tools.skill_manage.execute(
+      "id",
+      { action: "patch", skill: "proj-skill", old_string: "Imperative.", new_string: "Patched." },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(patched.content[0].text).to.include("Patched");
+    // no root → default agentDir target unchanged
+    const def = await tools.skill_manage.execute(
+      "id",
+      { action: "create", name: "def-skill", description: "Use when defaulting. Lands user-level.", body: "B." },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(readFileSync(join(agentDir(), "skills", "def-skill", "SKILL.md"), "utf8")).to.include("B.");
+  });
+
   it("invalid frontmatter name never becomes a backup path component", async () => {
     // SDK loader still loads skills with invalid names (warning only) — the
     // backup dir must fall back to the on-disk directory basename.

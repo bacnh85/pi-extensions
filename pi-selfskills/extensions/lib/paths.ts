@@ -32,7 +32,17 @@ export function writableRoots(cwd: string, settings: SelfSkillsSettings, trusted
     // ~/.agents/skills writable (invariant: user .agents is always read-only).
     if (settings.patchProjectAgents) {
       const boundary = gitRoot(cwd) ?? path.resolve(cwd);
-      for (const root of projectAgentsSkillRoots(cwd)) {
+      // Include the cwd-level .agents/skills even when absent so create can
+      // bootstrap a fresh project's root (create mkdir -p's the target).
+      const wouldBe = path.resolve(cwd, ".agents", "skills");
+      const candidates = projectAgentsSkillRoots(cwd);
+      if (!candidates.some((c) => c === wouldBe)) candidates.unshift(wouldBe);
+      // Invariant: the USER-level ~/.agents/skills is always read-only (shared
+      // across projects/harnesses). When cwd === $HOME the boundary is $HOME
+      // itself and would swallow it — exclude it explicitly.
+      const userAgents = path.join(os.homedir(), ".agents", "skills");
+      for (const root of candidates) {
+        if (realIfExists(root) === realIfExists(userAgents)) continue;
         if (!isContained(boundary, root)) continue;
         if (!roots.some((r) => r.root === root)) roots.push({ root, label: "project-agents" });
       }
@@ -51,11 +61,19 @@ export function writableRoots(cwd: string, settings: SelfSkillsSettings, trusted
   return roots;
 }
 
-function realIfExists(p: string): string {
+/** Canonicalize for comparisons: realpath when present; else realpath the
+ *  nearest existing ancestor and rejoin (macOS /var↔/private/var aliasing —
+ *  a not-yet-created path must still compare equal to its created form). */
+export function realIfExists(p: string): string {
   try {
     return realpathSync(p);
   } catch {
-    return p; // not yet created — containment still works on the resolved path
+    /* not yet created — fall through to the parent */
+  }
+  try {
+    return path.join(realpathSync(path.dirname(p)), path.basename(p));
+  } catch {
+    return p;
   }
 }
 

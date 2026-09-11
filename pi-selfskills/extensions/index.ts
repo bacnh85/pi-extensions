@@ -19,6 +19,7 @@ import {
   discoverSkills,
   isContained,
   isContainedOrSelf,
+  realIfExists,
   resolveSkillsDir,
   writableRoots,
 } from "./lib/paths";
@@ -44,7 +45,7 @@ function latestBackupFile(skillName: string, relpath: string): string | null {
 // explicit skillPaths); they're read-only regardless. LOCAL package skills
 // (monorepo source) ARE listed and patchable unless patchPackages=false.
 const LIST_NOTE =
-  "Note: npm-installed package skills and skills from settings skill arrays or --skill flags may be absent from this list (read-only regardless). Patchable: ~/.pi/agent/skills, <trusted>/.pi/skills, the skillsDir override, and local (repo-checkout) package skills.";
+  "Note: npm-installed package skills and skills from settings skill arrays or --skill flags may be absent from this list (read-only regardless). Patchable: ~/.pi/agent/skills, <trusted>/.pi/skills and .agents/skills, the skillsDir override, and local (repo-checkout) package skills.";
 
 const DISCIPLINE_BLOCK = `## pi-selfskills: skill self-improvement discipline
 
@@ -81,7 +82,11 @@ CREATE (judgment, not counting):
 - The description is the load gate — its first ~57 chars must stand alone as a
   trigger: "Use when X. One-line behavior."
 - Body: imperative, one rule per lesson; no incident narration; never secrets.
-- New skills auto-load next session; read the returned path to use it now.`;
+- New skills auto-load next session; read the returned path to use it now.
+  create defaults to ~/.pi/agent/skills — pass root (a writable path from
+  list) to place project-local skills (e.g. .agents/skills); never bypass
+  with raw write/sed for skill files — patch/write/restore keep the backup
+  and validation trail.`;
 
 /** Skill files read this session: realpath → sha256 of content at read time.
  *  Patches re-hash current content and refuse on mismatch, so a file edited
@@ -111,7 +116,7 @@ export default function selfskillsExtension(pi: ExtensionAPI) {
     name: "skill_manage",
     label: "Skill Manage",
     description:
-      "Self-improve pi skills. Actions: list (discovered skills + patchable flag), read (SKILL.md + bundled files), patch (targeted old_string→new_string edit with backup), create (new skill from name/description/body), write (create/overwrite a bundled file like references/*.md), delete (remove a bundled file or a whole skill — backed up), restore (revert file or skill from backup). Package/node_modules skills are read-only. Batch: pass operations[] for all-or-nothing multi-file changes.",
+      "Self-improve pi skills. Actions: list (discovered skills + patchable flag + writable roots), read (SKILL.md + bundled files), patch (targeted old_string→new_string edit with backup), create (new skill from name/description/body), write (create/overwrite a bundled file like references/*.md), delete (remove a bundled file or a whole skill — backed up), restore (revert file or skill from backup). Package/node_modules skills are read-only. Batch: pass operations[] for all-or-nothing multi-file changes. create lands in ~/.pi/agent/skills by default; pass root (a writable root shown by list) to create project-local skills.",
     promptSnippet: "Self-improve skills: patch gaps in loaded skills, create skills for recurring procedures",
     promptGuidelines: [
       "Patch a skill in the same turn a gap surfaces — and only then; most tasks should end with no skill write at all.",
@@ -156,6 +161,7 @@ export default function selfskillsExtension(pi: ExtensionAPI) {
       name: Type.Optional(Type.String({ description: "create: skill name, lowercase-hyphen (1-64 chars)." })),
       description: Type.Optional(Type.String({ description: "create: 'Use when X. One-line behavior.' ≤1024 chars, no newlines." })),
       body: Type.Optional(Type.String({ description: "create: markdown body, imperative rules." })),
+      root: Type.Optional(Type.String({ description: "create: writable root directory to place the new skill in (exact path from list output, e.g. a project .agents/skills). Default: ~/.pi/agent/skills or the skillsDir override." })),
       file: Type.Optional(Type.String({ description: "write/delete/restore: relative path inside the skill dir (e.g. references/api.md; omit for SKILL.md)." })),
       content: Type.Optional(Type.String({ description: "write: full file content." })),
       backup: Type.Optional(Type.String({ description: "restore: specific backup filename; default latest." })),
@@ -251,9 +257,12 @@ function listAction(cwd: string, settings: ReturnType<typeof readSelfSkillsSetti
       const desc = s.description.length > 100 ? `${s.description.slice(0, 100)}…` : s.description;
       return `- ${s.name} — ${desc} — ${s.filePath} — patchable: ${patchable ? "yes" : "no"}`;
     });
+  const roots = writableRoots(cwd, settings, trusted)
+    .map((r) => `- ${r.label}: ${r.root}`)
+    .join("\n");
   const text = rows.length
-    ? `Discovered ${rows.length} skill(s):\n${rows.join("\n")}\n\n${LIST_NOTE}`
-    : `No skills discovered.\n\n${LIST_NOTE}`;
+    ? `Discovered ${rows.length} skill(s):\n${rows.join("\n")}\n\n${LIST_NOTE}\n\nWritable roots (create root= accepts one of these exact paths):\n${roots}`
+    : `No skills discovered.\n\n${LIST_NOTE}\n\nWritable roots (create root= accepts one of these exact paths):\n${roots}`;
   return { content: [{ type: "text" as const, text }] };
 }
 
@@ -433,7 +442,24 @@ async function createAction(params: any, cwd: string, settings: ReturnType<typeo
   }
   const body = typeof params.body === "string" ? params.body : "";
   if (!body.trim()) return err("create requires a non-empty body.");
-  const target = path.join(resolveSkillsDir(settings, cwd), name, "SKILL.md");
+  let skillsDir = resolveSkillsDir(settings, cwd);
+  if (typeof params.root === "string" && params.root !== "") {
+    const roots = writableRoots(cwd, settings, trusted);
+    // Anchor relative roots to the session cwd (like skillsDir) and compare
+    // canonicalized both sides — symlink aliases (macOS /var↔/private/var)
+    // must not cause a refusal for a real writable root.
+    const wanted = realIfExists(path.resolve(cwd, params.root));
+    const hit = roots.find((r) => realIfExists(r.root) === wanted);
+    if (!hit) {
+      return err(
+        `Unknown root "${params.root}" — create root= must exactly match one of the writable roots shown by action=list:\n${roots
+          .map((r) => `- ${r.label}: ${r.root}`)
+          .join("\n")}`,
+      );
+    }
+    skillsDir = hit.root;
+  }
+  const target = path.join(skillsDir, name, "SKILL.md");
   if (existsSync(target)) return err(`Refusing: ${target} already exists.`);
   const { skills } = discoverSkills(cwd, agentDir(), trusted);
   const clash = skills.find((s) => s.name === name);

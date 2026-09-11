@@ -120,6 +120,24 @@ describe("paths", () => {
     }
   });
 
+  it("cwd === HOME: user-level ~/.agents/skills stays read-only (existing or would-be)", () => {
+    // Advisor scenario: when the session cwd IS $HOME (non-git), the boundary
+    // is $HOME itself — the user-level root must still never become writable,
+    // whether it already exists or only as a create-bootstrap candidate.
+    const fakeHome = tmpDir("pi-selfskills-paths-home3-");
+    const savedHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+    const userFile = writeSkill(join(fakeHome, ".agents", "skills"), "user-x");
+    try {
+      const roots = writableRoots(fakeHome, settings(), true);
+      expect(roots.filter((r) => r.label === "project-agents")).to.deep.equal([]);
+      expect(checkPatchable(userFile, fakeHome, settings(), true).ok).to.equal(false);
+    } finally {
+      process.env.HOME = savedHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
   it("git-tracked project: repo-root .agents is patchable up to the git boundary", () => {
     const repo = tmpDir("pi-selfskills-paths-repo-");
     mkdirSync(join(repo, ".git"), { recursive: true });
@@ -136,7 +154,7 @@ describe("paths", () => {
     const file = writeSkill(ovr, "zeta");
     const cfg = settings({ skillsDir: ovr });
     expect(resolveSkillsDir(cfg, cwd)).to.equal(ovr);
-    expect(writableRoots(cwd, cfg, true).map((r) => r.label)).to.deep.equal(["user", "project", "skillsDir"]);
+    expect(writableRoots(cwd, cfg, true).map((r) => r.label)).to.deep.equal(["user", "project", "project-agents", "skillsDir"]);
     expect(checkPatchable(file, cwd, cfg, true).ok).to.equal(true);
     // without the override in settings, the same file is refused
     expect(checkPatchable(file, cwd, settings(), true).ok).to.equal(false);

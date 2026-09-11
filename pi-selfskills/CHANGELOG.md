@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+- **`create` root placement**: new optional `root` param places a new skill in any writable root (path shown by `list`) — e.g. a project's `.agents/skills` — instead of only `~/.pi/agent/skills`/skillsDir. Previously the only way to get a project-local new skill was raw `write`, bypassing validation + backups (observed live in session 01a08bcc). Relative roots anchor to the session cwd; root matching canonicalizes both sides (macOS /var↔/private/var aliasing can't cause a refusal); the cwd-level `.agents/skills` is listed and creatable even when it doesn't exist yet (bootstrap), and create mkdir -p's the target.
+- `list` now shows the writable roots (`user`/`project`/`project-agents`/`skillsDir`/`package`) so `root=` values are discoverable.
+- Docs truth: `LIST_NOTE` and the tool description now state that project `.agents/skills` roots are patchable (true since 0.2.0 `patchProjectAgents`) and where `create` lands; the discipline block tells the model to use `root=` instead of bypassing with raw write/sed.
+
 ## 0.2.0
 
 - **Bundled-file writes**: `write` action creates/overwrites `references/`, `scripts/`, etc. under an existing skill's directory — extend a reference by topic instead of forking a sibling skill. SKILL.md stays patch-only; overwrites are backed up.

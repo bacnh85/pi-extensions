@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-selfskills",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Pi extension for skill self-improvement — one skill_manage tool (list/read/patch/create/restore) to patch gaps in loaded skills and create new ones, with a writable-root allowlist, SDK validation, and content-addressed backups.",
   "license": "MIT",
   "publishConfig": {
