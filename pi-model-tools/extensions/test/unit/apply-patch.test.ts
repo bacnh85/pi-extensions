@@ -151,8 +151,11 @@ describe("applyPatchToFiles — update", () => {
     await withTempDir(async (dir) => {
       const file = join(dir, "a.ts");
       await writeFile(file, "alpha\nbeta\n", "utf-8");
+      // 0.8.1: a bogus @@ label + a UNIQUE removed payload now applies via the
+      // anchor-demotion fallback (see label-anchor tests below). This stays an
+      // error only because the payload matches nothing either.
       const parsed = parsePatch(
-        "*** Update File: a.ts\n@@ nope\n-alpha\n+ALPHA\n*** End Patch",
+        "*** Update File: a.ts\n@@ nope\n-zeta\n+ZETA\n*** End Patch",
       );
       await assert.rejects(() => applyPatchToFiles(parsed, dir), /not found/);
     });
@@ -394,6 +397,177 @@ describe("applyPatchToFiles — markdown / blank-line / EOF regression", () => {
         "Some intro.\n\naccount. Re-import by dropping new Excel files.\n" +
         "## STATUS: EXECUTED\n\nSelf-check: 19/19.\n\nE2E: 11/11.\n",
       );
+    });
+  });
+});
+
+// Regression tests for 0.8.1: bare-@@ hunk separation + @@-label anchor demotion.
+// Session evidence: recurring "Hunk context not found" on Vietnamese prose files
+// (tong-luan.md, nsfw-writer.md, chuong-05) with glm-5.3-flash / deepseek-v4-flash.
+describe("applyPatchToFiles — bare @@ separators and label anchors", () => {
+  it("bare @@ separates consecutive context-free hunks (scattered single-line replacements)", async () => {
+    // tong-luan.md repro: three @@-separated -/+ pairs editing non-adjacent
+    // lines. Before the fix assembleHunks fused them into one hunk whose match
+    // block required all three lines to be adjacent → "Hunk context not found".
+    await withTempDir(async (dir) => {
+      const file = join(dir, "tong-luan.md");
+      await writeFile(file, "vy-1\nmid-a\nt7-1\nmid-b\nch6-1\n", "utf-8");
+      const patch = [
+        "*** Begin Patch",
+        "*** Update File: tong-luan.md",
+        "@@",
+        "-vy-1",
+        "+vy-2",
+        "@@",
+        "-t7-1",
+        "+t7-2",
+        "@@",
+        "-ch6-1",
+        "+ch6-2",
+        "*** End Patch",
+      ].join("\n");
+      const result = await applyPatchToFiles(parsePatch(patch), dir);
+      assert.strictEqual(result.exact, true);
+      assert.strictEqual(await readFile(file, "utf-8"), "vy-2\nmid-a\nt7-2\nmid-b\nch6-2\n");
+    });
+  });
+
+  it("bare @@ drops the previous hunk's trailing context instead of gluing it to the next hunk", async () => {
+    // nsfw-writer.md repro: hunk 1 ends with trailing context after its +block;
+    // a bare @@ then precedes hunk 2 with its own leading context. Before the
+    // fix the trailing context merged into hunk 2's match block, spanning the
+    // unrelated file lines between the two regions.
+    await withTempDir(async (dir) => {
+      const file = join(dir, "writer.md");
+      await writeFile(
+        file,
+        ["## Mandates", "", "### 1", "forbidden-1", "required-1", "xung-ho", "### 2", "no-euph", "mandatory", "sensation", ""].join("\n"),
+        "utf-8",
+      );
+      const patch = [
+        "*** Begin Patch",
+        "*** Update File: writer.md",
+        "@@",
+        "## Mandates",
+        "+### 0 new",
+        "### 1",
+        "forbidden-1",
+        "required-1",
+        "@@",
+        "### 2",
+        "no-euph",
+        "mandatory",
+        "+new-bullet",
+        "*** End Patch",
+      ].join("\n");
+      await applyPatchToFiles(parsePatch(patch), dir);
+      assert.strictEqual(
+        await readFile(file, "utf-8"),
+        ["## Mandates", "### 0 new", "", "### 1", "forbidden-1", "required-1", "xung-ho", "### 2", "no-euph", "mandatory", "new-bullet", "sensation", ""].join("\n"),
+      );
+    });
+  });
+
+  it("a @@ label that is not a file line is demoted to a hint when the removed payload is unique", async () => {
+    // chuong-05 repro: `@@ paraphrased fragment` (git-diff label habit) + a
+    // removed paragraph that exists exactly once. Before the fix the
+    // hallucinated anchor failed the whole hunk.
+    await withTempDir(async (dir) => {
+      const file = join(dir, "chuong.html");
+      await writeFile(file, "<p>intro</p>\n<p>old paragraph body</p>\n<p>outro</p>\n", "utf-8");
+      const patch = [
+        "*** Begin Patch",
+        "*** Update File: chuong.html",
+        "@@ Tay Dung run, dat len eo Lan (paraphrase label)",
+        "-<p>old paragraph body</p>",
+        "+<p>new paragraph body</p>",
+        "*** End Patch",
+      ].join("\n");
+      const result = await applyPatchToFiles(parsePatch(patch), dir);
+      assert.strictEqual(result.exact, false); // fuzzy: anchor was ignored
+      assert.strictEqual(await readFile(file, "utf-8"), "<p>intro</p>\n<p>new paragraph body</p>\n<p>outro</p>\n");
+    });
+  });
+
+  it("a @@ label with an ambiguous removed payload still errors", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "a.md");
+      await writeFile(file, "dup\nmid\ndup\n", "utf-8");
+      const patch = [
+        "*** Begin Patch",
+        "*** Update File: a.md",
+        "@@ invented label",
+        "-dup",
+        "+DUP",
+        "*** End Patch",
+      ].join("\n");
+      await assert.rejects(() => applyPatchToFiles(parsePatch(patch), dir), /Hunk context not found/);
+    });
+  });
+
+  it("bare @@ at section start, doubled, or trailing stays a no-op", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "a.txt");
+      await writeFile(file, "one\ntwo\n", "utf-8");
+      const patch = [
+        "*** Begin Patch",
+        "*** Update File: a.txt",
+        "@@",
+        "@@",
+        "-one",
+        "+ONE",
+        "@@",
+        "*** End Patch",
+      ].join("\n");
+      await applyPatchToFiles(parsePatch(patch), dir);
+      assert.strictEqual(await readFile(file, "utf-8"), "ONE\ntwo\n");
+    });
+  });
+});
+
+// Advisor-found edge cases for the bare-@@ separator (0.8.1 review round).
+describe("applyPatchToFiles — bare @@ edge cases", () => {
+  it("bare @@ after an unclaimed leading context keeps that context (no silent drop)", async () => {
+    // `@@ anchor` then a bare `@@` then payload: the leading context was never
+    // claimed by a payload hunk, so the bare @@ must NOT discard it — dropping
+    // it made [X] ambiguous where [anchor, X] was unique.
+    await withTempDir(async (dir) => {
+      const file = join(dir, "a.md");
+      await writeFile(file, "anchor\nX\nfill\nX\n", "utf-8");
+      const patch = [
+        "*** Begin Patch",
+        "*** Update File: a.md",
+        "@@ anchor",
+        "@@",
+        "-X",
+        "+Y",
+        "*** End Patch",
+      ].join("\n");
+      await applyPatchToFiles(parsePatch(patch), dir);
+      assert.strictEqual(await readFile(file, "utf-8"), "anchor\nY\nfill\nX\n");
+    });
+  });
+
+  it("two hunks demoted to the same target error as overlapping instead of silently dropping one", async () => {
+    // Different failing labels, identical removed payload: both demote to the
+    // same span; before the overlap guard the reverse-order application
+    // silently discarded one hunk's added lines.
+    await withTempDir(async (dir) => {
+      const file = join(dir, "a.md");
+      await writeFile(file, "intro\nX\noutro\n", "utf-8");
+      const patch = [
+        "*** Begin Patch",
+        "*** Update File: a.md",
+        "@@ label-a",
+        "-X",
+        "+A",
+        "@@ label-b",
+        "-X",
+        "+B",
+        "*** End Patch",
+      ].join("\n");
+      await assert.rejects(() => applyPatchToFiles(parsePatch(patch), dir), /overlap/i);
+      assert.strictEqual(await readFile(file, "utf-8"), "intro\nX\noutro\n");
     });
   });
 });

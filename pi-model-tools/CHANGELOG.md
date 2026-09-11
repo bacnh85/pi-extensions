@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.8.1 (2026-09-10)
+
+### Fixed
+
+- **apply_patch: bare `@@` now actually separates hunks.** `parsePatch`
+  documented a bare `@@` as a hunk separator, but `assembleHunks` treated the
+  empty hunk as a no-op — so consecutive context-free hunks
+  (`@@ / -A +A' / @@ / -B +B'`) fused into one hunk whose match block spanned
+  non-adjacent file lines, and hunk N's trailing context glued onto hunk N+1's
+  leading context. Both shapes guaranteed `Hunk context not found` (recurring
+  on multi-line prose updates; session-evidenced on `tong-luan.md`,
+  `nsfw-writer.md`, plan files). A bare `@@` now commits the pending hunk and
+  drops the previous hunk's trailing context, while leading context no payload
+  has claimed yet (`@@ anchor` / `@@` / payload) is preserved. Bare `@@` at
+  section start, doubled, or trailing remains a harmless no-op.
+- **apply_patch: `@@ <text>` used as a git-diff label is demoted to a hint.**
+  Models sometimes emit `@@ paraphrased fragment` — a label that is not a
+  verbatim file line — failing the hunk even when the removed payload matches
+  uniquely. When the full block matches nothing and the removed lines alone
+  match exactly once, the anchor is ignored and the edit applies (reported as
+  fuzzy via the `exact: false` result flag). Ambiguous payloads still error.
+  Unique-match safety is unchanged: the fallback only fires on a zero-match
+  hard error, never re-routes a patch that already matched. Hunks that resolve
+  to overlapping spans (e.g. two failing labels demoting to the same lines)
+  now error instead of silently discarding one hunk's added content during
+  reverse-order application.
+
 ## 0.8.0 (2026-09-06)
 
 ### Added
