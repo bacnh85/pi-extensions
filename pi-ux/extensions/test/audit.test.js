@@ -171,7 +171,7 @@ test("formatAuditResult states hints match the actual failure", () => {
   assert.equal(fragment.gates.states.hasInteractive, false);
   const text = formatAuditResult(fragment);
   assert.match(text, /ℹ Motion needs a prefers-reduced-motion fallback/, "hint line (not just the ✗ finding) present");
-  assert.ok(!text.includes("Fragment detected"));
+  assert.equal(text.split("\n").filter((l) => l.includes("ℹ")).length, 1, "exactly the motion hint");
 
   // Fragment WITH interactive selectors but focus rules elsewhere: gets the
   // complete-stylesheet hint (this case had no hint at all before 0.4.7).
@@ -186,7 +186,8 @@ test("formatAuditResult states hints match the actual failure", () => {
   assert.equal(full.gates.states.pass, false);
   assert.equal(full.gates.states.hasInteractive, true);
   const fullText = formatAuditResult(full);
-  assert.ok(!fullText.includes("Fragment detected"));
+  assert.match(fullText, /states rules may live in another file/, "focus hint fires — real finding");
+  assert.equal(fullText.split("\n").filter((l) => l.includes("ℹ")).length, 1, "exactly the focus hint");
   assert.ok(!fullText.includes("ℹ Motion needs"), "motion hint stays off when focus/disabled findings take priority");
 
   // Interactive + motion WITH complete focus/disabled rules: real reduced-motion
@@ -198,7 +199,7 @@ test("formatAuditResult states hints match the actual failure", () => {
   // Fragment that passes: no hint either.
   const clean = audit({ css: `.card { padding: 24px; }` });
   assert.equal(clean.gates.states.pass, true);
-  assert.ok(!formatAuditResult(clean).includes("Fragment detected"));
+  assert.equal(formatAuditResult(clean).split("\n").filter((l) => l.includes("ℹ")).length, 0);
 });
 
 test("scanStates: a commented-out prefers-reduced-motion block does not satisfy the check", () => {
