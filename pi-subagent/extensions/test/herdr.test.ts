@@ -498,6 +498,38 @@ describe("cancelAgent", () => {
     const keys = calls.filter((c) => c.args[1] === "send-keys").map((c) => c.args[3]);
     assert.deepEqual(keys, ["esc"]);
   });
+
+  it("escalates to ctrl+c when the pane stays blocked on a dialog", async () => {
+    const { exec, calls } = fakeExec((_cmd, args) => {
+      if (args[0] === "agent" && args[1] === "get") return json({ result: { agent: { agent_status: "blocked" } } });
+      return undefined;
+    });
+    await cancelAgent("scout-1", exec);
+    const keys = calls.filter((c) => c.args[1] === "send-keys").map((c) => c.args[3]);
+    assert.deepEqual(keys, ["esc", "ctrl+c"]);
+  });
+
+  it("escalates on unrecognized states too — herdr 0.9.0 misreports ask_user_question", async () => {
+    // herdr 0.9.0 does not classify ask_user_question dialogs: state reads
+    // "unknown". An unrecognized state must still escalate, or the child is
+    // stranded on the dialog.
+    const { exec, calls } = fakeExec((_cmd, args) => {
+      if (args[0] === "agent" && args[1] === "get") return json({ result: { agent: { agent_status: "unknown" } } });
+      return undefined;
+    });
+    await cancelAgent("scout-1", exec);
+    const keys = calls.filter((c) => c.args[1] === "send-keys").map((c) => c.args[3]);
+    assert.deepEqual(keys, ["esc", "ctrl+c"]);
+  });
+
+  it("never escalates when the post-esc state is settled (idle)", async () => {
+    const { exec, calls } = fakeExec((_cmd, args) => {
+      if (args[0] === "agent" && args[1] === "get") return json({ result: { agent: { agent_status: "idle" } } });
+      return undefined;
+    });
+    await cancelAgent("scout-1", exec);
+    assert.deepEqual(calls.filter((c) => c.args[1] === "send-keys").map((c) => c.args[3]), ["esc"]);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -582,7 +582,12 @@ export async function cancelAgent(name: string, exec: HerdrExec = defaultExec): 
   await exec("herdr", ["agent", "send-keys", name, "esc"], { timeout: 5_000 });
   await new Promise((resolve) => setTimeout(resolve, 1_500));
   try {
-    if (await getAgentState(name, exec) === "working") {
+    const state = await getAgentState(name, exec);
+    // Escalate whenever the post-esc state is not verifiably settled:
+    // herdr 0.9.0 does not classify ask_user_question dialogs as "blocked"
+    // (they report "unknown"), so classification-based escalation would
+    // strand them. Interrupting a finished child is harmless.
+    if (state !== "idle" && state !== "done") {
       await exec("herdr", ["agent", "send-keys", name, "ctrl+c"], { timeout: 5_000 });
     }
   } catch { /* best effort */ }

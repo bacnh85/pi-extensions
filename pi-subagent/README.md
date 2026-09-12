@@ -120,6 +120,16 @@ Trade-offs to know:
 - `background: true` always uses the in-process SDK runner; herdr tasks are
   foreground (all panes are created up front, prompts start under the usual
   concurrency limit).
+- **Mid-task user questions**: herdr 0.9.0 does not classify pi's
+  `ask_user_question` dialogs as `blocked`, so a delegating parent waits
+  until the hard timeout. Answer the question in the pane (the child
+  completes and the parent returns), or avoid mid-task questions in herdr
+  children.
+- **`/reload-runtime` while panes are in flight**: observed behavior —
+  mutating control actions (`cancel`/`close-tab`/`forget`) then refuse for
+  pre-reload panes ("not delegated by this session"), while
+  `status`/`read` keep working by name. Close in-flight panes before
+  reloading, or afterwards with `herdr tab close <tabId>`.
 
 Outside herdr nothing changes: the in-process SDK runner is the default.
 

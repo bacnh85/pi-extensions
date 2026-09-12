@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.21.2 (2026-09-12)
+
+### Fixed
+
+- **cancelAgent escalates to ctrl+c whenever the post-esc state is not
+  verifiably settled (idle/done)** — previously only the "working" state
+  escalated, and herdr 0.9.0 misreports ask_user_question dialogs as
+  "unknown", which left children stranded on the dialog after a timeout
+  cancel. Best-effort: the dialog's own key handling is outside this
+  extension's control.
+- Doc corrections: the timeout path's esc behavior is unit-tested (live
+  dialog dismissal unobserved); `/reload-runtime` control-action refusals
+  now include the manual `herdr tab close <tabId>` fallback.
+
+# Changelog
+
 ## 0.21.1 (2026-09-12)
 
 ### Fixed
@@ -28,8 +44,26 @@
   (HERDR_TASK_BUDGET = 64KB − 1KB) — a ceiling-sized task plus the
   report-file contract no longer exceeds the argv ceiling; the control
   tool's prompt check uses the same budget.
+- Timeout cancellation now escalates to ctrl+c whenever the post-esc state
+  is not verifiably settled (idle/done) — previously only "working"
+  escalated, and herdr 0.9.0 misreports ask_user_question dialogs as
+  "unknown", which would have left the child stranded. Best-effort: the
+  dialog's own key handling is outside this extension's control.
 - The `herdr --version` probe is cached only on success — a transient CLI
   hang no longer permanently disables herdr delegation for the session.
+- Known limitation (herdr 0.9.0): pi's `ask_user_question` dialogs are NOT
+  classified as `blocked` by herdr's pi detection — a herdr child that asks
+  a mid-task question makes the parent wait until the hard timeout. Answer
+  the question in the pane (the child then completes and the parent returns
+  normally), or avoid mid-task questions in herdr children. Upstream: herdr
+  needs question-widget detection for pi.
+- After `/reload-runtime`, mutating control actions (`cancel`/`close-tab`/
+  `forget`) refuse for pre-reload panes ("not delegated by this session")
+  while `status`/`read` keep working; refusal messages now include the
+  manual `herdr tab close <tabId>` fallback. Note: the herdr timeout path
+  already interrupts the child (esc) — a refused post-timeout `cancel` is
+  redundant, only the tab lingers. Close pre-reload panes before
+  reloading, or manually afterwards.
 - Parallel herdr integration tests: same-type prepare-before-prompt
   ordering, per-task prepare-failure mapping, mid-prompt abort (esc to every
   pane, no listener leaks), heartbeat traffic, oversized-report chain.

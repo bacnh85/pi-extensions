@@ -2016,7 +2016,7 @@ export default function (pi: ExtensionAPI) {
       // Mutating actions are scoped to agents this session delegated —
       // the model must not drive (or kill) panes it never spawned.
       if ((params.action === "prompt" || params.action === "cancel") && !isDelegatedHerdrAgent(name)) {
-        return toolResult(`"${name}" was not delegated by this session — refusing to ${params.action} an agent this session did not start.`, true);
+        return toolResult(`"${name}" was not delegated by this session — refusing to ${params.action} an agent this session did not start. If this pane predates a /reload-runtime, interrupt or close it manually (herdr tab close <tabId>; tab id via herdr status).`, true);
       }
       switch (params.action) {
         case "list": {
@@ -2139,7 +2139,7 @@ export default function (pi: ExtensionAPI) {
         case "close-tab": {
           const entry = getHerdrRegistry().find((e) => e.name === name);
           if (!entry) {
-            return toolResult(`"${name}" was not delegated by this session — refusing to close tabs this session did not create.`, true);
+            return toolResult(`"${name}" was not delegated by this session — refusing to close tabs this session did not create. If this pane predates a /reload-runtime, close it manually (herdr tab close <tabId>; tab id via herdr status).`, true);
           }
           if (!canCloseHerdrTab(name)) {
             return toolResult(`"${name}" runs in a tab that existed before this session dispatched to it (label match) — reusing it for dispatch, but refusing to close it.`, true);
