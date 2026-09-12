@@ -170,7 +170,7 @@ test("formatAuditResult states hints match the actual failure", () => {
   assert.equal(fragment.gates.states.pass, false);
   assert.equal(fragment.gates.states.hasInteractive, false);
   const text = formatAuditResult(fragment);
-  assert.match(text, /prefers-reduced-motion fallback/);
+  assert.match(text, /ℹ Motion needs a prefers-reduced-motion fallback/, "hint line (not just the ✗ finding) present");
   assert.ok(!text.includes("Fragment detected"));
 
   // Fragment WITH interactive selectors but focus rules elsewhere: gets the
@@ -179,12 +179,21 @@ test("formatAuditResult states hints match the actual failure", () => {
   assert.equal(focusFragment.gates.states.pass, false);
   assert.match(formatAuditResult(focusFragment), /states rules may live in another file/);
 
-  // Motion failure WITH interactive elements: no fragment-style hint
-  // (the reduced-motion finding is real).
+  // Motion failure WITH interactive elements: the focus hint fires — button
+  // genuinely lacks :focus-visible, so that's a real finding, not a fragment
+  // mislabel. Nothing assertively claims "Fragment detected" anymore.
   const full = audit({ css: `button { transition: opacity 200ms; }` });
   assert.equal(full.gates.states.pass, false);
   assert.equal(full.gates.states.hasInteractive, true);
-  assert.ok(!formatAuditResult(full).includes("Fragment detected"));
+  const fullText = formatAuditResult(full);
+  assert.ok(!fullText.includes("Fragment detected"));
+  assert.ok(!fullText.includes("ℹ Motion needs"), "motion hint stays off when focus/disabled findings take priority");
+
+  // Interactive + motion WITH complete focus/disabled rules: real reduced-motion
+  // finding, no hint at all.
+  const statesComplete = audit({ css: `button { transition: opacity 200ms; } button:focus-visible { outline: 2px solid; } button:disabled { opacity: .5; }` });
+  assert.equal(statesComplete.gates.states.pass, false);
+  assert.equal(formatAuditResult(statesComplete).split("\n").filter((l) => l.includes("ℹ")).length, 0);
 
   // Fragment that passes: no hint either.
   const clean = audit({ css: `.card { padding: 24px; }` });
