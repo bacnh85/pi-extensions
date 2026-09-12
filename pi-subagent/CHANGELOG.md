@@ -1,5 +1,89 @@
 # Changelog
 
+## 0.21.0 (2026-09-12)
+
+### Added
+
+- **Herdr pane delegation** — when pi runs inside [herdr](https://herdr.dev)
+  (`HERDR_ENV=1` + `herdr` binary), the `subagent` tool delegates to visible
+  interactive pi sessions in herdr panes instead of in-process SDK sessions.
+  Topology: one tab per agent type (tab label = agent name), one pane per
+  agent instance. Children are full `pi` sessions with the agent persona
+  applied via a file + `--append-system-prompt` (herdr's `agent start --`
+  arg encoder rejects multi-line strings), plus `--model`, `--thinking`,
+  `--tools`); read-only sandboxes map to the read-only allowlist. Results are
+  delivered via a report-file contract (children write their final report as
+  Markdown to a known path — pane scrollback is a best-effort fallback, since
+  TUI agents render on the alternate screen). New `runner: "sdk" | "herdr"`
+  tool parameter overrides the auto-detection per call; settings
+  `subagent.herdr: "off"` disables it. Delegated children run with
+  `PI_SUBAGENT_HERDR=off` so they never recurse into herdr dispatch.
+  Same-type prepares are serialized (tab/pane/name allocation is
+  race-prone); prompt submission and runs stay parallel.
+- **`herdr` control tool** — main-session oversight of delegated pane agents:
+  `list` (delegated agents + live states), `status`, `read` (best-effort pane
+  output), `prompt` (follow-up that continues the child's session, with
+  optional `wait`), `cancel` (esc, then ctrl+c if still working), `focus`
+  (raise the agent's tab), and `close-tab` (restricted to tabs this session
+  created). Always registered; outside herdr it returns a clear error.
+- Fifth auto-review round hardening: a herdr child that settles but whose
+  state cannot be verified with no collected report is an error, not an
+  empty success; a pre-aborted dispatch no longer submits the task to the
+  live child at all; a read-only agent whose tools never intersect the
+  read-only allowlist is rejected (previously `--tools` was silently
+  omitted, granting the child pi's full default toolset); arg building now
+  happens before topology creation so validation failures leave no orphan
+  tab/pane.
+- Fresh session per herdr dispatch: child session ids are now unique per task
+  (`herdr-<name>-<stamp>`), so a recycled agent name never silently resumes a
+  stale (potentially huge) session after a tab close or parent restart.
+  Control-tool follow-ups keep context in the live pane's memory — the
+  session id was never what carried that.
+- Pane-capture fallback (read-only agents without the report-file contract)
+  is now tail-capped to the last 8KB with a truncation marker — herdr
+  scrollback includes pre-prompt noise (resumed sessions, earlier turns), and
+  that stale content previously flowed verbatim into results and chain
+  `{previous}` substitution.
+- Fourth review round hardening: agent-level `sandbox: "worktree"` is no
+  longer silently dropped on the herdr runner — dispatch is rejected with an
+  explicit error (herdr children share the working tree), mirroring the
+  merge guard; control-tool follow-up prompts no longer return a stale
+  report file (unchanged file is reported as such); the `herdr read`
+  action clamps `lines` to 1-1000 and caps output bytes; four new
+  dispatch-reaching integration tests cover single success (details.runner),
+  chain blocked-pause, parent-abort cancellation with pane esc, and the
+  worktree guard.
+- Third review round hardening: herdr agents interrupted via parent abort or
+  `abortOnFailure` now report `status: "aborted"` (previously a cancelled
+  child settling to idle could read as success); the parallel abort listener
+  also fires without a parent tool signal; `merge: "3way"` combined with the
+  herdr runner is rejected with an explicit error instead of silently
+  dropping the merge; the control tool's `prompt wait` is tool-abort
+  interruptible; new index-level integration tests drive the registered
+  tools through a fake pi host.
+- Second review round hardening: `herdr` control tool `prompt`/`cancel` are
+  scoped to agents this session delegated (status/read/focus remain
+  workspace-wide, guidelines updated); dispatch into an adopted
+  (label-matched) tab always splits a fresh pane with the validated cwd
+  instead of reusing a free pane of unknown provenance; close-tab fails
+  closed on unrecognized agent states; the cross-session name-collision
+  retry re-reads live herdr names; report-file reads are capped at 256KB
+  with a truncation marker; best-effort pane captures are labeled in
+  results; `background: true` no longer stamps `runner: "herdr"`; oversized
+  control-tool prompts fail fast.
+- Blocked panes (child waiting on a permission/question dialog) surface as
+  `partial` with `stopReason: "blocked"` instead of failing; a blocked chain
+  step pauses the chain with instructions instead of feeding degraded output
+  to the next step.
+- `close-tab` only closes tabs this session actually created: a tab that
+  pre-existed with a matching label is adopted for dispatch but refused on
+  close, and it refuses while the named agent or sibling agents in the same
+  tab are still working/blocked (same-type agents share one tab; closing it
+  kills all their panes; an unverifiable sibling state counts as busy, while
+  a missing state for the named agent's own pane is treated as already
+  closed). The `herdr` control tool is disabled in delegated child sessions
+  (`PI_SUBAGENT_HERDR=off`), not just dispatch.
+
 ## 0.20.1 (2026-09-12)
 
 ### Fixed

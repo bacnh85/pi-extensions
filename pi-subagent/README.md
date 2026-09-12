@@ -66,6 +66,63 @@ subagent({ operation: "cancel", taskId: "bg-..." })   // abort a running task
 
 You will be notified on completion — do not poll or sleep.
 
+## Herdr delegation
+
+When pi runs inside [herdr](https://herdr.dev), subagent tasks are delegated to
+**visible interactive pi sessions in herdr panes** instead of in-process SDK
+sessions. Detection is automatic: `HERDR_ENV=1` + a working `herdr` binary.
+
+Topology — one **tab per agent type** (tab label = agent name), one **pane per
+agent instance**:
+
+```text
+┌─ tab "scout" ──────────┬─ tab "tester" ─────────┐
+│ ┌────────┐ ┌────────┐  │ ┌────────┐             │
+│ │scout-1 │ │scout-2 │  │ │tester-1│   main pi   │
+│ │  (pi)  │ │  (pi)  │  │ │  (pi)  │   (you)     │
+│ └────────┘ └────────┘  │ └────────┘             │
+└────────────────────────┴────────────────────────┘
+```
+
+Each pane runs a full `pi` child with the agent's persona applied via CLI
+flags (`--append-system-prompt` pointing at a persona file — herdr's arg
+encoder rejects multi-line strings — plus `--model`, `--thinking`, `--tools`). Results come
+back through a **report-file contract**: the task prompt asks the child to
+write its final report as Markdown to a known path, and the parent reads that
+file when the pane settles (pane scrollback is only a best-effort fallback —
+TUI agents render on the alternate screen, which never reaches herdr's
+scrollback).
+
+The **`herdr` tool** gives the main session oversight of every delegated pane:
+
+```ts
+herdr({ action: "list" })                                  // delegated agents + live states
+herdr({ action: "status", name: "scout-1" })               // lifecycle state
+herdr({ action: "prompt", name: "scout-1", text: "...", wait: true })  // follow-up (continues the child's session)
+herdr({ action: "cancel", name: "scout-1" })               // esc, then ctrl+c if still working
+herdr({ action: "focus", name: "scout-1" })                // raise the agent's tab
+herdr({ action: "close-tab", name: "scout-1" })            // close the tab (only session-created tabs)
+```
+
+Trade-offs to know:
+
+- **Shared working tree** — herdr children edit the parent's checkout
+  directly; there is no worktree isolation. That is inherent to visible
+  sibling agents.
+- **Full pi children** — they load AGENTS.md, extensions, and skills, so they
+  cost more than the lean SDK runner. Pass `runner: "sdk"` per call for cheap
+  routine delegation, or set `subagent.herdr: "off"` in settings.json to
+  disable herdr delegation entirely.
+- **Permission prompts** — children run with the normal pi approvals; a child
+  waiting on a confirmation shows as `blocked`, and a human answers it in the
+  pane. Delegated children set `PI_SUBAGENT_HERDR=off` so they never recurse
+  into herdr dispatch themselves.
+- `background: true` always uses the in-process SDK runner; herdr tasks are
+  foreground (all panes are created up front, prompts start under the usual
+  concurrency limit).
+
+Outside herdr nothing changes: the in-process SDK runner is the default.
+
 ## Auto-review
 
 Opt-in workflow automation (`subagent.autoReview: true` in settings.json,
