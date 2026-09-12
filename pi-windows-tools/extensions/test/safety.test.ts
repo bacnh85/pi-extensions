@@ -53,6 +53,23 @@ describe("safety", () => {
       }
     });
 
+    it("abbreviated PowerShell -Recurse params are confirm", () => {
+      // PowerShell allows unambiguous parameter prefixes; the tightened
+      // short-flag branch would otherwise let `-rec`/`-recu`/`-recurs` through.
+      for (const command of ["Remove-Item -rec C:\\temp", "Remove-Item -recu C:\\temp", "Remove-Item -recurs C:\\temp", "rm -rec C:\\temp"]) {
+        const r = classifyCommand(command);
+        expect(r.risk, command).to.equal("confirm");
+        expect(r.reasons, command).to.include("Recursive delete");
+      }
+    });
+
+    it("multi-line commands don't leak flags across newlines", () => {
+      // /s on a later line must not make an earlier non-recursive del recursive.
+      const r = classifyCommand("del C:\\a\r\necho /s");
+      expect(r.risk).to.equal("safe");
+      expect(r.reasons).to.not.include("Recursive delete");
+    });
+
     it("returns confirm for git push --force", () => {
       const r = classifyCommand("git push --force origin main");
       expect(r.risk).to.equal("confirm");

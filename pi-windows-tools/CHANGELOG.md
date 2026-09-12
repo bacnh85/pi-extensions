@@ -10,10 +10,13 @@
   **safe** because the two delete rules required recursion AND force. Both
   rules now trigger on recursion alone — force only makes a recursive delete
   worse, it was never what made it dangerous.
-  The short-flag match is limited to POSIX-shaped clusters (`-r`, `-R`, `-rf`,
-  `-fr`) so force-only non-recursive deletes (`Remove-Item -Force file.dll`,
-  `-Filter`) stay safe, and PowerShell aliases of `Remove-Item` (`ri`, `del`,
-  `erase`, `rd`) with `-Recurse` are covered too.
+  The explicit match covers `-Recurse` and its unambiguous PowerShell
+  abbreviations (`-rec`, `-recu`, `-recurs`); the short-flag match is limited
+  to POSIX-shaped clusters (`-r`, `-R`, `-rf`, `-fr`) so force-only
+  non-recursive deletes (`Remove-Item -Force file.dll`, `-Filter`) stay safe,
+  and PowerShell aliases of `Remove-Item` (`ri`, `del`, `erase`, `rd`) with
+  `-Recurse` are covered too. Flags don't leak across newlines when classifying
+  multi-line commands.
 
 ### Fixed — shell execution
 

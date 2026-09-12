@@ -3,12 +3,16 @@ export type CommandRisk = "safe" | "confirm";
 export interface RiskResult { risk: CommandRisk; reasons: string[]; }
 
 const DESTRUCTIVE_COMMANDS: { pattern: RegExp; reason: string }[] = [
-  // Short-flag branch matches POSIX-shaped clusters only (-r/-R/-rf/-fr);
-  // \w* would match any flag containing "r" (-Force, -Filter) and over-prompt
-  // non-recursive deletes. PowerShell aliases of Remove-Item (ri/del/erase/rd)
-  // accept -Recurse too, so they share rule 1; cmd-style /s stays on rule 2.
-  { pattern: /\b(?:remove-item|ri|erase|del|rd|rmdir|rm)\b(?=[^;&|\r\n]*\s(?:--?(?:recurse|recursive)|-[a-z]?r[a-z]?)\b)/i, reason: "Recursive delete" },
-  { pattern: /\b(?:rmdir|rd|del)\b(?=[^;&|]*\s\/s\b)/i, reason: "Recursive delete" },
+  // The explicit branch covers -Recurse AND its unambiguous PowerShell
+  // abbreviations (-rec/-recu/-recurs); the short-flag branch matches
+  // POSIX-shaped clusters only (-r/-R/-rf/-fr). A bare \w*r\w* would match
+  // ANY flag containing "r" (-Force, -Filter) and over-prompt non-recursive
+  // deletes. PowerShell aliases of Remove-Item (ri/del/erase/rd) accept
+  // -Recurse too, so they share rule 1; cmd-style /s stays on rule 2.
+  { pattern: /\b(?:remove-item|ri|erase|del|rd|rmdir|rm)\b(?=[^;&|\r\n]*\s(?:--?(?:recursive|recurse|recurs|recur|recu|rec)|-[a-z]?r[a-z]?)\b)/i, reason: "Recursive delete" },
+  // Newline excluded from the lookahead so a /s on a LATER line of a
+  // multi-line command can't flag an earlier single-file delete.
+  { pattern: /\b(?:rmdir|rd|del)\b(?=[^;&|\r\n]*\s\/s\b)/i, reason: "Recursive delete" },
   { pattern: /(?:^|[;&|\r\n]\s*)format\s+|\bcmd(?:\.exe)?\s+\/c\s+format\s+/i, reason: "Format disk" },
   { pattern: /(?:^|[;&|\r\n]\s*)diskpart\b/i, reason: "Disk partition tool" },
   { pattern: /reg\s+delete/i, reason: "Registry key delete" },

@@ -38,7 +38,9 @@ export function parseUxCommand(text, defaultMode = DEFAULT_MODE) {
   const normalizedText = String(text || "").trim().toLowerCase();
 
   if (!normalizedText) {
-    return { type: "set-mode", mode: fallback === "off" ? "strict" : fallback };
+    // Reset to the configured default, whatever it is — a deliberate
+    // `/ux default off` must survive bare `/ux` too.
+    return { type: "set-mode", mode: fallback };
   }
 
   const [primary, secondary] = normalizedText.split(/\s+/);

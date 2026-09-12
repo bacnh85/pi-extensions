@@ -74,7 +74,7 @@ pi install npm:@bacnh85/pi-chatgpt-web
 pi install npm:@bacnh85/pi-agy
 ```
 
-…repeat per package — every row in the table above is installable as `pi install npm:@bacnh85/<package-name>`. Project-local instead of user-scope: add `-l` (writes `.pi/settings.json`, shared with your team).
+…repeat per package — every extension row in the table above is installable as `pi install npm:@bacnh85/<package-name>` (all but **pi-hub**, a standalone CLI, and **pi-config-panel**, a library dependency). Project-local instead of user-scope: add `-l` (writes `.pi/settings.json`, shared with your team).
 
 ### Verify and manage
 
