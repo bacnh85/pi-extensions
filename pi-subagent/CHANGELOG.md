@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.21.3 (2026-09-12)
+
+### Fixed
+
+- Changelog attribution correction for 0.21.2 (the cancelAgent escalation
+  belongs to 0.21.2, not 0.21.1; malformed H1 ordering fixed). No code
+  changes.
+
+# Changelog
+
 ## 0.21.2 (2026-09-12)
 
 ### Fixed
