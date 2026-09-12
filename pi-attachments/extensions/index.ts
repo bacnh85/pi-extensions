@@ -40,7 +40,8 @@ function looksLikePathPayload(payload: string): boolean {
 }
 
 export default function piAttachments(pi: ExtensionAPI): void {
-  const settings = loadSettings();
+  // Re-read on session_start so settings.json edits apply without a full restart.
+  let settings = loadSettings();
   const tray = new AttachmentTray();
   let trayUi: { setWidget: (key: string, lines: string[]) => void } | undefined;
 
@@ -109,6 +110,7 @@ export default function piAttachments(pi: ExtensionAPI): void {
   };
 
   pi.on("session_start", async (_event, ctx) => {
+    settings = loadSettings();
     trayUi = ctx.ui;
     editorText = (ctx.ui as any).getEditorText?.bind(ctx.ui);
     ctx.ui.onTerminalInput?.(onPaste);

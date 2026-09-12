@@ -4,7 +4,7 @@ Interactive installer for [Pi coding agent](https://github.com/earendil-works/pi
 
 Inspired by [vercel-labs/skills](https://github.com/skills): one command, interactive multi-select, sensible defaults.
 
-Current version: **0.1.3**
+Current version: **0.1.4**
 
 ## Quick start
 
@@ -27,8 +27,8 @@ npx @bacnh85/pi-hub
 - Lists all 30 curated `@bacnh85` packages with full-width descriptions
 - `↑`/`↓` move · `space` toggle · `a` toggle all · `enter` confirm · `q` quit
 - The detail line under the list shows the full npm name + description of the highlighted package
-- On confirm, prints what will be installed, then runs `pi install` per package (passes through pi's own output)
-- Add `-y` to skip the confirmation, `-l` to install project-local instead of user-scope
+- Confirming the picker installs immediately — `pi install` runs per package (passes through pi's own output)
+- `-y` installs quietly (suppresses the "Will install" list), `-l` installs project-local instead of user-scope
 
 ### `add` — install without browsing
 
@@ -119,9 +119,9 @@ npx @bacnh85/pi-hub update                   # runs pi update --extensions
 | `pi-serena` | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) |
 | `pi-sub` | Subscription usage footer for OpenAI Codex, OpenCode Go, Z.ai |
 | `pi-subagent` | Isolated in-process subagents with parallel/chain modes and git worktree isolation |
-| `pi-themes` | Ayu-based theme collection (dark, mirage, light) |
+| `pi-themes` | Ayu variants (dark, mirage, light) + Catppuccin Mocha |
 | `pi-ux` | Anti-slop UI/UX design discipline — DESIGN.md anchoring + deterministic slop-audit gates |
-| `pi-web` | Unified web search, content extraction, site mapping/crawling, screenshots/PDFs |
+| `pi-web` | Web search, page extraction, Firecrawl scraping/crawling, Crawl4AI headless browser crawling |
 | `pi-windows-tools` | Windows-specific tools for Pi |
 
 Install any of them by directory name: `npx @bacnh85/pi-hub add pi-munin`.
@@ -161,7 +161,7 @@ npx @bacnh85/pi-hub add pi-permission -l
 
 ## Changelog
 
-See [CHANGELOG.md](./CHANGELOG.md). Versions: 0.1.0 initial, 0.1.1 redraw fix, 0.1.2 catalog self-reference fix, 0.1.3 hang fix + full-width descriptions.
+See [CHANGELOG.md](./CHANGELOG.md). Versions: 0.1.0 initial, 0.1.1 redraw fix, 0.1.2 catalog self-reference fix, 0.1.3 hang fix + full-width descriptions, 0.1.4 Windows fixes + catalog cleanup.
 
 ## License
 

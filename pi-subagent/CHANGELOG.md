@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.20.1 (2026-09-12)
+
+### Fixed
+
+- **Service path honors agent frontmatter `timeout:` and raises the hard cap**:
+  `runNamedAgent` (pi-review / auto-review path) applied only the caller's
+  per-call timeout against the 20-min default cap and ignored the agent's
+  `timeout:` frontmatter. Timeout resolution is now extracted into the shared
+  `resolveChildTimeouts` helper (security.ts) used by the tool path, so the
+  precedence is identical everywhere (per-call timeout > agent frontmatter
+  default > global default) and the hard lifetime cap is raised to match the
+  idle window — an agent with `timeout: 45` is no longer hard-killed mid-stream
+  at the default cap.
+- README: Compatibility peer ranges corrected from `<0.85.0` to `<0.86.0`
+  (package.json peers already said `<0.86.0`), and the read-only restriction
+  now describes the actual allowlist (built-in reads plus the read-only
+  extension allowlist — FFF, Windows, web, Serena, Munin), not just the four
+  built-in reads.
+
 ## 0.20.0 (2026-09-07)
 
 ### Added

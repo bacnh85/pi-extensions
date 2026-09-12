@@ -721,7 +721,17 @@ export function buildA2ASettingsPatch(opts: {
     return {
       ...a2a,
       ...(serverPatch ? { server: serverPatch } : {}),
-      ...(peerChanges ? { peers: working.peers } : {}),
+      // Peers persist in SETTINGS units: timeout in seconds (the loader
+      // multiplies by 1000 on read). working.peers holds runtime ms —
+      // this is the single writer-side conversion, so panel saves and
+      // panel-added peers are idempotent (no 1000× drift per save).
+      ...(peerChanges
+        ? {
+            peers: Object.fromEntries(
+              Object.entries(working.peers).map(([name, p]) => [name, { ...p, timeout: Math.round(p.timeout / 1000) }]),
+            ),
+          }
+        : {}),
       ...(discoveryChanged ? { discovery: mergedDiscovery } : {}),
       ...(working.selfIdentity !== cfg.selfIdentity ? { selfIdentity: working.selfIdentity } : {}),
       ...(JSON.stringify(working.ui) !== JSON.stringify(cfg.ui) ? { ui: working.ui } : {}),

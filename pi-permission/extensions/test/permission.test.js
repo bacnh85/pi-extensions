@@ -254,6 +254,14 @@ test("external_directory deny blocks path outside cwd", async () => {
   assert.match(result.reason, /external_directory/);
 });
 
+test("external_directory deny does NOT block a path equal to the workspace root", async () => {
+  // Regression: isExternal treated path === cwd as external, so a root-path
+  // read (e.g. ls /proj) was blocked by external_directory {"*":"deny"}.
+  const pi = harness({ rules: { external_directory: { "*": "deny" } } });
+  const result = await pi.handler({ toolName: "read", input: { path: "/proj" } }, ctx());
+  assert.equal(result, undefined, "cwd itself is not external → no rule matched → allow");
+});
+
 test("external_directory allow lets tool rules still apply", async () => {
   // Per OpenCode: external_directory is a gate. Once allowed through, tool rules
   // still apply. Here path is external but allowed; tool rule denies → deny.

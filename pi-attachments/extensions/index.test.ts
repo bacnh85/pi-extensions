@@ -204,6 +204,26 @@ describe("AttachmentTray", () => {
 
 let inlineDirCounter = 0;
 
+/** 0.3.1: session_start re-reads settings — keep a temp PI_CODING_AGENT_DIR
+ *  active through start (and input for start-less runs); restore after first use. */
+function keepSettingsThrough(h: ReturnType<typeof harness>, saved: string | undefined): ReturnType<typeof harness> {
+  const restore = () => {
+    if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = saved;
+  };
+  let restored = false;
+  const once = () => { if (!restored) { restored = true; restore(); } };
+  const realStart = h.start;
+  h.start = (event: unknown, ctx: unknown) => {
+    try { return realStart(event, ctx); } finally { once(); }
+  };
+  const realInput = h.input;
+  h.input = (event: unknown, ctx: unknown) => {
+    try { return realInput(event, ctx); } finally { once(); }
+  };
+  return h;
+}
+
 /** Harness whose piAttachments() sees inlineTextFiles: true via a temp settings dir. */
 function inlineHarness() {
   const dir = path.join(TMP, `inline-${inlineDirCounter++}`);
@@ -214,12 +234,7 @@ function inlineHarness() {
   );
   const saved = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = dir;
-  try {
-    return harness();
-  } finally {
-    if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = saved;
-  }
+  return keepSettingsThrough(harness(), saved);
 }
 
 describe("input transform", () => {
@@ -553,9 +568,9 @@ describe("paste collapse", () => {
     writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ attachments: { pasteCollapseLines: 0, pasteCollapseChars: 0 } }));
     const saved = process.env.PI_CODING_AGENT_DIR;
     process.env.PI_CODING_AGENT_DIR = dir;
-    const h = harness();
-    if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = saved;
+    // keepSettingsThrough: session_start re-reads settings, so the override
+    // must stay active through start.
+    const h = keepSettingsThrough(harness(), saved);
     const onPaste = harnessWithPaste(h);
     assert.equal(onPaste(wrap(logWall(15))), undefined);
   });

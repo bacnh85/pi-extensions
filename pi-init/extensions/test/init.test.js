@@ -92,7 +92,22 @@ test("scanProject detects existing AGENTS.md / CLAUDE.md", () => {
     writeFileSync(join(d, "AGENTS.md"), "# existing");
   });
   try {
-    assert.equal(scanProject(dir).hasAgentsMd, true);
+    const s = scanProject(dir);
+    assert.equal(s.hasAgentsMd, true);
+    assert.equal(s.agentsFile, "AGENTS.md", "reports WHICH file was found");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("scanProject reports CLAUDE.md when only that exists", () => {
+  const dir = fixture((d) => {
+    writeFileSync(join(d, "CLAUDE.md"), "# existing");
+  });
+  try {
+    const s = scanProject(dir);
+    assert.equal(s.hasAgentsMd, true);
+    assert.equal(s.agentsFile, "CLAUDE.md");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -154,6 +169,27 @@ test("buildInitPrompt includes real commands, not invented ones", () => {
 test("buildInitPrompt force mode says regenerate from scratch", () => {
   const s = { projectName: "x", languages: new Set(), topDirs: [], keyFiles: [], ci: [] };
   assert.match(buildInitPrompt(s, "force"), /from scratch/);
+});
+
+test("buildInitPrompt emits the detected package manager's run form", () => {
+  const s = {
+    projectName: "pnpm-app",
+    languages: new Set(),
+    packageManager: "pnpm",
+    buildSystem: null,
+    topDirs: [],
+    keyFiles: ["package.json"],
+    ci: [],
+    testCommand: "vitest",
+    lintCommand: null,
+    buildCommand: "vite build",
+    packageJson: null,
+    hasAgentsMd: false,
+  };
+  const prompt = buildInitPrompt(s, "");
+  assert.match(prompt, /`pnpm run test` → `vitest`/);
+  assert.match(prompt, /`pnpm run build` → `vite build`/);
+  assert.equal(prompt.includes("`npm run"), false, "never emits npm for a pnpm project");
 });
 
 test("buildInitPrompt handles missing commands gracefully", () => {

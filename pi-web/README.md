@@ -25,10 +25,10 @@ Variables:
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `BRAVE_API_KEY` | No (1) | — | Brave Search API key |
-| `SEARXNG_BASE_URL` | No | `http://172.30.55.22:8888` | Self-hosted SearXNG |
+| `SEARXNG_BASE_URL` | No | `http://127.0.0.1:8888` | Self-hosted SearXNG |
 | `FIRECRAWL_API_URL` | No | `https://api.firecrawl.dev/v2` | Self-hosted or hosted |
 | `FIRECRAWL_API_KEY` | No (2) | — | Required for hosted Firecrawl |
-| `CRAWL4AI_API_URL` | No | `http://172.30.55.22:11235` | Self-hosted Crawl4AI |
+| `CRAWL4AI_API_URL` | No | `http://127.0.0.1:11235` | Self-hosted Crawl4AI |
 | `CRAWL4AI_API_TOKEN` | No (3) | — | Required if Crawl4AI auth enabled |
 
 > (1) At least one search backend (SearXNG, Brave, or Firecrawl) must be configured for `web_search`.
@@ -66,6 +66,7 @@ Parameters:
 | `engines` | string | — | SearXNG engine override, e.g. `google,github` |
 | `include_content` | boolean | false | Fetch page content alongside results |
 | `content_chars` | number | 5000 | Max content chars per result |
+| `timeout_ms` | number | per-backend | Request timeout in ms (SearXNG/static 15000, Firecrawl/Crawl4AI 60000) |
 
 **Auto-selection behavior:**
 
@@ -188,10 +189,10 @@ Typical output:
 ```json
 {
   "brave": { "apiKeyFound": true, "apiKeySource": "process.env" },
-  "searxng": { "baseUrl": "http://172.30.55.22:8888", ... },
-  "firecrawl": { "baseUrl": "http://172.30.55.22:3002/v2", ... },
+  "searxng": { "baseUrl": "http://127.0.0.1:8888", ... },
+  "firecrawl": { "baseUrl": "http://127.0.0.1:3002/v2", ... },
   "crawl4ai": {
-    "baseUrl": "http://172.30.55.22:11235",
+    "baseUrl": "http://127.0.0.1:11235",
     ...
     "health": { "status": "healthy", "version": "0.5.0", ... }
   },
@@ -248,7 +249,4 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 ```bash
 # Run all tests
 npm test
-
-# Run only unit tests
-npm run test:unit
 ```

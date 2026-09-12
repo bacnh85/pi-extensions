@@ -12,10 +12,9 @@
  *     "sdk":  { "repository": "owner/repo", "branch": "main", "description": "JS SDK impl" }
  *   }
  *
- * The model can then read files under the resolved root (which is also added to
- * the permission allowlist for path tools). `@alias` autocomplete is a future
- * TUI enhancement; today references are surfaced via system-prompt injection +
- * the /refs command.
+ * The model can then read files under the resolved root. `@alias` autocomplete
+ * is a future TUI enhancement; today references are surfaced via system-prompt
+ * injection + the /refs command.
  *
  * Zero deps, plain JS (pi-budget pattern).
  */
@@ -79,10 +78,13 @@ export function normalizeReference(alias, def, cwd, cacheRoot) {
   };
 
   if (obj.path) {
-    const resolved = isAbsolute(obj.path) || obj.path.startsWith("~")
-      ? obj.path
-      : resolve(cwd || ".", obj.path);
-    out.path = resolved;
+    // Expand a leading ~ ("~/x", "~") to the real home dir — the agent's path
+    // tools won't expand it themselves, so an unexpanded ref never resolves.
+    const expanded =
+      obj.path === "~" || obj.path.startsWith("~/")
+        ? join(os.homedir(), obj.path.slice(1))
+        : obj.path;
+    out.path = isAbsolute(expanded) ? expanded : resolve(cwd || ".", expanded);
     return out;
   }
 
@@ -216,6 +218,7 @@ export default function referencesExtension(pi) {
   pi.registerCommand("refs", {
     description: "List configured project references (@alias → path)",
     handler: async (_args, ctx) => {
+      if (!ctx?.ui?.notify) return; // no UI in this context — nowhere to print
       if (refs.length === 0) {
         ctx.ui.notify("No references configured (set `references` in settings.json).", "info");
         return;

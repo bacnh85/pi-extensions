@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.15 (2026-09-12)
+
+### Fixed — restart robustness
+
+- **`/serena-restart` and the `serena_restart_worker` tool no longer throw
+  raw errors when Serena's Python is not installed.** Both entry points call
+  `restart()`, which spawns eagerly and throws synchronously from
+  `ensureStarted()` ("Could not find Serena Python…"). Both are now wrapped:
+  the command surfaces the message via `ctx.ui.notify` (error), the tool
+  returns it as the tool result — and both still succeed normally when Python
+  IS present.
+- **`session_shutdown` cleanup can no longer throw:** the finally-block's
+  `ctx.ui.setStatus("serena", undefined)` now runs behind an optional-chain +
+  try/catch — the ctx may already be stale/tearing down during shutdown.
+- README tool list now includes `serena_restart_worker` (20 registered, 19
+  were listed).
+
 ## 0.9.14 (2026-08-30)
 
 ### Changed

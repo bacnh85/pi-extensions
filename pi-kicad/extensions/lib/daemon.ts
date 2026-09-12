@@ -36,7 +36,7 @@ export const HEALTH_POLL_INTERVAL_MS = 200;
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-export function buildSpawnArgs(binary: string, configPath: string): string[] {
+export function buildSpawnArgs(configPath: string): string[] {
   return ["--config", configPath];
 }
 
@@ -149,7 +149,7 @@ export class KonnectDaemon {
     await this.deps.writeFile(configPath, toml);
 
     this.stderrTail = "";
-    this.child = this.deps.spawnImpl(this.config.konnectBinary, buildSpawnArgs(this.config.konnectBinary, configPath), {
+    this.child = this.deps.spawnImpl(this.config.konnectBinary, buildSpawnArgs(configPath), {
       stdio: ["ignore", "ignore", "pipe"],
       // Standalone Konnect doesn't inherit KiCad's data-dir env vars the way a
       // plugin-mode launch would; provide them so the symbol resolver works.

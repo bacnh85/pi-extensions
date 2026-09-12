@@ -1,6 +1,17 @@
 # Changelog
 
-## 0.3.0
+## 0.3.1 (2026-09-12)
+
+### Fixed
+
+- Settings are re-read on session start — editing `attachments.*` in
+  settings.json now applies without restarting pi.
+
+### Documentation
+
+- CHANGELOG: added the missing 0.3.0 release date (2026-09-07).
+
+## 0.3.0 (2026-09-07)
 
 - **Large text-paste collapse** (Hermes-inspired). Pasting ≥ 10 lines or ≥
   2000 chars of plain text (logs, stack traces, minified JSON) now saves the

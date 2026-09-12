@@ -505,7 +505,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
   // Inject the backend-selection protocol only when a web_* tool is actually
   // active, so recon agents / sessions without pi-web carry zero overhead.
   pi.on("before_agent_start", async (event) => {
-    const active = event.systemPromptOptions?.selectedTools ?? [];
+    const active = event.systemPromptOptions?.selectedTools ?? pi.getActiveTools();
     if (!active.some((t) => t.startsWith("web_"))) return;
     return { systemPrompt: `${event.systemPrompt}\n\n${WEB_ROUTING_GUIDANCE}` };
   });

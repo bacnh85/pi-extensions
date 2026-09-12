@@ -174,6 +174,8 @@ on an inbound agent server on whoever opens it. (`portFallback: 0` means
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20) |
 | `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply (`0` = unbounded: no reply-window timer) |
 | `A2A_ASYNC_TIMEOUT` | `86400` | Detached-task supervision window in seconds (`0` = unbounded) — see [Non-blocking dispatch](#non-blocking-dispatch-returnimmediately) |
+| `A2A_CHILD_TRANSCRIPTS` | `true` | Persist dispatched child-session transcripts to disk (`false` = in-memory only) |
+| `A2A_CHILD_TRANSCRIPT_RETENTION_DAYS` | `30` | Days to keep child-session transcripts before cleanup |
 | `A2A_SERVER_ENABLED` | `false` | Auto-start the inbound server on session start |
 | `A2A_SELF_IDENTITY` | _(unset)_ | Outbound caller identity: a key in `server.peerTokens`. When set, this session presents its OWN per-peer token (not the shared token) so receivers attribute calls to it uniquely. Empty = use the shared token (anonymous caller). |
 | `A2A_DISCOVERY_LOCAL` | `true` | Enable the local file registry |

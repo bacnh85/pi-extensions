@@ -49,7 +49,7 @@ a family is detected; everything degrades gracefully to a no-op otherwise.
 | **Tool argument repair** | Fixes invalid JSON, trailing commas, unquoted keys, JSON-string→object, top-level string→object (GLM-4.7 bug), **truncated-JSON auto-close** (DeepSeek mid-generation truncation — unterminated strings and unclosed brackets are closed), optional-null deletion, markdown autolinks in path fields, **param-name aliases** (cross-harness schemas — e.g. Claude-Code-style `file_path`→`path`, `file_text`→`content` — repaired for the wrapped built-ins when the aliased target is required and missing) |
 | **Prompt cache stats** | Tracks per-turn `usage.cacheRead`/`cacheWrite`/`input` and reports the session cache hit rate in `/model-tools-status` (Pi core already computes these; this surfaces them) |
 | **Leaked-content cleaning** | Strips leaked thinking headers and `` `tool_name(args)` `` prose from assistant messages (always on for detected families) |
-| **Reasoning strip** | Removes accumulated `reasoning_content` from prior turns to prevent provider 400s on long sessions (opt-in) |
+| **Reasoning strip** | Removes accumulated `reasoning_content` from prior turns to prevent provider 400s on long sessions (on by default) |
 | **Dangerous command guard** | Blocks forced recursive delete of absolute paths (`rm -rf /`) and destructive `dd` writes |
 | **Read-on-guessed-path blocking** | Blocks `read` on a non-existent code-file path, suggests `find` first |
 | **Prompt-aware first-tool hints** | Forces the correct first tool: `bash`-first for RUN/BUILD/EXECUTE tasks, `bash` git-clone-first for analyze-a-repo-URL tasks, and `find`-first for bare-filename reads. Targeted (only fires on matching intent) and applied to all detected families. Injected into the current user message on the **first provider round of the turn only** — never re-appended mid-turn after tool results (a repeated "FIRST tool call MUST be bash" next to tool output loops strict models into re-running bash), and never into the system prompt, keeping the prefix-cache head byte-stable for both DeepSeek (exact-prefix cache) and GLM (Z.ai automatic content-similarity cache). |
@@ -212,7 +212,7 @@ All toggles live under the `PI_MODEL_TOOLS_*` namespace.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `PI_MODEL_TOOLS_REPAIR_ENABLED` | 1 | Tool argument repair (`0`/`off`/`false` to disable) |
-| `PI_MODEL_TOOLS_STRIP_REASONING` | 0 | Strip accumulated reasoning from prior turns |
+| `PI_MODEL_TOOLS_STRIP_REASONING` | 1 | Strip accumulated reasoning from prior turns (`0`/`off`/`false`/`no` to disable) |
 | `PI_MODEL_TOOLS_REASONING_MAX_CHARS` | unlimited | Truncate long reasoning fields to N characters |
 | `PI_MODEL_TOOLS_BLOCK_DANGEROUS_COMMANDS` | 1 | Safety guard (on by default) |
 | `PI_MODEL_TOOLS_AUTO_BLOCK_AFTER_REMINDERS` | 0 | Auto-block tool-selection misses after N reminders |
@@ -238,7 +238,7 @@ All toggles live under the `PI_MODEL_TOOLS_*` namespace.
 
 ## Super Power Mode
 
-Enabled by default for DeepSeek V4 sessions. It prepends an unrestricted
+Opt-in: set `PI_MODEL_TOOLS_SUPERPOWER_MODE=1` (for DeepSeek V4 sessions). It prepends an unrestricted
 capability prompt at the top of the system prompt (before the selection
 guidance and the base prompt), removes content filters, and engages maximum
 reasoning effort. A light reinforcement is appended every 10 turns.

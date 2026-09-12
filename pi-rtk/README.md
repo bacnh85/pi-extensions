@@ -24,7 +24,7 @@ Pi extension that rewrites bash tool calls through RTK for token savings.
 ## Requirements
 
 - `rtk >= 0.23.0` available in `PATH`; `rtk >= 0.46.0` recommended — from 0.46, find predicates like `-not/-or/-mtime/-size/-newer/-perm/-empty` and `( … )` groups rewrite too (rtk passes unmodeled predicates through to real find). Older rtk keeps working with a stricter find blocklist.
-- Set `RTK_DISABLED=1` to bypass rewrites. The extension reads this from the process environment, current working directory `.env.local`/`.env`, or Pi global config `.env.local`/`.env` under `$PI_CODING_AGENT_DIR` or `~/.pi/agent`.
+- Set `RTK_DISABLED=1` to bypass rewrites (read from the process environment only).
 
 ## Install
 

@@ -141,6 +141,6 @@ export function executeCommand(command: string, options: ExecOptions = {}): Prom
       resolve({ command, shell: shellKind, cwd, exitCode: timedOut || aborted ? null : exitCode, stdout: stdout.replace(/\r\n/g, "\n"), stderr: (stderr || spawnError || "").replace(/\r\n/g, "\n"), timedOut, cancelled: aborted });
     };
     child.on("close", code => finish(code));
-    child.on("error", () => finish(1, "Failed to spawn process"));
+    child.on("error", (err: NodeJS.ErrnoException) => finish(1, `Failed to spawn ${exe}: ${err.message}`));
   });
 }

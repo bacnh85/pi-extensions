@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.13.1 (2026-09-12)
+
+### Fixed
+
+- Re-entering plan mode while a plan was approved/executing discarded the old
+  flow without aborting its in-flight abort-controller or clearing the pending
+  review timer — stale review timers could fire against the discarded flow.
+- `savePreferences` no longer leaves a `*.tmp` file behind when the final
+  rename throws (best-effort unlink, error re-thrown).
+
+### Removed
+
+- Dead export `modelAvailable` (zero callers).
+
 ## 0.13.0 (2026-09-11)
 
 ### Changed

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5
+
+- Catalog: add the three missing entries (pi-attachments, pi-cron, pi-selfskills). Bare-shorthand `add pi-cron` previously fell through `resolveSource` to the unscoped npm name `pi-cron` (fails, or could hit an unvetted same-named package); all 33 installable packages are now curated.
+
 ## 0.1.4
 
 - Windows: shell out to `pi` via `cmd` (npm shims are `pi.cmd`, which `spawnSync` can't PATHEXT-resolve without a shell — `pi --version` reported "not found" with pi installed). Applies to the installability check, `add`/`remove`, and `update`.

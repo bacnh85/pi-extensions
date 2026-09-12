@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.2 - 2026-09-12
+
+Question notifications + reachable terminal fallback.
+
+### Added
+
+- **`onQuestion` now actually fires:** wired to the SDK's `ui_prompt_start`
+  event, which Pi emits whenever it blocks on a user-facing prompt
+  (select/confirm/input/editor/custom — e.g. `ask_user_question`). Fires
+  a `Question: <title>` notification and respects the `onQuestion` config.
+  `onQuestion` was advertised but never triggered (a reserved no-op handler).
+
+### Fixed
+
+- **Terminal OSC fallback was unreachable:** `detectBackend()` only ever
+  returned darwin/windows/linux, so the OSC 777/99 + bell branches could
+  never run. The platform's desktop binary is now probed on `PATH`
+  (`osascript` / `notify-send` / `powershell.exe`); when it's absent the
+  backend falls back to `terminal` (OSC 777, OSC 99 on Kitty, bell) —
+  matching the README's promised fallback. Result is memoized.
+
 ## 0.1.1 - 2026-08-15
 
 Stale-extension-ctx crash fix.

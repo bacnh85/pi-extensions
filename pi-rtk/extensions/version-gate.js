@@ -15,7 +15,7 @@ export function parseSemver(raw) {
   return [Number.parseInt(match[1], 10), Number.parseInt(match[2], 10), Number.parseInt(match[3], 10)];
 }
 
-function isAtLeastVersion(current, minimum) {
+export function isAtLeastVersion(current, minimum) {
   for (let i = 0; i < minimum.length; i += 1) {
     if (current[i] > minimum[i]) return true;
     if (current[i] < minimum[i]) return false;

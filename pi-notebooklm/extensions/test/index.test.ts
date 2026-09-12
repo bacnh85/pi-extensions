@@ -1181,10 +1181,9 @@ describe("tool execution", () => {
       );
       expect.fail("should have thrown");
     } catch (e: any) {
-      // The --yes required branch should also have bounded, redacted args
+      // The --yes guidance is actionable (append --yes to args) and echoes no args at all
       expect(Buffer.byteLength(e.message, "utf8")).to.be.below(2000);
-      // Should show command path only, not the large inline content
-      expect(e.message).to.include("ask");
+      expect(e.message).to.include("--yes");
       expect(e.message).not.to.include("x".repeat(100));
     }
   });

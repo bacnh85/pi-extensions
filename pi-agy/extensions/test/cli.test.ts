@@ -183,6 +183,13 @@ describe("parseJsonResponse", () => {
     const raw = JSON.stringify({ status: "SUCCESS", usage: {} });
     expect(parseJsonResponse(raw)).to.equal(raw);
   });
+
+  it("falls back to raw when .response is not a string", () => {
+    // A non-string .response (schema drift) must not bypass the caller's
+    // string handling — return the raw envelope instead.
+    const raw = JSON.stringify({ status: "SUCCESS", response: { text: "nested" } });
+    expect(parseJsonResponse(raw)).to.equal(raw);
+  });
 });
 
 // ---------------------------------------------------------------------------

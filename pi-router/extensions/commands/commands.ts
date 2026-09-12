@@ -3,7 +3,6 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { openConfigPanel, row } from "@bacnh85/pi-config-panel";
-import type { RouterSettings } from "../lib/config.js";
 import { configSummary, getSettings, readStoredApiKey, maskApiKey, normalizeUrl } from "../lib/config.js";
 import { registerProvider, PROVIDER_ID } from "../lib/provider.js";
 import { refreshActiveModel } from "../index.js";
@@ -50,7 +49,7 @@ function writeRouterSection(patch: { baseUrl?: string; enableReasoning?: boolean
   renameSync(tmp, settingsPath());
 }
 
-export function registerCommands(pi: ExtensionAPI, _getSettings: () => RouterSettings): void {
+export function registerCommands(pi: ExtensionAPI): void {
   pi.registerCommand("router-reasoning", {
     description: "Enable/disable Pi thinking levels for router models.",
     handler: async (_args, ctx) => {

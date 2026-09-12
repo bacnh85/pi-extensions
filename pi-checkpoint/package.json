@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-checkpoint",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Git-backed undo/redo for Pi — snapshots file state at each turn into a dedicated ref namespace, so /undo rolls back the last message AND its file changes. Fills PI's gap vs OpenCode's git-backed /undo /redo (PI has conversation-level /tree but not file-state snapshots).",
   "keywords": [
     "pi-package",

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.3 - 2026-09-12
+
+### Fixed
+
+- Capped the `countedMessageIds` dedupe set (keep-last-1000, clear on reach):
+  it previously grew for the whole session lifetime; sessions past 1000
+  assistant messages lose replay-dedupe for old ids, an acceptable trade vs.
+  unbounded growth.
+- The footer `setStatus` block is now gated on `role === "assistant"` for
+  parity with cost accumulation — it previously ran on every `message_end`.
+
 ## 0.1.2 - 2026-08-15
 
 Stale-extension-ctx crash fix (same root cause as pi-notify 0.1.1).

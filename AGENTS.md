@@ -7,41 +7,41 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| **pi-router** | 1.1.5 | Connect to any OpenAI-compatible AI router (9router, omniroute, …) via its /v1 API; API key via built-in /login, URL in settings.json (`/router-config` panel), models auto-cached in models-store.json. |
-| **pi-chatgpt-web** | 0.2.0 | ChatGPT web-tier providers via self-hosted OpenAI-compatible bridges — chat-only `chatgpt-web` (chatgpt2api) + agentic `codex-web` (codex-proxy, tool-capable). No Plus subscription. |
-| **pi-commandcode** | 0.2.0 | Connect to Command Code's OpenAI-compatible Provider API; API key via built-in `/login`, base URL in settings.json (`/commandcode-config` panel), models auto-cached. |
-| **pi-checkpoint** | 0.1.1 | Git-backed undo/redo — snapshots file state per turn into a dedicated ref namespace so `/undo` rolls back a message AND its file changes. |
+| **pi-router** | 1.1.6 | Connect to any OpenAI-compatible AI router (9router, omniroute, …) via its /v1 API; API key via built-in /login, URL in settings.json (`/router-config` panel), models auto-cached in models-store.json. |
+| **pi-chatgpt-web** | 0.2.1 | ChatGPT web-tier providers via self-hosted OpenAI-compatible bridges — chat-only `chatgpt-web` (chatgpt2api) + agentic `codex-web` (codex-proxy, tool-capable). No Plus subscription. |
+| **pi-commandcode** | 0.2.1 | Connect to Command Code's OpenAI-compatible Provider API; API key via built-in `/login`, base URL in settings.json (`/commandcode-config` panel), models auto-cached. |
+| **pi-checkpoint** | 0.1.2 | Git-backed undo/redo — snapshots file state per turn into a dedicated ref namespace so `/undo` rolls back a message AND its file changes. |
 | **pi-cron** | 0.3.1 | Scheduled jobs — cron-style jobs fire a prompt into the live session while pi is running (30s timer, past-due catch-up, loop guard); per-job model/thinking pins run headless; `cron export` emits crontab lines for 24/7 coverage. |
-| **pi-notify** | 0.1.1 | Desktop notifications and sounds — fires on task completion, errors, and questions; cross-platform (macOS/Linux/Windows + terminal OSC). |
-| **pi-references** | 0.1.1 | External context roots — alias sibling dirs or git repos as `@docs`/`@sdk`; auto-clones repos and injects descriptions into agent context. |
-| **pi-budget** | 0.1.2 | Spend cap enforcement — `--budget <usd>` aborts the agent at the cap; companion to pi-sub (render vs enforce). |
-| **pi-init** | 0.1.0 | Guided AGENTS.md generation — `/init` scans the repo and generates/updates AGENTS.md with build/test/lint commands, architecture, and conventions. |
-| **pi-permission** | 0.2.0 | Granular permission system — config-driven allow/ask/deny rules per tool with wildcard patterns, external-directory boundary, and a doom-loop guard. |
-| **pi-agy** | 0.3.3 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
+| **pi-notify** | 0.1.2 | Desktop notifications and sounds — fires on task completion, errors, and questions; cross-platform (macOS/Linux/Windows + terminal OSC). |
+| **pi-references** | 0.1.2 | External context roots — alias sibling dirs or git repos as `@docs`/`@sdk`; auto-clones repos and injects descriptions into agent context. |
+| **pi-budget** | 0.1.3 | Spend cap enforcement — `--budget <usd>` aborts the agent at the cap; companion to pi-sub (render vs enforce). |
+| **pi-init** | 0.1.1 | Guided AGENTS.md generation — `/init` scans the repo and generates/updates AGENTS.md with build/test/lint commands, architecture, and conventions. |
+| **pi-permission** | 0.2.1 | Granular permission system — config-driven allow/ask/deny rules per tool with wildcard patterns, external-directory boundary, and a doom-loop guard. |
+| **pi-agy** | 0.3.4 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
 | **pi-fff** | 0.8.0 | FFF-powered fuzzy file and content search for Pi. |
-| **pi-kicad** | 0.1.3 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon (no MCP SDK). |
-| **pi-model-tools** | 0.8.0 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, and a Codex-style apply_patch diff tool. |
+| **pi-kicad** | 0.1.4 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon (no MCP SDK). |
+| **pi-model-tools** | 0.8.2 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, and a Codex-style apply_patch diff tool. |
 | **pi-munin** | 0.5.3 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and confirmed cross-project sharing. |
-| **pi-evolve** | 0.3.2 | Trajectory-based self-learning loop — captures tool-call trajectories, reflects to extract learnings, persists to Munin or local JSONL, injects recent learnings into future sessions. |
+| **pi-evolve** | 0.3.3 | Trajectory-based self-learning loop — captures tool-call trajectories, reflects to extract learnings, persists to Munin or local JSONL, injects recent learnings into future sessions. |
 | **pi-selfskills** | 0.3.1 | Skill self-improvement — one `skill_manage` tool (list/read/patch/create/write/delete/restore) to patch loaded skills and create new ones (user- or project-rooted), with a writable-root allowlist, SDK validation, and content-addressed backups. |
-| **pi-a2a** | 0.7.6 | A2A Protocol v1.0 bidirectional — Pi distributes tasks to remote agents (Hermes, ADK, LangChain, any A2A peer), exposes itself as an A2A-callable agent, self-declares for local session discovery (file registry + enriched Agent Card + mDNS), registers with **multiple a2a-switchboard gateways** (`discovery.gateways`), shows inbound task activity in the host TUI, and has an interactive config panel. |
-| **pi-config-panel** | 0.1.4 | Shared interactive config-panel kernel (library) — arrow-key toggle/edit overlay panels (`PanelRow`/`PanelGroup` + `ConfigPanelModel` TUI shell) via `ctx.ui.custom`; powers `/a2a-config`, `/commandcode-config`, `/router-config`. |
-| **pi-hub** | 0.1.3 | Interactive installer CLI — `npx @bacnh85/pi-hub` browses the @bacnh85 catalog, searches npm `keywords:pi-package`, multi-selects, and shells out to `pi install`. |
-| **pi-attachments** | 0.3.0 | Image and file attachments — drops/pastes become `[[attach:name]]` chips resolving to readable `📎` path references (images attach as real ImageContent parts; text read on demand). Large text pastes (logs, JSON ≥ 10 lines / 2000 chars) collapse to a paste file + chip. Paste clipboard files with `alt+shift+v`. |
-| **pi-notebooklm** | 0.1.8 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
-| **pi-obsidian** | 0.8.14 | Obsidian vault integration for Pi. |
-| **pi-advisor** | 0.2.3 | OMP-style automatic advisor — a second model reviews each settled turn and injects severity-routed steering notes (all notes steer as a follow-up turn; cooldown nits defer to a next-turn card, immune-turn cooldown, emission guard), ordered multi-model fallback chain (`pi-advisor.models`, `/advisor models` panel editor); plus the on-demand advisor consult moved from pi-plan. |
-| **pi-plan** | 0.13.0 | Plan mode with read-only gating and plan → implement → verify → review workflow; global plan-mode model/thinking (`/plan-model`, `/plan-thinking` — normal mode stays stock Pi); fallback model chain on overload. |
-| **pi-ponytail** | 0.1.13 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
-| **pi-review** | 0.2.9 | Isolated read-only code review with corrected same-session fallback. |
-| **pi-rtk** | 0.2.0 | Bash command token rewriting through RTK. |
-| **pi-serena** | 0.9.14 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
-| **pi-sub** | 0.1.38 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
+| **pi-a2a** | 0.7.8 | A2A Protocol v1.0 bidirectional — Pi distributes tasks to remote agents (Hermes, ADK, LangChain, any A2A peer), exposes itself as an A2A-callable agent, self-declares for local session discovery (file registry + enriched Agent Card + mDNS), registers with **multiple a2a-switchboard gateways** (`discovery.gateways`), shows inbound task activity in the host TUI, and has an interactive config panel. |
+| **pi-config-panel** | 0.1.6 | Shared interactive config-panel kernel (library) — arrow-key toggle/edit overlay panels (`PanelRow`/`PanelGroup` + `ConfigPanelModel` TUI shell) via `ctx.ui.custom`; powers `/a2a-config`, `/commandcode-config`, `/router-config`. |
+| **pi-hub** | 0.1.5 | Interactive installer CLI — `npx @bacnh85/pi-hub` browses the @bacnh85 catalog, searches npm `keywords:pi-package`, multi-selects, and shells out to `pi install`. |
+| **pi-attachments** | 0.3.1 | Image and file attachments — drops/pastes become `[[attach:name]]` chips resolving to readable `📎` path references (images attach as real ImageContent parts; text read on demand). Large text pastes (logs, JSON ≥ 10 lines / 2000 chars) collapse to a paste file + chip. Paste clipboard files with `alt+shift+v`. |
+| **pi-notebooklm** | 0.1.9 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
+| **pi-obsidian** | 0.8.15 | Obsidian vault integration for Pi. |
+| **pi-advisor** | 0.2.4 | OMP-style automatic advisor — a second model reviews each settled turn and injects severity-routed steering notes (all notes steer as a follow-up turn; cooldown nits defer to a next-turn card, immune-turn cooldown, emission guard), ordered multi-model fallback chain (`pi-advisor.models`, `/advisor models` panel editor); plus the on-demand advisor consult moved from pi-plan. |
+| **pi-plan** | 0.13.1 | Plan mode with read-only gating and plan → implement → verify → review workflow; global plan-mode model/thinking (`/plan-model`, `/plan-thinking` — normal mode stays stock Pi); fallback model chain on overload. |
+| **pi-ponytail** | 0.1.14 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
+| **pi-review** | 0.2.10 | Isolated read-only code review with corrected same-session fallback. |
+| **pi-rtk** | 0.2.1 | Bash command token rewriting through RTK. |
+| **pi-serena** | 0.9.15 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
+| **pi-sub** | 0.1.39 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | **pi-themes** | 0.2.0 | Pi TUI theme collection — Ayu variants (dark, mirage, light) + Catppuccin Mocha; pure-themes package (no extension code). |
-| **pi-subagent** | 0.20.0 | Isolated in-process subagents with parallel/chain modes, inspectable threads, git worktree isolation (`sandbox: worktree`), live progress widget, background mode, role-based model routing (`@fast`/`@coder`/`@smart` + `subagent.roles` settings, `/subagent roles` editor), and opt-in auto-review after coding turns (`subagent.autoReview`). |
-| **pi-web** | 0.6.2 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots (returned inline for multimodal models)/PDFs. |
-| **pi-ux** | 0.4.6 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, ships medium-tuned presets (Web/Mobile), runs deterministic slop-audit gates (APCA contrast + tokens + states + slop/taste tells + reduced-motion), taste rules (named cliché clusters, typography/motion/copy), vision render-inspect loop for multimodal models, works with text-only models. |
-| **pi-windows-tools** | 0.5.3 | Windows-specific tools for Pi. |
+| **pi-subagent** | 0.20.1 | Isolated in-process subagents with parallel/chain modes, inspectable threads, git worktree isolation (`sandbox: worktree`), live progress widget, background mode, role-based model routing (`@fast`/`@coder`/`@smart` + `subagent.roles` settings, `/subagent roles` editor), and opt-in auto-review after coding turns (`subagent.autoReview`). |
+| **pi-web** | 0.7.1 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs with local headless-Chrome capture for localhost/LAN/file URLs (inline PNGs for multimodal models). |
+| **pi-ux** | 0.4.7 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, ships medium-tuned presets (Web/Mobile), runs deterministic slop-audit gates (APCA contrast + tokens + states + slop/taste tells + reduced-motion), taste rules (named cliché clusters, typography/motion/copy), vision render-inspect loop for multimodal models, works with text-only models. |
+| **pi-windows-tools** | 0.5.4 | Windows-specific tools for Pi. |
 
 ## Repository Structure
 
@@ -188,9 +188,9 @@ A single `.github/workflows/ci.yml` workflow runs on GitHub-hosted runners:
 After each Pi minor release, verify extensions against the new SDK:
 
 1. Check the Pi CHANGELOG for "Breaking Changes" that affect extension APIs (TypeBox imports, ExtensionAPI exports, etc.).
-2. Widen peer caps `<0.x.0` → `<0.(x+1).0` in every package with a bounded peer — keep the existing floor, change only the cap. Find them with: `grep -l 'pi-coding-agent": "[^"]*<' pi-*/package.json` (currently `pi-advisor`, `pi-attachments`, `pi-plan`, `pi-sub`, `pi-subagent`).
-3. Bump their devDeps from `^0.x.0` to `^0.(x+1).0` (also `pi-review`'s devDep).
-4. Patch-version-bump + CHANGELOG the three capped packages; `pi-review` is devDep-only — no version bump needed.
+2. Widen peer caps `<0.x.0` → `<0.(x+1).0` in every package with a bounded peer — keep the existing floor, change only the cap. Find them with: `grep -l 'pi-coding-agent": "[^"]*<' pi-*/package.json` (7 as of 2026-09-12: `pi-advisor`, `pi-attachments`, `pi-cron`, `pi-plan`, `pi-review`, `pi-sub`, `pi-subagent` — re-run the grep rather than trusting this list).
+3. Bump their devDeps from `^0.x.0` to `^0.(x+1).0`.
+4. Patch-version-bump + CHANGELOG every package the grep lists (peer ranges ship in the published artifact, so a cap change is a version change).
 5. Refresh lockfiles in all packages so `npm ci` installs the new SDK — then
    backfill nested integrity hashes. npm quirk: `npm install` re-idealization
    strips `integrity` from nested

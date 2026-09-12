@@ -765,7 +765,12 @@ function searchReplace(
   return _out434;
 }
 
-function filesMissingProperty(property: string, vault?: string, timeoutMs = 30_000): string {
+export function filesMissingProperty(
+  property: string,
+  vault?: string,
+  timeoutMs = 30_000,
+  exec: (args: string[], formatJson?: boolean, timeoutMs?: number) => { stdout: string; stderr: string; parsed: unknown } = execObsidian
+): string {
   const script = [
     `const prop=${JSON.stringify(property)};`,
     `const missing=[];`,
@@ -780,9 +785,9 @@ function filesMissingProperty(property: string, vault?: string, timeoutMs = 30_0
   ].join("");
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
-  args.push("eval", `code=(async function(){${script}})()`);
-  const _out453 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
-  if (!_out453 || /^Error[:\s]/.test(_out453)) return _out453 || "Done.";
+  args.push("eval", `code=${wrapEval(script)}`);
+  const _out453 = exec(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
+  if (!_out453 || /^Error[:\s]/.test(_out453)) throw new Error(`filesMissingProperty failed: ${_out453 || "(no output)"}`);
   return _out453;
 }
 

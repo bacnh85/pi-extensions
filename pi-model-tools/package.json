@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-model-tools",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair (read-notice stripping + trim-tolerant retry), and a Codex-style apply_patch diff tool for DeepSeek V4 and GLM model families from any provider.",
   "type": "module",
   "license": "MIT",
@@ -40,8 +40,7 @@
     "README.md",
     "CHANGELOG.md",
     "extensions/index.ts",
-    "extensions/lib/",
-    "LICENSE"
+    "extensions/lib/"
   ],
   "pi": {
     "extensions": [

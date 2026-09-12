@@ -17,6 +17,7 @@ import {
   scanSlopTells,
   audit,
 } from "../../hooks/ux-audit.js";
+import { formatAuditResult } from "../index.js";
 
 // --- WCAG math ------------------------------------------------------------
 
@@ -153,6 +154,42 @@ test("scanStates: transition longhands and scroll-behavior count as motion", () 
   assert.equal(smooth.missingReducedMotion.length, 1);
   const inert = scanStates(`.a { transition-behavior: allow-discrete; }`);
   assert.equal(inert.missingReducedMotion.length, 0);
+});
+
+test("scanStates reports hasInteractive", () => {
+  assert.equal(scanStates(`button { color: red; }`).hasInteractive, true);
+  assert.equal(scanStates(`.card { padding: 24px; }`).hasInteractive, false);
+});
+
+test("formatAuditResult states hints match the actual failure", () => {
+  // Fragment with motion but no reduced-motion fallback and no interactive
+  // elements: gate fails; the hint names the real fix, only conditionally
+  // suggesting the fragment case (a complete stylesheet deserves the same
+  // advice).
+  const fragment = audit({ css: `.hero { transition: opacity 200ms; }` });
+  assert.equal(fragment.gates.states.pass, false);
+  assert.equal(fragment.gates.states.hasInteractive, false);
+  const text = formatAuditResult(fragment);
+  assert.match(text, /prefers-reduced-motion fallback/);
+  assert.ok(!text.includes("Fragment detected"));
+
+  // Fragment WITH interactive selectors but focus rules elsewhere: gets the
+  // complete-stylesheet hint (this case had no hint at all before 0.4.7).
+  const focusFragment = audit({ css: `button { color: red; }` });
+  assert.equal(focusFragment.gates.states.pass, false);
+  assert.match(formatAuditResult(focusFragment), /states rules may live in another file/);
+
+  // Motion failure WITH interactive elements: no fragment-style hint
+  // (the reduced-motion finding is real).
+  const full = audit({ css: `button { transition: opacity 200ms; }` });
+  assert.equal(full.gates.states.pass, false);
+  assert.equal(full.gates.states.hasInteractive, true);
+  assert.ok(!formatAuditResult(full).includes("Fragment detected"));
+
+  // Fragment that passes: no hint either.
+  const clean = audit({ css: `.card { padding: 24px; }` });
+  assert.equal(clean.gates.states.pass, true);
+  assert.ok(!formatAuditResult(clean).includes("Fragment detected"));
 });
 
 test("scanStates: a commented-out prefers-reduced-motion block does not satisfy the check", () => {

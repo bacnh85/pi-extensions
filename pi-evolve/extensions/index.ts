@@ -159,6 +159,15 @@ export default function evolveExtension(pi: ExtensionAPI) {
       ),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
+      // Plan gate (matches pi-plan's convention): saving is a mutation.
+      if (pi.getFlag?.("plan") === true) {
+        return {
+          content: [
+            { type: "text" as const, text: "Plan mode active: evolve_save is blocked (it's a mutation). Use evolve_reflect now, then save the learnings after exiting plan mode." },
+          ],
+          details: { error: true },
+        };
+      }
       const settings = readEvolveSettings(ctx.cwd);
       if (!settings.enabled) {
         return { content: [{ type: "text" as const, text: "pi-evolve is disabled." }] };

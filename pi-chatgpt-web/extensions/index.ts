@@ -155,9 +155,6 @@ function wireProvider(pi: ExtensionAPI, wiring: ProviderWiring) {
 // background and re-register when complete.
 
 export default async function (pi: ExtensionAPI) {
-  const chatConfig = getEffectiveConfig();
-  const codexConfig = getEffectiveCodexConfig();
-
   const chatWiring = wireProvider(pi, {
     providerId: PROVIDER_ID,
     cachePath: MODEL_CACHE_PATH,
@@ -175,8 +172,8 @@ export default async function (pi: ExtensionAPI) {
 
   registerCommands(
     pi,
-    () => chatConfig, () => chatWiring.getModelIds(), (c) => chatWiring.onConfigChange(c),
-    () => codexConfig, () => codexWiring.getModelIds(), (c) => codexWiring.onConfigChange(c),
+    () => getEffectiveConfig(), () => chatWiring.getModelIds(), (c) => chatWiring.onConfigChange(c),
+    () => getEffectiveCodexConfig(), () => codexWiring.getModelIds(), (c) => codexWiring.onConfigChange(c),
   );
 
   // Surface empty-account-pool failures (502 upstream_error) as an actionable
@@ -202,6 +199,8 @@ export default async function (pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    const chatConfig = getEffectiveConfig();
+    const codexConfig = getEffectiveCodexConfig();
     if (!chatConfig.baseUrl) {
       ctx.ui.notify("chatgpt-web not configured — run /login-chatgpt-web to connect.", "warning");
     } else {
@@ -214,6 +213,6 @@ export default async function (pi: ExtensionAPI) {
     }
   });
 
-  chatWiring.startup(chatConfig);
-  codexWiring.startup(codexConfig);
+  chatWiring.startup(getEffectiveConfig());
+  codexWiring.startup(getEffectiveCodexConfig());
 }

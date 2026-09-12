@@ -148,11 +148,14 @@ function resolve(p, cwd) {
 
 /**
  * Check whether `path` falls outside `cwd` (the external-directory boundary).
+ * A path exactly equal to cwd (e.g. reading the project root itself) is NOT
+ * external — only strictly-outside paths are.
  */
 function isExternal(path, cwd) {
   if (!path || !cwd) return false;
   const abs = resolve(path, cwd);
-  return !abs.startsWith(resolve(cwd, "") + "/");
+  const root = resolve(cwd, "");
+  return abs !== root && !abs.startsWith(root + "/");
 }
 
 // Tools that take a path and can trigger the external_directory boundary.

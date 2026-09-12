@@ -94,7 +94,7 @@ function makeDaemon(opts: {
 describe("daemon", () => {
   describe("buildSpawnArgs", () => {
     it("passes --config <path>", () => {
-      assert.deepEqual(buildSpawnArgs("/bin/konnect", "/tmp/k.toml"), ["--config", "/tmp/k.toml"]);
+      assert.deepEqual(buildSpawnArgs("/tmp/k.toml"), ["--config", "/tmp/k.toml"]);
     });
   });
 

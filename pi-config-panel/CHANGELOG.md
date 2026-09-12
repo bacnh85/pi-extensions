@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.6 (2026-09-12)
+
+### Fixed
+
+- Removed the phantom `extensions/tsconfig.json` from `files[]` (the file
+  does not exist; npm pack warned and the tarball shipped nothing for it).
+
 ## 0.1.5 (2026-09-11)
 
 ### Changed

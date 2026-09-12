@@ -10,9 +10,9 @@ Pi extension for **Obsidian vault tools** — a single unified tool that runs an
 |------|--------|
 | **Write reliability** | Write operations (create/write/append/prepend) route through base64-encoded `eval` — no escaping issues with `\`, `"`, `|`, literal `\n`, or large payloads. `content_from` reads from a vault note for convenience. |
 | **Properties** | `property:set` auto-normalizes spaces in array values; rejoins split tokens. |
-| **Directory handling** | `ensureFolderExists()` creates parent path before writing. Handles root folder `/` and empty folder string. |
+| **Directory handling** | `ensureFolder()` creates parent path before writing. Handles root folder `/` and empty folder string. |
 | **Tag operations** | `tag-rename from=X to=Y` command scans all files and renames tags across the vault. |
-| **Script execution** | `eval file=ScriptNoteName` reads JS from a vault note; auto-escapes bare quotes in `code=`. |
+| **Script execution** | `eval file=ScriptNoteName` reads JS from a vault note; bare expressions are auto-wrapped with `return`, and the eval body runs in a try/catch (thrown errors come back as `Error: ...` output). |
 
 ## Requirements
 
@@ -84,6 +84,11 @@ These are post-processed by the extension for richer output:
 | **Search grouped** | `search query=roadmap group=file` | Search results grouped by file with line numbers |
 | **Task creation** | `task-create path=note.md heading="Tasks" text="Buy milk"` | Adds a task line under the specified heading; creates the heading if missing |
 | **Create from template** | `create-from-template template="Project Brief" name="My Project" folder="01 Projects" title="..."` | Reads a template, fills `{{placeholder}}` values, writes a new note |
+| **Files by missing property** | `files missing-property=created` | Lists markdown notes whose frontmatter lacks the given property |
+| **Frontmatter tag validation** | `files validate-tags="type/,domain/"` | Reports notes with missing/invalid tags (defaults to `type/,domain/` dimensions) |
+| **Property rename** | `property:rename from=date to=created` | Renames a frontmatter property across all files |
+| **Search with replace** | `search query=old replace=new regex=true preview=true` | Replace across files; `preview=true` for dry-run, omit to apply |
+| **Frontmatter wrap** | `frontmatter:wrap` | Wraps leading `title:`/`tags:` lines of notes lacking frontmatter into a `---` block |
 
 ### Syntax rules
 

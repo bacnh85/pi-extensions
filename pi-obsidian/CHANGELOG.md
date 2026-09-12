@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.8.15 (2026-09-12)
+
+### Fixed
+
+- `files missing-property=` now fails closed like every other eval helper: the
+  eval body is wrapped in the standard try/catch (`wrapEval`) and a rejected
+  eval (empty output or `Error:` echo) throws instead of returning as success.
+
+### Documentation
+
+- Merged the duplicate `## 0.8.13` CHANGELOG headings into one entry.
+- README: corrected `ensureFolder` name, replaced the eval "auto-escapes bare
+  quotes" claim with the actual behavior (auto-`return` wrapping + try/catch),
+  and added the enhanced commands missing from the table (`files
+  missing-property=`, `files validate-tags=`, `property:rename`, `search …
+  replace=`, `frontmatter:wrap`).
+
 ## 0.8.14 (2026-08-17)
 
 ### Fixed
@@ -12,15 +29,11 @@
   so Windows path-style commands are blocked exactly like their backslash
   twins. POSIX behavior is unchanged (separator-only normalization).
 
-## 0.8.13 (2026-08-05)
+## 0.8.13 (2026-08-08)
 
 ### Improvements
 
 - Patch version bump for release sync and package documentation update.
-
-All notable changes to `pi-obsidian` will be documented in this file.
-
-## 0.8.13 (2026-08-08)
 
 ### Fixes
 

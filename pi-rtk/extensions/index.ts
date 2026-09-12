@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createLocalBashOperations, isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { hasUnsupportedRtkFind } from "./findFallback.js";
-import { parseSemver, supportsFindPassthrough } from "./version-gate.js";
+import { isAtLeastVersion, parseSemver, supportsFindPassthrough } from "./version-gate.js";
 
 const REWRITE_TIMEOUT_MS = 2_000;
 const RTK_UNAVAILABLE_RETRY_MS = 30_000;
@@ -14,14 +14,7 @@ let rtkUnavailableNotified = false;
 let rtkAvailable: boolean | undefined;
 let rtkLastCheckedAt = 0;
 let rtkSupportsFindPassthrough = false;
-
-function isAtLeastVersion(current: [number, number, number], minimum: [number, number, number]): boolean {
-  for (let i = 0; i < minimum.length; i += 1) {
-    if (current[i] > minimum[i]) return true;
-    if (current[i] < minimum[i]) return false;
-  }
-  return true;
-}
+let rtkVersion: string | null = null;
 
 function rewritingEnabled(): boolean {
   return sessionEnabled && !isRtkDisabled();
@@ -53,9 +46,13 @@ async function getRtkVersion(pi: ExtensionAPI): Promise<string | null> {
 }
 
 async function checkRtkAvailable(pi: ExtensionAPI, ctx: ExtensionContext): Promise<boolean> {
-  // Conservatively reset on every check; only a verified >=0.46 binary re-enables it.
+  // Availability gate: rtk >= 0.23.0 for `rtk rewrite`. A >= 0.46 binary does
+  // NOT affect availability — it only re-enables find passthrough below.
+  // Conservatively reset passthrough on every check; only a verified >=0.46
+  // binary re-enables it.
   rtkSupportsFindPassthrough = false;
   const version = await getRtkVersion(pi);
+  rtkVersion = version;
   if (!version) {
     rtkAvailable = false;
     rtkLastCheckedAt = Date.now();
@@ -147,7 +144,8 @@ async function maybeRewriteCommand(pi: ExtensionAPI, command: string, signal?: A
 
 async function showRtkStatus(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
   const available = await checkRtkAvailable(pi, ctx);
-  const version = available ? await getRtkVersion(pi) : null;
+  // Reuse the version checkRtkAvailable just fetched — no second spawn.
+  const version = available ? rtkVersion : null;
   const envDisabled = isRtkDisabled();
   const cacheState = rtkAvailable === false ? `unavailable (retry in ${Math.max(0, Math.ceil((RTK_UNAVAILABLE_RETRY_MS - (Date.now() - rtkLastCheckedAt)) / 1000))}s)` : "available";
   const lines = [

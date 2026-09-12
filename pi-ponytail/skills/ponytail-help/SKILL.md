@@ -13,7 +13,7 @@ write flag files, or persist anything.
 
 ## Levels
 
-| Level | Trigger | What change |
+| Level | Trigger | What changes |
 |-------|---------|-------------|
 | **Lite** | `/ponytail lite` | Build what's asked, name the lazier alternative in one line. |
 | **Full** | `/ponytail full` | The ladder enforced: YAGNI → stdlib → native → one line → minimum. Default. |
@@ -31,9 +31,6 @@ Level sticks until changed or session end.
 | **ponytail-debt** | `/skill:ponytail-debt` | Harvest `ponytail:` shortcut comments into a tracked ledger. |
 | **ponytail-gain** | `/skill:ponytail-gain` | Measured-impact scoreboard: less code, less cost, more speed. |
 | **ponytail-help** | `/skill:ponytail-help` | This card. |
-
-Codex uses `@ponytail`, `@ponytail-review`, and `@ponytail-help`; Claude Code
-and OpenCode can use `/skill:<name>` for one-shot skills.
 
 ## Deactivate
 
@@ -61,9 +58,13 @@ Resolution: env var > config file > `full`.
 
 ## Update
 
-Enable auto-update once: open `/plugin`, go to Marketplaces, pick ponytail, Enable auto-update. Claude Code then pulls new versions at startup (run `/reload-plugins` when it prompts). Manual refresh: `/plugin marketplace update ponytail` then `/reload-plugins`.
+Pi packages update by reinstalling:
 
-If `/plugin` is not recognized, your Claude Code is out of date. Update it (`npm install -g @anthropic-ai/claude-code@latest`, or `brew upgrade claude-code`) and restart. Other hosts use their own update flow.
+```bash
+pi install npm:@bacnh85/pi-ponytail
+```
+
+Restart pi to load the new version.
 
 ## More
 

@@ -51,7 +51,7 @@ Add a `permission` object to `.pi/settings.json` (project) or `~/.pi/agent/setti
 |------|---------|
 | `bash` | the shell command |
 | `read` / `write` / `edit` | the file path |
-| `grep` / `find` / `ls` | the path/glob/pattern |
+| `grep` / `find` / `ls` | the path (pattern-only searches have no subject) |
 | `external_directory` | deny-gate for paths outside the project cwd |
 | `*` | global default |
 

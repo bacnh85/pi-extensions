@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import { openConfigPanel, row } from "@bacnh85/pi-config-panel";
 import { DEFAULT_BASE_URL, fetchModels, mapModel, type CommandCodeModelRaw } from "./lib/client.js";
 import { getSettings, isCustomEndpoint, writeBaseUrl, type CommandCodeSettings } from "./lib/config.js";
@@ -66,9 +66,12 @@ function registerProvider(pi: ExtensionAPI, settings: CommandCodeSettings) {
     api: "openai-completions",
     refreshModels: async (context) => {
       // Restore from disk cache instantly if the network is unavailable.
+      // No cache → undefined ("keep current") so the catalog is never wiped.
+      // Cast: the composer runtime guards with `if (refreshed)` so undefined
+      // keeps the current catalog, but its .d.ts return type omits undefined.
       if (!context.allowNetwork || context.signal.aborted) {
         const cached = readModelCache();
-        return cached ? cached.map(mapModel) : [];
+        return cached ? cached.map(mapModel) : (undefined as unknown as ProviderModelConfig[]);
       }
 
       // apiKey is only safe to read from context.credential (resolved by Pi
@@ -154,7 +157,14 @@ function registerConfigCommand(pi: ExtensionAPI): void {
             ctx.ui.notify("No changes.", "info");
             return;
           }
-          const written = writeBaseUrl(working.baseUrl);
+          let written: string;
+          try {
+            written = writeBaseUrl(working.baseUrl);
+          } catch (err) {
+            // Corrupt global settings.json — surface instead of overwriting it.
+            ctx.ui.notify(`Not saved: ${err instanceof Error ? err.message : String(err)}`, "error");
+            return;
+          }
           // Re-register so the provider points at the new endpoint, then
           // force a catalog refresh (same pattern as pi-router).
           registerProvider(pi, working);

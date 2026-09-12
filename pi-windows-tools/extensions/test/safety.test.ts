@@ -22,6 +22,37 @@ describe("safety", () => {
       }
     });
 
+    it("recursive delete WITHOUT force flag is confirm (0.5.4)", () => {
+      // Recursion alone must ask — -Recurse without -Force and /s without /q
+      // previously classified as safe.
+      for (const command of ["Remove-Item -Recurse C:\\temp", "rm -r /tmp/dir", "rm --recursive /tmp/dir", "del /s C:\\temp", "rmdir /s C:\\temp", "rd /s C:\\temp"]) {
+        const r = classifyCommand(command);
+        expect(r.risk, command).to.equal("confirm");
+        expect(r.reasons, command).to.include("Recursive delete");
+      }
+    });
+
+    it("non-recursive force-only deletes stay safe (no r-flag over-match)", () => {
+      // -\w*r\w* matched ANY flag containing "r" (-Force, -Filter), wrongly
+      // prompting single-file deletes; the short-flag branch only matches
+      // POSIX-shaped clusters (-r/-R/-rf/-fr).
+      for (const command of ["Remove-Item -Force C:\\one.dll", "Remove-Item -Filter *.log .\\logs", "rm -f /tmp/one.txt"]) {
+        const r = classifyCommand(command);
+        expect(r.risk, command).to.equal("safe");
+        expect(r.reasons, command).to.not.include("Recursive delete");
+      }
+    });
+
+    it("PowerShell Remove-Item aliases with -Recurse are confirm", () => {
+      // ri/del/erase/rd ARE Remove-Item in PowerShell and accept -Recurse;
+      // they previously bypassed the recursive-delete gate entirely.
+      for (const command of ["ri -Recurse C:\\x", "del -Recurse C:\\x", "erase -Recurse C:\\x", "rd -Recurse C:\\x"]) {
+        const r = classifyCommand(command);
+        expect(r.risk, command).to.equal("confirm");
+        expect(r.reasons, command).to.include("Recursive delete");
+      }
+    });
+
     it("returns confirm for git push --force", () => {
       const r = classifyCommand("git push --force origin main");
       expect(r.risk).to.equal("confirm");

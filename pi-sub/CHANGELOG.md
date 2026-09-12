@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.39 (2026-09-12)
+
+### Fixed
+
+- **Guarded footer render against an uninitialized theme proxy** (pi-budget
+  parity): `renderSubscriptionLine` dereferenced `ctx.ui.theme.fg` unguarded —
+  if the theme isn't ready yet the throw escapes as a rejected promise and can
+  exit pi (the same unhandledRejection class 0.1.37/0.1.38 fixed elsewhere).
+  The footer is now best-effort: skipped when the theme isn't available.
+- **Finite-cost guard on `message_end` accumulation** (pi-budget parity): a
+  string or NaN `cost.total` previously hit `+=` directly — a string cost
+  concatenated onto the accumulator and garbled every subsequent footer.
+  Costs are now coerced with `Number()` and only finite positive values
+  accumulate.
+- README intro: Router (pi-router) listed among supported providers.
+
 ## 0.1.38 (2026-09-07)
 
 ### Fixed

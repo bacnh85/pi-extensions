@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-config-panel",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Shared interactive config-panel kernel for Pi extensions — arrow-key toggle/edit overlay panels (PanelRow/PanelGroup/PanelAction row model + ConfigPanelModel TUI shell) rendered via ctx.ui.custom.",
   "type": "module",
   "license": "MIT",
@@ -38,7 +38,6 @@
     "extensions/lib/",
     "extensions/package.json",
     "extensions/test/",
-    "extensions/tsconfig.json",
     "tsconfig.json",
     "extensions/.mocharc.yml"
   ],

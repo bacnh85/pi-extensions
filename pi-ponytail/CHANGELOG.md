@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.14 (2026-09-12)
+
+### Fixed
+
+- ponytail-help Update section now documents the Pi flow (reinstall via `pi install npm:@bacnh85/pi-ponytail`) instead of stale Claude Code /plugin marketplace and Codex instructions; dropped the stale Codex/Claude Code host note from the Skills section.
+- ponytail skill: removed a stray hardware paragraph (PCA9685/clock drift) leaked from an unrelated project — it was injected into every system prompt.
+- Fixed "What change" → "What changes" in both intensity tables (ponytail, ponytail-help).
+- extensions: removed an unreachable fallthrough notify at the end of the `/ponytail` handler (all `parsePonytailCommand` result types already return).
+
 ## 0.1.13 (2026-09-04)
 
 ### Added

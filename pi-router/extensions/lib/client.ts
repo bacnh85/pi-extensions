@@ -100,7 +100,9 @@ function detectThinkingFormat(modelId: string): string {
   if (id.includes("glm")) return "zai";
   if (id.includes("minimax")) return "minimax";
   if (id.includes("hunyuan")) return "hunyuan";
-  if (id.includes("step")) return "step";
+  // Anchored like the other families — a bare `includes("step")` grabbed any
+  // id containing "step" (e.g. "multistep", "stepwise") into the step map.
+  if (/step-|stepfun/.test(id)) return "step";
 
   // Default: OpenAI format (GPT, o-series, generic models)
   return "openai";

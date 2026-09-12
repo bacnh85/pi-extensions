@@ -42,7 +42,7 @@ import {
 import {
   flushWarnings,
   isRetryableModelResult,
-  normalizeTimeout,
+  resolveChildTimeouts,
   resolveSafeCwd,
   validateAgentTools,
   needsExtensions,
@@ -53,7 +53,6 @@ import {
   MAX_PARALLEL_TASKS,
   MAX_CHAIN_LENGTH,
   MAX_INSTRUCTIONS_LENGTH,
-  HARD_TIMEOUT_MS,
 } from "./security.ts";
 import {
   aggregateUsage,
@@ -888,16 +887,6 @@ export default function (pi: ExtensionAPI) {
         return { tools: result.tools, loadExtensions: needsExtensions(result.tools) };
       }
 
-      // Helper: normalise timeout.
-      function resolveChildTimeout(childTimeout: number | undefined, globalTimeout: number | undefined): number | undefined {
-        const effectiveTimeout = childTimeout ?? globalTimeout;
-        const result = normalizeTimeout({ requested: effectiveTimeout });
-        if (result.error) {
-          throw new Error(result.error);
-        }
-        return result.timeoutMs;
-      }
-
       // Helper: run a single agent via SDK with security validation
       async function runOne(
         agentName: string,
@@ -957,13 +946,13 @@ export default function (pi: ExtensionAPI) {
           const resolved = resolveChildTools(agent.tools, agent.sandbox, isReadOnly);
           tools = resolved.tools;
           loadExtensions = resolved.loadExtensions;
-          // Precedence: per-call timeout > agent frontmatter default > global default.
-          // The hard lifetime cap must never be shorter than the idle window
-          // (same invariant as the env-var clamp in security.ts) — an agent
-          // with timeout: 45 under a 20-min default cap would otherwise be
-          // hard-killed mid-stream while visibly producing deltas.
-          effectiveTimeoutMs = resolveChildTimeout(timeoutMs ?? (agent.timeout ? agent.timeout * 60 * 1_000 : undefined), params.timeout);
-          effectiveHardMs = Math.max(HARD_TIMEOUT_MS, effectiveTimeoutMs ?? 0);
+          // Precedence: per-call timeout > agent frontmatter default > global
+          // default; the hard lifetime cap is raised to match (shared resolver
+          // with the service path — resolveChildTimeouts in security.ts).
+          const timeouts = resolveChildTimeouts({ requested: timeoutMs, agentTimeoutMins: agent.timeout, globalTimeout: params.timeout });
+          if (timeouts.error) throw new Error(timeouts.error);
+          effectiveTimeoutMs = timeouts.timeoutMs;
+          effectiveHardMs = timeouts.hardTimeoutMs;
           safeCwd = resolveChildCwd(cwd);
         } catch (err: unknown) {
           const errorMsg = err instanceof Error ? err.message : String(err);

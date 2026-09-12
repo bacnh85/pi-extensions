@@ -10,12 +10,13 @@
 import { expect } from "chai";
 import piWebExtension from "../../index";
 
-function harness() {
+function harness(activeTools: string[] = []) {
   const tools: Record<string, any> = {};
   const handlers: Record<string, Function[]> = {};
   const pi: any = {
     registerTool(tool: any) { tools[tool.name] = tool; },
     on(name: string, handler: Function) { (handlers[name] ??= []).push(handler); },
+    getActiveTools: () => activeTools,
   };
   piWebExtension(pi);
   return { tools, handlers };
@@ -50,8 +51,14 @@ describe("pi-web before_agent_start routing guidance", () => {
     expect(result).to.equal(undefined);
   });
 
-  it("does not inject when selectedTools is undefined", async () => {
-    const { handlers } = harness();
+  it("falls back to pi.getActiveTools() when selectedTools is undefined", async () => {
+    const { handlers } = harness(["read", "web_search"]);
+    const result = await callHook(handlers, undefined);
+    expect(result.systemPrompt).to.include("Web Tool Routing (pi-web)");
+  });
+
+  it("does not inject when selectedTools is undefined and no web_* tool is active", async () => {
+    const { handlers } = harness(["read", "bash"]);
     const result = await callHook(handlers, undefined);
     expect(result).to.equal(undefined);
   });

@@ -47,6 +47,7 @@ npm install -g @bacnh85/pi-advisor
 /advisor models             # edit the full model chain (TUI panel; non-TUI prints it)
 /advisor status             # model chain, watch state, counters
 /advisor on                 # enable watch for this session (also clears a pause)
+/advisor watch-off          # disable background watch for this session
 /advisor off                # clear the chain (disables tool + watch)
 ```
 

@@ -1,6 +1,25 @@
 # Changelog
 
-## 0.2.0 — 2026-08-22
+## 0.2.1 (2026-09-12)
+
+### Fixed
+
+- **`writeBaseUrl` no longer wipes a corrupt settings.json.** The read step
+  conflated "file missing" with "file unparseable" (`?? {}`), so saving a new
+  baseUrl over a corrupt global settings.json destroyed every unrelated
+  section (router, a2a, …). writeBaseUrl now bails with an error when the file
+  exists but fails to parse (pi-router migrate.ts pattern); the config panel
+  surfaces the message instead of saving.
+- **Offline `refreshModels` no longer wipes the catalog.** With
+  `allowNetwork: false` (or an aborted signal) and a missing/corrupt disk
+  cache it returned `[]` — a truthy "here are the models" answer — so Pi
+  replaced the catalog with nothing. It now returns `undefined`
+  ("keep current") when there is no cache.
+- CHANGELOG date inversion: 0.2.0 was mislabeled 2026-08-22 (git: 2026-08-23)
+  and 0.1.6 was mislabeled 2026-08-24 (git: 2026-08-22).
+- Removed unused `typebox` peer dependency.
+
+## 0.2.0 — 2026-08-23
 
 ### Added
 
@@ -19,7 +38,7 @@
   matching pi-router. API keys stay in `auth.json` via `/login commandcode`
   (never settings.json).
 
-## 0.1.6 (2026-08-24)
+## 0.1.6 (2026-08-22)
 
 ### Fixes
 

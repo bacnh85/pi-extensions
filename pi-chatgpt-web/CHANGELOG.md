@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.1 (2026-09-12)
+
+### Fixed
+
+- **The bundled skill now ships.** `skills/` was missing from `files[]` and the
+  pi manifest, so the published package never carried
+  `skills/chatgpt-web/SKILL.md`.
+- **Stale config closure.** The extension factory snapshotted
+  `getEffectiveConfig()` / `getEffectiveCodexConfig()` once at startup;
+  `/login-chatgpt-web` saves were invisible to status output and session_start
+  warnings until restart. Commands now read live getters.
+- **`/chatgpt-web-status` account pool health.** The README/SKILL claimed the
+  status command reports account pool health but it never called
+  `fetchAccountPool`. Now wired in (best-effort: shows "unavailable" when the
+  pool endpoint doesn't respond, warns on an empty pool). codex-web status is
+  unaffected (codex-proxy has no pool monitor).
+- Removed unused `typebox` peer dependency.
+
 ## 0.2.0 — 2026-08-20
 
 **New provider: `codex-web` — tool-capable ChatGPT models via codex-proxy.**

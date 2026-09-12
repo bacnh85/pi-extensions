@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.1 (2026-09-12)
+
+### Changed
+
+- `isAtLeastVersion` is now imported from `version-gate.js` instead of a
+  verbatim duplicate in `index.ts`.
+- `/rtk status` reuses the version fetched by `checkRtkAvailable` instead of
+  spawning `rtk --version` a second time.
+
+### Fixed
+
+- README no longer claims `RTK_DISABLED` is read from cwd/Pi-global `.env`
+  files — it is read from the process environment only.
+- Clarified the availability-gate comment: rtk >= 0.23 is required for
+  availability; >= 0.46 only re-enables find passthrough.
+
 ## 0.2.0 (2026-08-31)
 
 ### Changed

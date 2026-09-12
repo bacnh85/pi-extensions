@@ -106,9 +106,10 @@ export function kiCadUserDirCandidates(
   home: string,
   plat: OsPlatform,
 ): string[] {
-  if (env.APPDATA) return [`${env.APPDATA}/kicad`];
+  // APPDATA is a Windows-only convention — a non-Windows host that happens to
+  // export it (CI images, wine envs) must not resolve its kicad dir from it.
+  if (plat === "win32") return [env.APPDATA ? `${env.APPDATA}/kicad` : `${home}/AppData/Roaming/kicad`];
   if (plat === "darwin") return [`${home}/Library/Application Support/kicad`];
-  if (plat === "win32") return [`${home}/AppData/Roaming/kicad`];
   return [`${home}/.local/share/kicad`];
 }
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.4 (2026-09-12)
+
+### Fixed — safety classification
+
+- **Recursive delete without a force flag now requires confirmation.**
+  `Remove-Item -Recurse` (no `-Force`), `rm -r` / `rm --recursive` (no force),
+  and `del /s` / `rmdir /s` / `rd /s` (no `/q`) previously classified as
+  **safe** because the two delete rules required recursion AND force. Both
+  rules now trigger on recursion alone — force only makes a recursive delete
+  worse, it was never what made it dangerous.
+  The short-flag match is limited to POSIX-shaped clusters (`-r`, `-R`, `-rf`,
+  `-fr`) so force-only non-recursive deletes (`Remove-Item -Force file.dll`,
+  `-Filter`) stay safe, and PowerShell aliases of `Remove-Item` (`ri`, `del`,
+  `erase`, `rd`) with `-Recurse` are covered too.
+
+### Fixed — shell execution
+
+- Spawn failures now surface the OS error: `Failed to spawn <exe>: <message>`
+  (e.g. the ENOENT) instead of the bare "Failed to spawn process".
+
 ## 0.5.3 (2026-08-17)
 
 ### Improvements

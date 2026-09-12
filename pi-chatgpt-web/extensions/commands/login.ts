@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ChatGptWebConfig } from "../lib/config.js";
 import { saveConfig, saveCodexConfig, configSummary, normalizeUrl } from "../lib/config.js";
-import { fetchModels } from "../lib/client.js";
+import { fetchModels, fetchAccountPool } from "../lib/client.js";
 import { PROVIDER_ID, CODEX_PROVIDER_ID } from "../lib/provider.js";
 import { refreshActiveModel } from "../index.js";
 
@@ -22,6 +22,8 @@ function registerTrio(
     getModelIds: () => string[];
     onConfigChange: ConfigChange;
     save: (config: ChatGptWebConfig) => void;
+    /** Bridge exposes the chatgpt2api pool monitor (/api/accounts). */
+    checkAccountPool: boolean;
   },
 ): void {
   pi.registerCommand(opts.loginCmd, {
@@ -142,6 +144,17 @@ function registerTrio(
         lines.push(`Bridge unreachable: ${err instanceof Error ? err.message : String(err)}`);
       }
 
+      if (opts.checkAccountPool) {
+        try {
+          const pool = await fetchAccountPool(config);
+          lines.push(pool.total > 0
+            ? `Account pool: ${pool.total} account(s) available.`
+            : "⚠ Account pool is EMPTY — add a web account in the bridge admin panel.");
+        } catch {
+          lines.push("Account pool: unavailable.");
+        }
+      }
+
       lines.push("", "Commands:");
       lines.push(`  /${opts.loginCmd}   Configure connection`);
       lines.push(`  /${opts.modelCmd}   Search and select a model`);
@@ -171,6 +184,7 @@ export function registerCommands(
     getModelIds: getChatModelIds,
     onConfigChange: onChatConfigChange,
     save: saveConfig,
+    checkAccountPool: true,
   });
 
   registerTrio(pi, {
@@ -184,5 +198,6 @@ export function registerCommands(
     getModelIds: getCodexModelIds,
     onConfigChange: onCodexConfigChange,
     save: saveCodexConfig,
+    checkAccountPool: false,
   });
 }

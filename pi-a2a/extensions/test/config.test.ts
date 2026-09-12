@@ -1045,6 +1045,36 @@ childTranscripts: false,
         assert.deepEqual(Object.keys(a2a.discovery.gateways), ["work"], "removed entry gone");
       });
     });
+
+    it("peer timeout round-trip is idempotent (settings seconds, no 1000× drift)", () => {
+      withIsolatedPiDir((dir) => {
+        const cfg = cfgWith(
+          { peers: { bob: { url: "http://b", auth: { type: "none" }, timeout: 120, capabilities: [] } } },
+          dir,
+        );
+        assert.equal(cfg.peers.bob?.timeout, 120000, "loader: seconds → ms");
+
+        // Panel edit (no timeout change) → patch → simulated save → reload.
+        const working = structuredClone(cfg);
+        const next = buildA2ASettingsPatch({ cfg, working, peerChanges: true, gatewayChanged: false })({ peers: {} });
+        assert.equal(next.peers.bob.timeout, 120, "persisted back as seconds");
+        fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ a2a: next }));
+        const cfg2 = loadConfig({ cwd: dir });
+        assert.equal(cfg2.peers.bob?.timeout, 120000);
+
+        // Second cycle must be byte-identical in the settings file.
+        const next2 = buildA2ASettingsPatch({ cfg: cfg2, working: structuredClone(cfg2), peerChanges: true, gatewayChanged: false })({
+          peers: {},
+        });
+        assert.deepEqual(next2.peers, next.peers, "no drift on second save");
+
+        // Panel-added peer (addPeer seeds runtime ms 120000) persists as 120 s.
+        const working3 = structuredClone(cfg2);
+        working3.peers.newp = { url: "http://n", auth: { type: "none" }, timeout: 120000, capabilities: [] };
+        const next3 = buildA2ASettingsPatch({ cfg: cfg2, working: working3, peerChanges: true, gatewayChanged: false })({ peers: {} });
+        assert.equal(next3.peers.newp.timeout, 120, "addPeer seed lands as seconds");
+      });
+    });
   });
 
   describe("writeSettingsA2A", () => {

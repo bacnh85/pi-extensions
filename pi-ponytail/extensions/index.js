@@ -137,8 +137,6 @@ export default function ponytailExtension(pi) {
         ctx?.ui?.notify?.(msg, "warning");
         return;
       }
-
-      ctx?.ui?.notify?.("Unknown or unsupported /ponytail mode.", "warning");
     },
   });
 

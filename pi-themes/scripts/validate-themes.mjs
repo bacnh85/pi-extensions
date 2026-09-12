@@ -16,9 +16,15 @@ if (files.length === 0) {
 
 // Reference token set comes from this package's themes/dark.json, regardless
 // of which dir is being validated, so alternate dirs can be checked too.
-const reference = JSON.parse(
-  readFileSync(join(dirname(dirname(fileURLToPath(import.meta.url))), "themes", "dark.json"), "utf8"),
-);
+let reference;
+try {
+  reference = JSON.parse(
+    readFileSync(join(dirname(dirname(fileURLToPath(import.meta.url))), "themes", "dark.json"), "utf8"),
+  );
+} catch (e) {
+  console.error(`reference themes/dark.json is not valid JSON: ${e.message}`);
+  process.exit(1);
+}
 const required = Object.keys(reference.colors).sort();
 
 let failed = false;
@@ -27,7 +33,14 @@ const isColorValue = (v, vars) =>
   typeof v === "number" || v === "" || /^#[0-9A-Fa-f]{6}$/.test(v) || vars.has(v);
 
 for (const file of files) {
-  const theme = JSON.parse(readFileSync(join(dir, file), "utf8"));
+  let theme;
+  try {
+    theme = JSON.parse(readFileSync(join(dir, file), "utf8"));
+  } catch (e) {
+    console.error(`${file}: not valid JSON: ${e.message}`);
+    failed = true;
+    continue;
+  }
   const fail = (msg) => {
     console.error(`${file}: ${msg}`);
     failed = true;

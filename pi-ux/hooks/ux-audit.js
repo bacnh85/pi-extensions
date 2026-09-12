@@ -206,7 +206,7 @@ function scanOffSystem(css, tokens) {
 // .test() flake across calls, so use plain includes().
 function scanStates(css) {
   css = css.replace(/\/\*[\s\S]*?\*\//g, ' '); // dead code must not fail the gate
-  const findings = { missingFocusVisible: [], missingDisabled: [], missingReducedMotion: [] };
+  const findings = { missingFocusVisible: [], missingDisabled: [], missingReducedMotion: [], hasInteractive: false };
 
   // Motion needs a reduced-motion fallback regardless of interactive elements
   // (a hero fade-in on a page with no buttons still needs one).
@@ -219,6 +219,7 @@ function scanStates(css) {
   const hasInteractive =
     /\b(?:button|a|input|select|textarea)\b/i.test(css) || /\[role\s*=\s*"?button"?\]/i.test(css);
   if (!hasInteractive) return findings;
+  findings.hasInteractive = true;
 
   if (!css.includes(':focus-visible')) findings.missingFocusVisible.push('no :focus-visible rule for interactive elements');
   if (!css.includes(':disabled')) findings.missingDisabled.push('no :disabled rule for interactive elements');

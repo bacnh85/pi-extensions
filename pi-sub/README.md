@@ -2,7 +2,7 @@
 
 Pi extension that shows subscription usage for the currently selected supported model provider.
 
- Supports OpenAI Codex (`openai-codex`) with live usage windows from ChatGPT's usage endpoint, OpenCode Go (`opencode-go`) with session cost tracking, and Z.ai GLM Coding Plan — both the international (`zai`) and China (`zai-coding-cn`, `open.bigmodel.cn`) endpoints — with quota monitoring. Also tracks Command Code (`commandcode`) 5-hour/weekly windows and monthly credit balance. Displays a subscription footer status after Pi's built-in status/token usage line.
+ Supports OpenAI Codex (`openai-codex`) with live usage windows from ChatGPT's usage endpoint, OpenCode Go (`opencode-go`) with session cost tracking, and Z.ai GLM Coding Plan — both the international (`zai`) and China (`zai-coding-cn`, `open.bigmodel.cn`) endpoints — with quota monitoring. Also tracks Router (pi-router, `router` provider) with response-speed tracking and optional OmniRoute quota windows, and Command Code (`commandcode`) 5-hour/weekly windows and monthly credit balance. Displays a subscription footer status after Pi's built-in status/token usage line.
 
 ## Install
 

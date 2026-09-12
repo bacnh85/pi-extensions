@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.2 (2026-09-12)
+
+### Fixed
+
+- `turn_end` cache stats coalesce missing `usage.input`/`cacheRead`/
+  `cacheWrite` to `0` before the zero-guard and accumulation — optional fields
+  no longer poison the aggregates to `NaN`.
+- npm `files[]` no longer lists a `LICENSE` file (none exists).
+- README: `PI_MODEL_TOOLS_STRIP_REASONING` documented with its real default
+  (`1`, on); reasoning-strip feature row no longer calls it opt-in; Super Power
+  Mode prose corrected from "enabled by default" to opt-in.
+
 ## 0.8.1 (2026-09-10)
 
 ### Fixed

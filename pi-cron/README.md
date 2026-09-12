@@ -39,7 +39,7 @@ closed at the scheduled time). Jobs only run while a pi process is open — use
 `thinking:"high"` on a job and it runs **headless in its own pi process**
 (`pi -p --no-session --model … --thinking …`) instead of the live session —
 useful for cheap/fast models or isolated runs. Output is logged under
-`<agentDir>/cron/logs/` (10-min hard cap per run) and the result is delivered
+`<agentDir>/cron/logs/` (default 10 min, configurable via cron.timeoutMs) and the result is delivered
 back into the session as a follow-up. `export` includes the pins in crontab
 lines. Headless children run with `PI_CRON_DISABLED=1`: the cron scheduler is
 off inside them (no parent/child races on `jobs.json`) and job mutations

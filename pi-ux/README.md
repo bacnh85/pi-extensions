@@ -19,7 +19,7 @@ Pi auto-discovers the extension and skill.
 ## Usage
 
 ```
-/ux              # toggle / show status
+/ux              # reset to configured default mode
 /ux strict       # guardrail + enforce ux_audit gate before handoff (default)
 /ux lite         # guardrail only (ideation, exploration)
 /ux off          # disable

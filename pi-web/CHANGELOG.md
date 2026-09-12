@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.1 (2026-09-12)
+
+### Fixed
+
+- `before_agent_start` routing guidance now falls back to `pi.getActiveTools()`
+  when the host omits `systemPromptOptions` (mirrors pi-fff), so guidance no
+  longer silently skips injection.
+- README: corrected default backend URLs to `127.0.0.1` (matching code defaults
+  in `lib/config.ts`), removed the nonexistent `npm run test:unit` script
+  reference, documented the `web_search` `timeout_ms` parameter.
+
 ## 0.7.0 (2026-09-11)
 
 ### Added

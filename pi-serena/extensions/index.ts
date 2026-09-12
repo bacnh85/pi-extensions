@@ -422,7 +422,18 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     promptGuidelines: ["Use when the worker is unresponsive; kills and re-spawns the Python bridge."],
     parameters: emptyToolSchema,
     async execute(_id, _params, _signal, _onUpdate, ctx) {
-      getWorker(ctx).restart();
+      // restart() spawns eagerly; without Python installed it throws
+      // synchronously — surface that as a tool error, never a raw throw.
+      try {
+        getWorker(ctx).restart();
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify?.(`Failed to restart Serena worker: ${msg}`, "error");
+        return {
+          content: [{ type: "text" as const, text: `Failed to restart Serena worker: ${msg}` }],
+          details: { ok: false, error: msg },
+        };
+      }
       return {
         content: [{ type: "text" as const, text: "Serena worker restarted." }],
         details: { ok: true, result: "Worker restarted" },
@@ -522,8 +533,13 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
   pi.registerCommand("serena-restart", {
     description: "Restart the persistent Serena worker",
     handler: async (_args, ctx) => {
-      getWorker(ctx).restart();
-      ctx.ui.notify("Restarted Serena worker", "info");
+      try {
+        getWorker(ctx).restart();
+        ctx.ui.notify("Restarted Serena worker", "info");
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`Failed to restart Serena worker: ${msg}`, "error");
+      }
     },
   });
 
@@ -578,7 +594,12 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
       // worker stop failed — proceed with cleanup
     } finally {
       worker = undefined;
-      ctx.ui.setStatus("serena", undefined);
+      // ctx may already be stale/tearing down during shutdown — never throw here.
+      try {
+        ctx?.ui?.setStatus?.("serena", undefined);
+      } catch {
+        // best-effort cleanup
+      }
     }
   });
 }

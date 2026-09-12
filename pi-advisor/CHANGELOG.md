@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.4 (2026-09-12)
+
+### Removed
+
+- Dead `AdvisorState.getThinking` knob (sole impl returned `undefined`; the
+  value flowed nowhere meaningful).
+
+### Fixed
+
+- `saveModels` / `migrateLegacyAdvisorModel` no longer leave a `*.tmp-*` file
+  behind when the final rename throws (best-effort unlink, error re-thrown).
+
+### Documentation
+
+- README: added `/advisor watch-off` to the command list.
+
 ## 0.2.3 (2026-09-11)
 
 - **Fix 20–30s+ TUI freeze after every settled turn**: pi core awaits

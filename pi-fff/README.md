@@ -77,6 +77,7 @@ Parameters:
 - `context` — context lines around matches
 - `limit` — global max matches per page (default: 20)
 - `outputMode` — `"content"`, `"files_with_matches"`, or `"count"` (default: `"content"`)
+- `caseSensitive` — `true` for exact case (smart-case by default)
 - `cursor` — pagination cursor from previous result
 
 ### `related_files`

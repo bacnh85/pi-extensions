@@ -243,7 +243,7 @@ function cmdRemove(refs, flags) {
   if (!sources.length) {
     const installed = readSettingsPackages().filter((p) => p.startsWith("npm:"));
     if (!installed.length) return console.log(paint.dim("no npm pi packages to remove"));
-    sources = installed; // interactive pick happens below via picker
+    sources = installed;
   }
   for (const source of sources) {
     console.log(paint.yellow(`pi remove ${source}`));
@@ -264,7 +264,7 @@ Usage:
 
 Flags:
   -l, --local    project-local install (.pi/settings.json) instead of user scope
-  -y, --yes      skip confirmation
+  -y, --yes      quiet (suppress the install plan printout; install runs immediately)
   --json         machine-readable output (find)
   -h, --help     this help`);
   if (code !== undefined) process.exitCode = code;

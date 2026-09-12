@@ -1103,6 +1103,9 @@ export function renderSubscriptionLine(state: State): void {
   const ctx = state.ctx;
   if (!ctx) return;
   const theme = ctx.ui.theme;
+  // pi-budget parity: the theme proxy may not be initialized yet — dereferencing
+  // theme.fg throws (unhandledRejection → pi exits). Best-effort footer: skip.
+  if (!theme?.fg) return;
   if (!state.adapter) {
     // Unsupported provider (e.g. Ollama): still show the last response speed.
     ctx.ui.setStatus(STATUS_KEY, state.lastTokPerSec !== undefined ? theme.fg("dim", `${state.lastTokPerSec} tok/s`) : undefined);
@@ -1340,7 +1343,11 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("message_end", async (event, _ctx) => {
     if (event.message.role === "assistant") {
-      state.cumulativeCost += (event.message.usage as any)?.cost?.total ?? 0;
+      // pi-budget parity: coerce + finite guard so a string/NaN cost.total can
+      // never poison the accumulator (string concat garbles every subsequent
+      // footer).
+      const cost = Number((event.message.usage as any)?.cost?.total);
+      if (Number.isFinite(cost) && cost > 0) state.cumulativeCost += cost;
       if (state.responseStartTime) {
         // usage.output already includes reasoning tokens (Pi SDK contract) —
         // this is total tok/s in both thinking and normal mode.

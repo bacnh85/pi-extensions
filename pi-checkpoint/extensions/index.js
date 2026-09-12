@@ -64,23 +64,43 @@ export default function checkpointExtension(pi) {
     }
     const n = sessionCounter++;
     const ref = refName(sid, n);
+    // A new turn invalidates redo history (standard undo/redo semantics);
+    // otherwise /redo would re-apply stale states on top of the new checkpoint.
+    redoBuffer.length = 0;
 
     // `git stash create` returns a commit ref of the current working/index
     // state WITHOUT touching the stash list. Empty stdout = clean tree (nothing
     // to snapshot). We still record an empty checkpoint so /undo depth matches
     // turns, even when a turn made no changes.
     const created = await git(["stash", "create"], ctx);
+    if (created?.failed) {
+      // Git failure ≠ clean tree: skip this checkpoint instead of silently
+      // recording a bogus "clean" one.
+      notify(ctx, `pi-checkpoint: snapshot skipped — git stash create failed (${(created.stderr || "unknown error").trim()}).`, "warning");
+      return;
+    }
     if (!created?.stdout?.trim()) {
       stack.push({ ref: null, n });
       return;
     }
     const tree = created.stdout.trim();
-    await git(["update-ref", ref, tree], ctx);
+    const upd = await git(["update-ref", ref, tree], ctx);
+    if (upd?.failed) {
+      notify(ctx, `pi-checkpoint: snapshot skipped — git update-ref failed (${(upd.stderr || "unknown error").trim()}).`, "warning");
+      return;
+    }
     stack.push({ ref, n });
   }
 
   async function restoreRef(ref, ctx) {
-    if (!ref) return; // empty checkpoint — nothing to restore
+    if (ref === undefined) return; // nothing recorded — nothing known to restore
+    if (ref === null) {
+      // Target checkpoint was "clean" (stash create empty → tracked state == HEAD).
+      // Restoring = discard tracked changes since then; untracked files are left
+      // alone (safer than git clean).
+      await git(["checkout", "HEAD", "--", "."], ctx);
+      return;
+    }
     // Restore tracked-file state from the snapshot's tree into worktree+index.
     // `git checkout <tree> -- .` touches only tracked paths at that tree;
     // untracked files remain.
@@ -133,12 +153,20 @@ export default function checkpointExtension(pi) {
         if (!top) break;
         undone.push(top);
       }
-      redoBuffer.push(...undone.reverse());
+      // undone is newest-first ([C, B] for depth 2); push as-is so /redo pops
+      // B (older) first and replays forward in order.
+      redoBuffer.push(...undone);
 
       const target = stack[stack.length - 1];
-      await restoreRef(target?.ref, ctx);
-      const label = target?.ref ? target.n : "(clean)";
-      notify(ctx, `Undid ${undone.length} turn(s); file state restored to checkpoint ${label}.`, "info");
+      if (!target) {
+        notify(ctx, `Undid ${undone.length} turn(s); no earlier checkpoint to restore.`, "info");
+        return;
+      }
+      await restoreRef(target.ref, ctx);
+      const label = target.ref
+        ? `checkpoint ${target.n}`
+        : "clean state (HEAD) — tracked changes discarded";
+      notify(ctx, `Undid ${undone.length} turn(s); file state restored to ${label}.`, "info");
     },
   });
 

@@ -178,7 +178,7 @@ Child agent tools are validated against a fixed allowlist:
 
 - **Allowed:** `read`, `grep`, `find`, `ls`, `bash`, `edit`, `write`
 - **Always rejected:** `subagent` (prevents recursive delegation)
-- **Read-only restriction:** When a service requests read-only execution, only `read`, `grep`, `find`, `ls` are permitted. `bash`, `edit`, and `write` are rejected.
+- **Read-only restriction:** When a service requests read-only execution, only the built-in reads plus the read-only extension allowlist (FFF, Windows, web, Serena, Munin — see `READ_ONLY_TOOLS` in `extensions/security.ts`) are permitted. `bash`, `edit`, and `write` are rejected.
 
 Unknown or misspelled tool names produce clear diagnostics. Duplicate tool names are deduplicated.
 
@@ -303,10 +303,10 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Compatibility
 
-- Requires `@earendil-works/pi-coding-agent >=0.80.0 <0.85.0`
-- Requires `@earendil-works/pi-ai >=0.80.0 <0.85.0`
-- Requires `@earendil-works/pi-agent-core >=0.80.0 <0.85.0`
-- Requires `@earendil-works/pi-tui >=0.80.0 <0.85.0`
+- Requires `@earendil-works/pi-coding-agent >=0.80.0 <0.86.0`
+- Requires `@earendil-works/pi-ai >=0.80.0 <0.86.0`
+- Requires `@earendil-works/pi-agent-core >=0.80.0 <0.86.0`
+- Requires `@earendil-works/pi-tui >=0.80.0 <0.86.0`
 - Requires `typebox >=1.3.0 <2.0.0`
 - Requires Node.js >= 20.18
 

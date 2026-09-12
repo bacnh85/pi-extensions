@@ -38,7 +38,7 @@ Add a `references` object to `.pi/settings.json` (project) or `~/.pi/agent/setti
 | `repository` | — | ✅ | Git URL, `host/path`, or GitHub `owner/repo` |
 | `branch` | — | ✅ | Optional branch/ref (defaults to repo default) |
 | `description` | ✅ | ✅ | When to use the reference (advertised to the agent) |
-| `hidden` | ✅ | ✅ | Hide from future autocomplete (still advertised if it has a description) |
+| `hidden` | ✅ | ✅ | Hide from the agent: excluded from the system-prompt advertisement even when a `description` is set |
 
 ### Shorthand
 

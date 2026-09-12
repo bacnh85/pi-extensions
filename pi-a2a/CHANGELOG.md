@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.8 (2026-09-12)
+
+### Fixed
+
+- **Peer `timeout` no longer inflates 1000× on every `/a2a-config` save.**
+  Settings store peer timeouts in SECONDS (the loader multiplies by 1000
+  on read), but the panel persisted the runtime millisecond value
+  verbatim, so each panel save turned 120 → 120000 (~33 h).
+  `buildA2ASettingsPatch` now converts peers back to settings units on
+  write — the single writer-side conversion, covering panel edits and the
+  panel-add default (120 s) alike. A panel-added peer lands as
+  `timeout: 120` in settings.json and load → save → load round-trips are
+  idempotent (regression-tested).
+- **`/a2a-help` now lists the `a2a_peers` tool** (was 6 of 7).
+- README environment table: added the missing `A2A_CHILD_TRANSCRIPTS` and
+  `A2A_CHILD_TRANSCRIPT_RETENTION_DAYS` rows.
+
 ## 0.7.7 (2026-09-11)
 
 ### Added

@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-chatgpt-web",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Pi extension that turns a self-hosted ChatGPT-web bridge (OpenAI-compatible, e.g. basketikun/chatgpt2api) into a Pi provider for free web-tier models.",
   "type": "module",
   "license": "MIT",
@@ -35,16 +35,19 @@
     "extensions/index.ts",
     "extensions/lib/",
     "extensions/commands/",
+    "skills/",
     "LICENSE"
   ],
   "pi": {
     "extensions": [
       "./extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
+    "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

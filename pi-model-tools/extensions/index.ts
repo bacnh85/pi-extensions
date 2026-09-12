@@ -797,9 +797,9 @@ export default function (pi: ExtensionAPI) {
     if (event.message.role !== "assistant") return;
     const usage = event.message.usage;
     if (!usage) return;
-    const input = usage.input;
-    const cacheRead = usage.cacheRead;
-    const cacheWrite = usage.cacheWrite;
+    const input = usage.input ?? 0;
+    const cacheRead = usage.cacheRead ?? 0;
+    const cacheWrite = usage.cacheWrite ?? 0;
     if (input === 0 && cacheRead === 0 && cacheWrite === 0) return;
     cacheStats.input += input;
     cacheStats.cacheRead += cacheRead;

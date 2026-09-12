@@ -19,7 +19,6 @@ export function parseChainArgument(raw: string): string[] {
 export interface AdvisorState {
   getModels(): string[];
   setModels(models: string[]): Promise<void> | void;
-  getThinking(): string | undefined;
   getRuntime(): WatcherRuntime | undefined;
   isWatchEnabled(): boolean;
   setWatchEnabled(value: boolean): void;
@@ -100,7 +99,6 @@ export function registerAdvisor(pi: ExtensionAPI, state: AdvisorState): void {
       const transcriptEvidence = buildEvidence(ctx, models, transcript.messages, SYSTEM);
       const chain = models.join(" → ");
       onUpdate?.({ content: [{ type: "text", text: `Consulting ${chain}…` }], details: { models } });
-      const reasoning = state.getThinking();
       // Progressive display resets per attempt: a candidate that dies mid-stream
       // must not leave its partial output above the next candidate's response.
       let output = "";
@@ -116,7 +114,7 @@ export function registerAdvisor(pi: ExtensionAPI, state: AdvisorState): void {
         if (forAttempt !== attempt) { attempt = forAttempt; output = ""; }
         output += delta;
         onUpdate?.({ content: [{ type: "text", text: output }], details: { models } });
-      }, signal, reasoning);
+      }, signal);
       return {
         content: [{ type: "text", text: `Advice from ${result.model}:\n${result.text}` }],
         details: { models, served: result.model },

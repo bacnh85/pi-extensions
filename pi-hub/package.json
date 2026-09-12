@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-hub",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Interactive installer for Pi coding agent packages — browse, search, and install pi extensions via npx pi-hub",
   "license": "MIT",
   "author": "bacnh85",

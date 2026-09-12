@@ -7,7 +7,7 @@ import {
   isRateLimitError,
   validateAgentTools,
   needsExtensions,
-  normalizeTimeout,
+  resolveChildTimeouts,
   resolveSafeCwd,
   MAX_INSTRUCTIONS_LENGTH,
   READ_ONLY_TOOLS,
@@ -58,12 +58,18 @@ export async function runNamedAgent(options: {
   const modelRuntime = (modelRegistry as any).runtime;
   const authStorage = (modelRegistry as any).authStorage;
 
-  // Security: validate and normalise timeout.
-  const timeoutResult = normalizeTimeout({ requested: options.timeout });
+  // Security: validate and normalise timeout — the same shared resolver the
+  // tool path uses, so agent frontmatter `timeout:` is honored and the hard
+  // lifetime cap is raised to match (never shorter than the idle window).
+  const timeoutResult = resolveChildTimeouts({
+    requested: options.timeout,
+    agentTimeoutMins: options.agent.timeout,
+  });
   if (timeoutResult.error) {
     throw new Error(timeoutResult.error);
   }
   const effectiveTimeoutMs = timeoutResult.timeoutMs;
+  const effectiveHardMs = timeoutResult.hardTimeoutMs;
 
   // Parent tool names — agents without an explicit `tools` line inherit them.
   const parentToolNames = (options.ctx as any).getAllTools?.()?.map((t: { name: string }) => t.name) as string[] | undefined;
@@ -117,6 +123,7 @@ export async function runNamedAgent(options: {
         modelRegistry,
         signal: options.signal,
         timeoutMs: effectiveTimeoutMs,
+        hardTimeoutMs: effectiveHardMs,
         agentName: options.agent.name,
         thinkingLevel,
         onMessage: options.onMessage,

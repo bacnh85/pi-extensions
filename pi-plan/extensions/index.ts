@@ -11,7 +11,7 @@ import {
   withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
 import { isOverloadError } from "./lib/fallback";
@@ -563,7 +563,12 @@ async function savePreferences(preferences: PlanPreferences): Promise<void> {
   settings["pi-plan"] = preferences;
   const tmp = `${file}.${process.pid}.tmp`;
   await writeFile(tmp, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
-  await rename(tmp, file);
+  try {
+    await rename(tmp, file);
+  } catch (e) {
+    try { await unlink(tmp); } catch { /* best-effort cleanup */ }
+    throw e;
+  }
 }
 
 function isReviewFinding(value: unknown): value is ReviewFinding {
@@ -864,7 +869,14 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     clearPlanSessionAllows();
     // ponytail: after approval, start fresh plan path
     if (lastPlanStatus === "approved" || lastPlanStatus === "executing") {
+      // ponytail: re-entry discards the old flow — abort its in-flight
+      // controller and clear the pending review timer so stale timers don't
+      // fire against the discarded flow.
       flow = undefined;
+      flowController?.abort();
+      flowController = undefined;
+      if (reviewTimer) clearTimeout(reviewTimer);
+      reviewTimer = undefined;
       lastPlanPath = undefined;
       lastPlanTitle = undefined;
       lastPlanStatus = undefined;

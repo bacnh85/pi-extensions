@@ -52,7 +52,8 @@ read → error(ENOENT)
 - **Static hint** — 9 error categories with action-oriented hints (adapted from
   pi-model-tools' `categorizeToolError`).
 - **Stored-fix recall** — searches recovery learnings by the error text
-  (Munin search or local keyword rank), best-effort within ~1s.
+  (Munin search or local keyword rank), best-effort within 3s
+  (RECALL_TIMEOUT_MS).
 - **Repeat escalation** — same error ≥2× adds `You've hit X on Y N× — try a
   different approach`.
 - **Plan-mode aware** — in pi-plan read-only mode, the `edit_mismatch` hint

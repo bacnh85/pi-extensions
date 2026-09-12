@@ -465,6 +465,45 @@ export function normalizeTimeout(options: NormalizeTimeoutOptions): NormalizeTim
 }
 
 // ---------------------------------------------------------------------------
+// Child timeout resolution (shared by tool path and service path)
+// ---------------------------------------------------------------------------
+
+export interface ResolveChildTimeoutsOptions {
+  /** Per-call timeout in ms (tool `timeout` param / service `timeout` option). */
+  requested?: number;
+  /** Agent frontmatter `timeout:` in minutes. */
+  agentTimeoutMins?: number;
+  /** Caller-wide timeout in ms, used when nothing more specific is set. */
+  globalTimeout?: number;
+}
+
+export interface ResolveChildTimeoutsResult {
+  /** Idle (inactivity) timeout in ms for the child run. */
+  timeoutMs?: number;
+  /** Hard lifetime cap in ms — never shorter than the idle window. */
+  hardTimeoutMs?: number;
+  /** Error message if the value is invalid. */
+  error?: string;
+}
+
+/**
+ * Resolve a child run's effective timeouts — the single resolver shared by the
+ * tool path (index.ts) and the service path (service.ts runNamedAgent).
+ *
+ * Precedence: per-call timeout > agent frontmatter `timeout:` > global/caller
+ * timeout. The hard lifetime cap must never be shorter than the idle window
+ * (same invariant as the env-var clamp above) — an agent with `timeout: 45`
+ * under a 20-min default cap would otherwise be hard-killed mid-stream while
+ * visibly producing deltas.
+ */
+export function resolveChildTimeouts(options: ResolveChildTimeoutsOptions): ResolveChildTimeoutsResult {
+  const agentMs = options.agentTimeoutMins ? options.agentTimeoutMins * 60_000 : undefined;
+  const result = normalizeTimeout({ requested: options.requested ?? agentMs ?? options.globalTimeout });
+  if (result.error) return { error: result.error };
+  return { timeoutMs: result.timeoutMs, hardTimeoutMs: Math.max(HARD_TIMEOUT_MS, result.timeoutMs ?? 0) };
+}
+
+// ---------------------------------------------------------------------------
 // Abort signal composition
 // ---------------------------------------------------------------------------
 

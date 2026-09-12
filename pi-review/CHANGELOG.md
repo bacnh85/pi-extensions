@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.10 (2026-09-12)
+
+### Fixed
+
+- Dropped `typebox` from `peerDependencies` and `devDependencies` — it was
+  never imported (pi-coding-agent provides its own).
+- Capped the `@earendil-works/pi-coding-agent` peer range at
+  `>=0.84.3 <0.86.0` instead of `*`.
+
 ## 0.2.9 (2026-08-29)
 
 ### Added

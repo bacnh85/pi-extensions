@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import os from "node:os";
 import { join } from "node:path";
 
 import referencesExtension, {
@@ -58,6 +59,12 @@ test("normalizeReference: local relative path resolved against cwd", () => {
 test("normalizeReference: absolute path kept as-is", () => {
   const r = normalizeReference("docs", "/abs/path", "/proj", "/cache");
   assert.equal(r.path, "/abs/path");
+});
+
+test("normalizeReference: ~-prefixed path expands to the real home dir", () => {
+  const r = normalizeReference("notes", "~/docs/notes", "/proj", "/cache");
+  assert.equal(r.path, join(os.homedir(), "docs/notes"));
+  assert.equal(normalizeReference("h", "~", "/proj", "/cache").path, os.homedir());
 });
 
 test("normalizeReference: local path object form", () => {

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.6 (2026-09-12)
+
+### Fixed
+
+- **Step-family detection is now anchored.** `detectThinkingFormat` matched
+  any model id containing "step" (`id.includes("step")`), routing unrelated
+  ids (e.g. "multistep", "stepwise") onto the step thinkingLevelMap. The
+  match is now `/step-|stepfun/` like the other family patterns.
+- Removed the dead `_getSettings` parameter from `registerCommands` (the
+  command handlers read `getSettings()` directly).
+- Removed unused `typebox` peer dependency.
+
 ## 1.1.5 (2026-09-06)
 
 ### Fixed

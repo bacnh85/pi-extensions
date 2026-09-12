@@ -93,7 +93,7 @@ deletions snapshot to `<skill>/__deleted__/<stamp>/…`. Manual restore is just
 a copy:
 
 ```bash
-cp ~/.pi/agent/selfskills/backups/my-skill/<stamp>-<hash>.md \
+cp ~/.pi/agent/selfskills/backups/my-skill/SKILL.md/<yyyyMMdd-HHmmss.mmm>-<hash>.md \
    ~/.pi/agent/skills/my-skill/SKILL.md
 ```
 

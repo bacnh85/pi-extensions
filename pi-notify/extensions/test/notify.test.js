@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import notifyExtension, { resolveConfig, notify, playSound } from "../index.js";
+import notifyExtension, { resolveConfig, notify, playSound, detectBackend, _resetBackendCacheForTest } from "../index.js";
 
 // ── resolveConfig ─────────────────────────────────────────────────────────
 
@@ -70,6 +70,7 @@ test("extension registers handlers without throwing", () => {
   assert.equal(typeof pi.handlers.agent_settled, "function");
   assert.equal(typeof pi.handlers.tool_result, "function");
   assert.equal(typeof pi.handlers.turn_start, "function");
+  assert.equal(typeof pi.handlers.ui_prompt_start, "function", "question hook must be registered");
 });
 
 test("--no-notify flag disables firing (handler still must not throw)", () => {
@@ -129,6 +130,47 @@ test("stale runner (getFlag throws) never crashes handlers (regression)", () => 
   assert.doesNotThrow(() => pi.handlers.agent_settled({}, {}));
   assert.doesNotThrow(() => pi.handlers.tool_result({ isError: true }, {}));
   assert.doesNotThrow(() => pi.handlers.turn_start({}, {}));
+});
+
+test("ui_prompt_start fires a question notification with the prompt title", () => {
+  const notifyCalls = [];
+  const pi = harness({ notifySpy: (...a) => notifyCalls.push(a), soundSpy: () => {} });
+  pi.handlers.ui_prompt_start({ type: "ui_prompt_start", kind: "custom", title: "Deploy to prod?" }, {});
+  assert.equal(notifyCalls.length, 1);
+  assert.equal(notifyCalls[0][0], "Pi");
+  assert.match(notifyCalls[0][1], /Deploy to prod\?/);
+});
+
+test("ui_prompt_start tolerates a missing title", () => {
+  const notifyCalls = [];
+  const pi = harness({ notifySpy: (...a) => notifyCalls.push(a), soundSpy: () => {} });
+  assert.doesNotThrow(() => pi.handlers.ui_prompt_start({ kind: "select" }, {}));
+  assert.equal(notifyCalls.length, 1);
+  assert.match(notifyCalls[0][1], /waiting for your input/);
+});
+
+test("onQuestion config=false suppresses question notification", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-notify-"));
+  mkdirSync(join(dir, ".pi"), { recursive: true });
+  writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ notify: { onQuestion: false } }));
+  const notifyCalls = [];
+  const pi = harness({ notifySpy: (...a) => notifyCalls.push(a), soundSpy: () => {} });
+  pi.handlers.session_start({}, { cwd: dir });
+  pi.handlers.ui_prompt_start({ kind: "confirm", title: "Sure?" }, {});
+  assert.equal(notifyCalls.length, 0, "onQuestion:false must suppress the notification");
+});
+
+test("detectBackend falls back to terminal when the platform binary is absent", () => {
+  const empty = mkdtempSync(join(tmpdir(), "pi-notify-path-"));
+  const prev = process.env.PATH;
+  _resetBackendCacheForTest();
+  process.env.PATH = empty; // no osascript / notify-send / powershell.exe here
+  try {
+    assert.equal(detectBackend(), "terminal");
+  } finally {
+    process.env.PATH = prev;
+    _resetBackendCacheForTest();
+  }
 });
 
 // ── Review-fix regression tests ────────────────────────────────────────────

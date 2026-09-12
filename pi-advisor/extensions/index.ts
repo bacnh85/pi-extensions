@@ -147,7 +147,6 @@ export default function piAdvisor(pi: ExtensionAPI): void {
       await saveModels(models);
       if (runtime) runtime.models = models;
     },
-    getThinking: () => undefined,
     getRuntime: () => runtime,
     isWatchEnabled: () => watchEnabled,
     setWatchEnabled: (value) => {

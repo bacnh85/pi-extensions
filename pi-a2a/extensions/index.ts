@@ -1095,7 +1095,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
           "  /a2a-config show             Show config summary",
           "  /a2a-server start|stop|status  Manage inbound server",
           "",
-          "Tools: a2a_call, a2a_status, a2a_discover, a2a_list, a2a_history, a2a_orchestrate",
+          "Tools: a2a_call, a2a_status, a2a_discover, a2a_peers, a2a_list, a2a_history, a2a_orchestrate",
         ].join("\n"),
         "info",
       );

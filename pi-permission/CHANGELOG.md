@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1 (2026-09-12)
+
+### Fixed
+
+- **A path exactly equal to the workspace root was classified external.**
+  `isExternal` used a prefix check, so `path === cwd` (e.g. reading the project
+  root itself) failed the `root + "/"` prefix test and was treated as outside —
+  `external_directory {"*":"deny"}` blocked reads of the workspace root. The
+  equality case is now explicitly internal. Regression-tested.
+- README rule-keys table: `grep`/`find`/`ls` match `input.path` only —
+  pattern-only searches have no subject (the table previously said
+  "path/glob/pattern", implying patterns were matched).
+
 ## 0.2.0 - 2026-08-17
 
 Ask-prompt redesign + session-allow bug fix.

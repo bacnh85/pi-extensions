@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { CONFIG_DIR_NAME, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -94,7 +94,12 @@ export async function saveModels(models: string[]): Promise<void> {
   const tmp = `${file}.tmp-${process.pid}`;
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(tmp, JSON.stringify(settings, null, 2) + "\n", "utf8");
-  await rename(tmp, file);
+  try {
+    await rename(tmp, file);
+  } catch (e) {
+    try { await unlink(tmp); } catch { /* best-effort cleanup */ }
+    throw e;
+  }
 }
 
 export function parseModel(value: string): { provider: string; id: string } | undefined {
@@ -130,7 +135,12 @@ export async function migrateLegacyAdvisorModel(): Promise<string | undefined> {
     const tmp = `${settingsPath}.tmp-${process.pid}`;
     await mkdir(path.dirname(settingsPath), { recursive: true });
     await writeFile(tmp, JSON.stringify({ ...settings, [KEY]: { ...block, model: legacy, migrationVersion: MIGRATION_VERSION } }, null, 2) + "\n", "utf8");
-    await rename(tmp, settingsPath);
+    try {
+      await rename(tmp, settingsPath);
+    } catch (e) {
+      try { await unlink(tmp); } catch { /* best-effort cleanup */ }
+      throw e;
+    }
     return legacy;
   } catch { return undefined; }
 }

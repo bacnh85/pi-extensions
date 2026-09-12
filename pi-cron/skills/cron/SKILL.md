@@ -47,4 +47,6 @@ write job prompts that schedule further jobs.
 ## Config
 
 `settings.json` → `"cron": { "enabled": true, "tickMs": 30000 }` (global kill
-switch + tick interval).
+switch + tick interval). `timeoutMs` caps headless (pinned) child runs
+(SIGTERM at the cap, SIGKILL after a 5s grace; clamped 1min–24h, default
+10min) — raise it for long pinned jobs.

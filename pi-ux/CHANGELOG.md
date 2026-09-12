@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.7 (2026-09-12)
+
+### Fixed
+
+- `ux_audit` states hints now match the actual failure. With interactive
+  selectors present but focus/disabled rules failing (the fragment case 0.4.6
+  promised to catch), the result appends "states rules may live in another
+  file — pass the COMPLETE stylesheet" (previously: no hint at all). With zero
+  interactive selectors the only possible failure is reduced-motion, so the
+  hint names that fix and only conditionally suggests the fragment case
+  instead of assertively mislabeling a complete stylesheet.
+  (`scanStates` reports `hasInteractive`; `formatAuditResult` is now exported
+  and covered by a test.)
+- README Usage: bare `/ux` resets to the configured default mode (it never
+  toggled).
+
 ## 0.4.6 (2026-09-06)
 
 ### Added

@@ -90,7 +90,7 @@ function auditParametersSchema() {
   };
 }
 
-function formatAuditResult(result) {
+export function formatAuditResult(result) {
   const lines = [];
   lines.push(result.pass ? "✅ UX AUDIT PASSED" : "❌ UX AUDIT FAILED");
   lines.push("");
@@ -113,6 +113,17 @@ function formatAuditResult(result) {
   for (const m of s.missingFocusVisible) lines.push(`  ✗ ${m}`);
   for (const m of s.missingDisabled) lines.push(`  ✗ ${m}`);
   for (const m of s.missingReducedMotion || []) lines.push(`  ✗ ${m}`);
+  if (!s.pass) {
+    if (s.missingFocusVisible.length || s.missingDisabled.length) {
+      // Interactive selectors ARE present, yet focus/disabled rules failed —
+      // for a fragment those rules may simply live in another file.
+      lines.push("  ℹ If this is a fragment, states rules may live in another file — pass the COMPLETE stylesheet.");
+    } else if (s.hasInteractive === false) {
+      // No interactive selectors: the only possible failure is reduced-motion.
+      // Say how to fix it, and only conditionally suggest the fragment case.
+      lines.push("  ℹ Motion needs a prefers-reduced-motion fallback. If this is the complete stylesheet, add one; if it is a fragment, audit the COMPLETE stylesheet.");
+    }
+  }
 
   const st = result.gates.slopTells;
   lines.push(st.pass ? "✓ Slop tells" : "✗ Slop tells");
