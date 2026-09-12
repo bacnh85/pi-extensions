@@ -40,6 +40,30 @@ export const HERDR_OFF_ENV = "PI_SUBAGENT_HERDR";
 const HERDR_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 /** Reject herdr tasks above this size — the prompt travels as a CLI argv element. */
 export const MAX_HERDR_TASK_BYTES = 64 * 1024;
+/**
+ * Usable task budget: wrapTaskPrompt appends the ~150-byte report-file
+ * delivery contract to the task text, so validation must reserve headroom or
+ * a ceiling-sized task passes validation and then exceeds the ceiling.
+ */
+export const HERDR_TASK_BUDGET = MAX_HERDR_TASK_BYTES - 1024;
+
+/**
+ * Byte-safe truncation for herdr task text (chain `{previous}` substitution
+ * can exceed the task budget when a step's report is large). Cuts at
+ * HERDR_TASK_BUDGET minus the marker, backs off any split multibyte
+ * sequence, and appends a visible marker — the result passes the
+ * prepareHerdrTask size check.
+ */
+export function truncateHerdrTask(task: string): string {
+  if (Buffer.byteLength(task, "utf8") <= HERDR_TASK_BUDGET) return task;
+  const marker = "\n\n…({previous} truncated: herdr task ceiling 64KB)";
+  const budget = HERDR_TASK_BUDGET - Buffer.byteLength(marker, "utf8");
+  let cut = Buffer.from(task, "utf8").subarray(0, budget).toString("utf8");
+  // A split multibyte tail becomes U+FFFD — back off up to 3 continuation
+  // bytes, then a dangling lead byte, so the cut lands between characters.
+  while (cut.endsWith("\uFFFD") && cut.length > 0) cut = cut.slice(0, -1);
+  return cut + marker;
+}
 const AGENT_START_TIMEOUT_MS = 45_000;
 
 export interface HerdrHandle {
@@ -163,9 +187,21 @@ export function herdrDisabled(subagentSettings: { herdr?: unknown } | undefined)
   return process.env[HERDR_OFF_ENV] === "off";
 }
 
+let defaultExecProbe: Promise<boolean> | undefined;
+
 export async function probeHerdrBinary(exec: HerdrExec = defaultExec): Promise<boolean> {
-  const res = await exec("herdr", ["--version"], { timeout: 5_000 });
-  return res.code === 0;
+  // Memoize the default-exec probe per process — every subagent call inside
+  // herdr would otherwise pay a CLI spawn. Custom execs (tests) never cache.
+  if (exec === defaultExec && defaultExecProbe) return defaultExecProbe;
+  const probe = (async () => {
+    const res = await exec("herdr", ["--version"], { timeout: 5_000 });
+    const ok = res.code === 0;
+    // Cache successes only: a transient failure (CLI hang, load spike) must
+    // not permanently disable herdr delegation for the process lifetime.
+    if (exec === defaultExec && ok) defaultExecProbe = Promise.resolve(true);
+    return ok;
+  })();
+  return probe;
 }
 
 /**
@@ -660,8 +696,8 @@ async function prepareHerdrTaskUncached(opts: PrepareHerdrTaskOptions): Promise<
   // herdrCli.exec (defaultExec unless a test swapped it) — one seam keeps
   // every dispatch path controllable from tests.
   const exec = opts.exec ?? herdrCli.exec;
-  if (Buffer.byteLength(opts.task, "utf8") > MAX_HERDR_TASK_BYTES) {
-    throw new Error(`herdr task exceeds ${MAX_HERDR_TASK_BYTES} bytes (argv ceiling) — shorten the task or use runner:"sdk".`);
+  if (Buffer.byteLength(opts.task, "utf8") > HERDR_TASK_BUDGET) {
+    throw new Error(`herdr task exceeds the ${HERDR_TASK_BUDGET}-byte budget (argv ceiling incl. delivery wrapper) — shorten the task or use runner:"sdk".`);
   }
   const liveNames = await liveAgentNames(exec);
   const name = allocateName(opts.agentType, [...liveNames, ...registry.keys()]);

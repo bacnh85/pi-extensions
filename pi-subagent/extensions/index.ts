@@ -19,6 +19,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import {
   CONFIG_DIR_NAME,
   DynamicBorder,
+  type AgentToolUpdateCallback,
   type ExtensionAPI,
   type ExtensionContext,
   getAgentDir,
@@ -82,6 +83,8 @@ import {
 import { parseStructuredResult } from "./result.ts";
 import { appendHistory, readHistory, markInterruptedOnRestart, trimHistory, getHistoryPath } from "./history.ts";
 import { herdrCli } from './herdr.ts';
+/** Keep-alive cadence for herdr delegations (test seam: shorten to assert). */
+export const herdrHeartbeat = { intervalMs: 30_000 };
 import {
   cancelAgent,
   canCloseHerdrTab,
@@ -96,11 +99,13 @@ import {
   herdrTabCloseBlockers,
   isDelegatedHerdrAgent,
   listHerdrAgents,
+  HERDR_TASK_BUDGET,
   MAX_HERDR_TASK_BYTES,
   MAX_REPORT_BYTES,
   prepareHerdrTask,
   promptAndWait,
   resolveEffectiveRunner,
+  truncateHerdrTask,
   wrapTaskPrompt,
   type HerdrHandle,
   type PromptOutcome,
@@ -690,12 +695,18 @@ export default function (pi: ExtensionAPI) {
 
       // Runner resolution: explicit param wins; default auto-detects herdr
       // (HERDR_ENV=1 + herdr binary answering, unless subagent.herdr:"off"
-      // or the PI_SUBAGENT_HERDR=off child recursion guard).
-      const runnerResolved = await resolveEffectiveRunner(
-        params.runner,
-        (ctx as any).settings?.subagent ?? {},
-        herdrCli.exec,
-      );
+      // or the PI_SUBAGENT_HERDR=off child recursion guard). Task-control
+      // operations and background runs never dispatch via herdr — skip the
+      // binary probe entirely.
+      const skipRunnerResolution = params.runner === undefined &&
+        (params.operation !== undefined || params.background === true);
+      const runnerResolved = skipRunnerResolution
+        ? { runner: "sdk" as const }
+        : await resolveEffectiveRunner(
+            params.runner,
+            (ctx as any).settings?.subagent ?? {},
+            herdrCli.exec,
+          );
       if (runnerResolved.error) {
         return {
           content: [{ type: "text", text: runnerResolved.error }],
@@ -1041,12 +1052,23 @@ export default function (pi: ExtensionAPI) {
         parentSignal: AbortSignal | undefined,
         timeoutMs: number | undefined,
         onActivity?: (progress: SubAgentProgress) => void,
+        onUpdate?: AgentToolUpdateCallback<SubagentDetails>,
+        heartbeatDetails?: () => SubagentDetails,
+        onHeartbeat?: () => void,
       ): Promise<SubAgentResult> {
         const prepared = await prepareHerdrOne(agentName, task, cwd, timeoutMs);
         if ("error" in prepared) return herdrErrorResult(agentName, task, prepared.error);
         const { handle, startedAt } = prepared;
+        // Keep-alive parity with the SDK path: a long pane run must emit
+        // onUpdate traffic or the host may idle-abort the tool call.
+        const stopHeartbeat = onUpdate ? startHeartbeat(() => {
+          onHeartbeat?.();
+          onUpdate({ content: [{ type: "text", text: "" }], details: heartbeatDetails?.() ?? makeDetails("single")([]) });
+          widget.requestRender();
+        }, herdrHeartbeat.intervalMs) : undefined;
+        let onCancel: (() => void) | undefined;
         if (parentSignal) {
-          const onCancel = () => { void cancelAgent(handle.name, herdrCli.exec); };
+          onCancel = () => { void cancelAgent(handle.name, herdrCli.exec); };
           // An already-aborted signal never fires its listeners — cancel now.
           if (parentSignal.aborted) onCancel();
           else parentSignal.addEventListener("abort", onCancel, { once: true });
@@ -1060,6 +1082,11 @@ export default function (pi: ExtensionAPI) {
           });
         } catch (err) {
           return herdrErrorResult(agentName, task, `herdr delegation failed: ${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          // Settled: stop the keep-alive and detach the abort listener so a
+          // later abort never keystrokes a completed step's pane.
+          stopHeartbeat?.();
+          if (parentSignal && onCancel) parentSignal.removeEventListener("abort", onCancel);
         }
       }
 
@@ -1230,22 +1257,28 @@ export default function (pi: ExtensionAPI) {
         for (let i = 0; i < params.chain.length; i++) {
           const step = params.chain[i];
           const taskWithContext = step.task.replace(/\{previous\}/g, () => previousOutput);
+          // A large step report can blow the herdr argv ceiling — truncate the
+          // substituted text (SDK tasks have no ceiling and stay untouched).
+          const dispatchTask = herdrActive ? truncateHerdrTask(taskWithContext) : taskWithContext;
 
           const thread = threadStore.createThread({
             agentName: step.agent,
-            task: taskWithContext,
+            task: dispatchTask,
             mode: "chain-step",
             toolCallId: _toolCallId,
             color: agentToThemeColor(step.agent),
           });
           if (ctx.mode === "tui") widget.ensureWidget(ctx);
           const historyId = makeForegroundHistoryId(thread.createdAt);
-          recordForegroundStart(historyId, step.agent, taskWithContext, thread.createdAt);
+          recordForegroundStart(historyId, step.agent, dispatchTask, thread.createdAt);
           const result = herdrActive
             ? await startHerdrOne(
-                step.agent, taskWithContext, step.cwd,
+                step.agent, dispatchTask, step.cwd,
                 signal, step.timeout ?? params.timeout,
                 (progress) => threadStore.updateProgress(thread.id, progress),
+                onUpdate,
+                () => makeDetails("chain")(results),
+                () => threadStore.refreshHeartbeat(thread.id),
               )
             : await runOne(
                 step.agent, taskWithContext, step.cwd,
@@ -1261,7 +1294,7 @@ export default function (pi: ExtensionAPI) {
             status: isFailedResult(result) ? (result.stopReason === "aborted" ? "aborted" : "failed") : "completed",
             result,
           });
-          recordForegroundHistory(historyId, step.agent, taskWithContext, result, thread.createdAt);
+          recordForegroundHistory(historyId, step.agent, dispatchTask, result, thread.createdAt);
           results.push(result);
 
           // Herdr: a blocked pane needs human input — pause the chain instead
@@ -1355,6 +1388,7 @@ export default function (pi: ExtensionAPI) {
         }
 
         // Wrap all remaining setup + execution so cleanupParentSignal always runs.
+        let stopParallelHeartbeat: ReturnType<typeof startHeartbeat> | undefined;
         try {
           // Pre-create threads for all parallel tasks
           const parallelThreads = params.tasks.map((t) =>
@@ -1411,6 +1445,15 @@ export default function (pi: ExtensionAPI) {
             };
           }
 
+          // One keep-alive for the whole herdr parallel block (per tool call,
+          // not per slot) — parity with the SDK path's heartbeat.
+          stopParallelHeartbeat = herdrActive && onUpdate
+            ? startHeartbeat(() => {
+                onUpdate({ content: [{ type: "text", text: "" }], details: makeDetails("parallel")([...allResults]) });
+                widget.requestRender();
+              })
+            : undefined;
+
           const emitParallelUpdate = () => {
             if (onUpdate) {
               const running = allResults.filter((r) => r.exitCode === -1).length;
@@ -1434,7 +1477,7 @@ export default function (pi: ExtensionAPI) {
                 // Skip if already aborted by sibling failure or parent abort
                 if (parallelController.signal.aborted) {
                   const preparedSkip = herdrPrepared?.[index];
-                  if (preparedSkip?.ok) void cancelAgent(preparedSkip.handle.name);
+                  if (preparedSkip?.ok) void cancelAgent(preparedSkip.handle.name, herdrCli.exec);
                   const skippedResult: SubAgentResult = {
                     agent: t.agent,
                     task: t.task,
@@ -1500,18 +1543,24 @@ export default function (pi: ExtensionAPI) {
               },
             );
 
-            const successCount = results.filter((r) => !isFailedResult(r)).length;
+            // Blocked herdr panes (status "partial") are neither succeeded nor
+            // failed — they await human input and get their own count.
+            const blockedCount = results.filter((r) => r.stopReason === "blocked").length;
+            const successCount = results.filter((r) => !isFailedResult(r) && r.stopReason !== "blocked").length;
             const cancelCount = results.filter((r) => r.stopReason === "aborted" && r.errorMessage?.includes("Cancelled")).length;
             const summaries = results.map((r) => {
               const output = truncateParallelOutput(getResultOutput(r));
               const status = isFailedResult(r)
                 ? `failed${r.stopReason ? ` (${r.stopReason})` : ""}`
-                : "completed";
+                : r.stopReason === "blocked"
+                  ? "blocked — awaiting input in its pane"
+                  : "completed";
               const patch = formatPatchBlock(r);
               return `### [${r.agent}] ${status}\n\n${output}${patch ? `\n\n${patch}` : ""}`;
             });
 
             let headerText = `Parallel: ${successCount}/${results.length} succeeded`;
+            if (blockedCount > 0) headerText += ` (${blockedCount} blocked awaiting input)`;
             if (cancelCount > 0) headerText += ` (${cancelCount} cancelled)`;
             return {
               content: [
@@ -1523,6 +1572,7 @@ export default function (pi: ExtensionAPI) {
               details: makeDetails("parallel")(results),
             };
         } finally {
+          stopParallelHeartbeat?.();
           cleanupParentSignal?.();
         }
       }
@@ -1562,6 +1612,9 @@ export default function (pi: ExtensionAPI) {
               params.agent, params.task, params.cwd,
               signal, params.timeout,
               (progress) => threadStore.updateProgress(thread.id, progress),
+              onUpdate,
+              () => makeDetails("single")([]),
+              () => threadStore.refreshHeartbeat(thread.id),
             )
           : await runOne(
               params.agent, params.task, params.cwd,
@@ -1601,6 +1654,18 @@ export default function (pi: ExtensionAPI) {
             ],
             details: makeDetails("single")([result]),
             isError: true,
+          };
+        }
+
+        // Herdr panes blocked on a permission/question dialog are not
+        // successes with no output — tell the model exactly what happened.
+        if (result.stopReason === "blocked") {
+          return {
+            content: [{
+              type: "text",
+              text: `${params.agent} is blocked awaiting input in its herdr pane — answer it there (or via the herdr tool), then prompt again. ${result.errorMessage ?? ""}`,
+            }],
+            details: makeDetails("single")([result]),
           };
         }
 
@@ -1991,8 +2056,8 @@ export default function (pi: ExtensionAPI) {
           if (!params.text) {
             return toolResult('Missing text for action "prompt".', true);
           }
-          if (Buffer.byteLength(params.text, "utf8") > MAX_HERDR_TASK_BYTES) {
-            return toolResult(`Prompt exceeds ${MAX_HERDR_TASK_BYTES} bytes (argv ceiling) — shorten it.`, true);
+          if (Buffer.byteLength(params.text, "utf8") > HERDR_TASK_BUDGET) {
+            return toolResult(`Prompt exceeds the ${HERDR_TASK_BUDGET}-byte budget (argv ceiling incl. delivery wrapper) — shorten it.`, true);
           }
           const entry = getHerdrRegistry().find((e) => e.name === name);
           // Delegated agents keep the report-file contract on follow-ups too.

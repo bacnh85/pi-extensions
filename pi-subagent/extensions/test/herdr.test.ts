@@ -33,7 +33,9 @@ import {
   prepareHerdrTask,
   promptAndWait,
   resolveEffectiveRunner,
+  HERDR_TASK_BUDGET,
   startAgent,
+  truncateHerdrTask,
   wrapTaskPrompt,
   type HerdrExec,
 } from "../herdr.ts";
@@ -215,6 +217,25 @@ describe("wrapTaskPrompt", () => {
     const prompt = wrapTaskPrompt("find auth code", "/repo/.pi/herdr/scout-1-abc.md");
     assert.ok(prompt.startsWith("find auth code"));
     assert.match(prompt, /write your full final report as Markdown to `\/repo\/\.pi\/herdr\/scout-1-abc\.md`/);
+  });
+});
+
+describe("truncateHerdrTask", () => {
+  it("leaves short tasks untouched", () => {
+    assert.equal(truncateHerdrTask("normal task"), "normal task");
+  });
+
+  it("byte-caps oversized tasks with a visible marker and no split multibyte", () => {
+    const marker = "\n\n…({previous} truncated: herdr task ceiling 64KB)";
+    // An emoji straddles the cut boundary (4-byte UTF-8 split mid-sequence).
+    const huge = "x".repeat(HERDR_TASK_BUDGET - Buffer.byteLength(marker, "utf8") - 2) + "🎉🎉🎉🎉 tail beyond ceiling with enough trailing padding to push the total past the line";
+    const out = truncateHerdrTask(huge);
+    // The truncated task must PASS the prepareHerdrTask validation budget —
+    // cutting to the raw ceiling would throw after truncating.
+    assert.ok(Buffer.byteLength(out, "utf8") <= HERDR_TASK_BUDGET, "must fit the validation budget, not just the ceiling");
+    assert.ok(out.includes("{previous} truncated"), "marker must be present");
+    assert.ok(!out.endsWith("\uFFFD"), "must not end with a split multibyte replacement char");
+    assert.ok(!out.includes("tail beyond ceiling"), "content beyond the ceiling must be dropped");
   });
 });
 

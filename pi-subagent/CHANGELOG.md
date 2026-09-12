@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.21.1 (2026-09-12)
+
+### Fixed
+
+- **Packaging: `extensions/herdr.ts` was missing from `files[]`** — the
+  published 0.21.0 tarball could not resolve `./herdr.ts` and crashed on
+  load. 0.21.0 also shipped without the test files (intentional).
+
+### Added
+
+- **`herdr` control tool `forget` action** — drops a stale registry entry
+  (e.g. after its tab was closed outside this session) without touching
+  herdr state.
+- **Keep-alive parity for herdr delegations** — single/chain/parallel herdr
+  runs now emit the same onUpdate heartbeat traffic as SDK runs, so long
+  pane runs are not idle-aborted by the host.
+- **Chain `{previous}` truncation** — a large step report no longer pushes
+  the next chain task past the 64KB herdr argv ceiling; substituted text is
+  byte-safe truncated (multibyte-aware) with a visible marker. SDK chains
+  are unaffected.
+- Blocked herdr panes surfaced honestly in every mode: single mode returns
+  a "blocked awaiting input" message instead of an empty success, and
+  parallel headers count them separately (`N blocked awaiting input`) with
+  per-task `blocked — awaiting input in its pane` labels.
+- Task-size validation now reserves headroom for the delivery wrapper
+  (HERDR_TASK_BUDGET = 64KB − 1KB) — a ceiling-sized task plus the
+  report-file contract no longer exceeds the argv ceiling; the control
+  tool's prompt check uses the same budget.
+- The `herdr --version` probe is cached only on success — a transient CLI
+  hang no longer permanently disables herdr delegation for the session.
+- Parallel herdr integration tests: same-type prepare-before-prompt
+  ordering, per-task prepare-failure mapping, mid-prompt abort (esc to every
+  pane, no listener leaks), heartbeat traffic, oversized-report chain.
+
+### Changed
+
+- Task-control calls (`operation:"status"`/`"cancel"`) and `background:true`
+  dispatches skip the `herdr --version` probe entirely; the probe is
+  memoized per process for real dispatches.
+- Abort listeners on the parent signal are now removed once a herdr task
+  settles — a later abort no longer keystrokes completed step panes in
+  chains.
+
 ## 0.21.0 (2026-09-12)
 
 ### Added
