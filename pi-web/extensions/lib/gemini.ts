@@ -356,6 +356,9 @@ export function describeGeminiError(err: unknown): string {
       return err instanceof Error ? err.message : String(err);
     default: {
       const msg = err instanceof Error ? err.message : String(err);
+      if (/Cannot poll|research_id/.test(msg)) {
+        return `Gemini web research polling failed (${msg}). The web protocol's plan/report shape has drifted from the client library — the plan step engaged but the poll could not find its research id. This is a protocol-drift limitation of the embedded gemini-reverse client, not an account-tier gate.`;
+      }
       if (/Unknown API error/.test(msg)) {
         return `Gemini web rejected the request (${msg}). The 1184 code is unreliable from this client — it also fires on expired-cookie sessions (verified 2026-09-13). For research mode: Deep Research plan creation has succeeded on a free-tier account via a browser-grade client (2026-09-13), but Gemini itself has also described Deep Research as Pro/Ultra-gated, so the tier requirement is unverified. mode=ask still works.`;
       }

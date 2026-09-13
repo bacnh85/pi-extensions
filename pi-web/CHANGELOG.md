@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.9 (2026-09-14)
+
+### Changed
+
+- **Map the research polling-drift error** (herdr test round 7): gemini-reverse
+  now sometimes fails research with "Cannot poll: plan.research_id is missing."
+  after the plan step engages — a third distinct failure shape this week (1184 /
+  DR-agent greeting / missing research id), confirming server-side protocol and
+  session-state instability rather than a stable tier gate. This error now maps
+  to a protocol-drift explanation instead of surfacing raw.
+
 ## 0.11.8 (2026-09-13)
 
 ### Fixed
