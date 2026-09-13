@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.2 (2026-09-13)
+
+### Fixed
+
+- `.gif` downloads inline as `image/gif` (was mislabeled `image/png`).
+- **SSRF guard on gateway-supplied image URLs**: downloads to
+  loopback/private/link-local hosts (e.g. cloud metadata 169.254.169.254)
+  are refused before any request is made — the URL is surfaced instead.
+- **25 MB download cap**: oversized image downloads are not written to disk;
+  the URL is surfaced instead.
+- pi-hub catalog/README description updated to match 0.10.x features.
+
 ## 0.10.1 (2026-09-13)
 
 ### Added

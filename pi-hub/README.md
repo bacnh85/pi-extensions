@@ -120,7 +120,7 @@ npx @bacnh85/pi-hub update                   # runs pi update --extensions
 | `pi-subagent` | Isolated in-process subagents with parallel/chain modes and git worktree isolation |
 | `pi-themes` | Ayu variants (dark, mirage, light) + Catppuccin Mocha |
 | `pi-ux` | Anti-slop UI/UX design discipline — DESIGN.md anchoring + deterministic slop-audit gates |
-| `pi-web` | Web search, page extraction, Firecrawl scraping/crawling, Crawl4AI headless browser crawling |
+| `pi-web` | Web search, page extraction, Firecrawl scraping/crawling, Crawl4AI headless browser crawling, Gemini web-tier research, free upstream image generation, one-off gateway chat |
 | `pi-windows-tools` | Windows-specific tools for Pi |
 
 Install any of them by directory name: `npx @bacnh85/pi-hub add pi-munin`.

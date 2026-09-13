@@ -152,7 +152,7 @@
   {
     "name": "@bacnh85/pi-web",
     "dir": "pi-web",
-    "description": "Pi extension for web search, page extraction, Firecrawl scraping/crawling, and Crawl4AI headless browser crawling."
+    "description": "Pi extension for web search, page extraction, Firecrawl scraping/crawling, Crawl4AI headless browser crawling, Gemini web-tier research, free upstream image generation, and one-off gateway chat."
   },
   {
     "name": "@bacnh85/pi-windows-tools",

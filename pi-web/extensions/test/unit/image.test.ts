@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   ZAI_PRESET,
+  MAX_DOWNLOAD_BYTES,
   apiGenerateImage,
   describeImageApiError,
   generateImageWithFallback,
@@ -649,5 +650,62 @@ describe("generateImageWithFallback cancellation + n handling (review findings)"
     } catch (e) {
       expect((e as Error).message).to.include("gemini:");
     }
+  });
+
+  it("SSRF-guards gateway-supplied image URLs (no fetch, URL surfaced)", async () => {
+    const outDir = await tmpDir();
+    let getCalled = false;
+    const fetchImpl = (async (_url: string, init?: { method?: string }) => {
+      if (init?.method === "POST") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ url: "http://169.254.169.254/latest/meta-data" }] }),
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      }
+      getCalled = true;
+      throw new Error("metadata host must not be fetched");
+    }) as unknown as FetchLike;
+    const r = await apiGenerateImage({ baseUrl: "https://x/v1", prompt: "p", outDir, fetchImpl });
+    expect(getCalled).to.equal(false);
+    expect(r.paths).to.deep.equal([]);
+    expect(r.urls).to.deep.equal(["http://169.254.169.254/latest/meta-data"]);
+  });
+
+  it("caps oversized downloads at MAX_DOWNLOAD_BYTES and surfaces the URL instead", async () => {
+    const outDir = await tmpDir();
+    const big = Buffer.alloc(MAX_DOWNLOAD_BYTES + 1);
+    const fetchImpl = (async (_url: string, init?: { method?: string }) => {
+      if (init?.method === "POST") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ url: "https://cdn.example.com/huge.png" }] }),
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        arrayBuffer: async () => big.buffer,
+      };
+    }) as unknown as FetchLike;
+    const r = await apiGenerateImage({ baseUrl: "https://x/v1", prompt: "p", outDir, fetchImpl });
+    expect(fs.readdirSync(outDir)).to.deep.equal([]); // nothing written
+    expect(r.urls).to.deep.equal(["https://cdn.example.com/huge.png"]);
+  });
+});
+
+describe("toImageBlock mime mapping", () => {
+  it("maps .gif files to image/gif", async () => {
+    const { toImageBlock } = await import("../../index");
+    const dir = await tmpDir();
+    const file = path.join(dir, "x.gif");
+    fs.writeFileSync(file, "GIF89a");
+    const block = await toImageBlock(file);
+    expect(block.mimeType).to.equal("image/gif");
+    expect(block.type).to.equal("image");
   });
 });

@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { findEnvValue } from "./config";
+import { isLocalUrl } from "./chrome";
 import {
   describeGeminiError,
   geminiGenerateImage,
@@ -169,6 +170,9 @@ export interface ApiImageResult {
   model?: string;
 }
 
+/** Hard cap on downloaded image size — gateways can point at arbitrary URLs. */
+export const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+
 export class ImageApiError extends Error {
   constructor(
     public status: number,
@@ -231,6 +235,7 @@ export async function apiGenerateImage(opts: {
     } else if (typeof item?.url === "string" && item.url) {
       // A failed download must not waste the generation: surface the URL.
       try {
+        if (isLocalUrl(item.url)) throw new Error("image host is private/loopback (SSRF-guarded)");
         paths.push(await downloadImage(fetchImpl, item.url, opts.outDir, i, opts.signal, opts.timeoutMs));
       } catch (err) {
         urls.push(item.url);
@@ -265,6 +270,7 @@ async function downloadImage(
   });
   if (!res.ok) throw new ImageApiError(res.status, `image download failed (HTTP ${res.status})`);
   const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > MAX_DOWNLOAD_BYTES) throw new Error(`image exceeds the ${MAX_DOWNLOAD_BYTES}-byte download cap`);
   const file = path.join(outDir, `pi-web-image-${randomUUID().slice(0, 8)}-${i}${extFor(url)}`);
   fs.writeFileSync(file, buf);
   return file;

@@ -87,13 +87,15 @@ const engineSchema = {
 
 // Saved image file → inline image block (the 0.6.2 vision-loop lesson: the
 // generating model should see its own output).
-async function toImageBlock(file: string): Promise<{ type: "image"; data: string; mimeType: string }> {
+export async function toImageBlock(file: string): Promise<{ type: "image"; data: string; mimeType: string }> {
   const data = (await fs.promises.readFile(file)).toString("base64");
   const lower = file.toLowerCase();
   const mimeType = lower.endsWith(".jpg") || lower.endsWith(".jpeg")
     ? "image/jpeg"
     : lower.endsWith(".webp")
       ? "image/webp"
+      : lower.endsWith(".gif")
+        ? "image/gif"
       : "image/png";
   return { type: "image" as const, data, mimeType };
 }
