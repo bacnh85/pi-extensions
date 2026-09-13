@@ -1,6 +1,6 @@
 # @bacnh85/pi-web
 
-Pi extension for **unified web search, content extraction, site crawling, page capture, and Gemini web-tier research**.
+Pi extension for **unified web search, content extraction, site crawling, page capture, Gemini web-tier research, and free upstream image generation**.
 
 Auto-selects the best backend from SearXNG (self-hosted), Brave Search, Firecrawl, Crawl4AI, and agy (Gemini/Claude, when installed) — so agents don't have to know which backend to use. Search selection is adaptive: broad discovery prefers self-hosted SearXNG, while precision-sensitive searches and inline content prefer Brave. `web_research` adds AI-synthesized research with citations via your gemini.google.com session.
 
@@ -32,11 +32,18 @@ Variables:
 | `CRAWL4AI_API_TOKEN` | No (3) | — | Required if Crawl4AI auth enabled |
 | `GEMINI_WEB_SECURE_1PSID` | No (4) | — | `__Secure-1PSID` cookie from gemini.google.com — enables authed `web_research` (Deep Research) |
 | `GEMINI_WEB_PROXY` | No | — | Proxy URL for Gemini web calls (escape hatch if Google blocks the IP) |
+| `ZAI_API_KEY` | No (5) | — | Z.ai API key — enables the `web_image` `zai` provider (CogView-4 via the official `api.z.ai`); `Z_AI_API_KEY` also accepted |
+| `WEB_IMAGE_API_BASE_URL` | No | — | `web_image` `custom` provider: any OpenAI-compatible images endpoint (e.g. `https://api.openai.com/v1`) |
+| `WEB_IMAGE_API_KEY` | No | — | Bearer key for the `custom` endpoint |
+| `WEB_IMAGE_API_LABEL` | No | — | Display label for the `custom` endpoint (default: host name) |
+| `WEB_IMAGE_MIN_INTERVAL_MS` | No | `5000` | Min interval between `web_image` calls per provider |
+| `WEB_IMAGE_DAILY_CAP` | No | `20` | Daily soft cap for the Gemini **web tier** `web_image` provider (keyed APIs stay uncapped) |
 
 > (1) At least one search backend (SearXNG, Brave, or Firecrawl) must be configured for `web_search`.
 > (2) Required for hosted Firecrawl; optional for self-hosted instances without auth.
 > (3) Required for Crawl4AI v0.9+ default config.
 > (4) Without it `web_research mode=ask` still works in guest mode (Flash-only); `mode=research` errors with setup steps.
+> (5) `web_image` works with zero config via Gemini guest mode (availability varies by region/account); `zai` activates when `ZAI_API_KEY` is present, `custom` when `WEB_IMAGE_API_BASE_URL` is set.
 
 Secrets are never printed; `web_status` reports only presence/source.
 
@@ -258,6 +265,46 @@ Troubleshooting:
   was rejected; usually means no Gemini Advanced subscription on the account
   (Deep Research is Advanced-only), or Google changed the protocol. `ask`
   mode is unaffected.
+
+### `web_image` — free upstream image generation
+
+Text → image with automatic provider fallback (all direct-to-upstream, no
+self-host services):
+
+```
+web_image(prompt="isometric cutaway of a container ship, technical illustration")
+web_image(prompt="...", provider="zai")                       # pin CogView-4 via api.z.ai
+web_image(prompt="...", model="cogview-4", n=2, out_dir="/tmp/imgs")
+```
+
+**Provider chain** (`provider: "auto"` tries in order; pin one to skip):
+
+| Provider | Upstream | Auth | Notes |
+|---|---|---|---|
+| `gemini` (default) | gemini.google.com web tier | none (guest) or `GEMINI_WEB_SECURE_1PSID` | free ≈ 20 images/day; availability varies by region/account |
+| `zai` | `https://api.z.ai/api/paas/v4` (official API) | `ZAI_API_KEY` | CogView-4 (`model` default), fully ToS-compliant |
+| `custom` | any OpenAI-compatible `/images/generations` endpoint | `WEB_IMAGE_API_KEY` | e.g. official OpenAI `https://api.openai.com/v1` |
+
+Results are saved to `out_dir` (default: fresh temp dir) and returned as file
+paths **plus inline image blocks** (multimodal models see the render
+immediately). `details` reports the winning provider, model, and fallback
+attempts.
+
+**Guardrails** (soft, in-memory): per-provider `WEB_IMAGE_MIN_INTERVAL_MS`
+(default 5 s) and a `WEB_IMAGE_DAILY_CAP` (default 20/day, applied to the
+Gemini web tier only — keyed APIs are billed upstream and stay uncapped).
+Counters reset on restart; `web_status.imageProviders.rate` shows usage.
+
+⚠️ **ToS reality (read once)**: *every* AI chatbot's terms prohibit automated
+access to its web UI (Google, OpenAI, xAI "unauthorized automated or
+non-human means", Z.ai alike). This tool therefore follows a risk ladder:
+
+1. **Official APIs** (`zai`, `custom`) — fully compliant; prefer them when a key exists.
+2. **Guest mode** (Gemini without a cookie) — no account at stake, lowest risk, Flash-tier.
+3. **Personal cookie** (Gemini authed) — your own account, single session, low volume; same accepted-risk stance as the web bridges: use a burner/low-value account, never a valued one. No account pools, no commercial use, keep volume human-scale.
+
+Smoke test: `npx tsx extensions/scripts/gemini-smoke.ts "a red cube on white background" image`
+(or `… zai` for the Z.ai path).
 
 ## Library structure
 

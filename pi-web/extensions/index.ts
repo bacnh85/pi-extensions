@@ -1,5 +1,9 @@
 /// <reference path="./types.d.ts" />
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -27,6 +31,13 @@ import {
   geminiResearch,
   describeGeminiError,
 } from "./lib/gemini";
+import {
+  generateImageWithFallback,
+  loadImageApiConfig,
+  loadImageRateConfig,
+  imageRateSnapshot,
+  type ImageProvider,
+} from "./lib/imageapi";
 import { extractWithDiagnostics, type ExtractMode } from "./lib/extract";
 import { firecrawlRequest, type FirecrawlResult } from "./lib/firecrawl";
 import {
@@ -69,6 +80,19 @@ const engineSchema = {
   ], { default: "auto", description: "auto routes localhost/private/file URLs to local Chrome, the rest to the Crawl4AI daemon; local/daemon force one." })),
 };
 
+// Saved image file → inline image block (the 0.6.2 vision-loop lesson: the
+// generating model should see its own output).
+async function toImageBlock(file: string): Promise<{ type: "image"; data: string; mimeType: string }> {
+  const data = (await fs.promises.readFile(file)).toString("base64");
+  const lower = file.toLowerCase();
+  const mimeType = lower.endsWith(".jpg") || lower.endsWith(".jpeg")
+    ? "image/jpeg"
+    : lower.endsWith(".webp")
+      ? "image/webp"
+      : "image/png";
+  return { type: "image" as const, data, mimeType };
+}
+
 // ---------------------------------------------------------------------------
 // Always-on routing guidance (injected only when a web_* tool is active)
 // ---------------------------------------------------------------------------
@@ -84,6 +108,7 @@ const WEB_ROUTING_GUIDANCE = `## Web Tool Routing (pi-web)
 - **web_crawl** — multi-page crawl: \`mode: "light"\` (Firecrawl, url) or \`mode: "full"\` (Crawl4AI, urls[]).
 - **web_screenshot** / **web_pdf** — page capture (Crawl4AI).
 - **web_research** — AI-synthesized research via Gemini web (mode "ask" = grounded answer, guest OK; mode "research" = Deep Research report, needs cookie + Gemini Advanced, takes minutes).
+- **web_image** — text→image generation via free upstreams (auto: Gemini web → Z.ai CogView-4 → custom OpenAI-images endpoint; \`model\`/\`n\` params).
 - **web_status** — provider config + health.
 
 Rules: Firecrawl Search is weak on domain-specific queries — prefer SearXNG/Brave; Firecrawl Scrape fails on bot-protected sites — use Crawl4AI (\`mode: "full"\`) then agy (\`mode: "agy"\`); cite source URLs.`;
@@ -499,6 +524,63 @@ export default function piWebExtension(pi: ExtensionAPI) {
     },
   });
 
+  // ── web_image ────────────────────────────────────────────────────────
+  pi.registerTool({
+    name: "web_image",
+    label: "Web Image Generation",
+    description:
+      "Generate images from text via free upstream providers, with fallback: Gemini web (gemini.google.com, guest or cookie auth), Z.ai official API (CogView-4 via ZAI_API_KEY), or any custom OpenAI-compatible images endpoint (WEB_IMAGE_API_BASE_URL). Returns saved file paths plus the images inline.",
+    promptSnippet: "Generate images via free upstreams (Gemini web, Z.ai CogView)",
+    promptGuidelines: [
+      "Use for image GENERATION from a text prompt. provider auto falls back gemini → zai → custom. Capturing an EXISTING page is web_screenshot, not this.",
+    ],
+    parameters: Type.Object({
+      prompt: Type.String({ description: "Image description." }),
+      provider: Type.Optional(Type.Union(
+        [Type.Literal("auto"), Type.Literal("gemini"), Type.Literal("zai"), Type.Literal("custom")],
+        { default: "auto", description: "auto = gemini → zai (if ZAI_API_KEY) → custom (if WEB_IMAGE_API_BASE_URL); pin one to skip fallback." },
+      )),
+      model: Type.Optional(Type.String({ description: "Provider-specific model (e.g. cogview-4, or a Gemini image-capable model id). Omit for the provider default." })),
+      n: Type.Optional(Type.Number({ default: 1, description: "Number of images, 1-4." })),
+      out_dir: Type.Optional(Type.String({ description: "Directory for saved images (default: fresh temp dir)." })),
+      ...sharedControlSchema,
+    }),
+    async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
+      const cwd = cwdFromContext(ctx);
+      const trusted = includeProjectEnv(ctx);
+      const prompt = params.prompt as string;
+      const n = Math.min(Math.max(Math.trunc((params.n as number) ?? 1) || 1, 1), 4);
+      const timeoutMs = Math.min(Math.max((params.timeout_ms as number) ?? 180_000, 10_000), 600_000);
+      const outDir = params.out_dir
+        ? path.resolve(String(params.out_dir))
+        : await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-web-image-"));
+      const result = await generateImageWithFallback({
+        prompt,
+        model: params.model as string | undefined,
+        n,
+        outDir,
+        provider: (params.provider as "auto" | ImageProvider) ?? "auto",
+        geminiConfig: loadGeminiWebConfig(cwd, trusted),
+        apiConfig: loadImageApiConfig(cwd, trusted),
+        rateConfig: loadImageRateConfig(cwd, trusted),
+        timeoutMs,
+        signal,
+      });
+      const blocks = await Promise.all(result.paths.map(toImageBlock));
+      const text = [
+        `Provider: ${result.provider}${result.model ? ` (${result.model})` : ""}`,
+        `Saved: ${result.paths.length} image(s)`,
+        ...result.paths.map((p) => `  ${p}`),
+        result.attempts.length ? `Fallback attempts: ${result.attempts.join(" | ")}` : null,
+      ].filter(Boolean).join("\n");
+      const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
+        { type: "text" as const, text },
+        ...blocks,
+      ];
+      return { content, details: { provider: result.provider, model: result.model, paths: result.paths, attempts: result.attempts } };
+    },
+  });
+
   // ── web_status ───────────────────────────────────────────────────────
   pi.registerTool({
     name: "web_status",
@@ -519,6 +601,8 @@ export default function piWebExtension(pi: ExtensionAPI) {
       const fireUrl = findEnvValue("FIRECRAWL_API_URL", cwd, trusted);
       const c4aiUrl = findEnvValue("CRAWL4AI_API_URL", cwd, trusted);
       const c4aiToken = findEnvValue("CRAWL4AI_API_TOKEN", cwd, trusted);
+      const geminiCfg = loadGeminiWebConfig(cwd, trusted);
+      const imageApiCfg = loadImageApiConfig(cwd, trusted);
 
       const { isAgyInstalled } = await import("./lib/agy");
 
@@ -543,10 +627,15 @@ export default function piWebExtension(pi: ExtensionAPI) {
           apiTokenSource: c4aiToken.value ? c4aiToken.source : "not set",
         },
         agy: { installed: isAgyInstalled() },
-        geminiWeb: (() => {
-          const cfg = loadGeminiWebConfig(cwd, trusted);
-          return { configured: Boolean(cfg.psid), cookieSource: cfg.psidSource, proxy: Boolean(cfg.proxy) };
-        })(),
+        geminiWeb: { configured: Boolean(geminiCfg.psid), cookieSource: geminiCfg.psidSource, proxy: Boolean(geminiCfg.proxy) },
+        imageProviders: {
+          gemini: { configured: Boolean(geminiCfg.psid), guestPossible: true },
+          zai: { configured: Boolean(imageApiCfg.zai) },
+          custom: imageApiCfg.custom
+            ? { configured: true, label: imageApiCfg.custom.label }
+            : { configured: false },
+          rate: imageRateSnapshot(),
+        },
         localChrome: { path: findChromeBinary() ?? "not found" },
       };
 

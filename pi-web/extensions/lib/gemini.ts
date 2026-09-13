@@ -40,12 +40,29 @@ export interface GeminiResearchLike {
   statuses?: Array<Record<string, unknown>>;
 }
 
+export interface GeminiImageLike {
+  save(opts?: { path?: string; filename?: string }): Promise<string>;
+  url?: string;
+  alt?: string;
+}
+
+export interface GeminiImageOutputLike {
+  text?: string | null;
+  model?: string;
+  images?: GeminiImageLike[];
+  generated_images?: GeminiImageLike[];
+}
+
 export interface GeminiClientLike {
   ask(prompt: string, opts?: Record<string, unknown>): Promise<GeminiOutputLike>;
   research(
     prompt: string,
     opts?: { wait?: boolean; pollInterval?: number; timeout?: number; onStatus?: (s: Record<string, unknown>) => void },
   ): Promise<GeminiResearchLike>;
+  // Optional so pre-0.9 fake clients (ask+research only) keep compiling.
+  newChat?(opts?: { model?: string }): {
+    generateContent(o: { prompt: string }): Promise<GeminiImageOutputLike>;
+  };
 }
 
 export type GeminiClientFactory = (
@@ -171,7 +188,8 @@ export async function withGeminiClient<T>(
 // ponytail: gemini-reverse polls aren't cancellable — abort/timeout rejects the
 // tool call promptly, but the underlying client poll finishes/times out in the
 // background (ceiling; real cancellation needs upstream AbortSignal support).
-function raceGuard<T>(
+// Shared with lib/imageapi.ts (same abort semantics for plain fetch calls).
+export function raceGuard<T>(
   promise: Promise<T>,
   opts: { signal?: AbortSignal; timeoutMs?: number; label: string },
 ): Promise<T> {
@@ -336,4 +354,54 @@ export async function geminiResearch(
     guest: false,
     sources: extractSources(text),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Image generation (free web tier): prompt → GeneratedImage.save() paths
+// ---------------------------------------------------------------------------
+
+export interface GeminiImageResult {
+  paths: string[];
+  model?: string;
+  guest: boolean;
+  text: string;
+}
+
+export async function geminiGenerateImage(
+  prompt: string,
+  opts: {
+    config: GeminiWebConfig;
+    outDir: string;
+    model?: string;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    factory?: GeminiClientFactory;
+  },
+): Promise<GeminiImageResult> {
+  const out = await raceGuard(
+    withGeminiClient(
+      opts.config,
+      async (client) => {
+        if (typeof client.newChat !== "function") {
+          throw new Error("gemini-reverse client exposes no newChat (unexpected package shape)");
+        }
+        const chat = client.newChat(opts.model ? { model: opts.model } : undefined);
+        return chat.generateContent({ prompt });
+      },
+      opts.factory,
+    ),
+    { signal: opts.signal, timeoutMs: opts.timeoutMs ?? 180_000, label: "web_image gemini" },
+  );
+  const images = out?.generated_images ?? out?.images ?? [];
+  const text = String(out?.text ?? "");
+  if (!images.length) {
+    throw new Error(
+      text
+        ? `Gemini replied with text but no images: ${text.slice(0, 200)} — image generation is likely unavailable for this account/region (it is for some Google accounts); try provider=zai (ZAI_API_KEY) or provider=custom.`
+        : "Gemini returned no images — generation may be unavailable for this account/region (guest mode may not support it; set GEMINI_WEB_SECURE_1PSID).",
+    );
+  }
+  const paths: string[] = [];
+  for (const img of images) paths.push(await img.save({ path: opts.outDir }));
+  return { paths, model: out?.model, guest: !opts.config.psid, text };
 }

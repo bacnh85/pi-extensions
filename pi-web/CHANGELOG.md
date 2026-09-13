@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.0 (2026-09-13)
+
+### Added
+
+- **`web_image` tool** — image generation from text via free upstream
+  providers, all direct-to-upstream (no self-host services), with automatic
+  fallback: `gemini` (gemini.google.com web tier via `gemini-reverse`, guest
+  or cookie auth) → `zai` (official `api.z.ai` CogView-4 via `ZAI_API_KEY`)
+  → `custom` (any OpenAI-compatible `/images/generations` endpoint via
+  `WEB_IMAGE_API_BASE_URL`). `provider: "auto"` walks the chain and the
+  result reports every fallback attempt.
+- Results are saved as files (`out_dir`, default fresh temp dir) and returned
+  as **inline image blocks** so multimodal models see their own output;
+  `model`/`n` (1–4) parameters per call.
+- **Soft ToS guardrails** — per-provider `WEB_IMAGE_MIN_INTERVAL_MS`
+  (default 5000) and a `WEB_IMAGE_DAILY_CAP` (default 20/day) on the Gemini
+  web tier; successes-only counting, UTC-day reset, usage surfaced in
+  `web_status.imageProviders.rate`.
+- `web_status` now reports `imageProviders` (gemini/zai/custom config + rate
+  snapshot).
+- Smoke script: `image` and `zai` modes (prints saved paths + PNG magic-byte
+  check); ask/research modes now print **full answers and source URLs**
+  (previously sliced to a 200/400-char preview).
+
 ## 0.8.0 (2026-09-13)
 
 ### Added
