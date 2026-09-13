@@ -234,9 +234,10 @@ describe("buildPiArgs", () => {
     assert.equal(args[idx("--name") + 1], "scout-1");
   });
 
-  it("omits --thinking for off and filters read-only to the allowlist", () => {
+  it("passes --thinking off explicitly (a bare child would inherit its own default) and filters read-only to the allowlist", () => {
     const off = buildPiArgs({ name: "s-1", systemPromptFile: "/tmp/s.system.md", model: "p/m", thinking: "off", tools: ["read"], sessionStamp: "abc" });
-    assert.equal(off.indexOf("--thinking"), -1);
+    const i = off.indexOf("--thinking");
+    assert.ok(i >= 0 && off[i + 1] === "off");
     const ro = buildPiArgs({ name: "s-1", systemPromptFile: "/tmp/s.system.md", model: "p/m", readOnly: true, tools: ["read", "bash", "web_search"], sessionStamp: "abc" });
     const toolsFlag = ro[ro.indexOf("--tools") + 1].split(",");
     assert.ok(!toolsFlag.includes("bash"));

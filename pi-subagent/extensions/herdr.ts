@@ -316,8 +316,10 @@ export interface BuildPiArgsOptions {
 export function buildPiArgs(opts: BuildPiArgsOptions): string[] {
   const args = ["--append-system-prompt", opts.systemPromptFile];
   if (opts.model) args.push("--model", opts.model);
-  const thinking = opts.thinking && opts.thinking !== "off" ? opts.thinking : undefined;
-  if (thinking) args.push("--thinking", thinking);
+  // Pass "off" explicitly: omitting it lets the child fall back to ITS own
+  // default (e.g. the user's defaultThinkingLevel), silently overriding the
+  // agent's frontmatter/:pin off. pi --thinking accepts off.
+  if (opts.thinking) args.push("--thinking", opts.thinking);
   let tools = opts.tools;
   if (opts.readOnly) {
     // Same filter the SDK path applies: explicit tools ∩ read-only allowlist.

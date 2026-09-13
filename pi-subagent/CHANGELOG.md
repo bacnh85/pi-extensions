@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.22.1 (2026-09-13)
+
+### Fixed
+
+- **herdr children honor `thinking: off` explicitly.** `buildPiArgs` omitted
+  the `--thinking` flag for "off", so the child pi fell back to its own
+  default (e.g. a user-level `defaultThinkingLevel`), silently overriding
+  the agent's frontmatter or `:off` pin — an SDK child ran off while a
+  herdr child of the same agent ran at the child default. The flag is now
+  always passed when a level is known (`pi --thinking off` is valid). Found
+  by the live-fallback smoke: scout (@fast, dead model id → parent fallback)
+  ran at `max` instead of its frontmatter `off`.
+
 ## 0.22.0 (2026-09-13)
 
 ### Added
