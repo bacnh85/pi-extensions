@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Gateway registration self-heals after a failed first register.**
+  `GatewayUpstream.start()` armed the heartbeat timer only when the initial
+  registration succeeded, so a transient failure at session start (gateway
+  briefly down, VPN not up yet, macOS Local Network permission not granted)
+  disabled gateway discovery for the whole session. The timer is now armed
+  unconditionally; each beat retries, and the reverse channel opens on the
+  first successful beat.
+- **`register failed: network error` now carries the OS cause** —
+  `network error (EHOSTUNREACH)`, `(ECONNREFUSED)`, `(TimeoutError)`, etc.
+  `send()` swallowed the fetch rejection cause, making a systemic block
+  (e.g. macOS Local Network privacy denying the node binary LAN access —
+  which surfaces as EHOSTUNREACH while `curl` works) indistinguishable from
+  the gateway being down. The cause travels with each response (per-call,
+  not shared state), and repeated identical failures log once per cause —
+  a permanent failure no longer repeats a line every beat (mirrors the
+  peer-directory refresh policy).
+- **A late self-healing beat announces the registration.** When the first
+  register failed at session start and a later heartbeat succeeded, the
+  registration was silent: no status line and no `setGatewayRegistrationName`
+  publication (X-Gateway-Caller attribution stayed unset/stale). A new
+  `onRegistered` transition callback on `GatewayUpstream` (fires once, on
+  first success) routes through the same announce path as a successful
+  `start()`.
+
 ## 0.7.8 (2026-09-12)
 
 ### Fixed

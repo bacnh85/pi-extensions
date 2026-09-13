@@ -1197,7 +1197,7 @@ describe("gateway diagnostics routing", () => {
     const statuses: string[] = [];
     const errors: string[] = [];
     const gw = new GatewayUpstream(
-      { url: "http://127.0.0.1:1", token: TOKEN, name: "self-1" }, // port 1: connection refused
+      { url: "http://127.0.0.1:1", token: TOKEN, name: "self-1" }, // port 1: fetch rejects synchronously (bad-port blocklist)
       () => ({}),
       (m) => errors.push(String(m)),
       () => {},
@@ -1207,5 +1207,148 @@ describe("gateway diagnostics routing", () => {
     assert.ok(errors.some((e) => e.includes("register failed")), "failure surfaced as error");
     assert.equal(statuses.length, 0, "no status line for a failed registration");
     await gw.stop();
+  });
+
+  it("failed start still arms the retry heartbeat (self-heal without restart)", async () => {
+    const gw = new GatewayUpstream(
+      { url: "http://127.0.0.1:1", token: TOKEN, name: "self-1", channel: false }, // fetch rejects (bad-port blocklist — no connect attempted)
+      () => ({}),
+      () => {},
+      () => {},
+    );
+    try {
+      assert.isFalse(await gw.start("http://127.0.0.1:9911"));
+      assert.ok((gw as unknown as { timer: unknown }).timer, "heartbeat armed despite failed start");
+    } finally {
+      await gw.stop();
+    }
+    assert.equal((gw as unknown as { timer: unknown }).timer, null, "stop() clears the retry heartbeat");
+  });
+
+  it("network-error register logs carry the errno cause", async () => {
+    const errors: string[] = [];
+    const gw = new GatewayUpstream(
+      { url: "http://127.0.0.1:1", token: TOKEN, name: "self-1", channel: false },
+      () => ({}),
+      (m) => errors.push(String(m)),
+      () => {},
+    );
+    assert.isFalse(await gw.start("http://127.0.0.1:9911"));
+    assert.ok(
+      errors.some((e) => /register failed: network error \((.+?)\)/.test(e)),
+      `cause appended to network error: ${errors.join(" | ")}`,
+    );
+    await gw.stop();
+  });
+
+  it("identical register failures log once (change-dedup), like directory refresh", async () => {
+    const errors: string[] = [];
+    const gw = new GatewayUpstream(
+      { url: "http://127.0.0.1:1", token: TOKEN, name: "self-1", channel: false },
+      () => ({}),
+      (m) => errors.push(String(m)),
+      () => {},
+    );
+    await gw.register("http://127.0.0.1:9911");
+    await gw.register("http://127.0.0.1:9911");
+    assert.lengthOf(
+      errors.filter((e) => e.includes("register failed")),
+      1,
+      "repeated identical failure must not repeat per beat",
+    );
+    await gw.stop();
+  });
+
+  it("late self-heal beat registers, notifies onRegistered once, logs no failures", async () => {
+    const errors: string[] = [];
+    const registered: Array<{ name: string; state: string }> = [];
+    const srv = http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ state: "accepted" }));
+      });
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    const port = (srv.address() as { port: number }).port;
+    await new Promise<void>((r) => srv.close(() => r())); // gateway down at session start
+    const gw = new GatewayUpstream(
+      { url: `http://127.0.0.1:${port}`, token: TOKEN, name: "late-1", channel: false },
+      () => ({ name: "late-1" }),
+      (m) => errors.push(String(m)),
+      () => {},
+      undefined,
+      (name, state) => registered.push({ name, state }),
+    );
+    const beat = (gw as unknown as { beat: (u: string) => Promise<void> }).beat;
+    try {
+      assert.isFalse(await gw.start(`http://127.0.0.1:${port}`));
+      await new Promise<void>((r) => srv.listen(port, "127.0.0.1", r)); // gateway up BEFORE the beat (no connect/bind race)
+      await beat.call(gw, `http://127.0.0.1:${port}`);
+      assert.deepEqual(registered, [{ name: "late-1", state: "accepted" }],
+        "first successful beat announces the registration");
+      await beat.call(gw, `http://127.0.0.1:${port}`);
+      assert.lengthOf(registered, 1, "onRegistered fires once (transition only)");
+      assert.lengthOf(
+        errors.filter((e) => e.includes("register failed")),
+        1,
+        "failed start logged once; recovered beats log nothing",
+      );
+    } finally {
+      await gw.stop();
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  });
+
+  it("EHOSTUNREACH on darwin hints Local Network privacy, once per cause", async () => {
+    const realPlatform = process.platform;
+    const originalFetch = globalThis.fetch;
+    const errors: string[] = [];
+    let gw1: GatewayUpstream | null = null;
+    let gw2: GatewayUpstream | null = null;
+    try {
+      globalThis.fetch = (async () => {
+        throw Object.assign(new TypeError("fetch failed"), { cause: { code: "EHOSTUNREACH" } });
+      }) as any;
+      Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+
+      // Phase 1 — darwin: hint appended, dedup keeps it to one line.
+      gw1 = new GatewayUpstream(
+        { url: "http://192.168.1.50:9920", token: TOKEN, name: "self-1", channel: false },
+        () => ({}),
+        (m) => errors.push(String(m)),
+        () => {},
+      );
+      assert.isFalse(await gw1.register("http://127.0.0.1:9911"));
+      assert.isFalse(await gw1.register("http://127.0.0.1:9911"));
+      const failed = errors.filter((e) => e.includes("register failed"));
+      assert.lengthOf(failed, 1, "repeated identical failure must not repeat per beat");
+      assert.include(failed[0]!, "network error (EHOSTUNREACH)");
+      assert.include(failed[0]!, "Local Network");
+      assert.include(failed[0]!, "Privacy & Security");
+      assert.notInclude(failed[0]!, "\n", "hint stays on a single line");
+      assert.isBelow(failed[0]!.length, 320, "line stays length-capped");
+
+      // Phase 2 — non-darwin: EHOSTUNREACH is genuine routing, no hint.
+      errors.length = 0;
+      Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+      gw2 = new GatewayUpstream(
+        { url: "http://192.168.1.50:9920", token: TOKEN, name: "self-2", channel: false },
+        () => ({}),
+        (m) => errors.push(String(m)),
+        () => {},
+      );
+      await gw2.register("http://127.0.0.1:9911");
+      assert.ok(
+        errors.some((e) => e.includes("EHOSTUNREACH") && !e.includes("Local Network")),
+        `no darwin hint on linux: ${errors.join(" | ")}`,
+      );
+    } finally {
+      if (gw1) await gw1.stop();
+      if (gw2) await gw2.stop();
+      Object.defineProperty(process, "platform", { value: realPlatform, configurable: true });
+      globalThis.fetch = originalFetch as any;
+    }
   });
 });

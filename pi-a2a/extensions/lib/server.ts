@@ -549,36 +549,40 @@ export class A2AServer {
             console.error(msg);
           }
         },
+        // Fires on the transition to registered — including a late beat that
+        // self-heals after start() returned false (gateway down at session
+        // start). Same surface as a successful start(): publish the
+        // gateway-issued name (a 409 self-heal rename may have changed it —
+        // publishing the pre-rename name would advertise a caller identity
+        // the gateway never registered) and emit the registration line.
+        (registeredName, state) => {
+          setGatewayRegistrationName(registeredName, key);
+          const pending = state === "pending";
+          let host = gw.url;
+          try {
+            host = new URL(gw.url).host;
+          } catch {
+            /* keep raw url */
+          }
+          const msg =
+            `[a2a] registered to a2a-switchboard ${key}@${host} as ${registeredName}` +
+            (pending ? " (pending admin acceptance — not yet listed for peers)" : "");
+          if (this.onStatus) {
+            try {
+              this.onStatus(msg);
+              return;
+            } catch {
+              /* fall back to console */
+            }
+          }
+          console.log(msg);
+        },
       );
       this.gatewayUpstreams.set(key, upstream);
-      const ok = await upstream.start(this.publicUrl());
-      if (ok) {
-        // registeredName, not the local computation: a 409 self-heal may have
-        // renamed the peer — publishing the pre-rename name would advertise a
-        // caller identity the gateway never registered.
-        const registeredName = upstream.registeredName;
-        setGatewayRegistrationName(registeredName, key);
-        const state = upstream.lastState;
-        const pending = state === "pending";
-        let host = gw.url;
-        try {
-          host = new URL(gw.url).host;
-        } catch {
-          /* keep raw url */
-        }
-        const msg =
-          `[a2a] registered to a2a-switchboard ${key}@${host} as ${registeredName}` +
-          (pending ? " (pending admin acceptance — not yet listed for peers)" : "");
-        if (this.onStatus) {
-          try {
-            this.onStatus(msg);
-            continue;
-          } catch {
-            /* fall back to console */
-          }
-        }
-        console.log(msg);
-      }
+      // The onRegistered callback above announces success (immediately, or on
+      // a later self-healing beat if the first register failed) — nothing to
+      // do with start()'s return value.
+      await upstream.start(this.publicUrl());
     }
   }
 
