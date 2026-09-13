@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.12.3 (2026-09-14)
+
+### Fixed
+
+- **Keepalive fresh-store skip is psid-scoped** (reviewer, blocking): a fresh
+  store belonging to a different psid no longer suppresses the immediate
+  take-ownership rotation for a newly pasted session.
+- **403 no longer wipes the cookie store** (reviewer): only definitive
+  400/401 clear it — 403 (rate-limit/abuse soft-block) keeps the newest TS.
+- **Cookie store writes are atomic** (reviewer): write-to-temp + rename —
+  concurrent readers never observe an empty/partial store.
+- Keepalive arming now covered by tests (disable flag, env interval,
+  clamp, psid re-arm) via a __keepaliveDebug test hook.
+
 ## 0.12.2 (2026-09-14)
 
 ### Changed

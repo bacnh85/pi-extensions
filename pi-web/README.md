@@ -233,11 +233,11 @@ web_research(query="compare the top 3 cloud providers' AI offerings", mode="rese
   Sent as a temporary chat so your Gemini history stays clean.
 - **`mode: "research"`** — full Gemini **Deep Research**: plan → autonomous web
   browsing (minutes) → cited report. Requires the cookie and a **fresh session**.
-  **Known limitation (2026-09):** currently fails with 1184/FEATURE_NOT_AVAILABLE
-  from this tool's plain-Node transport. 1184 is an unreliable code (it also
-  fires on expired-cookie sessions); free-tier plan creation has succeeded via
-  a browser-impersonating client (2026-09-13), while Gemini has also described
-  Deep Research as Pro/Ultra-gated — tier requirement unverified.
+  Runs a plan turn, a "Start research" confirm turn, then polls conversation
+  turns until the report lands. Plan/confirm run even on degraded sessions,
+  but report polling needs the live-session XSRF token — on stale sessions
+  the tool returns an honest partial result (plan + transcript + note)
+  instead of failing.
   Default timeout 600 s, cap 1 800 000.
 
 Both modes return the text plus **Sources** — URLs extracted from the
@@ -311,19 +311,16 @@ Troubleshooting:
   `__Secure-1PSID` + `__Secure-1PSIDTS` from a fresh **incognito** login. If
   this returns often, your daily browser is competing for the same session —
   keep using the incognito cookie and let pi own the rotation.
-- *"no new `__Secure-1PSIDTS` in response"* — with status 400/401/403 this
-  means the session is dead server-side: re-paste from a fresh incognito
-  login. Other statuses are transient (the cookie store is kept) — retry
+- *"no new `__Secure-1PSIDTS` in response"* — with status 400/401 this means
+  the session is dead server-side: re-paste from a fresh incognito login.
+  403 and other statuses are transient (the cookie store is kept) — retry
   later.
 - *"temporarily blocked this IP"* — set `GEMINI_WEB_PROXY`.
-- *research mode: "Unknown API error: 1184"* — unreliable signal: it also
-  fires on expired-cookie sessions (verified 2026-09-14). Evidence is mixed
-  on tier gating: free-tier Deep Research plan creation succeeded via a
-  browser-impersonating client (2026-09-13), while Gemini has also described
-  it as Pro/Ultra-gated. Gemini refuses privileged tools to non-browser
-  clients; this tool's transport is plain Node, so research currently fails
-  regardless. `ask` mode is
-  unaffected.
+- *research mode returns a partial result ("report could not be retrieved")* —
+  the plan/confirm turns ran, but report polling needs a live-session token:
+  re-copy `__Secure-1PSID` + `__Secure-1PSIDTS` from a fresh **incognito**
+  login and retry. The report remains in your Gemini web history for the
+  returned chat id. `ask` mode is unaffected.
 
 ### `web_image` — free upstream image generation
 

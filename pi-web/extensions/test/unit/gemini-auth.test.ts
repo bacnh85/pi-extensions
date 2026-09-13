@@ -8,15 +8,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  __keepaliveDebug,
   clearCookieStore,
   cookieStoreSnapshot,
   defaultStorePath,
+  ensureKeepalive,
   keepaliveOnce,
   loadCookieStore,
   refreshGeminiAuth,
   resolvePsidts,
   rotateCookies,
   saveCookieStore,
+  stopKeepalive,
   type PostFn,
 } from "../../lib/gemini-auth";
 import {
@@ -140,6 +143,9 @@ describe("rotateCookies", () => {
     const boom = await rotateCookies({ psid: "p1", post: fakePost({ status: 503, setCookie: [] }) });
     expect(boom.ok).to.equal(false);
     expect(boom.stale).to.equal(undefined);
+    const forbidden = await rotateCookies({ psid: "p1", post: fakePost({ status: 403, setCookie: [] }) });
+    expect(forbidden.ok).to.equal(false);
+    expect(forbidden.stale).to.equal(undefined); // 403 = soft-block, not dead
   });
 
   it("marks transport errors as NOT stale", async () => {
@@ -170,6 +176,11 @@ describe("refreshGeminiAuth", () => {
     // transient 5xx must also keep the store (reviewer: stale is for definitive rejections only)
     saveCookieStore({ psid: "psid-test", psidts: "old", updatedAt: 1 }, p);
     await refreshGeminiAuth(config, { post: fakePost({ status: 503, setCookie: [] }), storePath: p });
+    expect(loadCookieStore(p)).to.deep.include({ psidts: "old" });
+
+    // 403 is a soft-block — the newest TS must survive it
+    saveCookieStore({ psid: "psid-test", psidts: "old", updatedAt: 1 }, p);
+    await refreshGeminiAuth(config, { post: fakePost({ status: 403, setCookie: [] }), storePath: p });
     expect(loadCookieStore(p)).to.deep.include({ psidts: "old" });
   });
 
@@ -202,6 +213,19 @@ describe("keepaliveOnce", () => {
     saveCookieStore({ psid: "psid-test", psidts: "old", updatedAt: 1 }, p);
     expect(await keepaliveOnce(config, { storePath: p, post: unauthorizedPost() })).to.equal(false);
     expect(loadCookieStore(p)).to.equal(null);
+  });
+
+  it("does not skip rotation for a fresh store belonging to a DIFFERENT psid", async () => {
+    const p = tmpStore();
+    saveCookieStore({ psid: "old-psid", psidts: "old-ts", updatedAt: Date.now() }, p);
+    let called = 0;
+    const post: PostFn = async () => {
+      called++;
+      return { status: 200, setCookie: ["__Secure-1PSIDTS=fresh-ts; Path=/"] };
+    };
+    expect(await keepaliveOnce(config, { storePath: p, post })).to.equal(true);
+    expect(called).to.equal(1);
+    expect(loadCookieStore(p)).to.deep.include({ psid: "psid-test", psidts: "fresh-ts" });
   });
 });
 
@@ -308,5 +332,46 @@ describe("describeGeminiError AuthError guidance", () => {
     const msg = describeGeminiError(e);
     expect(msg).to.match(/incognito/);
     expect(msg).to.match(/gemini-web-cookies\.json/);
+  });
+});
+
+describe("ensureKeepalive arming", () => {
+  const OLD_KEEPALIVE = process.env.GEMINI_WEB_KEEPALIVE;
+  const OLD_INTERVAL = process.env.GEMINI_WEB_ROTATE_INTERVAL_MS;
+
+  afterEach(() => {
+    stopKeepalive();
+    if (OLD_KEEPALIVE === undefined) delete process.env.GEMINI_WEB_KEEPALIVE;
+    else process.env.GEMINI_WEB_KEEPALIVE = OLD_KEEPALIVE;
+    if (OLD_INTERVAL === undefined) delete process.env.GEMINI_WEB_ROTATE_INTERVAL_MS;
+    else process.env.GEMINI_WEB_ROTATE_INTERVAL_MS = OLD_INTERVAL;
+  });
+
+  it("stays disarmed when GEMINI_WEB_KEEPALIVE=0", () => {
+    process.env.GEMINI_WEB_KEEPALIVE = "0";
+    ensureKeepalive(config);
+    expect(__keepaliveDebug().armed).to.equal(false);
+  });
+
+  it("arms with the default 600s cadence, honors env interval, clamps below the floor", () => {
+    delete process.env.GEMINI_WEB_ROTATE_INTERVAL_MS;
+    ensureKeepalive(config);
+    expect(__keepaliveDebug().armed).to.equal(true);
+    expect(__keepaliveDebug().intervalMs).to.equal(600_000);
+    stopKeepalive();
+    process.env.GEMINI_WEB_ROTATE_INTERVAL_MS = "120000";
+    ensureKeepalive(config);
+    expect(__keepaliveDebug().intervalMs).to.equal(120_000);
+    stopKeepalive();
+    process.env.GEMINI_WEB_ROTATE_INTERVAL_MS = "5000";
+    ensureKeepalive(config);
+    expect(__keepaliveDebug().intervalMs).to.equal(600_000);
+  });
+
+  it("re-arms when the psid changes", () => {
+    ensureKeepalive(config);
+    expect(__keepaliveDebug().psid).to.equal("psid-test");
+    ensureKeepalive({ ...config, psid: "psid-other" });
+    expect(__keepaliveDebug().psid).to.equal("psid-other");
   });
 });

@@ -82,7 +82,11 @@ export function saveCookieStore(entry: CookieStoreEntry, storePath: string = def
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
   // mode at creation — no world-readable window before the chmod (which stays
   // for rewrites of pre-existing files whose mode may have drifted).
-  fs.writeFileSync(storePath, JSON.stringify(entry, null, 2), { mode: 0o600 });
+  // write-then-rename: concurrent readers (keepalive tick, auto-heal, jar
+  // persist) must never observe an empty/partial store.
+  const tmp = `${storePath}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(entry, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, storePath);
   fs.chmodSync(storePath, 0o600);
 }
 
@@ -177,10 +181,10 @@ export async function rotateCookies(opts: {
     });
     const fresh = extractSetCookie(res.setCookie, "__Secure-1PSIDTS");
     if (fresh) return { ok: true, psidts: fresh };
-    // Only definitive rejections prove the session dead (store cleared).
-    // 429/5xx/3xx/other are transient or ambiguous — keep the store, like
-    // transport errors.
-    if (res.status === 400 || res.status === 401 || res.status === 403) {
+  // Only definitive rejections prove the session dead (store cleared).
+  // 403 (rate-limit/abuse soft-block), 429/5xx/3xx/other are transient or
+  // ambiguous — keep the store, like transport errors.
+  if (res.status === 400 || res.status === 401) {
       return { ok: false, stale: true, reason: `unauthorized (${res.status}) — session expired server-side` };
     }
     return { ok: false, reason: `no new __Secure-1PSIDTS in response (status ${res.status}) — transient server response; store kept` };
@@ -224,7 +228,9 @@ export async function keepaliveOnce(
   if (!cfg.psid) return false;
   const storePath = opts.storePath ?? defaultStorePath();
   const store = loadCookieStore(storePath);
-  if (store && Date.now() - store.updatedAt < MIN_ROTATE_GAP_MS) return true;
+  // Fresh-store skip is psid-scoped: a fresh store for ANOTHER session must
+  // not stop this one from taking ownership of its own generation.
+  if (store && store.psid === cfg.psid && Date.now() - store.updatedAt < MIN_ROTATE_GAP_MS) return true;
   return (await refreshGeminiAuth(cfg, opts)).ok;
 }
 
@@ -232,7 +238,10 @@ let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 let keepalivePsid: string | undefined;
 
 /** Arms the background rotation timer (10-min cadence). No-op for guest mode, when disabled, or when already armed for this session. */
-export function ensureKeepalive(cfg: { psid?: string; psidts?: string; proxy?: string }): void {
+export function ensureKeepalive(
+  cfg: { psid?: string; psidts?: string; proxy?: string },
+  hooks?: { post?: PostFn; storePath?: string },
+): void {
   if (!cfg.psid) return;
   if (keepaliveTimer && keepalivePsid === cfg.psid) return;
   stopKeepalive();
@@ -241,18 +250,23 @@ export function ensureKeepalive(cfg: { psid?: string; psidts?: string; proxy?: s
   const intervalMs = Number.isFinite(parsed) && parsed >= MIN_ROTATE_GAP_MS ? parsed : DEFAULT_ROTATE_INTERVAL_MS;
   keepalivePsid = cfg.psid;
   keepaliveTimer = setInterval(() => {
-    void keepaliveOnce(cfg).catch(() => {});
+    void keepaliveOnce(cfg, hooks).catch(() => {});
   }, intervalMs);
   keepaliveTimer.unref?.();
   // Rotate immediately too — don't wait a full interval. The pasted TS is
   // current at paste time; pi must take ownership of the generation before
   // anything else can supersede it (lesson: a lost generation requires a
   // full re-paste).
-  void keepaliveOnce(cfg).catch(() => {});
+  void keepaliveOnce(cfg, hooks).catch(() => {});
 }
 
 export function stopKeepalive(): void {
   if (keepaliveTimer) clearInterval(keepaliveTimer);
   keepaliveTimer = null;
   keepalivePsid = undefined;
+}
+
+/** @internal test hook — keepalive arm state */
+export function __keepaliveDebug(): { armed: boolean; psid: string | undefined; intervalMs: number | null } {
+  return { armed: keepaliveTimer !== null, psid: keepalivePsid, intervalMs: keepaliveTimer ? (keepaliveTimer as unknown as { _idleTimeout?: number })._idleTimeout ?? null : null };
 }
