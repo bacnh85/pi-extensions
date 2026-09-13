@@ -486,7 +486,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
     name: "web_research",
     label: "Web Research (Gemini)",
     description:
-      "AI-synthesized web research via Gemini (gemini.google.com web tier, cookie auth). Mode 'ask' returns a quick grounded answer with source links (works guest-mode, Flash only). Mode 'research' runs Gemini Deep Research — plan, autonomous web browsing, cited report. Requires GEMINI_WEB_SECURE_1PSID and a fresh session; note Gemini currently refuses Deep Research to non-browser clients (1184) — the error is a transport artifact, not an entitlement gate.",
+      "AI-synthesized web research via Gemini (gemini.google.com web tier, cookie auth). Mode 'ask' returns a quick grounded answer with source links (works guest-mode, Flash only). Mode 'research' runs Gemini Deep Research — plan, autonomous web browsing, cited report. Requires GEMINI_WEB_SECURE_1PSID and a fresh session; research currently fails from this plain-Node transport with 1184 — an unreliable code (it also fires on expired-cookie sessions), and the account-tier requirement is unverified (free-tier plan creation has succeeded via browser-grade clients; Gemini has also described Deep Research as Pro/Ultra-gated).",
     promptSnippet: "AI-synthesized research with citations",
     promptGuidelines: [
       "Use for AI-synthesized research with sources (mode ask = quick grounded answer; mode research = multi-minute Deep Research report). NOT for URL-list searches (web_search) or single-URL extraction (web_extract). Cite the returned source URLs.",
@@ -587,6 +587,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
             ]
           : []),
         result.attempts.length ? `Provider notes: ${result.attempts.join(" | ")}` : null,
+        result.note ?? null,
       ].filter(Boolean).join("\n");
       const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
         { type: "text" as const, text },

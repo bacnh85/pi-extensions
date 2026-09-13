@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.5 (2026-09-13)
+
+### Fixed
+
+- **web_image reports an n shortfall**: when the upstream model returns fewer
+  images than requested (Z.ai glm-image returned 1 of 2 requested in live
+  testing), the result now carries a note instead of being silently short
+  (found in herdr test round 3).
+- The web_research tool description now carries the hedged Deep Research
+  wording (0.11.3 pass missed the tool-description surface).
+
 ## 0.11.4 (2026-09-13)
 
 ### Fixed

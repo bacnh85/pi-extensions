@@ -176,6 +176,8 @@ export interface ApiImageResult {
   urls: string[];
   /** Download failure reason per urls entry (aligned by index), flattened to one line. */
   downloadErrors?: string[];
+  /** Set when upstream returned fewer images than requested (some models ignore n). */
+  note?: string;
   model?: string;
 }
 
@@ -259,7 +261,11 @@ export async function apiGenerateImage(opts: {
     }
   }
   if (!paths.length && !urls.length) throw new Error(`upstream returned no image data (model ${opts.model ?? "default"})`);
-  return { paths, urls, ...(downloadErrors ? { downloadErrors } : {}), model: typeof payload?.model === "string" ? payload.model : opts.model };
+  const note =
+    opts.n && opts.n > 1 && items.length < opts.n
+      ? `upstream returned ${items.length} of ${opts.n} requested images — model ${opts.model ?? "default"} may ignore n`
+      : undefined;
+  return { paths, urls, ...(downloadErrors ? { downloadErrors } : {}), ...(note ? { note } : {}), model: typeof payload?.model === "string" ? payload.model : opts.model };
 }
 
 // Some gateways serve JPEG/WebP bytes behind a .png URL (Z.ai GLM-Image does) —
@@ -342,6 +348,8 @@ export interface ImageChainResult {
   urls: string[];
   /** Download failure reason per urls entry (aligned by index) — provider-dependent, so optional. */
   downloadErrors?: string[];
+  /** Set when upstream returned fewer images than requested (some models ignore n). */
+  note?: string;
   attempts: string[];
 }
 
@@ -395,7 +403,7 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
       continue;
     }
     try {
-      let result: { paths: string[]; urls?: string[]; downloadErrors?: string[]; model?: string };
+      let result: { paths: string[]; urls?: string[]; downloadErrors?: string[]; note?: string; model?: string };
       if (provider === "gemini") {
         result = await geminiGenerateImage(params.prompt, {
           config: params.geminiConfig,
@@ -435,7 +443,7 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
       if (provider === "gemini" && params.n && params.n > 1 && result.paths.length < params.n) {
         attempts.push(`gemini: n=${params.n} requested — the gemini web tier returns its own image count (${result.paths.length}); n applies to zai/custom`);
       }
-      return { provider, model: result.model, paths: result.paths, urls: result.urls ?? [], downloadErrors: result.downloadErrors, attempts };
+      return { provider, model: result.model, paths: result.paths, urls: result.urls ?? [], downloadErrors: result.downloadErrors, note: result.note, attempts };
     } catch (err) {
       // Cancellation is not a provider failure: rethrow so aborted tool calls
       // surface as AbortError instead of an "all providers failed" listing —

@@ -327,6 +327,31 @@ describe("apiGenerateImage", () => {
     expect(r.model).to.equal("img-1");
   });
 
+  it("notes an n shortfall when upstream returns fewer than requested", async () => {
+    const outDir = await tmpDir();
+    const r = await apiGenerateImage({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "k",
+      model: "img-1",
+      prompt: "p",
+      n: 2,
+      outDir,
+      fetchImpl: routingFetch({ data: [{ b64_json: PNG_B64 }] }),
+    });
+    expect(r.paths).to.have.length(1);
+    expect(r.note).to.match(/1 of 2/);
+    const r1 = await apiGenerateImage({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "k",
+      model: "img-1",
+      prompt: "p",
+      n: 1,
+      outDir,
+      fetchImpl: routingFetch({ data: [{ b64_json: PNG_B64 }] }),
+    });
+    expect(r1.note).to.be.undefined;
+  });
+
   it("downloads url results (extension from the URL)", async () => {
     const outDir = await tmpDir();
     const fetchImpl = routingFetch({ data: [{ url: "https://cdn.example.com/a/b.WEBP?x=1" }] });
