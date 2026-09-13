@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.7 (2026-09-13)
+
+### Fixed
+
+- README rotation-failure guidance now includes **403** among the definitive
+  dead-session statuses (400/401/403), matching the code — a 403 previously
+  got the wrong "retry later" advice (advisor nit).
+
 ## 0.11.6 (2026-09-13)
 
 ### Fixed

@@ -311,9 +311,10 @@ Troubleshooting:
   `__Secure-1PSID` + `__Secure-1PSIDTS` from a fresh **incognito** login. If
   this returns often, your daily browser is competing for the same session —
   keep using the incognito cookie and let pi own the rotation.
-- *"no new `__Secure-1PSIDTS` in response"* — with status 400/401 this means
-  the session is dead server-side: re-paste from a fresh incognito login.
-  Other statuses are transient (the cookie store is kept) — retry later.
+- *"no new `__Secure-1PSIDTS` in response"* — with status 400/401/403 this
+  means the session is dead server-side: re-paste from a fresh incognito
+  login. Other statuses are transient (the cookie store is kept) — retry
+  later.
 - *"temporarily blocked this IP"* — set `GEMINI_WEB_PROXY`.
 - *research mode: "Unknown API error: 1184"* — unreliable signal: it also
   fires on expired-cookie sessions (verified 2026-09-14). Evidence is mixed
