@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.1 (2026-09-13)
+
+### Fixed
+
+- **`zai` default model is `glm-image`** (live-verified against
+  `api.z.ai/api/paas/v4/images/generations` — the endpoint rejects
+  `cogview-4`/`cogview-3-flash` with "Unknown Model"; GLM-Image returns
+  URL results).
+- **Failed image downloads no longer waste the generation** — some upstreams
+  return URL-only results and the CDN can be unreachable from the local
+  network (e.g. `mfile.z.ai` DNS-sinkholed). The tool now reports
+  "Not saved (image host unreachable…)" with the URL instead of failing the
+  provider; inline image blocks are still attached for saved files.
+
 ## 0.9.0 (2026-09-13)
 
 ### Added
@@ -7,7 +21,7 @@
 - **`web_image` tool** — image generation from text via free upstream
   providers, all direct-to-upstream (no self-host services), with automatic
   fallback: `gemini` (gemini.google.com web tier via `gemini-reverse`, guest
-  or cookie auth) → `zai` (official `api.z.ai` CogView-4 via `ZAI_API_KEY`)
+  or cookie auth) → `zai` (official `api.z.ai` GLM-Image via `ZAI_API_KEY`)
   → `custom` (any OpenAI-compatible `/images/generations` endpoint via
   `WEB_IMAGE_API_BASE_URL`). `provider: "auto"` walks the chain and the
   result reports every fallback attempt.

@@ -361,6 +361,24 @@ describe("apiGenerateImage", () => {
       expect((e as Error).message).to.include("no image data");
     }
   });
+
+  it("survives a failed image download by returning the URL (generation not wasted)", async () => {
+    const outDir = await tmpDir();
+    const failingDownload = (async (_url: string, init?: { method?: string }) => {
+      if (init?.method === "POST") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ url: "https://blocked-cdn.example.com/a.png" }] }),
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      }
+      throw new Error("connect ECONNREFUSED 0.0.0.0:443");
+    }) as unknown as FetchLike;
+    const r = await apiGenerateImage({ baseUrl: "https://x/v1", prompt: "p", outDir, fetchImpl: failingDownload });
+    expect(r.paths).to.deep.equal([]);
+    expect(r.urls).to.deep.equal(["https://blocked-cdn.example.com/a.png"]);
+  });
 });
 
 // ---------------------------------------------------------------------------

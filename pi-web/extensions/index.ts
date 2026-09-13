@@ -108,7 +108,7 @@ const WEB_ROUTING_GUIDANCE = `## Web Tool Routing (pi-web)
 - **web_crawl** — multi-page crawl: \`mode: "light"\` (Firecrawl, url) or \`mode: "full"\` (Crawl4AI, urls[]).
 - **web_screenshot** / **web_pdf** — page capture (Crawl4AI).
 - **web_research** — AI-synthesized research via Gemini web (mode "ask" = grounded answer, guest OK; mode "research" = Deep Research report, needs cookie + Gemini Advanced, takes minutes).
-- **web_image** — text→image generation via free upstreams (auto: Gemini web → Z.ai CogView-4 → custom OpenAI-images endpoint; \`model\`/\`n\` params).
+- **web_image** — text→image generation via free upstreams (auto: Gemini web → Z.ai GLM-Image → custom OpenAI-images endpoint; \`model\`/\`n\` params).
 - **web_status** — provider config + health.
 
 Rules: Firecrawl Search is weak on domain-specific queries — prefer SearXNG/Brave; Firecrawl Scrape fails on bot-protected sites — use Crawl4AI (\`mode: "full"\`) then agy (\`mode: "agy"\`); cite source URLs.`;
@@ -529,8 +529,8 @@ export default function piWebExtension(pi: ExtensionAPI) {
     name: "web_image",
     label: "Web Image Generation",
     description:
-      "Generate images from text via free upstream providers, with fallback: Gemini web (gemini.google.com, guest or cookie auth), Z.ai official API (CogView-4 via ZAI_API_KEY), or any custom OpenAI-compatible images endpoint (WEB_IMAGE_API_BASE_URL). Returns saved file paths plus the images inline.",
-    promptSnippet: "Generate images via free upstreams (Gemini web, Z.ai CogView)",
+      "Generate images from text via free upstream providers, with fallback: Gemini web (gemini.google.com, guest or cookie auth), Z.ai official API (GLM-Image via ZAI_API_KEY), or any custom OpenAI-compatible images endpoint (WEB_IMAGE_API_BASE_URL). Returns saved file paths plus the images inline.",
+    promptSnippet: "Generate images via free upstreams (Gemini web, Z.ai GLM-Image)",
     promptGuidelines: [
       "Use for image GENERATION from a text prompt. provider auto falls back gemini → zai → custom. Capturing an EXISTING page is web_screenshot, not this.",
     ],
@@ -540,7 +540,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
         [Type.Literal("auto"), Type.Literal("gemini"), Type.Literal("zai"), Type.Literal("custom")],
         { default: "auto", description: "auto = gemini → zai (if ZAI_API_KEY) → custom (if WEB_IMAGE_API_BASE_URL); pin one to skip fallback." },
       )),
-      model: Type.Optional(Type.String({ description: "Provider-specific model (e.g. cogview-4, or a Gemini image-capable model id). Omit for the provider default." })),
+      model: Type.Optional(Type.String({ description: "Provider-specific model (e.g. glm-image, or a Gemini image-capable model id). Omit for the provider default." })),
       n: Type.Optional(Type.Number({ default: 1, description: "Number of images, 1-4." })),
       out_dir: Type.Optional(Type.String({ description: "Directory for saved images (default: fresh temp dir)." })),
       ...sharedControlSchema,
@@ -571,13 +571,16 @@ export default function piWebExtension(pi: ExtensionAPI) {
         `Provider: ${result.provider}${result.model ? ` (${result.model})` : ""}`,
         `Saved: ${result.paths.length} image(s)`,
         ...result.paths.map((p) => `  ${p}`),
+        ...(result.urls.length
+          ? [`Not saved (image host unreachable from this machine — open directly):`, ...result.urls.map((u) => `  ${u}`)]
+          : []),
         result.attempts.length ? `Fallback attempts: ${result.attempts.join(" | ")}` : null,
       ].filter(Boolean).join("\n");
       const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
         { type: "text" as const, text },
         ...blocks,
       ];
-      return { content, details: { provider: result.provider, model: result.model, paths: result.paths, attempts: result.attempts } };
+      return { content, details: { provider: result.provider, model: result.model, paths: result.paths, urls: result.urls, attempts: result.attempts } };
     },
   });
 

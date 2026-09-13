@@ -1,5 +1,5 @@
 // Generic OpenAI-compatible images client + fallback chain for web_image.
-// Serves the `zai` preset (official api.z.ai, CogView-4) and any `custom`
+// Serves the `zai` preset (official api.z.ai, GLM-Image) and any `custom`
 // OpenAI-images endpoint — direct-to-upstream plain fetch, no self-host.
 
 import fs from "node:fs";
@@ -18,7 +18,7 @@ import {
 // Config
 // ---------------------------------------------------------------------------
 
-export const ZAI_PRESET = { baseUrl: "https://api.z.ai/api/paas/v4", defaultModel: "cogview-4" } as const;
+export const ZAI_PRESET = { baseUrl: "https://api.z.ai/api/paas/v4", defaultModel: "glm-image" } as const;
 
 export interface ImageApiConfig {
   zai?: { apiKey: string; source: string };
@@ -155,6 +155,8 @@ export interface FetchLike {
 
 export interface ApiImageResult {
   paths: string[];
+  /** Image URLs that could not be downloaded (e.g. CDN unreachable) — the generation still happened. */
+  urls: string[];
   model?: string;
 }
 
@@ -212,17 +214,25 @@ export async function apiGenerateImage(opts: {
   if (!items.length) throw new Error(`upstream returned no image data (model ${opts.model ?? "default"})`);
   fs.mkdirSync(opts.outDir, { recursive: true });
   const paths: string[] = [];
+  const urls: string[] = [];
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     if (typeof item?.b64_json === "string" && item.b64_json) {
       paths.push(writeB64(opts.outDir, item.b64_json, i));
     } else if (typeof item?.url === "string" && item.url) {
-      paths.push(await downloadImage(fetchImpl, item.url, opts.outDir, i, opts.signal, opts.timeoutMs));
+      // A failed download must not waste the generation: surface the URL.
+      try {
+        paths.push(await downloadImage(fetchImpl, item.url, opts.outDir, i, opts.signal, opts.timeoutMs));
+      } catch (err) {
+        urls.push(item.url);
+        void err;
+      }
     } else {
       throw new Error(`image item ${i} had neither b64_json nor url`);
     }
   }
-  return { paths, model: typeof payload?.model === "string" ? payload.model : opts.model };
+  if (!paths.length && !urls.length) throw new Error(`upstream returned no image data (model ${opts.model ?? "default"})`);
+  return { paths, urls, model: typeof payload?.model === "string" ? payload.model : opts.model };
 }
 
 function writeB64(outDir: string, b64: string, i: number): string {
@@ -267,6 +277,7 @@ export interface ImageChainResult {
   provider: ImageProvider;
   model?: string;
   paths: string[];
+  urls: string[];
   attempts: string[];
 }
 
@@ -309,7 +320,7 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
       continue;
     }
     try {
-      let result: { paths: string[]; model?: string };
+      let result: { paths: string[]; urls?: string[]; model?: string };
       if (provider === "gemini") {
         result = await geminiGenerateImage(params.prompt, {
           config: params.geminiConfig,
@@ -345,7 +356,7 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
         });
       }
       imageRateRecord(provider);
-      return { provider, model: result.model, paths: result.paths, attempts };
+      return { provider, model: result.model, paths: result.paths, urls: result.urls ?? [], attempts };
     } catch (err) {
       attempts.push(`${provider}: ${provider === "gemini" ? describeGeminiError(err) : describeImageApiError(err)}`);
     }

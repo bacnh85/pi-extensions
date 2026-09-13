@@ -32,7 +32,7 @@ Variables:
 | `CRAWL4AI_API_TOKEN` | No (3) | — | Required if Crawl4AI auth enabled |
 | `GEMINI_WEB_SECURE_1PSID` | No (4) | — | `__Secure-1PSID` cookie from gemini.google.com — enables authed `web_research` (Deep Research) |
 | `GEMINI_WEB_PROXY` | No | — | Proxy URL for Gemini web calls (escape hatch if Google blocks the IP) |
-| `ZAI_API_KEY` | No (5) | — | Z.ai API key — enables the `web_image` `zai` provider (CogView-4 via the official `api.z.ai`); `Z_AI_API_KEY` also accepted |
+| `ZAI_API_KEY` | No (5) | — | Z.ai API key — enables the `web_image` `zai` provider (GLM-Image via the official `api.z.ai`); `Z_AI_API_KEY` also accepted |
 | `WEB_IMAGE_API_BASE_URL` | No | — | `web_image` `custom` provider: any OpenAI-compatible images endpoint (e.g. `https://api.openai.com/v1`) |
 | `WEB_IMAGE_API_KEY` | No | — | Bearer key for the `custom` endpoint |
 | `WEB_IMAGE_API_LABEL` | No | — | Display label for the `custom` endpoint (default: host name) |
@@ -273,8 +273,8 @@ self-host services):
 
 ```
 web_image(prompt="isometric cutaway of a container ship, technical illustration")
-web_image(prompt="...", provider="zai")                       # pin CogView-4 via api.z.ai
-web_image(prompt="...", model="cogview-4", n=2, out_dir="/tmp/imgs")
+web_image(prompt="...", provider="zai")                       # pin GLM-Image via api.z.ai
+web_image(prompt="...", model="glm-image", n=2, out_dir="/tmp/imgs")
 ```
 
 **Provider chain** (`provider: "auto"` tries in order; pin one to skip):
@@ -282,7 +282,7 @@ web_image(prompt="...", model="cogview-4", n=2, out_dir="/tmp/imgs")
 | Provider | Upstream | Auth | Notes |
 |---|---|---|---|
 | `gemini` (default) | gemini.google.com web tier | none (guest) or `GEMINI_WEB_SECURE_1PSID` | free ≈ 20 images/day; availability varies by region/account |
-| `zai` | `https://api.z.ai/api/paas/v4` (official API) | `ZAI_API_KEY` | CogView-4 (`model` default), fully ToS-compliant |
+| `zai` | `https://api.z.ai/api/paas/v4` (official API) | `ZAI_API_KEY` | GLM-Image (`model` default), fully ToS-compliant |
 | `custom` | any OpenAI-compatible `/images/generations` endpoint | `WEB_IMAGE_API_KEY` | e.g. official OpenAI `https://api.openai.com/v1` |
 
 Results are saved to `out_dir` (default: fresh temp dir) and returned as file

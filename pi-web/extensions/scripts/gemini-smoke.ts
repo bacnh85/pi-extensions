@@ -3,7 +3,7 @@
 //   npx tsx extensions/scripts/gemini-smoke.ts "query"            # ask (guest if no cookie)
 //   npx tsx extensions/scripts/gemini-smoke.ts "query" research   # Deep Research (cookie + Gemini Advanced)
 //   npx tsx extensions/scripts/gemini-smoke.ts "prompt" image     # Gemini web image generation
-//   npx tsx extensions/scripts/gemini-smoke.ts "prompt" zai       # Z.ai CogView-4 (needs ZAI_API_KEY)
+//   npx tsx extensions/scripts/gemini-smoke.ts "prompt" zai       # Z.ai GLM-Image (needs ZAI_API_KEY)
 // Set GEMINI_WEB_SECURE_1PSID in the environment (or ~/.pi/agent/.env.local)
 // for authed Gemini mode. Prints full answers (no preview slicing).
 import fs from "node:fs";
@@ -43,8 +43,9 @@ async function main() {
       prompt: query,
       outDir,
     });
-    console.log(`zai OK in ${Date.now() - t0}ms — model: ${r.model ?? "?"} — files: ${r.paths.length}`);
+    console.log(`zai OK in ${Date.now() - t0}ms — model: ${r.model ?? "?"} — files: ${r.paths.length} — unsaved urls: ${r.urls.length}`);
     for (const p of r.paths) console.log(`  ${p} — ${fs.statSync(p).size} bytes — ${pngMagic(p)}`);
+    for (const u of r.urls) console.log(`  (not saved, host unreachable) ${u}`);
   } else {
     const r = await geminiAsk(query, { config });
     console.log(`ask OK in ${Date.now() - t0}ms — model: ${r.model ?? "?"} — guest: ${r.guest} — sources: ${r.sources.length}`);
