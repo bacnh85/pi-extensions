@@ -353,6 +353,92 @@ describe("geminiGenerateImage", () => {
       expect((e as Error).message).to.match(/no newChat/);
     }
   });
+
+  it("creates a non-existent out_dir before saving (parity with the API path)", async () => {
+    const outDir = path.join(await tmpDir(), "nested", "deeper");
+    const client: GeminiClientLike = {
+      ask: async () => ({ text: "ok" }),
+      research: async () => ({ text: "r" }),
+      newChat: () => ({
+        generateContent: async () => ({
+          text: "",
+          generated_images: [
+            {
+              save: async (so?: { path?: string }) => {
+                const p = path.join(so!.path!, "mk-0.png");
+                fs.writeFileSync(p, "png");
+                return p;
+              },
+            },
+          ],
+        }),
+      }),
+    };
+    const r = await geminiGenerateImage("x", { config: { psid: "psid", psidSource: "t" }, outDir, factory: () => client });
+    expect(r.paths).to.have.length(1);
+    expect(fs.existsSync(r.paths[0])).to.equal(true);
+  });
+});
+
+describe("download-phase cancellation and size caps", () => {
+  it("abort during the download phase rejects with AbortError, not a per-image downloadError", async () => {
+    const outDir = await tmpDir();
+    const controller = new AbortController();
+    const fetchImpl = ((url: string, init?: { method?: string; signal?: AbortSignal }) => {
+      if (init?.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ url: "https://cdn.example.com/a.png" }] }),
+        });
+      }
+      return new Promise((_, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const e = new Error("The operation was aborted");
+          e.name = "AbortError";
+          reject(e);
+        });
+      });
+    }) as unknown as FetchLike;
+    const p = apiGenerateImage({ baseUrl: "https://x/v1", prompt: "p", outDir, fetchImpl, signal: controller.signal });
+    const check = p.then(
+      () => {
+        throw new Error("should have rejected");
+      },
+      (e) => expect((e as Error).name).to.equal("AbortError"),
+    );
+    controller.abort();
+    await check;
+  });
+
+  it("Content-Length over the cap fails the download without buffering the body", async () => {
+    const outDir = await tmpDir();
+    let buffered = false;
+    const fetchImpl = ((url: string, init?: { method?: string }) => {
+      if (init?.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ url: "https://cdn.example.com/big.png" }] }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: (name: string) => (name.toLowerCase() === "content-length" ? String(MAX_DOWNLOAD_BYTES + 1) : null) },
+        arrayBuffer: async () => {
+          buffered = true;
+          return new ArrayBuffer(0);
+        },
+      });
+    }) as unknown as FetchLike;
+    // the cap error surfaces as a downloadError — the generation itself is
+    // preserved (same contract as SSRF/redirect failures)
+    const r = await apiGenerateImage({ baseUrl: "https://x/v1", prompt: "p", outDir, fetchImpl });
+    expect(r.urls).to.have.length(1);
+    expect(r.downloadErrors?.[0]).to.match(/download cap/);
+    expect(buffered).to.equal(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

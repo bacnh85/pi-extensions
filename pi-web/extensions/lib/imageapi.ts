@@ -250,6 +250,12 @@ export async function apiGenerateImage(opts: {
         if (isLocalUrl(item.url)) throw new Error("image host is private/loopback (SSRF-guarded)");
         paths.push(await downloadImage(fetchImpl, item.url, opts.outDir, i, opts.signal, opts.timeoutMs));
       } catch (err) {
+        // An aborted download is cancellation, not a per-image failure —
+        // rethrow so the chain surfaces AbortError (same contract as the
+        // provider-phase catch).
+        if (opts.signal?.aborted) {
+          throw abortError();
+        }
         // Surface WHY the download failed without corrupting the raw-URL
         // contract: urls stays openable/parsable, reasons live in downloadErrors.
         const reason = (err instanceof Error ? err.message : String(err)).split("\n").join(" ").slice(0, 200);
@@ -284,6 +290,12 @@ function writeB64(outDir: string, buf: Buffer, i: number): string {
   return file;
 }
 
+function abortError(): Error {
+  const e = new Error("web_image aborted");
+  e.name = "AbortError";
+  return e;
+}
+
 async function downloadImage(
   fetchImpl: FetchLike,
   url: string,
@@ -315,12 +327,22 @@ async function downloadImage(
       // generation (edge propagation) — verified empirically; retry with
       // linear backoff (1s/2s/3s, ≤6s total) instead of wasting generations.
       notFound++;
-      if (signal?.aborted) throw new Error("web_image download aborted");
-      await new Promise((resolve) => setTimeout(resolve, 1_000 * notFound));
+      if (signal?.aborted) throw abortError();
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(resolve, 1_000 * notFound);
+        signal?.addEventListener("abort", () => {
+          clearTimeout(t);
+          reject(abortError());
+        }, { once: true });
+      });
       hop--; // retry the same URL — doesn't count as a redirect hop
       continue;
     }
     if (!res.ok) throw new ImageApiError(res.status, `image download failed (HTTP ${res.status})`);
+    // Reject oversized downloads before transfer when the response declares
+    // its size — the post-buffer check alone protects disk, not memory.
+    const declared = Number(res.headers?.get?.("content-length") ?? 0);
+    if (declared > MAX_DOWNLOAD_BYTES) throw new Error(`image exceeds the ${MAX_DOWNLOAD_BYTES}-byte download cap`);
   const buf = Buffer.from(await res.arrayBuffer());
   if (buf.length > MAX_DOWNLOAD_BYTES) throw new Error(`image exceeds the ${MAX_DOWNLOAD_BYTES}-byte download cap`);
   const file = path.join(outDir, `pi-web-image-${randomUUID().slice(0, 8)}-${i}${extFromBytes(buf, extFor(url))}`);

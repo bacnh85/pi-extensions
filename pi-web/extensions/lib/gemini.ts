@@ -2,6 +2,7 @@
 // __Secure-1PSID cookie. Thin wrapper over the `gemini-reverse` npm package
 // (CJS), lazily dynamic-imported so pi startup pays zero cost when unused.
 
+import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import { urlToHttpOptions } from "node:url";
@@ -462,6 +463,9 @@ export async function geminiGenerateImage(
     auth?: { rotatePost?: PostFn; storePath?: string };
   },
 ): Promise<GeminiImageResult> {
+  // Create the dir before generating — a bad out_dir must not waste a
+  // generation (same contract as the API path's mkdir).
+  fs.mkdirSync(opts.outDir, { recursive: true });
   const out = await raceGuard(
     withGeminiClient(
       opts.config,

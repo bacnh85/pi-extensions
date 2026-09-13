@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.11.8 (2026-09-13)
+
+### Fixed
+
+- **web_image gemini creates out_dir before generating** (reviewer,
+  blocking): a non-existent out_dir no longer fails the gemini tier with
+  ENOENT after the generation was already spent — parity with the
+  zai/custom API path.
+- **Abort during the image download phase surfaces as AbortError**
+  (reviewer, blocking): a cancelled download is no longer swallowed as a
+  per-image downloadError, and the 404-retry backoff sleep is abortable —
+  cancelled calls now return promptly instead of pending up to ~6s.
+- **Content-Length precheck before buffering** (reviewer): oversized
+  downloads are rejected at the start of the transfer when the response
+  declares its size, instead of buffering multi-GB bodies first.
+
 ## 0.11.7 (2026-09-13)
 
 ### Fixed
