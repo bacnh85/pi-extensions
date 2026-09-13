@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.2 (2026-09-14)
+
+### Changed
+
+- **Eager first rotation on keepalive arm**: instead of waiting a full 10-min
+  interval, pi rotates immediately when a session is first used — minimizing
+  the window where the pasted TS could be superseded by another client
+  (a superseded generation cannot rotate again; recovering requires a full
+  re-paste, as demonstrated by the lost-generation incident this round).
+
 ## 0.12.1 (2026-09-14)
 
 ### Fixed

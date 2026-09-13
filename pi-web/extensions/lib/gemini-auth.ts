@@ -244,6 +244,11 @@ export function ensureKeepalive(cfg: { psid?: string; psidts?: string; proxy?: s
     void keepaliveOnce(cfg).catch(() => {});
   }, intervalMs);
   keepaliveTimer.unref?.();
+  // Rotate immediately too — don't wait a full interval. The pasted TS is
+  // current at paste time; pi must take ownership of the generation before
+  // anything else can supersede it (lesson: a lost generation requires a
+  // full re-paste).
+  void keepaliveOnce(cfg).catch(() => {});
 }
 
 export function stopKeepalive(): void {
