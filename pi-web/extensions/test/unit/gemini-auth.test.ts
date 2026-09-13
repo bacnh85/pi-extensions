@@ -282,6 +282,22 @@ describe("withGeminiClient auto-heal + passive persist", () => {
     await withGeminiClient({ ...cfg, psid: undefined }, (c) => c.ask!("q"), () => client, { storePath: p });
     expect(loadCookieStore(p)).to.equal(null);
   });
+
+  it("store-write failure never fails the call (best-effort persist)", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-auth-ro-"));
+    fs.chmodSync(dir, 0o555);
+    const client: GeminiClientLike = {
+      ask: async () => ({ text: "ok" }),
+      research: async () => ({ text: "report" }),
+      cookies: { "__Secure-1PSIDTS": "jar-ts" },
+    } as GeminiClientLike;
+    try {
+      const r = await withGeminiClient(cfg, (c) => c.ask!("q"), () => client, { storePath: path.join(dir, "cookies.json") });
+      expect(r.text).to.equal("ok");
+    } finally {
+      fs.chmodSync(dir, 0o755);
+    }
+  });
 });
 
 describe("describeGeminiError AuthError guidance", () => {

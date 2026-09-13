@@ -305,6 +305,54 @@ describe("geminiGenerateImage", () => {
     expect(r.paths).to.have.length(1);
     void seen;
   });
+
+  it("falls back to images when generated_images is empty", async () => {
+    const outDir = await tmpDir();
+    const img = {
+      save: async (so?: { path?: string }) => {
+        const p = path.join(so?.path ?? outDir, "fb-0.png");
+        fs.writeFileSync(p, "png");
+        return p;
+      },
+    };
+    const client: GeminiClientLike = {
+      ask: async () => ({ text: "ok" }),
+      research: async () => ({ text: "r" }),
+      newChat: () => ({
+        generateContent: async () => ({ text: "", generated_images: [], images: [img] }),
+      }),
+    };
+    const r = await geminiGenerateImage("x", { config: { psid: "psid", psidSource: "t" }, outDir, factory: () => client });
+    expect(r.paths).to.have.length(1);
+  });
+
+  it("throws the text-preview error when no images come back", async () => {
+    const outDir = await tmpDir();
+    const client: GeminiClientLike = {
+      ask: async () => ({ text: "ok" }),
+      research: async () => ({ text: "r" }),
+      newChat: () => ({
+        generateContent: async () => ({ text: "cannot create images for you", generated_images: [] }),
+      }),
+    };
+    try {
+      await geminiGenerateImage("x", { config: { psid: "psid", psidSource: "t" }, outDir, factory: () => client });
+      expect.fail("should throw");
+    } catch (e) {
+      expect((e as Error).message).to.include("cannot create images for you");
+    }
+  });
+
+  it("throws the shape error when newChat is missing", async () => {
+    const outDir = await tmpDir();
+    const client: GeminiClientLike = { ask: async () => ({ text: "ok" }), research: async () => ({ text: "r" }) };
+    try {
+      await geminiGenerateImage("x", { config: { psid: "psid", psidSource: "t" }, outDir, factory: () => client });
+      expect.fail("should throw");
+    } catch (e) {
+      expect((e as Error).message).to.match(/no newChat/);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

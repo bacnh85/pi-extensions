@@ -218,13 +218,19 @@ function isAuthError(err: unknown): boolean {
 // absorbed from response Set-Cookie headers (gemini-reverse merges them into
 // client.cookies). Without this, the rotated value dies with the process —
 // exactly the static-snapshot decay OmniRoute #7676 describes.
+// Best-effort: a store-write failure (EACCES, ENOSPC, bad path) must never
+// convert a succeeded tool call into an error.
 function persistRotatedTs(client: GeminiClientLike, config: GeminiWebConfig, storePath?: string): void {
-  if (!config.psid) return;
-  const ts = (client as unknown as { cookies?: Record<string, string> }).cookies?.["__Secure-1PSIDTS"];
-  if (!ts || ts === config.psidts) return;
-  const store = loadCookieStore(storePath);
-  if (store?.psid === config.psid && store.psidts === ts) return;
-  saveCookieStore({ psid: config.psid, psidts: ts, updatedAt: Date.now() }, storePath);
+  try {
+    if (!config.psid) return;
+    const ts = (client as unknown as { cookies?: Record<string, string> }).cookies?.["__Secure-1PSIDTS"];
+    if (!ts || ts === config.psidts) return;
+    const store = loadCookieStore(storePath);
+    if (store?.psid === config.psid && store.psidts === ts) return;
+    saveCookieStore({ psid: config.psid, psidts: ts, updatedAt: Date.now() }, storePath);
+  } catch {
+    /* best-effort persistence — the call already succeeded */
+  }
 }
 
 // One AuthError retry: rotate the cookie via Google's RotateCookies endpoint
@@ -281,7 +287,13 @@ export function raceGuard<T>(
       reject(err);
     };
     if (signal) {
-      if (signal.aborted) return onAbort();
+      if (signal.aborted) {
+        // Mark the guarded promise handled BEFORE rejecting with AbortError —
+        // otherwise a later rejection of the underlying call becomes a fatal
+        // process-level unhandledRejection.
+        promise.catch(() => {});
+        return onAbort();
+      }
       signal.addEventListener("abort", onAbort, { once: true });
     }
     if (timeoutMs) timer = setTimeout(onTimeout, timeoutMs);
@@ -465,7 +477,9 @@ export async function geminiGenerateImage(
     ),
     { signal: opts.signal, timeoutMs: opts.timeoutMs ?? 180_000, label: "web_image gemini" },
   );
-  const images = out?.generated_images ?? out?.images ?? [];
+  // gemini-reverse's ModelOutput always defines generated_images (defaults to
+  // []), so only fall back to `images` when it is empty — not when absent.
+  const images = out?.generated_images?.length ? out.generated_images : (out?.images ?? []);
   const text = String(out?.text ?? "");
   if (!images.length) {
       throw new Error(

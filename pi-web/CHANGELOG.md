@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.11.6 (2026-09-13)
+
+### Fixed
+
+- **raceGuard: pre-aborted calls no longer risk a fatal unhandledRejection**
+  (reviewer, blocking): when the abort signal is already set, the guarded
+  promise is marked handled before the AbortError propagates, so a later
+  rejection of the underlying client call is swallowed. Regression test
+  asserts zero unhandledRejection events.
+- **Cookie-store persistence is best-effort** (reviewer): a store write
+  failure (EACCES/ENOSPC/read-only path) after a successful ask/research/
+  image call no longer converts the succeeded call into an error (tested
+  with a read-only store directory).
+- **web_image gemini: image-collection fallback made real + tested**
+  (reviewer): fall back to `images` only when `generated_images` is empty
+  (gemini-reverse always defines it, defaulting to []); added tests for the
+  fallback, the text-preview refusal error, and the missing-newChat shape
+  error.
+
 ## 0.11.5 (2026-09-13)
 
 ### Fixed

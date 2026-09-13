@@ -92,6 +92,40 @@ describe("loadGeminiWebConfig", () => {
   });
 });
 
+describe("raceGuard abort safety", () => {
+  it("pre-aborted signal: AbortError now, later underlying rejection is swallowed (no unhandledRejection)", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      // Non-AuthError rejection keeps withGeminiClient on its single-attempt
+      // path (no rotation) — the abort semantics under test are orthogonal.
+      const client: GeminiClientLike = {
+        ask: async () => {
+          throw new Error("boom");
+        },
+        research: async () => ({ text: "r" }),
+      };
+      const p = geminiAsk("q", {
+        config: { psid: "p", psidSource: "t" },
+        signal: AbortSignal.abort(),
+        factory: () => client,
+      });
+      await p.then(
+        () => {
+          throw new Error("should have rejected");
+        },
+        (e) => expect((e as Error).name).to.equal("AbortError"),
+      );
+      // give the unguarded-rejection a chance to fire if the fix regressed
+      await new Promise((r) => setTimeout(r, 50));
+      expect(unhandled).to.have.length(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+});
+
 describe("describeGeminiError", () => {
   it("maps upstream error classes by name and constructor", () => {
     expect(describeGeminiError({ name: "AuthError" })).to.include("session expired");
