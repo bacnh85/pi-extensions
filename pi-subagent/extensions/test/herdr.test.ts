@@ -33,6 +33,7 @@ import {
   prepareHerdrTask,
   promptAndWait,
   resolveEffectiveRunner,
+  wouldHerdrDelegate,
   HERDR_TASK_BUDGET,
   startAgent,
   truncateHerdrTask,
@@ -150,6 +151,46 @@ describe("herdr detection", () => {
 // Name allocation & child argv
 // ---------------------------------------------------------------------------
 
+describe("wouldHerdrDelegate", () => {
+  afterEach(() => {
+    delete process.env.HERDR_ENV;
+    delete process.env.HERDR_WORKSPACE_ID;
+    delete process.env.PI_SUBAGENT_HERDR;
+  });
+  const binaryOk = () => fakeExec(() => ({ stdout: "herdr 0.9.0" }));
+  const binaryBroken = () => fakeExec(() => ({ code: 127, stderr: "command not found" }));
+
+  it("false when the call pins runner:\"sdk\" — no env or probe needed", async () => {
+    process.env.HERDR_ENV = "1";
+    process.env.HERDR_WORKSPACE_ID = "w1";
+    const { exec, calls } = binaryOk();
+    assert.equal(await wouldHerdrDelegate("sdk", undefined, exec), false);
+    assert.equal(calls.length, 0);
+  });
+
+  it("false outside herdr or when delegation is disabled", async () => {
+    delete process.env.HERDR_ENV;
+    const ok = binaryOk();
+    assert.equal(await wouldHerdrDelegate(undefined, undefined, ok.exec), false);
+    process.env.HERDR_ENV = "1";
+    process.env.HERDR_WORKSPACE_ID = "w1";
+    assert.equal(await wouldHerdrDelegate(undefined, { herdr: "off" }, ok.exec), false);
+    process.env.PI_SUBAGENT_HERDR = "off";
+    assert.equal(await wouldHerdrDelegate(undefined, undefined, ok.exec), false);
+    delete process.env.PI_SUBAGENT_HERDR;
+  });
+
+  it("tracks the binary probe — true when it answers, false when it fails", async () => {
+    process.env.HERDR_ENV = "1";
+    process.env.HERDR_WORKSPACE_ID = "w1";
+    const ok = binaryOk();
+    assert.equal(await wouldHerdrDelegate(undefined, undefined, ok.exec), true);
+    const broken = binaryBroken();
+    assert.equal(await wouldHerdrDelegate(undefined, undefined, broken.exec), false);
+    assert.equal(await wouldHerdrDelegate("herdr", undefined, broken.exec), false);
+  });
+});
+
 describe("allocateName", () => {
   it("allocates scout-1, scout-2, … bumping on collisions", () => {
     assert.equal(allocateName("scout", []), "scout-1");
@@ -217,6 +258,14 @@ describe("wrapTaskPrompt", () => {
     const prompt = wrapTaskPrompt("find auth code", "/repo/.pi/herdr/scout-1-abc.md");
     assert.ok(prompt.startsWith("find auth code"));
     assert.match(prompt, /write your full final report as Markdown to `\/repo\/\.pi\/herdr\/scout-1-abc\.md`/);
+  });
+
+  it("read-only children are told to reply inline, never to write the report file", () => {
+    const prompt = wrapTaskPrompt("find auth code", "/repo/.pi/herdr/scout-1-abc.md", true);
+    assert.ok(prompt.startsWith("find auth code"));
+    assert.match(prompt, /read-only tools/);
+    assert.match(prompt, /do NOT write any files/);
+    assert.ok(!prompt.includes("scout-1-abc.md"));
   });
 });
 
@@ -677,6 +726,32 @@ describe("prepareHerdrTask + executeHerdrTask", () => {
       assert.equal(isManagedHerdrTab("w9:t1"), false);
       forgetHerdrTab("w1:t9");
       assert.equal(getHerdrRegistry().length, 0);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("readOnly flows into the handle and switches dispatch delivery to inline", async () => {
+    const cwd = tmpCwd();
+    try {
+      const { exec, calls } = happyExec();
+      const handle = await prepareHerdrTask({
+        agentType: "scout",
+        systemPrompt: "You are a scout.",
+        task: "find auth code",
+        cwd,
+        readOnly: true,
+        timeoutMs: 60_000,
+        exec,
+      });
+      // Sandbox → handle: drop `readOnly: opts.readOnly` in prepare and this fails.
+      assert.equal(handle.readOnly, true);
+      fs.writeFileSync(handle.resultFile, "# Report\nfound 3 files");
+      await executeHerdrTask(handle, { exec });
+      // execute → wrapTaskPrompt: drop `handle.readOnly` and this fails.
+      const prompt = calls.find((c) => c.args[1] === "prompt")!;
+      assert.match(prompt.args[3]!, /read-only tools/);
+      assert.ok(!prompt.args[3]!.includes(handle.resultFile));
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

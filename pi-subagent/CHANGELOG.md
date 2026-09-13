@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.21.4 (2026-09-13)
+
+### Fixed
+
+- **Read-only herdr children no longer get a report-file delivery
+  instruction they cannot follow.** The delivery wrapper asked every child
+  to write its report to `.pi/herdr/<name>-<stamp>.md`, but read-only
+  sandboxes (scout: read/grep/find/ls) have no write tool — children burned
+  3–5 turns discovering this before falling back to an inline reply (rescued
+  only by the pane-read fallback). The sandbox flag now flows into the
+  handle and `wrapTaskPrompt`, which tells read-only children to deliver
+  inline and never write files. Applies to initial dispatch and
+  control-tool follow-up prompts alike. The herdr `read` fallback hint now
+  also branches on the sandbox (suggests an inline-reply prompt instead of
+  the impossible file write). The full chain is pinned by three tests that
+  fail if `readOnly` is dropped anywhere: the wrapper itself, the handle,
+  the follow-up wrapper, or the `sandbox: read-only` frontmatter → dispatch
+  mapping (mutation-verified).
+- **Background receipts inside herdr now say herdr was skipped.**
+  `background:true` always runs in-process (sdk) — inside a herdr session
+  the resulting missing pane read as a bug. The receipt now explains it and
+  points at the pane-dispatching alternative — but only when a foreground
+  rerun would actually delegate (a pinned `runner:"sdk"`, disabled
+  delegation, or a failed herdr-binary probe all suppress the advice).
+- **Status of an evicted background task no longer reads as "never
+  existed".** Finished tasks leave the in-memory map after 60s retention;
+  `operation:"status"` now falls back to the durable
+  `.pi/subagent-history.json` (background entries only — foreground `fg-*`
+  ids are excluded) and reports the terminal state + summary ("no longer
+  retained in memory"); non-terminal entries read as "history shows
+  running — not live in this session".
+- **Project-local agents (`.pi/agents/`) verified live**: invisible at the
+  default `agentScope:"user"` (clear "Unknown agent" error), confirmation
+  gate on first project-agent dispatch, then single/chain/background all
+  work with `agentScope:"project"` on both sdk and herdr runners.
+
 ## 0.21.3 (2026-09-12)
 
 ### Fixed
@@ -7,8 +43,6 @@
 - Changelog attribution correction for 0.21.2 (the cancelAgent escalation
   belongs to 0.21.2, not 0.21.1; malformed H1 ordering fixed). No code
   changes.
-
-# Changelog
 
 ## 0.21.2 (2026-09-12)
 

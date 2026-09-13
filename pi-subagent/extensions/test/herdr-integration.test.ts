@@ -194,6 +194,50 @@ describe("herdr index-level integration", () => {
     assert.equal(calls.length, 0);
   });
 
+  it("sandbox: read-only agent dispatches herdr children with the inline delivery contract", async () => {
+    process.env.HERDR_ENV = "1";
+    process.env.HERDR_WORKSPACE_ID = "w1";
+    writeAgent(cwd, "name: ro\ndescription: ro agent\nmodel: test/m\nsandbox: read-only");
+    const { exec, calls } = dispatchExec();
+    herdrCli.exec = exec;
+    const result = await tools.subagent!.execute(
+      "t1", { agent: "ro", task: "t", runner: "herdr", agentScope: "both" },
+      undefined, undefined, fakeCtx(cwd, UNCONFIRMED),
+    );
+    const details = result.details as { results: Array<{ status?: string }> };
+    assert.equal(details.results[0]?.status, "success");
+    // Drop the sandbox→readOnly mapping in prepareHerdrOne and this fails.
+    const promptCall = calls.find((c) => c.args[1] === "prompt")!;
+    assert.match(promptCall.args[3]!, /read-only tools/);
+    assert.ok(!promptCall.args[3]!.includes("ro-1-"));
+  });
+
+  it("status of an evicted task falls back to durable history", async () => {
+    const { exec } = fakeExec(() => undefined);
+    herdrCli.exec = exec;
+    const piDir = path.join(cwd, ".pi");
+    fs.mkdirSync(piDir, { recursive: true });
+    fs.writeFileSync(path.join(piDir, "subagent-history.json"), JSON.stringify([
+      { id: "bg-done-1", agent: "scout", task: "find auth", status: "completed", startedAt: 1, completedAt: 2, summary: "found 3 files", background: true },
+      { id: "bg-run-1", agent: "worker", task: "long job", status: "running", startedAt: 1, background: true },
+      { id: "fg-abc-1", agent: "scout", task: "fg job", status: "completed", startedAt: 1, completedAt: 2, background: false },
+    ]));
+    const result = await tools.subagent!.execute("t1", { operation: "status", taskId: "bg-done-1" }, undefined, undefined, fakeCtx(cwd));
+    assert.match(text(result), /bg-done-1 \(scout\): completed/);
+    assert.match(text(result), /no longer retained/);
+    assert.match(text(result), /found 3 files/);
+    // Non-terminal entries are not "finished".
+    const running = await tools.subagent!.execute("t1", { operation: "status", taskId: "bg-run-1" }, undefined, undefined, fakeCtx(cwd));
+    assert.match(text(running), /history shows running/);
+    assert.ok(!/no longer retained/.test(text(running)));
+    // Foreground ids never read as background tasks.
+    const fg = await tools.subagent!.execute("t1", { operation: "status", taskId: "fg-abc-1" }, undefined, undefined, fakeCtx(cwd));
+    assert.match(text(fg), /No background task with id "fg-abc-1"/);
+    // Unknown ids still report missing.
+    const miss = await tools.subagent!.execute("t1", { operation: "status", taskId: "bg-gone" }, undefined, undefined, fakeCtx(cwd));
+    assert.match(text(miss), /No background task with id "bg-gone"/);
+  });
+
   it("forget drops a stale registry entry without touching herdr", async () => {
     process.env.HERDR_ENV = "1";
     process.env.HERDR_WORKSPACE_ID = "w1";
@@ -213,6 +257,23 @@ describe("herdr index-level integration", () => {
     assert.ok(!calls.some((c) => c.args[1] === "send-keys" || c.args[1] === "close"));
     const unknown = await tools.herdr!.execute("t1", { action: "forget", name: "ghost-1" }, undefined, undefined, fakeCtx(cwd));
     assert.equal(unknown.isError, true);
+  });
+
+  it("control-tool prompt on a read-only entry re-wraps with the inline delivery contract", async () => {
+    process.env.HERDR_ENV = "1";
+    process.env.HERDR_WORKSPACE_ID = "w1";
+    const { exec, calls } = dispatchExec();
+    herdrCli.exec = exec;
+    const handle = await prepareHerdrTask({
+      agentType: "scout", systemPrompt: "x", task: "t", cwd, model: "p/m", timeoutMs: 60_000, exec, readOnly: true,
+    });
+    const result = await tools.herdr!.execute("t1", { action: "prompt", name: handle.name, text: "summarize" }, undefined, undefined, fakeCtx(cwd));
+    assert.equal(result.isError, false);
+    // Drop `entry.readOnly` from the follow-up wrapper and this fails.
+    const promptCall = calls.find((c) => c.args[1] === "prompt")!;
+    assert.match(promptCall.args[3]!, /summarize/);
+    assert.match(promptCall.args[3]!, /read-only tools/);
+    assert.ok(!promptCall.args[3]!.includes("scout-1-"));
   });
 
   it("parallel same-type dispatch: prepares before prompts, per-index results", async () => {

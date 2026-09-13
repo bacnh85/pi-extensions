@@ -74,6 +74,7 @@ import { ThreadViewer, type ThreadViewerCallbacks } from "./thread-viewer.ts";
 import { createTaskWidgetController, renderLiveThreadLine, type TaskWidgetController } from "./widget.ts";
 import {
   startBackgroundTask,
+  backgroundHerdrHint,
   cancelBackgroundTask,
   getBackgroundTask,
   getAllBackgroundTasks,
@@ -107,6 +108,7 @@ import {
   resolveEffectiveRunner,
   truncateHerdrTask,
   wrapTaskPrompt,
+  wouldHerdrDelegate,
   type HerdrHandle,
   type PromptOutcome,
 } from "./herdr.ts";
@@ -784,6 +786,23 @@ export default function (pi: ExtensionAPI) {
         const bgTask = getBackgroundTask(taskId);
         if (params.operation === "status") {
           if (!bgTask) {
+            // Evicted after the 60s post-completion retention — fall back to
+            // the durable history so a finished task doesn't read as "never existed".
+            // Background entries only: foreground fg-* ids live here too, and
+            // non-terminal entries (running/interrupted) aren't "finished".
+            const hist = readHistory(path.join(ctx.cwd, CONFIG_DIR_NAME)).find((e) => e.id === taskId && e.background);
+            if (hist) {
+              const terminal = hist.status === "completed" || hist.status === "failed" || hist.status === "aborted" || hist.status === "timeout";
+              const paren = terminal
+                ? "finished — no longer retained in memory"
+                : `history shows ${hist.status} — not live in this session`;
+              const lines = [
+                `Task ${hist.id} (${hist.agent}): ${hist.status} (${paren})`,
+                `Task: ${hist.task}`,
+              ];
+              if (hist.summary) lines.push(`Summary: ${hist.summary}`);
+              return { content: [{ type: "text" as const, text: lines.join("\n") }], details: opDetails() };
+            }
             return { content: [{ type: "text" as const, text: `No background task with id "${taskId}".` }], details: opDetails() };
           }
           const snap = snapshotTask(bgTask);
@@ -1592,8 +1611,12 @@ export default function (pi: ExtensionAPI) {
             deps: { pi, ctx, runOne, threadStore },
           });
           if (ctx.mode === "tui") widget.ensureWidget(ctx);
+          // A foreground rerun of a pinned-sdk / disabled / unprobed call would
+          // also run in-process — only advise when it would really delegate.
+          const hint = backgroundHerdrHint(await wouldHerdrDelegate(params.runner, (ctx as any).settings?.subagent, herdrCli.exec));
+          const receiptText = hint ? `${receipt}\n${hint}` : receipt;
           return {
-            content: [{ type: "text", text: receipt }],
+            content: [{ type: "text", text: receiptText }],
             details: { ...makeDetails("single")([]), backgroundTaskId: taskId },
           };
         }
@@ -2047,8 +2070,11 @@ export default function (pi: ExtensionAPI) {
             ["agent", "read", name, "--source", "recent-unwrapped", "--lines", String(lines)],
             { timeout: 10_000 },
           );
+          const roEntry = getHerdrRegistry().find((e) => e.name === name);
           const text = res.code === 0
-            ? res.stdout.trim().slice(0, MAX_REPORT_BYTES) || "(no readable output — the agent may be rendering on the alternate screen; prompt it to write its report to a file)"
+            ? res.stdout.trim().slice(0, MAX_REPORT_BYTES) || (roEntry?.readOnly
+              ? "(no readable output — the agent may be rendering on the alternate screen; prompt it and it will reply inline — it has read-only tools and cannot write files)"
+              : "(no readable output — the agent may be rendering on the alternate screen; prompt it to write its report to a file)")
             : `herdr agent read failed: ${(res.stderr || res.stdout).trim().split("\n")[0]}`;
           return toolResult(text, res.code !== 0);
         }
@@ -2060,8 +2086,9 @@ export default function (pi: ExtensionAPI) {
             return toolResult(`Prompt exceeds the ${HERDR_TASK_BUDGET}-byte budget (argv ceiling incl. delivery wrapper) — shorten it.`, true);
           }
           const entry = getHerdrRegistry().find((e) => e.name === name);
-          // Delegated agents keep the report-file contract on follow-ups too.
-          const text = entry ? wrapTaskPrompt(params.text, entry.resultFile) : params.text;
+          // Delegated agents keep the delivery contract on follow-ups too
+          // (report file — or inline reply for read-only children).
+          const text = entry ? wrapTaskPrompt(params.text, entry.resultFile, entry.readOnly) : params.text;
           if (params.wait) {
             const timeoutMs = params.timeout ?? 120_000;
             const fileStampBefore = entry

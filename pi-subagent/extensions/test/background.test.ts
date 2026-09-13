@@ -16,6 +16,7 @@ import {
   getBackgroundTask,
   snapshotTask,
   clearBackgroundTasks,
+  backgroundHerdrHint,
   type BackgroundDeps,
 } from "../background.ts";
 
@@ -96,6 +97,14 @@ function makeThrowingDeps(runOne: BackgroundDeps["runOne"]): {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+describe("backgroundHerdrHint", () => {
+  it("explains the missing pane only when a foreground rerun would delegate", () => {
+    assert.match(backgroundHerdrHint(true)!, /herdr skipped/);
+    assert.match(backgroundHerdrHint(true)!, /omit background:true/);
+    assert.equal(backgroundHerdrHint(false), null);
+  });
+});
 
 describe("background task", () => {
   beforeEach(() => clearBackgroundTasks());

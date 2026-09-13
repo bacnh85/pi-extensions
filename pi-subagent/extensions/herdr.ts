@@ -74,6 +74,9 @@ export interface HerdrHandle {
   paneId: string;
   resultFile: string;
   task: string;
+  /** Read-only sandbox: the child has no write tool, so the delivery
+   *  contract is inline reply instead of the report file. */
+  readOnly?: boolean;
   /** Resolved "provider/id" passed to the child. */
   model: string;
   timeoutMs: number;
@@ -226,6 +229,20 @@ export async function resolveEffectiveRunner(
   return { runner: "herdr" };
 }
 
+/** Would a foreground dispatch of this call delegate to a visible herdr
+ *  pane? Background receipts use this to decide whether the missing pane
+ *  needs explaining — a pinned sdk runner, disabled delegation, or a failed
+ *  binary probe all mean the foreground rerun would also run in-process. */
+export async function wouldHerdrDelegate(
+  runner: "sdk" | "herdr" | undefined,
+  subagentSettings: { herdr?: unknown } | undefined,
+  exec: HerdrExec = defaultExec,
+): Promise<boolean> {
+  if (runner === "sdk") return false;
+  if (!herdrEnvDetected() || herdrDisabled(subagentSettings)) return false;
+  return probeHerdrBinary(exec);
+}
+
 // ---------------------------------------------------------------------------
 // CLI plumbing
 // ---------------------------------------------------------------------------
@@ -320,8 +337,16 @@ export function buildPiArgs(opts: BuildPiArgsOptions): string[] {
 }
 
 /** Task + file-report contract. The file is the reliable channel: pi renders
- *  on the alternate screen, so finished output never reaches herdr scrollback. */
-export function wrapTaskPrompt(task: string, resultFile: string): string {
+ *  on the alternate screen, so finished output never reaches herdr scrollback.
+ *  Read-only children can't write files — they deliver inline instead. */
+export function wrapTaskPrompt(task: string, resultFile: string, readOnly = false): string {
+  if (readOnly) {
+    return (
+      `${task}\n\n---\n` +
+      `Delivery: this session has read-only tools — do NOT write any files. ` +
+      `Reply with your full final report as your final message.`
+    );
+  }
   return (
     `${task}\n\n---\n` +
     `Delivery: when your task is complete, write your full final report as Markdown to \`${resultFile}\` ` +
@@ -714,6 +739,7 @@ async function prepareHerdrTaskUncached(opts: PrepareHerdrTaskOptions): Promise<
     paneId: "",
     resultFile: resultFilePath(opts.cwd, name, stamp),
     task: opts.task,
+    readOnly: opts.readOnly,
     model: opts.model ?? "",
     timeoutMs: opts.timeoutMs,
     tabCreatedHere: true,
@@ -831,7 +857,7 @@ export async function executeHerdrTask(
       ? { state: "unknown" as const, delivered: false, error: "aborted: parent operation aborted" }
       : await promptAndWait({
         name: handle.name,
-        text: wrapTaskPrompt(handle.task, handle.resultFile),
+        text: wrapTaskPrompt(handle.task, handle.resultFile, handle.readOnly),
         timeoutMs: handle.timeoutMs,
         exec,
       });

@@ -138,6 +138,13 @@ export interface StartBackgroundResult {
   receipt: string;
 }
 
+/** Hint appended to background receipts inside herdr: background tasks skip
+ *  pane delegation by design, and the missing pane reads as a bug (it did). */
+export function backgroundHerdrHint(wouldDelegateForeground: boolean): string | null {
+  if (!wouldDelegateForeground) return null;
+  return "(herdr skipped: background tasks run in-process — omit background:true to dispatch to a visible herdr pane)";
+}
+
 /**
  * Start a detached background task. Returns immediately with a receipt.
  * On completion, delivers a follow-up turn to the parent session.
