@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.1 (2026-09-14)
+
+### Fixed
+
+- **RotateCookies requires a browser User-Agent** (found live, fresh-cookie
+  testing): accounts.google.com answered 400 to the rotation POST when sent
+  with the default axios UA — even with a perfectly valid cookie. The
+  rotation request now sends the Chrome-145 UA + client hints; verified
+  200 + fresh __Secure-1PSIDTS with the identical cookie pair.
+
 ## 0.12.0 (2026-09-14)
 
 ### Added
@@ -14,6 +24,21 @@
   polling requires the session XSRF token, so on degraded sessions the tool
   returns an honest partial result (plan + transcript) instead of 1184.
   Fixture-tested against captured real responses (279→280 tests).
+
+### Fixed
+
+- **Poll-turn filtering in Deep Research** — report polling no longer accepts
+  the first long string it sees: plan/confirm turn transcripts (which reappear
+  verbatim in conversation polls) are excluded, so a plan transcript can no
+  longer be mislabeled as the report.
+
+### Changed
+
+- **Docs: dropped the "research fails with 1184" claims** from the web_research
+  tool description and README — false under the new transport; kept honest
+  cookie/session requirements (fresh `__Secure-1PSIDTS`, live-session poll
+  token, partial-result fallback). Removed the stale `cogview` keyword
+  (models removed in 0.9.1).
 
 ## 0.11.9 (2026-09-14)
 

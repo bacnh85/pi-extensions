@@ -120,6 +120,7 @@ describe("rotateCookies", () => {
     expect(capture.opts?.body).to.equal('[000,"-0000000000000000000"]');
     expect(capture.opts?.headers["Content-Type"]).to.equal("application/json");
     expect(capture.opts?.headers.Origin).to.equal("https://accounts.google.com");
+    expect(capture.opts?.headers["User-Agent"]).to.include("Chrome/145"); // non-browser UAs get 400
     expect(capture.opts?.headers.Cookie).to.equal("__Secure-1PSID=p1; __Secure-1PSIDTS=t1");
   });
 

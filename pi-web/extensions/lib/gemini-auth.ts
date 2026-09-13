@@ -19,6 +19,17 @@ import { findEnvValue } from "./config";
 const ROTATE_URL = "https://accounts.google.com/RotateCookies";
 // jspb sentinel body from Gemini-API — send raw so axios doesn't re-serialize
 // (JSON.stringify would rewrite [000,...] to [0,...]).
+// accounts.google.com refuses RotateCookies from non-browser user agents —
+// verified 2026-09-14: identical valid cookie, axios default UA → 400; Chrome
+// UA → 200 + fresh __Secure-1PSIDTS. Browser fingerprint required.
+const ROTATE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
+const ROTATE_CLIENT_HINTS: Record<string, string> = {
+  "User-Agent": ROTATE_UA,
+  "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not-A.Brand";v="24"',
+  "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-platform": '"Windows"',
+};
+
 const ROTATE_BODY = '[000,"-0000000000000000000"]';
 // Google declares the next rotation interval as 600s in the response body
 // (["identity.hfcr",600]) — used as the default keepalive cadence.
@@ -154,7 +165,12 @@ export async function rotateCookies(opts: {
   const cookie = opts.psidts ? `__Secure-1PSID=${opts.psid}; __Secure-1PSIDTS=${opts.psidts}` : `__Secure-1PSID=${opts.psid}`;
   try {
     const res = await post(ROTATE_URL, {
-      headers: { "Content-Type": "application/json", Origin: "https://accounts.google.com", Cookie: cookie },
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "https://accounts.google.com",
+        ...ROTATE_CLIENT_HINTS,
+        Cookie: cookie,
+      },
       body: ROTATE_BODY,
       proxy: opts.proxy,
       timeoutMs: opts.timeoutMs ?? 15_000,
