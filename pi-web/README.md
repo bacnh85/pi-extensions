@@ -1,8 +1,8 @@
 # @bacnh85/pi-web
 
-Pi extension for **unified web search, content extraction, site crawling, and page capture**.
+Pi extension for **unified web search, content extraction, site crawling, page capture, and Gemini web-tier research**.
 
-Auto-selects the best backend from SearXNG (self-hosted), Brave Search, Firecrawl, Crawl4AI, and agy (Gemini/Claude, when installed) — so agents don't have to know which backend to use. Search selection is adaptive: broad discovery prefers self-hosted SearXNG, while precision-sensitive searches and inline content prefer Brave.
+Auto-selects the best backend from SearXNG (self-hosted), Brave Search, Firecrawl, Crawl4AI, and agy (Gemini/Claude, when installed) — so agents don't have to know which backend to use. Search selection is adaptive: broad discovery prefers self-hosted SearXNG, while precision-sensitive searches and inline content prefer Brave. `web_research` adds AI-synthesized research with citations via your gemini.google.com session.
 
 ## Install
 
@@ -30,10 +30,13 @@ Variables:
 | `FIRECRAWL_API_KEY` | No (2) | — | Required for hosted Firecrawl |
 | `CRAWL4AI_API_URL` | No | `http://127.0.0.1:11235` | Self-hosted Crawl4AI |
 | `CRAWL4AI_API_TOKEN` | No (3) | — | Required if Crawl4AI auth enabled |
+| `GEMINI_WEB_SECURE_1PSID` | No (4) | — | `__Secure-1PSID` cookie from gemini.google.com — enables authed `web_research` (Deep Research) |
+| `GEMINI_WEB_PROXY` | No | — | Proxy URL for Gemini web calls (escape hatch if Google blocks the IP) |
 
 > (1) At least one search backend (SearXNG, Brave, or Firecrawl) must be configured for `web_search`.
 > (2) Required for hosted Firecrawl; optional for self-hosted instances without auth.
 > (3) Required for Crawl4AI v0.9+ default config.
+> (4) Without it `web_research mode=ask` still works in guest mode (Flash-only); `mode=research` errors with setup steps.
 
 Secrets are never printed; `web_status` reports only presence/source.
 
@@ -197,9 +200,64 @@ Typical output:
     "health": { "status": "healthy", "version": "0.5.0", ... }
   },
   "agy": { "installed": true },
+  "geminiWeb": { "configured": true, "cookieSource": "process.env", "proxy": false },
   "localChrome": { "path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" }
 }
 ```
+
+### `web_research` — Gemini web-tier research
+
+AI-synthesized research through your gemini.google.com session (powered by the
+[`gemini-reverse`](https://github.com/rynn-k/Gemini-Reverse) client, lazy-loaded).
+
+```
+web_research(query="compare the top 3 cloud providers' AI offerings", mode="research", timeout_ms=600000)
+```
+
+- **`mode: "ask"`** (default) — quick grounded answer (Gemini auto-grounds with
+  Google Search). Works **without any cookie** in guest mode (Flash-only).
+  Sent as a temporary chat so your Gemini history stays clean.
+- **`mode: "research"`** — full Gemini **Deep Research**: plan → autonomous web
+  browsing (minutes) → cited report. Requires the cookie **and a Gemini
+  Advanced subscription** on the account. Default timeout 600 s, cap 1 800 000.
+
+Both modes return the text plus **Sources** — URLs extracted from the
+answer/report markdown (the web protocol exposes no structured citations field).
+
+Setup (authed mode):
+
+1. Sign in at [gemini.google.com](https://gemini.google.com/).
+2. `F12` → **Application** → **Cookies** → `https://gemini.google.com`.
+3. Copy the `__Secure-1PSID` value into `~/.pi/agent/.env.local`:
+
+   ```bash
+   GEMINI_WEB_SECURE_1PSID=your-cookie-value
+   # optional, if Google blocks your IP:
+   # GEMINI_WEB_PROXY=http://host:port
+   ```
+4. Restart pi; `web_status` shows `geminiWeb.configured: true`.
+
+Live verification script (also proves the header-cap patch end-to-end — an
+authed failure would surface `HPE_HEADER_OVERFLOW`):
+
+```bash
+npx tsx extensions/scripts/gemini-smoke.ts "test query"            # ask (authed or guest)
+npx tsx extensions/scripts/gemini-smoke.ts "topic" research        # Deep Research
+```
+
+⚠️ **Unofficial, at your own risk.** Cookie auth uses your real Google session
+against gemini.google.com's internal web API and may not comply with Google's
+ToS; the protocol can break when Google changes it. `ask` mode errors map to
+actionable steps (expired cookie → re-copy; IP block → set `GEMINI_WEB_PROXY`).
+
+Troubleshooting:
+
+- *"cookie expired or invalid"* — re-copy `__Secure-1PSID` (it rotates).
+- *"temporarily blocked this IP"* — set `GEMINI_WEB_PROXY`.
+- *research mode: "Unknown API error: 1184"* — on this account Deep Research
+  was rejected; usually means no Gemini Advanced subscription on the account
+  (Deep Research is Advanced-only), or Google changed the protocol. `ask`
+  mode is unaffected.
 
 ## Library structure
 

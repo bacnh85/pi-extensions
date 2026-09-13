@@ -21,6 +21,12 @@ import {
   formatUnifiedSearchResults,
 } from "./lib/format";
 import { searchWithDiagnostics } from "./lib/search";
+import {
+  loadGeminiWebConfig,
+  geminiAsk,
+  geminiResearch,
+  describeGeminiError,
+} from "./lib/gemini";
 import { extractWithDiagnostics, type ExtractMode } from "./lib/extract";
 import { firecrawlRequest, type FirecrawlResult } from "./lib/firecrawl";
 import {
@@ -77,6 +83,7 @@ const WEB_ROUTING_GUIDANCE = `## Web Tool Routing (pi-web)
 - **web_map** — discover site URLs (Firecrawl Map).
 - **web_crawl** — multi-page crawl: \`mode: "light"\` (Firecrawl, url) or \`mode: "full"\` (Crawl4AI, urls[]).
 - **web_screenshot** / **web_pdf** — page capture (Crawl4AI).
+- **web_research** — AI-synthesized research via Gemini web (mode "ask" = grounded answer, guest OK; mode "research" = Deep Research report, needs cookie + Gemini Advanced, takes minutes).
 - **web_status** — provider config + health.
 
 Rules: Firecrawl Search is weak on domain-specific queries — prefer SearXNG/Brave; Firecrawl Scrape fails on bot-protected sites — use Crawl4AI (\`mode: "full"\`) then agy (\`mode: "agy"\`); cite source URLs.`;
@@ -440,6 +447,58 @@ export default function piWebExtension(pi: ExtensionAPI) {
     },
   });
 
+  // ── web_research ─────────────────────────────────────────────────────
+  pi.registerTool({
+    name: "web_research",
+    label: "Web Research (Gemini)",
+    description:
+      "AI-synthesized web research via Gemini (gemini.google.com web tier, cookie auth). Mode 'ask' returns a quick grounded answer with source links (works guest-mode, Flash only). Mode 'research' runs Gemini Deep Research — an autonomous agent browses the web for minutes and returns a comprehensive cited report (requires GEMINI_WEB_SECURE_1PSID cookie and a Gemini Advanced subscription).",
+    promptSnippet: "AI-synthesized research with citations",
+    promptGuidelines: [
+      "Use for AI-synthesized research with sources (mode ask = quick grounded answer; mode research = multi-minute Deep Research report). NOT for URL-list searches (web_search) or single-URL extraction (web_extract). Cite the returned source URLs.",
+    ],
+    parameters: Type.Object({
+      query: Type.String({ description: "Research question or topic." }),
+      mode: Type.Optional(Type.Union(
+        [Type.Literal("ask"), Type.Literal("research")],
+        { default: "ask", description: "ask = quick grounded answer (guest OK); research = full Deep Research report (cookie + Gemini Advanced required, takes minutes)." },
+      )),
+      model: Type.Optional(Type.String({ description: "Gemini model for ask mode (e.g. gemini-3-flash). Discovered from the account by default." })),
+      ...sharedControlSchema,
+    }),
+    async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
+      const config = loadGeminiWebConfig(cwdFromContext(ctx), includeProjectEnv(ctx));
+      const mode = (params.mode as string) || "ask";
+      const query = params.query as string;
+      try {
+        if (mode === "research") {
+          const timeoutMs = Math.min(Math.max((params.timeout_ms as number) ?? 600_000, 30_000), 1_800_000);
+          const result = await geminiResearch(query, { config, timeoutMs, signal });
+          const meta = [
+            "Mode: research (Gemini Deep Research)",
+            result.title ? `Title: ${result.title}` : null,
+            result.eta ? `ETA: ${result.eta}` : null,
+          ].filter(Boolean).join("\n");
+          const sources = result.sources.length ? result.sources.map((s, i) => `${i + 1}. ${s}`).join("\n") : "(none found in report text)";
+          const text = `${meta}\n\n${result.text}\n\n--- Sources (extracted from report) ---\n${sources}`;
+          return { content: [{ type: "text" as const, text: truncateText(text) }], details: { mode, ...result } };
+        }
+        const askTimeoutMs = Math.min(Math.max((params.timeout_ms as number) ?? 120_000, 30_000), 600_000);
+        const result = await geminiAsk(query, { config, model: params.model as string | undefined, timeoutMs: askTimeoutMs, signal });
+        const meta = [
+          "Mode: ask",
+          `Model: ${result.model ?? "unknown"}`,
+          result.guest ? "Guest mode (no cookie — Flash only; set GEMINI_WEB_SECURE_1PSID for full access)" : "Cookie auth",
+        ].join("\n");
+        const sources = result.sources.length ? result.sources.map((s, i) => `${i + 1}. ${s}`).join("\n") : "(none found in answer text)";
+        const text = `${meta}\n\n${result.text}\n\n--- Sources (extracted from answer) ---\n${sources}`;
+        return { content: [{ type: "text" as const, text: truncateText(text) }], details: { mode, ...result } };
+      } catch (err) {
+        throw new Error(describeGeminiError(err));
+      }
+    },
+  });
+
   // ── web_status ───────────────────────────────────────────────────────
   pi.registerTool({
     name: "web_status",
@@ -484,6 +543,10 @@ export default function piWebExtension(pi: ExtensionAPI) {
           apiTokenSource: c4aiToken.value ? c4aiToken.source : "not set",
         },
         agy: { installed: isAgyInstalled() },
+        geminiWeb: (() => {
+          const cfg = loadGeminiWebConfig(cwd, trusted);
+          return { configured: Boolean(cfg.psid), cookieSource: cfg.psidSource, proxy: Boolean(cfg.proxy) };
+        })(),
         localChrome: { path: findChromeBinary() ?? "not found" },
       };
 

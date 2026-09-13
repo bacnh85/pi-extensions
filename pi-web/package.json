@@ -1,7 +1,7 @@
 {
   "name": "@bacnh85/pi-web",
-  "version": "0.7.1",
-  "description": "Pi extension for web search, page extraction, Firecrawl scraping/crawling, and Crawl4AI headless browser crawling.",
+  "version": "0.8.0",
+  "description": "Pi extension for web search, page extraction, Firecrawl scraping/crawling, Crawl4AI headless browser crawling, and Gemini web-tier research.",
   "type": "module",
   "license": "MIT",
   "publishConfig": {
@@ -21,7 +21,9 @@
     "firecrawl",
     "crawl4ai",
     "scraping",
-    "crawling"
+    "crawling",
+    "gemini",
+    "deep-research"
   ],
   "scripts": {
     "test": "cd extensions && npx mocha"
@@ -44,6 +46,7 @@
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
+    "gemini-reverse": "^2.1.0",
     "jsdom": "^27.0.1",
     "turndown": "^7.2.2",
     "turndown-plugin-gfm": "^1.0.2"

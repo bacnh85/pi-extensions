@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.0 (2026-09-13)
+
+### Added
+
+- **`web_research` tool** — AI-synthesized web research via Gemini's web tier
+  (gemini.google.com), cookie-authed with `__Secure-1PSID`.
+  `mode: "ask"` returns a quick grounded answer with extracted source links
+  (works in guest mode without any cookie, Flash-only);
+  `mode: "research"` runs Gemini **Deep Research** — an autonomous agent that
+  browses the web for minutes and returns a comprehensive report (requires the
+  cookie and a Gemini Advanced subscription; default timeout 10 min, cap 30).
+- New `lib/gemini.ts` wrapper over the `gemini-reverse` npm package (lazy
+  dynamic import, injectable client for tests, one AuthError retry that
+  re-absorbs rotated Set-Cookies). Sources are extracted from markdown links
+  in the answer/report text (the web protocol exposes no structured citations).
+- `web_status` now reports `geminiWeb` (configured/cookieSource/proxy).
+- Env config: `GEMINI_WEB_SECURE_1PSID` (required for authed/research mode),
+  optional `GEMINI_WEB_PROXY` (escape hatch if Google blocks the IP).
+- **Header-cap fix (authed mode)** — Google ships ~25 KB of response headers on
+  Gemini pages (giant `content-security-policy`), over Node's default 16 KB
+  parser cap; the wrapper injects a per-request `maxHeaderSize` for
+  gemini.google.com hosts only (lazy, no global flag needed).
+
 ## 0.7.1 (2026-09-12)
 
 ### Fixed
