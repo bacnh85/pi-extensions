@@ -8,7 +8,6 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | Package | Version | Description |
 |---------|---------|-------------|
 | **pi-router** | 1.1.6 | Connect to any OpenAI-compatible AI router (9router, omniroute, …) via its /v1 API; API key via built-in /login, URL in settings.json (`/router-config` panel), models auto-cached in models-store.json. |
-| **pi-chatgpt-web** | 0.2.1 | ChatGPT web-tier providers via self-hosted OpenAI-compatible bridges — chat-only `chatgpt-web` (chatgpt2api) + agentic `codex-web` (codex-proxy, tool-capable). No Plus subscription. |
 | **pi-commandcode** | 0.2.1 | Connect to Command Code's OpenAI-compatible Provider API; API key via built-in `/login`, base URL in settings.json (`/commandcode-config` panel), models auto-cached. |
 | **pi-checkpoint** | 0.1.2 | Git-backed undo/redo — snapshots file state per turn into a dedicated ref namespace so `/undo` rolls back a message AND its file changes. |
 | **pi-cron** | 0.3.1 | Scheduled jobs — cron-style jobs fire a prompt into the live session while pi is running (30s timer, past-due catch-up, loop guard); per-job model/thinking pins run headless; `cron export` emits crontab lines for 24/7 coverage. |
@@ -68,7 +67,6 @@ pi-config-panel/      # TS library package — shared config-panel kernel (no pi
   pi-rtk/               # TS extension for RTK bash command rewriting
   pi-model-tools/        # TS extension for unified tool-wrapping + DeepSeek guidance + Super Power Mode (DeepSeek V4 + GLM)
    pi-router/            # TS extension to connect to any OpenAI-compatible AI router.
-   pi-chatgpt-web/       # TS extension: ChatGPT web-tier provider via self-hosted chatgpt2api bridge.
   pi-commandcode/       # TS extension for Command Code Provider API.
   pi-budget/            # JS extension for spend-cap enforcement (--budget <usd>).
   pi-sub/               # TS extension for subscription usage footer
@@ -165,7 +163,6 @@ cd pi-<name> && npm test
 # pi-sub:        cd pi-sub && npm test            (node --import tsx --test; npm ci auto-installs SDK peer)
 # pi-themes:     npm test                               (theme validator + packaging check; pure-themes, no extension code)
 # pi-router:     node --import tsx --test extensions/test/unit.test.ts (node:test + tsx)
-# pi-chatgpt-web: node --import tsx --test extensions/test/unit.test.ts (node:test + tsx)
 # pi-commandcode: node --import tsx --test extensions/test/*.test.ts (node:test + tsx)
 ```
 

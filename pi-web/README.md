@@ -290,6 +290,9 @@ paths **plus inline image blocks** (multimodal models see the render
 immediately). `details` reports the winning provider, model, and fallback
 attempts.
 
+`n` (1–4) applies to the API providers (`zai`/`custom`); the Gemini web tier
+returns its own image count (surfaced as a provider note when fewer than `n`).
+
 **Guardrails** (soft, in-memory): per-provider `WEB_IMAGE_MIN_INTERVAL_MS`
 (default 5 s) and a `WEB_IMAGE_DAILY_CAP` (default 20/day, applied to the
 Gemini web tier only — keyed APIs are billed upstream and stay uncapped).

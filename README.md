@@ -9,7 +9,6 @@ Each package lives in its own directory and can be installed independently — e
 | Package | Version | What it adds |
 | --- | ---: | --- |
 | [`@bacnh85/pi-router`](./pi-router) | 1.1.6 | Connect to any OpenAI-compatible AI router (9router, omniroute, …) — API key via built-in /login, URL in settings.json (`/router-config` panel), cached model discovery. |
-| [`@bacnh85/pi-chatgpt-web`](./pi-chatgpt-web) | 0.2.1 | ChatGPT web-tier providers via self-hosted OpenAI-compatible bridges — chat-only `chatgpt-web` (chatgpt2api) + agentic `codex-web` (codex-proxy, tool-capable). No Plus subscription. |
 | [`@bacnh85/pi-commandcode`](./pi-commandcode) | 0.2.1 | Connect to Command Code's OpenAI-compatible Provider API; API key via built-in `/login`, base URL in settings.json (`/commandcode-config` panel). |
 | [`@bacnh85/pi-agy`](./pi-agy) | 0.3.4 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
 | [`@bacnh85/pi-budget`](./pi-budget) | 0.1.3 | Spend cap enforcement — `--budget <usd>` aborts the agent at the cap. |
@@ -70,7 +69,6 @@ If you prefer plain `pi` (or are scripting without Node ≥ 20):
 
 ```bash
 pi install npm:@bacnh85/pi-router
-pi install npm:@bacnh85/pi-chatgpt-web
 pi install npm:@bacnh85/pi-agy
 ```
 
@@ -99,7 +97,6 @@ Packages are standalone npm packages. Most TypeScript packages use Mocha + `tsx`
 ```text
 pi-extensions/
   pi-router/
-  pi-chatgpt-web/
   pi-commandcode/
   pi-agy/
   pi-attachments/

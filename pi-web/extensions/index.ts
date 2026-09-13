@@ -541,7 +541,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
         { default: "auto", description: "auto = gemini → zai (if ZAI_API_KEY) → custom (if WEB_IMAGE_API_BASE_URL); pin one to skip fallback." },
       )),
       model: Type.Optional(Type.String({ description: "Provider-specific model (e.g. glm-image, or a Gemini image-capable model id). Omit for the provider default." })),
-      n: Type.Optional(Type.Number({ default: 1, description: "Number of images, 1-4." })),
+      n: Type.Optional(Type.Number({ default: 1, description: "Number of images, 1-4 (applies to zai/custom; the gemini web tier returns its own count)." })),
       out_dir: Type.Optional(Type.String({ description: "Directory for saved images (default: fresh temp dir)." })),
       ...sharedControlSchema,
     }),
@@ -552,7 +552,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
       const n = Math.min(Math.max(Math.trunc((params.n as number) ?? 1) || 1, 1), 4);
       const timeoutMs = Math.min(Math.max((params.timeout_ms as number) ?? 180_000, 10_000), 600_000);
       const outDir = params.out_dir
-        ? path.resolve(String(params.out_dir))
+        ? path.resolve(cwd, String(params.out_dir))
         : await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-web-image-"));
       const result = await generateImageWithFallback({
         prompt,
@@ -574,7 +574,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
         ...(result.urls.length
           ? [`Not saved (image host unreachable from this machine — open directly):`, ...result.urls.map((u) => `  ${u}`)]
           : []),
-        result.attempts.length ? `Fallback attempts: ${result.attempts.join(" | ")}` : null,
+        result.attempts.length ? `Provider notes: ${result.attempts.join(" | ")}` : null,
       ].filter(Boolean).join("\n");
       const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
         { type: "text" as const, text },

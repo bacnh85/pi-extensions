@@ -25,11 +25,6 @@
     "description": "Spend cap enforcement for Pi — halts the agent when session cost exceeds a --budget USD limit. Companion to pi-sub (which renders usage); this one enforces."
   },
   {
-    "name": "@bacnh85/pi-chatgpt-web",
-    "dir": "pi-chatgpt-web",
-    "description": "Pi extension that turns a self-hosted ChatGPT-web bridge (OpenAI-compatible, e.g. basketikun/chatgpt2api) into a Pi provider for free web-tier models."
-  },
-  {
     "name": "@bacnh85/pi-checkpoint",
     "dir": "pi-checkpoint",
     "description": "Git-backed undo/redo for Pi — snapshots file state at each turn into a dedicated ref namespace, so /undo rolls back the last message AND its file changes. Fills PI's gap vs OpenCode's git-backed /undo /redo (PI has conversation-level /tree but not file-state snapshots)."

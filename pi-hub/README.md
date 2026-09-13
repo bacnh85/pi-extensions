@@ -97,7 +97,6 @@ npx @bacnh85/pi-hub update                   # runs pi update --extensions
 | `pi-advisor` | Automatic advisor: a second model reviews each settled turn and injects severity-routed notes |
 | `pi-agy` | Google Antigravity CLI bridge — delegate bulk scaffolding, refactors, test generation |
 | `pi-budget` | Spend cap enforcement — halts the agent when session cost exceeds `--budget` USD |
-| `pi-chatgpt-web` | ChatGPT web-tier provider via self-hosted OpenAI-compatible bridge |
 | `pi-checkpoint` | Git-backed undo/redo — `/undo` rolls back a message AND its file changes |
 | `pi-commandcode` | Connect to Command Code's OpenAI-compatible Provider API |
 | `pi-evolve` | Trajectory-based self-learning loop — captures tool calls, extracts and injects learnings |

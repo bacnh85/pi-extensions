@@ -483,3 +483,142 @@ describe("generateImageWithFallback", () => {
     }
   });
 });
+
+describe("generateImageWithFallback cancellation + n handling (review findings)", () => {
+  it("rejects with AbortError on an aborted signal and does not try further providers", async () => {
+    const { client } = imageClient();
+    const calls = { n: 0 };
+    const controller = new AbortController();
+    controller.abort();
+    let zaiCalled = false;
+    const fetchSpy: FetchLike = (async () => {
+      zaiCalled = true;
+      throw new Error("zai must not be attempted after abort");
+    }) as unknown as FetchLike;
+    try {
+      await generateImageWithFallback(baseParams({
+        geminiFactory: factoryFor(client, calls),
+        apiConfig: { zai: { apiKey: "k", source: "test" } },
+        fetchImpl: fetchSpy,
+        signal: controller.signal,
+        outDir: await tmpDir(),
+      }));
+      expect.fail("should throw");
+    } catch (e) {
+      expect((e as Error).name).to.equal("AbortError");
+    }
+    expect(calls.n).to.equal(0); // loop-top check: no client construction either
+    expect(zaiCalled).to.equal(false);
+  });
+
+  it("notes when the gemini web tier returns fewer images than n requested", async () => {
+    const { client } = imageClient({ images: 1 });
+    const r = await generateImageWithFallback(baseParams({
+      geminiFactory: factoryFor(client),
+      n: 3,
+      outDir: await tmpDir(),
+    }));
+    expect(r.provider).to.equal("gemini");
+    expect(r.paths).to.have.length(1);
+    expect(r.attempts.join(" ")).to.include("n=3 requested");
+    expect(r.attempts.join(" ")).to.include("zai/custom");
+  });
+
+  it("normalizes a provider-phase error to AbortError when the signal aborted mid-flight", async () => {
+    const controller = new AbortController();
+    let zaiAttempted = false;
+    const client: GeminiClientLike = {
+      ask: async () => ({ text: "" }),
+      research: async () => ({ text: "" }),
+      newChat: () => ({
+        generateContent: async () => ({
+          text: "",
+          generated_images: [
+            {
+              save: async () => {
+                controller.abort(); // user cancel lands during the save phase
+                throw new Error("disk full");
+              },
+            },
+          ],
+        }),
+      }),
+    };
+    try {
+      await generateImageWithFallback(baseParams({
+        geminiFactory: () => client,
+        apiConfig: { zai: { apiKey: "k", source: "test" } },
+        fetchImpl: (async () => {
+          zaiAttempted = true;
+          throw new Error("zai must not be attempted after abort");
+        }) as unknown as FetchLike,
+        signal: controller.signal,
+        outDir: await tmpDir(),
+      }));
+      expect.fail("should throw");
+    } catch (e) {
+      // Not "disk full" (raw provider error) — cancellation semantics win.
+      expect((e as Error).name).to.equal("AbortError");
+    }
+    expect(zaiAttempted).to.equal(false); // cancelled calls skip fallback
+  });
+
+  it("continues the chain when a foreign AbortError-named error is not from the caller's signal", async () => {
+    const { client } = imageClient({ images: 0, text: "nope" }); // gemini must fail so the chain reaches zai
+    const fetchImpl = (async (url: string, init?: { method?: string }) => {
+      if (init?.method !== "POST") throw new Error("download not expected");
+      if (String(url).includes("api.z.ai")) {
+        const e = new Error("upstream internal abort");
+        e.name = "AbortError"; // foreign abort — not the caller's signal
+        throw e;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [{ b64_json: PNG_B64 }] }),
+        arrayBuffer: async () => new ArrayBuffer(0),
+      };
+    }) as unknown as FetchLike;
+    const r = await generateImageWithFallback(baseParams({
+      geminiFactory: factoryFor(client),
+      apiConfig: {
+        zai: { apiKey: "k", source: "test" },
+        custom: { baseUrl: "https://custom.example.com/v1", label: "c", source: "test" },
+      },
+      fetchImpl,
+      outDir: await tmpDir(),
+    }));
+    expect(r.provider).to.equal("custom"); // foreign abort recorded, chain continued
+    expect(r.attempts.join(" ")).to.include("zai: upstream internal abort");
+    expect(r.paths).to.have.length(1);
+  });
+
+  it("throws AbortError before any provider work when the signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    __setImageRateClock(() => 10_000);
+    imageRateRecord("gemini"); // cap gemini so the pre-fix code would skip it and reach zai's fetch
+    const { client } = imageClient();
+    const calls = { n: 0 };
+    let fetchCalls = 0;
+    const fetchSpy: FetchLike = (async () => {
+      fetchCalls++;
+      throw new Error("no fetch expected");
+    }) as unknown as FetchLike;
+    try {
+      await generateImageWithFallback(baseParams({
+        geminiFactory: factoryFor(client, calls),
+        apiConfig: { zai: { apiKey: "k", source: "test" } },
+        rateConfig: { minIntervalMs: 0, dailyCap: 1 },
+        fetchImpl: fetchSpy,
+        signal: controller.signal,
+        outDir: await tmpDir(),
+      }));
+      expect.fail("should throw");
+    } catch (e) {
+      expect((e as Error).name).to.equal("AbortError");
+    }
+    expect(calls.n).to.equal(0);
+    expect(fetchCalls).to.equal(0);
+  });
+});

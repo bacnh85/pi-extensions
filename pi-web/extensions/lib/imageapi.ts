@@ -308,6 +308,13 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
   const chain = chainFor(params.provider);
   const attempts: string[] = [];
   for (const provider of chain) {
+    // Cancelled calls skip fallback entirely — before any provider client
+    // construction or fetch invocation.
+    if (params.signal?.aborted) {
+      const abortErr = new Error("web_image aborted");
+      abortErr.name = "AbortError";
+      throw abortErr;
+    }
     const configured =
       provider === "gemini" ? true : provider === "zai" ? Boolean(params.apiConfig.zai) : Boolean(params.apiConfig.custom);
     if (!configured) {
@@ -356,8 +363,24 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
         });
       }
       imageRateRecord(provider);
+      if (provider === "gemini" && params.n && params.n > 1 && result.paths.length < params.n) {
+        attempts.push(`gemini: n=${params.n} requested — the gemini web tier returns its own image count (${result.paths.length}); n applies to zai/custom`);
+      }
       return { provider, model: result.model, paths: result.paths, urls: result.urls ?? [], attempts };
     } catch (err) {
+      // Cancellation is not a provider failure: rethrow so aborted tool calls
+      // surface as AbortError instead of an "all providers failed" listing —
+      // even when a genuine provider error (AuthError, a failed save, …) was
+      // the error in flight when the abort landed.
+      if (params.signal?.aborted) {
+        if ((err as Error)?.name === "AbortError") throw err;
+        // cause keeps the in-flight provider error for diagnostics.
+        const abortErr = new Error("web_image aborted", { cause: err });
+        abortErr.name = "AbortError";
+        throw abortErr;
+      }
+      // A foreign AbortError-named error (not from the caller's signal) is a
+      // provider failure like any other — record it and keep the chain going.
       attempts.push(`${provider}: ${provider === "gemini" ? describeGeminiError(err) : describeImageApiError(err)}`);
     }
   }
