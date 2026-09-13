@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.10.0 (2026-09-13)
+
+### Added
+
+- **`web_chat` tool** — one-off chat completion against any OpenAI-compatible
+  gateway (`WEB_CHAT_API_BASE_URL` + optional `WEB_CHAT_API_KEY`): a ChatGPT
+  web bridge, official OpenAI (`https://api.openai.com/v1`), or any web2api
+  gateway. Non-streaming `POST /chat/completions` with optional `model`/
+  `system`; timeout capped at 300 s. Error mapping: 401/403 key hint,
+  429 quota, 502 → "empty account pool" hint, 5xx server error.
+- `web_status` now reports `webChat` (configured/baseUrl/keyFound/source).
+
+Supersedes the removed `pi-chatgpt-web` package (free web-chat-only models):
+point `WEB_CHAT_API_BASE_URL` at the same gateway to keep using it.
+
 ## 0.9.2 (2026-09-13)
 
 ### Fixed

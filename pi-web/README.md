@@ -1,6 +1,6 @@
 # @bacnh85/pi-web
 
-Pi extension for **unified web search, content extraction, site crawling, page capture, Gemini web-tier research, and free upstream image generation**.
+Pi extension for **unified web search, content extraction, site crawling, page capture, Gemini web-tier research, free upstream image generation, and one-off gateway chat**.
 
 Auto-selects the best backend from SearXNG (self-hosted), Brave Search, Firecrawl, Crawl4AI, and agy (Gemini/Claude, when installed) — so agents don't have to know which backend to use. Search selection is adaptive: broad discovery prefers self-hosted SearXNG, while precision-sensitive searches and inline content prefer Brave. `web_research` adds AI-synthesized research with citations via your gemini.google.com session.
 
@@ -38,6 +38,8 @@ Variables:
 | `WEB_IMAGE_API_LABEL` | No | — | Display label for the `custom` endpoint (default: host name) |
 | `WEB_IMAGE_MIN_INTERVAL_MS` | No | `5000` | Min interval between `web_image` calls per provider |
 | `WEB_IMAGE_DAILY_CAP` | No | `20` | Daily soft cap for the Gemini **web tier** `web_image` provider (keyed APIs stay uncapped) |
+| `WEB_CHAT_API_BASE_URL` | No | — | `web_chat`: any OpenAI-compatible `/chat/completions` gateway (a ChatGPT web bridge, `https://api.openai.com/v1`, …) |
+| `WEB_CHAT_API_KEY` | No | — | Bearer key for the `web_chat` gateway |
 
 > (1) At least one search backend (SearXNG, Brave, or Firecrawl) must be configured for `web_search`.
 > (2) Required for hosted Firecrawl; optional for self-hosted instances without auth.
@@ -308,6 +310,28 @@ non-human means", Z.ai alike). This tool therefore follows a risk ladder:
 
 Smoke test: `npx tsx extensions/scripts/gemini-smoke.ts "a red cube on white background" image`
 (or `… zai` for the Z.ai path).
+
+### `web_chat` — one-off gateway chat
+
+Single non-streaming chat completion against any OpenAI-compatible gateway —
+the in-session equivalent of "ask another model quickly" without switching
+your main provider:
+
+```
+web_chat(prompt="In one sentence: why is idempotency key needed here?")
+web_chat(prompt="Summarize", model="gpt-5.3-mini", system="Be terse")
+```
+
+Configure once in `~/.pi/agent/.env.local`, then restart pi:
+
+```bash
+WEB_CHAT_API_BASE_URL=https://api.openai.com/v1   # or any OpenAI-compatible gateway
+WEB_CHAT_API_KEY=sk-...                           # if the gateway needs a key
+```
+
+`web_status.webChat` shows configuration without printing secrets. Chat-only
+by design (no tool calling through gateways); for grounded research with
+sources use `web_research`, and `/model` switches your main model.
 
 ## Library structure
 

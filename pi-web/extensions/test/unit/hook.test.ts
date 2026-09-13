@@ -30,10 +30,10 @@ function callHook(handlers: Record<string, Function[]>, selectedTools: string[] 
 }
 
 describe("pi-web before_agent_start routing guidance", () => {
-  it("registers nine web_* tools", () => {
+  it("registers ten web_* tools", () => {
     const { tools } = harness();
     const webTools = Object.keys(tools).filter((n) => n.startsWith("web_"));
-    expect(webTools).to.have.length(9);
+    expect(webTools).to.have.length(10);
   });
 
   it("injects routing guidance when a web_* tool is active", async () => {

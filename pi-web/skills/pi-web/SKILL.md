@@ -1,11 +1,11 @@
 ---
 name: pi-web
-description: Web search, content extraction, site crawling, page capture, Gemini web-tier research, and free upstream image generation via the pi-web extension. Use when the user needs current web search results, documentation lookup, factual research, AI-synthesized research with sources (Gemini Deep Research), image generation from text (Gemini web, Z.ai GLM-Image), source discovery, URL-to-markdown extraction, JSON extraction from websites, site URL discovery, site crawling, or page screenshots/PDFs. Use when the user mentions searching the web, finding docs, looking something up, researching deeply, generating/creating an image, scraping/extracting content from a URL, or capturing a page.
+description: Web search, content extraction, site crawling, page capture, Gemini web-tier research, free upstream image generation, and one-off gateway chat via the pi-web extension. Use when the user needs current web search results, documentation lookup, factual research, AI-synthesized research with sources (Gemini Deep Research), image generation from text (Gemini web, Z.ai GLM-Image), one-off ChatGPT/gateway chat, source discovery, URL-to-markdown extraction, JSON extraction from websites, site URL discovery, site crawling, or page screenshots/PDFs. Use when the user mentions searching the web, finding docs, looking something up, researching deeply, generating/creating an image, asking another model, scraping/extracting content from a URL, or capturing a page.
 ---
 
 # pi-web — Unified Web Tools
 
-Use the **9 unified tools** from the `pi-web` extension for all web-related tasks. These tools automatically select the best backend from SearXNG, Brave Search, Firecrawl, Crawl4AI, and agy (when installed) — you don't need to know which backend to use. Search selection is adaptive: broad discovery prefers self-hosted SearXNG, while precision-sensitive queries and inline content prefer Brave.
+Use the **10 unified tools** from the `pi-web` extension for all web-related tasks. These tools automatically select the best backend from SearXNG, Brave Search, Firecrawl, Crawl4AI, and agy (when installed) — you don't need to know which backend to use. Search selection is adaptive: broad discovery prefers self-hosted SearXNG, while precision-sensitive queries and inline content prefer Brave.
 
 ## Quick Reference
 
@@ -19,6 +19,7 @@ Use the **9 unified tools** from the `pi-web` extension for all web-related task
 | `web_pdf` | Generate page PDF | Crawl4AI daemon (public URLs) or local headless Chrome (localhost/LAN/file URLs — auto-detected) |
 | `web_research` | AI-synthesized research with sources | Gemini web tier: ask = grounded answer (guest OK); research = Deep Research report (cookie + Gemini Advanced) |
 | `web_image` | Generate images from a text prompt | Gemini web (guest/cookie) → Z.ai GLM-Image (`ZAI_API_KEY`) → custom OpenAI-images endpoint |
+| `web_chat` | One-off chat via an OpenAI-compatible gateway | `WEB_CHAT_API_BASE_URL` (ChatGPT web bridge, official OpenAI, …) |
 | `web_status` | Check provider configuration and health | — |
 
 ## Decision Tree
@@ -64,6 +65,9 @@ What do you need?
 │   → web_image
 │     ├─ default: provider=auto (Gemini web → Z.ai GLM-Image → custom endpoint)
 │     └─ pin/model: provider=zai model=glm-image, or any custom OpenAI-images endpoint
+│
+├── One-off chat with another model (second opinion, classification)
+│   → web_chat (WEB_CHAT_API_BASE_URL gateway; non-streaming; no tools)
 │
 └── Check what web tools are configured
     → web_status

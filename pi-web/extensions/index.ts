@@ -38,6 +38,11 @@ import {
   imageRateSnapshot,
   type ImageProvider,
 } from "./lib/imageapi";
+import {
+  chatgptChat,
+  describeChatApiError,
+  loadChatConfig,
+} from "./lib/chatapi";
 import { extractWithDiagnostics, type ExtractMode } from "./lib/extract";
 import { firecrawlRequest, type FirecrawlResult } from "./lib/firecrawl";
 import {
@@ -109,6 +114,7 @@ const WEB_ROUTING_GUIDANCE = `## Web Tool Routing (pi-web)
 - **web_screenshot** / **web_pdf** — page capture (Crawl4AI).
 - **web_research** — AI-synthesized research via Gemini web (mode "ask" = grounded answer, guest OK; mode "research" = Deep Research report, needs cookie + Gemini Advanced, takes minutes).
 - **web_image** — text→image generation via free upstreams (auto: Gemini web → Z.ai GLM-Image → custom OpenAI-images endpoint; \`model\`/\`n\` params).
+- **web_chat** — one-off chat completion via an OpenAI-compatible gateway (\`WEB_CHAT_API_BASE_URL\`; non-streaming).
 - **web_status** — provider config + health.
 
 Rules: Firecrawl Search is weak on domain-specific queries — prefer SearXNG/Brave; Firecrawl Scrape fails on bot-protected sites — use Crawl4AI (\`mode: "full"\`) then agy (\`mode: "agy"\`); cite source URLs.`;
@@ -584,6 +590,51 @@ export default function piWebExtension(pi: ExtensionAPI) {
     },
   });
 
+  // ── web_chat ─────────────────────────────────────────────────────────
+  pi.registerTool({
+    name: "web_chat",
+    label: "Web Chat (gateway)",
+    description:
+      "One-off chat completion via an OpenAI-compatible gateway (WEB_CHAT_API_BASE_URL — a ChatGPT web bridge, official OpenAI, or any web2api gateway). Non-streaming Q&A; not a provider — use /model to switch your main model.",
+    promptSnippet: "One-off chat via OpenAI-compatible gateway",
+    promptGuidelines: [
+      "Use for a quick one-off second opinion, classification, or short generation call. Grounded research with sources → web_research; switching your main chat model → /model.",
+    ],
+    parameters: Type.Object({
+      prompt: Type.String({ description: "The question or instruction." }),
+      model: Type.Optional(Type.String({ description: "Gateway model id (e.g. gpt-5.3-mini). Omit for the gateway default." })),
+      system: Type.Optional(Type.String({ description: "Optional system prompt." })),
+      ...sharedControlSchema,
+    }),
+    async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
+      const cwd = cwdFromContext(ctx);
+      const trusted = includeProjectEnv(ctx);
+      const config = loadChatConfig(cwd, trusted);
+      if (!config) {
+        throw new Error(
+          "web_chat is not configured. Set WEB_CHAT_API_BASE_URL (and optional WEB_CHAT_API_KEY) in ~/.pi/agent/.env.local — any OpenAI-compatible /chat/completions gateway works (a ChatGPT web bridge, https://api.openai.com/v1, …) — then restart pi.",
+        );
+      }
+      const timeoutMs = Math.min(Math.max((params.timeout_ms as number) ?? 120_000, 10_000), 300_000);
+      try {
+        const result = await chatgptChat({
+          baseUrl: config.baseUrl,
+          apiKey: config.apiKey,
+          prompt: params.prompt as string,
+          model: params.model as string | undefined,
+          system: params.system as string | undefined,
+          timeoutMs,
+          signal,
+        });
+        const text = `Model: ${result.model ?? "gateway default"}\n\n${result.text}`;
+        return { content: [{ type: "text" as const, text: truncateText(text) }], details: { model: result.model } };
+      } catch (err) {
+        if ((err as Error)?.name === "AbortError") throw err;
+        throw new Error(describeChatApiError(err));
+      }
+    },
+  });
+
   // ── web_status ───────────────────────────────────────────────────────
   pi.registerTool({
     name: "web_status",
@@ -639,6 +690,15 @@ export default function piWebExtension(pi: ExtensionAPI) {
             : { configured: false },
           rate: imageRateSnapshot(),
         },
+        webChat: (() => {
+          const cfg = loadChatConfig(cwd, trusted);
+          return {
+            configured: Boolean(cfg),
+            baseUrl: cfg?.baseUrl,
+            keyFound: Boolean(cfg?.apiKey),
+            source: cfg?.source ?? "not set",
+          };
+        })(),
         localChrome: { path: findChromeBinary() ?? "not found" },
       };
 
