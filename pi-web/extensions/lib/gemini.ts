@@ -14,13 +14,15 @@ import { findEnvValue } from "./config";
 export interface GeminiWebConfig {
   psid?: string;
   psidSource: string;
+  psidts?: string;
   proxy?: string;
 }
 
 export function loadGeminiWebConfig(cwd = process.cwd(), includeCwdEnv = false): GeminiWebConfig {
   const psid = findEnvValue("GEMINI_WEB_SECURE_1PSID", cwd, includeCwdEnv);
+  const psidts = findEnvValue("GEMINI_WEB_SECURE_1PSIDTS", cwd, includeCwdEnv);
   const proxy = findEnvValue("GEMINI_WEB_PROXY", cwd, includeCwdEnv);
-  return { psid: psid.value, psidSource: psid.value ? psid.source : "not set", proxy: proxy.value };
+  return { psid: psid.value, psidSource: psid.value ? psid.source : "not set", psidts: psidts.value, proxy: proxy.value };
 }
 
 // ---------------------------------------------------------------------------
@@ -66,7 +68,7 @@ export interface GeminiClientLike {
 }
 
 export type GeminiClientFactory = (
-  opts: { secure_1psid?: string; proxy?: string },
+  opts: { secure_1psid?: string; secure_1psidts?: string; proxy?: string },
 ) => GeminiClientLike | Promise<GeminiClientLike>;
 
 // Cached per config (psid|proxy) so a config change re-creates the client.
@@ -137,14 +139,24 @@ export async function loadDefaultFactory(): Promise<GeminiClientFactory> {
   }
   // ponytail: generous per-request cap (covers research); per-mode ask/research
   // timeouts are enforced by raceGuard below.
-  return (opts) => new Gemini({ secure_1psid: opts.secure_1psid, proxy: opts.proxy ?? null, timeout: 1_800_000 });
+  // ponytail: Google's rotating __Secure-1PSIDTS is required for sensitive
+  // surfaces (image generation refuses with "You might be signed out" when it
+  // is missing); the page HTML no longer carries SNlM0e/rotations for plain
+  // clients, so the user passes it explicitly and we inject it pre-init.
+  return (opts) => {
+    const client = new Gemini({ secure_1psid: opts.secure_1psid, proxy: opts.proxy ?? null, timeout: 1_800_000 });
+    if (opts.secure_1psidts) {
+      (client as unknown as { cookies: Record<string, string> }).cookies["__Secure-1PSIDTS"] = opts.secure_1psidts;
+    }
+    return client;
+  };
 }
 
 async function getClient(config: GeminiWebConfig, factory?: GeminiClientFactory): Promise<GeminiClientLike> {
-  const key = `${config.psid ?? ""}|${config.proxy ?? ""}`;
+  const key = `${config.psid ?? ""}|${config.psidts ?? ""}|${config.proxy ?? ""}`;
   if (cached?.key === key) return cached.client;
   const make = factory ?? (await loadDefaultFactory());
-  const client = await make({ secure_1psid: config.psid, proxy: config.proxy });
+  const client = await make({ secure_1psid: config.psid, secure_1psidts: config.psidts, proxy: config.proxy });
   cached = { key, client };
   return client;
 }

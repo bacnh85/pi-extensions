@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.5 (2026-09-13)
+
+### Added
+
+- **`GEMINI_WEB_SECURE_1PSIDTS` env** — the rotating `__Secure-1PSIDTS`
+  session cookie, injected into the client jar pre-init. Google stopped
+  serving SNlM0e/cookie rotations to plain clients; without it the session
+  is partially authed (chat works, `accessToken` unresolved, sensitive
+  surfaces refuse). With it: full auth (`accessToken` resolves).
+
 ## 0.10.4 (2026-09-13)
 
 ### Fixed

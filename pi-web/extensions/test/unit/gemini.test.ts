@@ -104,6 +104,14 @@ describe("describeGeminiError", () => {
   });
 });
 
+describe("loadDefaultFactory 1PSIDTS injection", () => {
+  it("injects __Secure-1PSIDTS into the client cookie jar pre-init", async () => {
+    const f = await loadDefaultFactory();
+    const c = await f({ secure_1psid: "psid", secure_1psidts: "ts-value" });
+    expect((c as unknown as { cookies: Record<string, string> }).cookies["__Secure-1PSIDTS"]).to.equal("ts-value");
+  });
+});
+
 describe("injectGeminiHeaderCap (25KB Google CSP response headers)", () => {
   const CAP = 256 * 1024;
 
