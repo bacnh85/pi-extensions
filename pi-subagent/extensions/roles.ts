@@ -36,7 +36,7 @@ import type { AgentConfig } from "./agents.ts";
 
 export type SubagentThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
-const THINKING_LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+export const THINKING_LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /** Role → raw chain value (string/array, may contain `@role` and `*` refs). */
 export type RoleMap = Record<string, string | string[]>;
@@ -45,6 +45,9 @@ export interface RolesConfig {
   roles: RoleMap;
   /** Per-agent model override (agent name → selector / role alias / `*`). */
   agentModels: Record<string, string>;
+  /** Per-agent thinking override (agent name → level). Beats frontmatter;
+   *  a matched candidate's `:level` suffix still wins. */
+  agentThinking: Record<string, SubagentThinkingLevel>;
 }
 
 export interface ExpandedCandidates {
@@ -117,6 +120,21 @@ function mergeSection(cfg: RolesConfig, json: Record<string, unknown> | null): v
       if (typeof value === "string" && value.trim()) cfg.agentModels[name] = value.trim();
     }
   }
+  const agentThinking = section.agentThinking;
+  if (agentThinking && typeof agentThinking === "object" && !Array.isArray(agentThinking)) {
+    for (const [name, value] of Object.entries(agentThinking as Record<string, unknown>)) {
+      if (typeof value === "string" && THINKING_LEVELS.includes(value)) cfg.agentThinking[name] = value as SubagentThinkingLevel;
+    }
+  }
+}
+
+/** Effective chain-wide default thinking for an agent: settings override
+ *  beats frontmatter; a matched candidate's `:level` suffix wins over both. */
+export function effectiveAgentThinking(
+  agent: Pick<AgentConfig, "name" | "thinking">,
+  cfg: Pick<RolesConfig, "agentThinking">,
+): SubagentThinkingLevel | undefined {
+  return cfg.agentThinking[agent.name] ?? agent.thinking;
 }
 
 /**
@@ -128,6 +146,7 @@ export function readSubagentRoles(ctx?: ExtensionContext): RolesConfig {
   const cfg: RolesConfig = {
     roles: structuredClone(DEFAULT_ROLES),
     agentModels: {},
+    agentThinking: {},
   };
   mergeSection(cfg, readJson(join(agentDir(), "settings.json")));
   try {
@@ -156,6 +175,7 @@ export function readSubagentRolesGlobal(): RolesConfig {
   const cfg: RolesConfig = {
     roles: structuredClone(DEFAULT_ROLES),
     agentModels: {},
+    agentThinking: {},
   };
   mergeSection(cfg, readJson(join(agentDir(), "settings.json")));
   return cfg;
@@ -265,8 +285,10 @@ export function describeAgentModels(
   const raw =
     roles.agentModels[agent.name] ??
     [...new Set([agent.model, ...(agent.models ?? [])].filter((model): model is string => Boolean(model)))].join(", ");
-  const { candidates, unresolved } = resolveAgentModelChain(agent, roles);
-  const chain = candidates.length > 0 ? `${candidates.join(" → ")} → parent fallback` : "parent fallback";
+  const { candidates, thinkingByCandidate, unresolved } = resolveAgentModelChain(agent, roles);
+  const chain = candidates.length > 0
+    ? `${candidates.map((name) => (thinkingByCandidate.get(name) ? `${name}:${thinkingByCandidate.get(name)}` : name)).join(" → ")} → parent fallback`
+    : "parent fallback";
   const source = roles.agentModels[agent.name] ? "override" : "frontmatter";
   const warn = unresolved.length > 0 ? ` (unresolved: ${unresolved.join(", ")})` : "";
   return `[${source}: ${raw}] ${chain}${warn}`;

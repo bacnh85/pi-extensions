@@ -17,14 +17,14 @@ import {
   splitThinkingSuffix,
   type RolesConfig,
 } from "../roles.ts";
-import { buildRows, buildRolesPanelCfg, cfgToPatch, defaultChainLabel, makeAddRoleAction, makeRemoveRoleAction, removeRoleFromCfg, validateNewRoleName } from "../roles-panel.ts";
+import { buildRows, buildRolesPanelCfg, cfgToPatch, defaultChainLabel, makeAddRoleAction, makeRemoveRoleAction, preserveUnknownAgentModels, removeRoleFromCfg, validateNewRoleName } from "../roles-panel.ts";
 import { discoverAgents, getModelCandidates } from "../agents.ts";
 import type { AgentConfig } from "../agents.ts";
 
 const BUNDLED_DIR = path.resolve(import.meta.dirname, "..", "..", "agents");
 
 function emptyRoles(): RolesConfig {
-  return { roles: {}, agentModels: {} };
+  return { roles: {}, agentModels: {}, agentThinking: {} };
 }
 
 describe("splitThinkingSuffix", () => {
@@ -107,7 +107,7 @@ describe("expandModelCandidates", () => {
 
 describe("resolveAgentModelChain", () => {
   it("behavior preservation: bundled agents + DEFAULT_ROLES equal today's chains", () => {
-    const rolesCfg: RolesConfig = { roles: structuredClone(DEFAULT_ROLES), agentModels: {} };
+    const rolesCfg: RolesConfig = { roles: structuredClone(DEFAULT_ROLES), agentModels: {}, agentThinking: {} };
     const discovery = discoverAgents(os.tmpdir(), "user", BUNDLED_DIR);
     const byName = new Map(discovery.agents.map((a) => [a.name, a]));
 
@@ -136,7 +136,7 @@ describe("resolveAgentModelChain", () => {
   });
 
   it("agentModels override replaces the whole candidate list", () => {
-    const rolesCfg: RolesConfig = { roles: structuredClone(DEFAULT_ROLES), agentModels: { scout: "a/custom" } };
+    const rolesCfg: RolesConfig = { roles: structuredClone(DEFAULT_ROLES), agentModels: { scout: "a/custom" }, agentThinking: {} };
     const agent: Pick<AgentConfig, "name" | "model" | "models"> = { name: "scout", model: "@fast", models: [] };
     const chain = resolveAgentModelChain(agent, rolesCfg);
     assert.deepEqual(chain.candidates, ["a/custom"]);
@@ -144,7 +144,7 @@ describe("resolveAgentModelChain", () => {
   });
 
   it("agentModels override may reference a role with :thinking", () => {
-    const rolesCfg: RolesConfig = { roles: structuredClone(DEFAULT_ROLES), agentModels: { reviewer: "@smart:high" } };
+    const rolesCfg: RolesConfig = { roles: structuredClone(DEFAULT_ROLES), agentModels: { reviewer: "@smart:high" }, agentThinking: {} };
     const agent: Pick<AgentConfig, "name" | "model" | "models"> = { name: "reviewer", model: "@smart", models: [] };
     const chain = resolveAgentModelChain(agent, rolesCfg);
     assert.deepEqual(chain.candidates, ["zai-coding-cn/glm-5.3", "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", "opencode-go/deepseek-v4-pro"]);
@@ -152,7 +152,7 @@ describe("resolveAgentModelChain", () => {
   });
 
   it("no candidates → parent fallback (empty list)", () => {
-    const rolesCfg: RolesConfig = { roles: structuredClone(DEFAULT_ROLES), agentModels: { scout: "*" } };
+    const rolesCfg: RolesConfig = { roles: structuredClone(DEFAULT_ROLES), agentModels: { scout: "*" }, agentThinking: {} };
     const agent: Pick<AgentConfig, "name" | "model" | "models"> = { name: "scout", model: "@fast", models: [] };
     assert.deepEqual(resolveAgentModelChain(agent, rolesCfg).candidates, []);
   });
@@ -202,6 +202,24 @@ describe("readSubagentRoles settings layering", () => {
     const cfg = readSubagentRoles();
     assert.deepEqual(cfg.roles, DEFAULT_ROLES);
     assert.deepEqual(cfg.agentModels, {});
+  });
+
+  it("reads valid agentThinking entries and drops invalid ones", () => {
+    writeFileSync(path.join(tmpHome, "settings.json"), JSON.stringify({
+      subagent: { agentThinking: { reviewer: "high", junk: "nope" } },
+    }));
+    const cfg = readSubagentRoles();
+    assert.equal(cfg.agentThinking.reviewer, "high");
+    assert.equal(cfg.agentThinking.junk, undefined);
+  });
+
+  it("effectiveAgentThinking: settings override beats frontmatter", async () => {
+    const { effectiveAgentThinking } = await import("../roles.ts");
+    const agent = { name: "planner", thinking: "high" as const };
+    assert.equal(effectiveAgentThinking(agent, { agentThinking: {} }), "high");
+    assert.equal(effectiveAgentThinking(agent, { agentThinking: { planner: "low" } }), "low");
+    assert.equal(effectiveAgentThinking({ name: "x", thinking: undefined }, { agentThinking: { x: "medium" } }), "medium");
+    assert.equal(effectiveAgentThinking({ name: "x", thinking: undefined }, { agentThinking: {} }), undefined);
   });
 
   it("untrusted repo .pi/settings.json is ignored", () => {
@@ -254,7 +272,7 @@ describe("roles panel", () => {
   ];
 
   it("buildRolesPanelCfg defaults render blank (= default chain)", () => {
-    const cfg = buildRolesPanelCfg(agents, { roles: structuredClone(DEFAULT_ROLES), agentModels: {} });
+    const cfg = buildRolesPanelCfg(agents, { roles: structuredClone(DEFAULT_ROLES), agentModels: {}, agentThinking: {} });
     assert.equal(cfg.roles.fast, "");
     assert.equal(cfg.roles.coder, "");
     assert.equal(cfg.agentModels.scout, "");
@@ -263,7 +281,7 @@ describe("roles panel", () => {
   it("explicit overrides render as comma chains", () => {
     const current: RolesConfig = {
       roles: { ...structuredClone(DEFAULT_ROLES), fast: ["a/one", "a/two"] },
-      agentModels: { scout: "a/custom" },
+      agentModels: { scout: "a/custom" }, agentThinking: {},
     };
     const cfg = buildRolesPanelCfg(agents, current);
     assert.equal(cfg.roles.fast, "a/one, a/two");
@@ -271,7 +289,7 @@ describe("roles panel", () => {
   });
 
   it("cfgToPatch drops blanks and parses comma chains", () => {
-    const cfg = buildRolesPanelCfg(agents, { roles: structuredClone(DEFAULT_ROLES), agentModels: {} });
+    const cfg = buildRolesPanelCfg(agents, { roles: structuredClone(DEFAULT_ROLES), agentModels: {}, agentThinking: {} });
     cfg.roles.fast = "a/one, a/two";
     cfg.roles.coder = "";
     cfg.agentModels.scout = "a/custom";
@@ -282,7 +300,7 @@ describe("roles panel", () => {
   });
 
   it("single model without comma stays a string", () => {
-    const cfg = buildRolesPanelCfg(agents, { roles: structuredClone(DEFAULT_ROLES), agentModels: {} });
+    const cfg = buildRolesPanelCfg(agents, { roles: structuredClone(DEFAULT_ROLES), agentModels: {}, agentThinking: {} });
     cfg.roles.fast = "nvidia/openai/gpt-oss-20b";
     assert.deepEqual(cfgToPatch(cfg).roles, { fast: "nvidia/openai/gpt-oss-20b" });
   });
@@ -297,20 +315,47 @@ describe("roles panel", () => {
     assert.deepEqual(preserved, { scout: "a/custom", worker: "kept", ghost: "also-kept" });
   });
 
-  it("buildRows produces role + agent groups", () => {
-    const cfg = buildRolesPanelCfg(agents, { roles: structuredClone(DEFAULT_ROLES), agentModels: {} });
+  it("buildRows produces role + agent + thinking groups", () => {
+    const cfg = buildRolesPanelCfg(agents, { roles: structuredClone(DEFAULT_ROLES), agentModels: {}, agentThinking: {} });
     const groups = buildRows(cfg, agents);
-    assert.equal(groups.length, 2);
+    assert.equal(groups.length, 3);
     assert.ok(groups[0].rows.some((r) => r.key === "role.fast"));
     assert.ok(groups[1].rows.some((r) => r.key === "agent.scout"));
+    assert.ok(groups[2].rows.some((r) => r.key === "agentThinking.scout"));
     // setter mutates cfg
     const fastRow = groups[0].rows.find((r) => r.key === "role.fast")!;
     fastRow.set("a/x, a/y");
     assert.equal(cfg.roles.fast, "a/x, a/y");
   });
 
+  it("thinking rows round-trip through cfgToPatch; blanks and invalid drop", async () => {
+    const { invalidAgentThinking } = await import("../roles-panel.ts");
+    const cfg = buildRolesPanelCfg(agents, { roles: structuredClone(DEFAULT_ROLES), agentModels: {}, agentThinking: {} });
+    const groups = buildRows(cfg, agents);
+    const scoutRow = groups[2].rows.find((r) => r.key === "agentThinking.scout")!;
+    scoutRow.set("high");
+    const workerRow = groups[2].rows.find((r) => r.key === "agentThinking.worker")!;
+    workerRow.set("hgh"); // typo — dropped by cfgToPatch, reported by invalidAgentThinking
+    const patch = cfgToPatch(cfg);
+    assert.equal(patch.agentThinking.scout, "high");
+    assert.equal(patch.agentThinking.worker, undefined);
+    assert.deepEqual(invalidAgentThinking(cfg), ["worker"]);
+    workerRow.set("");
+    assert.deepEqual(invalidAgentThinking(cfg), []);
+    assert.deepEqual(cfgToPatch(cfg).agentThinking, { scout: "high" });
+  });
+
+  it("preserveUnknownAgentModels also preserves agentThinking for undiscovered agents", () => {
+    const preserved = preserveUnknownAgentModels(
+      { scout: "high" },
+      ["scout"],
+      { scout: "low", ghost: "medium" },
+    );
+    assert.deepEqual(preserved, { scout: "high", ghost: "medium" });
+  });
+
   it("agent row labels show the default chain when effectiveRoles provided", () => {
-    const cfg = buildRolesPanelCfg(agents, { roles: structuredClone(DEFAULT_ROLES), agentModels: {} });
+    const cfg = buildRolesPanelCfg(agents, { roles: structuredClone(DEFAULT_ROLES), agentModels: {}, agentThinking: {} });
     const groups = buildRows(cfg, agents, { models: () => [], roles: () => [], effectiveRoles: DEFAULT_ROLES });
     const scout = groups[1].rows.find((r) => r.key === "agent.scout")!;
     assert.ok(scout.label.includes("@fast"), `expected @fast alias in label, got: ${scout.label}`);
@@ -322,7 +367,7 @@ describe("roles panel", () => {
   });
 
   it("buildRows appends add/remove action rows when actions provided", () => {
-    const cfg = buildRolesPanelCfg(agents, { roles: structuredClone(DEFAULT_ROLES), agentModels: {} });
+    const cfg = buildRolesPanelCfg(agents, { roles: structuredClone(DEFAULT_ROLES), agentModels: {}, agentThinking: {} });
     const actions = {
       addRole: { label: "Add role", run: () => {} },
       removeRole: { label: "Remove role", run: () => {} },
@@ -362,7 +407,7 @@ describe("roles panel", () => {
   });
 
   it("removeRoleFromCfg resets built-ins and deletes customs", () => {
-    const cfg = buildRolesPanelCfg([], { roles: { ...structuredClone(DEFAULT_ROLES), writer: ["a/one"] }, agentModels: {} });
+    const cfg = buildRolesPanelCfg([], { roles: { ...structuredClone(DEFAULT_ROLES), writer: ["a/one"] }, agentModels: {}, agentThinking: {} });
     assert.equal(removeRoleFromCfg(cfg, "fast"), "reset");
     assert.equal(cfg.roles.fast, "");
     assert.equal(removeRoleFromCfg(cfg, "WRITER"), "deleted");
@@ -372,7 +417,7 @@ describe("roles panel", () => {
 
   it("addRole action validates and mutates the working config", async () => {
     // full flow: name prompt then chain prompt
-    const cfg = buildRolesPanelCfg([], { roles: structuredClone(DEFAULT_ROLES), agentModels: {} });
+    const cfg = buildRolesPanelCfg([], { roles: structuredClone(DEFAULT_ROLES), agentModels: {}, agentThinking: {} });
     const add = makeAddRoleAction(cfg, {});
     let step = 0;
     await add.run((_label, onDone) => { step += 1; onDone(step === 1 ? "writer" : "a/one, a/two"); });
@@ -380,20 +425,20 @@ describe("roles panel", () => {
 
     // case-insensitive duplicate name aborts with a notify
     const notes: string[] = [];
-    const cfg2 = buildRolesPanelCfg([], { roles: structuredClone(DEFAULT_ROLES), agentModels: {} });
+    const cfg2 = buildRolesPanelCfg([], { roles: structuredClone(DEFAULT_ROLES), agentModels: {}, agentThinking: {} });
     const add2 = makeAddRoleAction(cfg2, { notify: (m) => notes.push(m) });
     await add2.run((_label, onDone) => onDone("FAST"));
     assert.ok(!("FAST" in cfg2.roles) && cfg2.roles.fast === "");
     assert.ok(notes.some((n) => n.includes("already exists")));
 
     // invalid name aborts
-    const cfg3 = buildRolesPanelCfg([], { roles: structuredClone(DEFAULT_ROLES), agentModels: {} });
+    const cfg3 = buildRolesPanelCfg([], { roles: structuredClone(DEFAULT_ROLES), agentModels: {}, agentThinking: {} });
     const add3 = makeAddRoleAction(cfg3, {});
     await add3.run((_label, onDone) => onDone("has space"));
     assert.ok(!("has space" in cfg3.roles));
 
     // blank chain aborts
-    const cfg4 = buildRolesPanelCfg([], { roles: structuredClone(DEFAULT_ROLES), agentModels: {} });
+    const cfg4 = buildRolesPanelCfg([], { roles: structuredClone(DEFAULT_ROLES), agentModels: {}, agentThinking: {} });
     const add4 = makeAddRoleAction(cfg4, {});
     let step4 = 0;
     await add4.run((_label, onDone) => { step4 += 1; onDone(step4 === 1 ? "writer" : ""); });
@@ -401,7 +446,7 @@ describe("roles panel", () => {
   });
 
   it("removeRole action resets built-ins via removeRoleFromCfg", async () => {
-    const cfg = buildRolesPanelCfg([], { roles: structuredClone(DEFAULT_ROLES), agentModels: {} });
+    const cfg = buildRolesPanelCfg([], { roles: structuredClone(DEFAULT_ROLES), agentModels: {}, agentThinking: {} });
     const notes: string[] = [];
     const remove = makeRemoveRoleAction(cfg, { notify: (m) => notes.push(m) });
     await remove.run((label, onDone) => onDone("fast"));
@@ -457,10 +502,10 @@ describe("writeSubagentSection persistence", () => {
 
   it("creates the file when missing and drops an emptied subagent", async () => {
     const { writeSubagentSection } = await import("../roles-panel.ts");
-    assert.equal(writeSubagentSection({ roles: { fast: ["a/x"] }, agentModels: {} }), true);
+    assert.equal(writeSubagentSection({ roles: { fast: ["a/x"] }, agentModels: {}, agentThinking: {} }), true);
     const created = JSON.parse(readFileSync(path.join(tmpHome, "settings.json"), "utf8"));
     assert.deepEqual(created.subagent.roles.fast, ["a/x"]);
-    writeSubagentSection({ roles: {}, agentModels: {} });
+    writeSubagentSection({ roles: {}, agentModels: {}, agentThinking: {} });
     const after = JSON.parse(readFileSync(path.join(tmpHome, "settings.json"), "utf8"));
     assert.equal(after.subagent, undefined);
   });
@@ -483,9 +528,9 @@ describe("writeSubagentSection persistence", () => {
     const { writeSubagentSection } = await import("../roles-panel.ts");
     writeFileSync(path.join(tmpHome, "settings.json"), JSON.stringify({
       theme: "dark",
-      subagent: { roles: { fast: ["a/x"] }, agentModels: {}, maxTurns: 20 },
+      subagent: { roles: { fast: ["a/x"] }, agentModels: {}, agentThinking: {}, maxTurns: 20 },
     }));
-    writeSubagentSection({ roles: {}, agentModels: {} });
+    writeSubagentSection({ roles: {}, agentModels: {}, agentThinking: {} });
     const after = JSON.parse(readFileSync(path.join(tmpHome, "settings.json"), "utf8"));
     assert.equal(after.theme, "dark");
     assert.equal(after.subagent.maxTurns, 20);

@@ -25,7 +25,7 @@ interface CompletionItem {
 }
 import type { AgentConfig } from "./agents.ts";
 import { getModelCandidates } from "./agents.ts";
-import { DEFAULT_ROLES, readSubagentRoles, resolveAgentModelChain, type RoleMap, type RolesConfig } from "./roles.ts";
+import { DEFAULT_ROLES, readSubagentRoles, resolveAgentModelChain, THINKING_LEVELS, type RoleMap, type RolesConfig, type SubagentThinkingLevel } from "./roles.ts";
 
 // ---------------------------------------------------------------------------
 // Settings persistence (global only — repo .pi/settings.json is read-only)
@@ -59,17 +59,20 @@ function readSettingsJson(): Record<string, unknown> | null {
  *  Writes a temp file then renames (atomic); never touches other keys.
  *  Throws if the existing settings.json is corrupt (the file is left intact).
  *  Returns false when nothing changes. */
-export function writeSubagentSection(patch: { roles?: RolesConfig["roles"]; agentModels?: RolesConfig["agentModels"] }): boolean {
+export function writeSubagentSection(patch: { roles?: RolesConfig["roles"]; agentModels?: RolesConfig["agentModels"]; agentThinking?: RolesConfig["agentThinking"] }): boolean {
   const settings = readSettingsJson() ?? {};
   const existing = (settings.subagent ?? {}) as Record<string, unknown>;
   const subagent = { ...existing };
   if (patch.roles !== undefined) subagent.roles = patch.roles;
   if (patch.agentModels !== undefined) subagent.agentModels = patch.agentModels;
+  if (patch.agentThinking !== undefined) subagent.agentThinking = patch.agentThinking;
   if (JSON.stringify(subagent) === JSON.stringify(existing)) return false;
   const rolesEmpty = subagent.roles === undefined || (typeof subagent.roles === "object" && Object.keys(subagent.roles as object).length === 0);
   const modelsEmpty = subagent.agentModels === undefined || (typeof subagent.agentModels === "object" && Object.keys(subagent.agentModels as object).length === 0);
+  const thinkingEmpty = subagent.agentThinking === undefined || (typeof subagent.agentThinking === "object" && Object.keys(subagent.agentThinking as object).length === 0);
   if (rolesEmpty) delete subagent.roles;
   if (modelsEmpty) delete subagent.agentModels;
+  if (thinkingEmpty) delete subagent.agentThinking;
   // Preserve any unrelated subagent.* keys (forward compat); drop the section
   // only when roles/agentModels were the only content.
   if (Object.keys(subagent).length === 0) delete settings.subagent;
@@ -91,6 +94,8 @@ export interface RolesPanelCfg {
   roles: Record<string, string>;
   /** Working copy: agent name → override selector ("" = inherit). */
   agentModels: Record<string, string>;
+  /** Working copy: agent name → thinking level ("" = agent file default). */
+  agentThinking: Record<string, string>;
 }
 
 /** Completion sources for the panel's model rows (lazy — resolved per keypress). */
@@ -107,7 +112,7 @@ export interface RolesPanelOptions {
 /** Seed a working config from current effective settings + bundled agents. */
 export function buildRolesPanelCfg(agents: AgentConfig[], current: RolesConfig): RolesPanelCfg {
   const roleNames = new Set([...Object.keys(DEFAULT_ROLES), ...Object.keys(current.roles)]);
-  const cfg: RolesPanelCfg = { roles: {}, agentModels: {} };
+  const cfg: RolesPanelCfg = { roles: {}, agentModels: {}, agentThinking: {} };
   for (const name of roleNames) {
     // Only show explicitly-configured values; defaults render blank (= default).
     const explicit = (current.roles[name] !== undefined && JSON.stringify(current.roles[name]) !== JSON.stringify(DEFAULT_ROLES[name]))
@@ -116,6 +121,7 @@ export function buildRolesPanelCfg(agents: AgentConfig[], current: RolesConfig):
     cfg.roles[name] = explicit;
   }
   for (const agent of agents) cfg.agentModels[agent.name] = current.agentModels[agent.name] ?? "";
+  for (const agent of agents) cfg.agentThinking[agent.name] = current.agentThinking[agent.name] ?? "";
   return cfg;
 }
 
@@ -126,7 +132,7 @@ export function defaultChainLabel(
 ): string {
   const raw = getModelCandidates(agent);
   const alias = raw.filter((m) => m.startsWith("@")).join(", ");
-  const { candidates } = resolveAgentModelChain(agent, { roles, agentModels: {} });
+  const { candidates } = resolveAgentModelChain(agent, { roles, agentModels: {}, agentThinking: {} });
   const chain = candidates.length > 0 ? candidates.join(", ") : "parent fallback";
   // alias is @-prefixed, candidates are expanded model ids — never equal.
   return alias ? `default: ${alias} → ${chain}` : `default: ${chain}`;
@@ -174,14 +180,27 @@ export function buildRows(
     actionRows.push({ key: "action.removeRole", label: "− Remove role", kind: "action", value: undefined, set: (p) => actions.removeRole!.run(p as never) });
   }
   return [
-    { key: "roles", label: "Model roles (chain, blank = default)", rows: [...roleRows, ...actionRows] },
+    { key: "roles", label: "Model roles (entry may end :level; blank = default)", rows: [...roleRows, ...actionRows] },
     { key: "agents", label: "Per-agent overrides (blank = inherit)", rows: agentRows },
+    {
+      key: "agentThinking",
+      label: "Per-agent thinking (blank = file default)",
+      rows: agents.map((agent) =>
+        row(`agentThinking.${agent.name}`, agent.name, "string", cfg.agentThinking[agent.name] ?? "", (v) => {
+          const value = String(v ?? "").trim();
+          if (value) cfg.agentThinking[agent.name] = value;
+          else delete cfg.agentThinking[agent.name];
+        }, withCompletions(() => THINKING_LEVELS.map((level) => ({ value: level })))),
+      ),
+    },
   ];
 }
 
 /** Convert a working config back to a settings patch. Blank values drop keys
- *  (role falls back to default; agent override is removed). */
-export function cfgToPatch(cfg: RolesPanelCfg): { roles: RolesConfig["roles"]; agentModels: RolesConfig["agentModels"] } {
+ *  (role falls back to default; agent override is removed). Invalid thinking
+ *  values are dropped too — `invalidAgentThinking` reports them for the save
+ *  notification. */
+export function cfgToPatch(cfg: RolesPanelCfg): { roles: RolesConfig["roles"]; agentModels: RolesConfig["agentModels"]; agentThinking: RolesConfig["agentThinking"] } {
   const roles: RolesConfig["roles"] = {};
   for (const [name, chain] of Object.entries(cfg.roles)) {
     const trimmed = chain.trim();
@@ -193,7 +212,23 @@ export function cfgToPatch(cfg: RolesPanelCfg): { roles: RolesConfig["roles"]; a
     const trimmed = value.trim();
     if (trimmed) agentModels[name] = trimmed;
   }
-  return { roles, agentModels };
+  const agentThinking: RolesConfig["agentThinking"] = {};
+  for (const [name, value] of Object.entries(cfg.agentThinking)) {
+    const trimmed = value.trim();
+    if (THINKING_LEVELS.includes(trimmed)) agentThinking[name] = trimmed as SubagentThinkingLevel;
+  }
+  return { roles, agentModels, agentThinking };
+}
+
+/** Agent names whose working-copy thinking value is non-blank but not a valid
+ *  level (typo guard — cfgToPatch drops them). Empty when all values are OK. */
+export function invalidAgentThinking(cfg: RolesPanelCfg): string[] {
+  return Object.entries(cfg.agentThinking)
+    .filter(([, value]) => {
+      const trimmed = value.trim();
+      return trimmed !== "" && !THINKING_LEVELS.includes(trimmed);
+    })
+    .map(([name]) => name);
 }
 
 /** Validate a new role name; returns an error message or null when OK. */
@@ -280,16 +315,17 @@ export function makeRemoveRoleAction(cfg: RolesPanelCfg, opts: RoleActionOpts = 
 
 /** Keep overrides for agents NOT shown in the panel (e.g. overrides for
  *  project-local agents saved globally from another project) so a panel save
- *  doesn't wipe them. Discovered-agent entries always follow the panel. */
-export function preserveUnknownAgentModels(
-  patch: RolesConfig["agentModels"],
+ *  doesn't wipe them. Discovered-agent entries always follow the panel.
+ *  Generic over the value type so it also preserves `agentThinking`. */
+export function preserveUnknownAgentModels<T extends Record<string, string>>(
+  patch: T,
   discoveredNames: readonly string[],
-  existing: RolesConfig["agentModels"] | undefined,
-): RolesConfig["agentModels"] {
+  existing: T | undefined,
+): T {
   if (!existing) return patch;
-  const out = { ...patch };
+  const out: Record<string, string> = { ...patch };
   for (const [name, value] of Object.entries(existing)) {
     if (!discoveredNames.includes(name) && out[name] === undefined) out[name] = value;
   }
-  return out;
+  return out as T;
 }

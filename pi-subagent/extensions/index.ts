@@ -64,7 +64,7 @@ import {
 import { type SubagentThread, threadStore } from "./threads.ts";
 import { SUBAGENT_REQUEST_EVENT, runNamedAgent, type SubagentRunRequest } from "./service.ts";
 import { resolveModel, runWithModelFallback } from "./model.ts";
-import { DEFAULT_ROLES, describeAgentModels, readSubagentRoles, readSubagentRolesGlobal, resolveAgentModelChain, type RolesConfig } from "./roles.ts";
+import { DEFAULT_ROLES, describeAgentModels, effectiveAgentThinking, readSubagentRoles, readSubagentRolesGlobal, resolveAgentModelChain, type RolesConfig } from "./roles.ts";
 import {
   createAutoReviewState,
   handleAutoReviewSettle,
@@ -282,7 +282,7 @@ export default function (pi: ExtensionAPI) {
     const catalog = catalogAgents
       .map((agent) => {
         const modelInfo = ` (models: ${describeAgentModels(agent, rolesCfg)})`;
-        const thinkingInfo = agent.thinking ? `, thinking: ${agent.thinking}` : "";
+        const thinkingInfo = effectiveAgentThinking(agent, rolesCfg) ? `, thinking: ${effectiveAgentThinking(agent, rolesCfg)}` : "";
         const sandboxInfo = agent.sandbox ? `, sandbox: ${agent.sandbox}` : "";
         // ponytail: one-line inheritance hint; the model picks agents by description, this just sets expectations.
         const toolsInfo = agent.tools ? `, tools: ${agent.tools.join(", ")}` : ", tools: inherits all parent tools";
@@ -450,7 +450,7 @@ export default function (pi: ExtensionAPI) {
 
       const openRolesEditor = async (): Promise<void> => {
         // Role mapping editor: panel in TUI, plain text otherwise.
-        const [{ openConfigPanel }, { buildRows, buildRolesPanelCfg, cfgToPatch, makeAddRoleAction, makeRemoveRoleAction, preserveUnknownAgentModels, writeSubagentSection }] = await Promise.all([
+        const [{ openConfigPanel }, { buildRows, buildRolesPanelCfg, cfgToPatch, invalidAgentThinking, makeAddRoleAction, makeRemoveRoleAction, preserveUnknownAgentModels, writeSubagentSection }] = await Promise.all([
           import("@bacnh85/pi-config-panel"),
           import("./roles-panel.ts"),
         ]);
@@ -475,7 +475,7 @@ export default function (pi: ExtensionAPI) {
         const working = buildRolesPanelCfg(discovery.agents, current);
         // Actions (add/remove role) set model.dirty but not editedKeys — guard
         // the save on a working-copy diff instead (pi-a2a pattern).
-        const before = JSON.stringify([working.roles, working.agentModels]);
+        const before = JSON.stringify([working.roles, working.agentModels, working.agentThinking]);
         const notify = (message: string, kind?: "info" | "warning" | "error") => ctx.ui.notify(message, kind ?? "info");
         const panelOptions = {
           models: () => {
@@ -497,12 +497,21 @@ export default function (pi: ExtensionAPI) {
           build: (cfg, panelActions) => buildRows(cfg, discovery.agents, panelOptions, panelActions),
           title: "Subagent model roles",
           onSave: (saved) => {
-            if (!saved || JSON.stringify([working.roles, working.agentModels]) === before) return;
+            if (!saved || JSON.stringify([working.roles, working.agentModels, working.agentThinking]) === before) return;
+            const invalid = invalidAgentThinking(working);
+            if (invalid.length > 0) {
+              ctx.ui.notify(`Dropped invalid thinking for: ${invalid.join(", ")} (valid: off…max).`, "warning");
+            }
             const patch = cfgToPatch(working);
             patch.agentModels = preserveUnknownAgentModels(
               patch.agentModels,
               discovery.agents.map((a) => a.name),
               current.agentModels,
+            );
+            patch.agentThinking = preserveUnknownAgentModels(
+              patch.agentThinking,
+              discovery.agents.map((a) => a.name),
+              current.agentThinking,
             );
             try {
               writeSubagentSection(patch);
@@ -604,7 +613,7 @@ export default function (pi: ExtensionAPI) {
             `Agent: ${agent.name} (${agent.source})`,
             `Description: ${agent.description}`,
             `Models: ${describeAgentModels(agent, rolesCfg)}`,
-            `Thinking: ${agent.thinking || "off"}`,
+            `Thinking: ${effectiveAgentThinking(agent, rolesCfg) || "off"}${rolesCfg.agentThinking[agent.name] ? " (settings override)" : ""}`,
             `Tools: ${agent.tools?.join(", ") || "all default"}`,
             `Source file: ${agent.filePath}`,
             "",
@@ -1052,7 +1061,7 @@ export default function (pi: ExtensionAPI) {
             task,
             cwd: safe.path,
             model: `${resolved.model.provider}/${resolved.model.id}`,
-            thinking: resolved.matchedThinking ?? agent.thinking,
+            thinking: agentChain.thinkingByCandidate.get(resolved.matchedCandidate ?? "") ?? effectiveAgentThinking(agent, rolesCfg),
             tools: agent.tools,
             readOnly: agent.sandbox === "read-only",
             timeoutMs: hardTimeoutMs,
@@ -1210,7 +1219,7 @@ export default function (pi: ExtensionAPI) {
             parentModel: ctx.model,
             modelRegistry: ctx.modelRegistry,
             thinkingByCandidate: agentChain.thinkingByCandidate,
-            defaultThinking: agent.thinking,
+            defaultThinking: effectiveAgentThinking(agent, rolesCfg),
             runAttempt: (model, thinkingLevel) =>
               runSubAgent({
                 cwd: safeCwd,

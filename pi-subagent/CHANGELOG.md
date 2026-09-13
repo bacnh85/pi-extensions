@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.22.0 (2026-09-13)
+
+### Added
+
+- **`subagent.agentThinking`** — per-agent thinking override in
+  `~/.pi/agent/settings.json` (repo overlay honored). Precedence: a matched
+  candidate's `:level` suffix wins, then `agentThinking`, then the agent
+  file's frontmatter `thinking`. Applies to SDK, service, and herdr dispatch
+  paths.
+- **`/subagent` panel thinking rows** — one thinking row per agent (blank =
+  file default) with level completions; invalid values are dropped with a
+  save notification. `/subagent <name>` details show the effective thinking
+  (with an override marker), and chains render per-candidate `:level` pins.
+
+### Fixed
+
+- herdr dispatch now honors a matched candidate's `:level` pin — the pane
+  task previously always used the agent's default thinking because
+  `resolveModel` receives pre-stripped candidates (so its `matchedThinking`
+  was never set); the pin is now read from the chain's `thinkingByCandidate`
+  map, matching the SDK and service paths (auto-review caught this gap
+  against the Added bullet above).
+
 ## 0.21.4 (2026-09-13)
 
 ### Fixed

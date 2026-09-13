@@ -16,7 +16,8 @@ in `~/.pi/agent/settings.json` under `subagent.roles`:
       "coder": "zai-coding-cn/glm-5.1, opencode-go/deepseek-v4-flash",
       "smart": "*"
     },
-    "agentModels": { "reviewer": "@smart:high" }
+    "agentModels": { "reviewer": "@smart:high" },
+    "agentThinking": { "reviewer": "low" }
   }
 }
 ```
@@ -30,15 +31,19 @@ in `~/.pi/agent/settings.json` under `subagent.roles`:
 - `subagent.agentModels` overrides a single agent's models without editing its
   file. Repo `.pi/settings.json` overlays the global mapping when the project
   is trusted (read-only; saves go to the global file).
+- `subagent.agentThinking` overrides a single agent's thinking without
+  editing its file. Precedence: matched candidate's `:level` suffix →
+  `agentThinking` → agent frontmatter `thinking`.
 - Without any settings, bundled defaults reproduce today's chains exactly.
 
 `/subagent` opens the interactive role editor (TUI panel via the shared
 `@bacnh85/pi-config-panel` kernel; prints the effective mapping headless).
 The panel supports `+ Add role` / `− Remove role` (custom roles are deletable,
 built-ins reset to their bundled default) and shows each agent's default
-(no-override) chain on its row. `/subagent list` lists agents,
-`/subagent <name>` shows an agent's resolved chain, and `/subagent @role`
-(or `/subagent fast`) shows a role's chain and the agents using it.
+(no-override) chain on its row, plus a thinking row per agent (blank = file
+default). `/subagent list` lists agents, `/subagent <name>` shows an agent's
+resolved chain and effective thinking, and `/subagent @role` (or
+`/subagent fast`) shows a role's chain and the agents using it.
 
 ## Live progress widget
 

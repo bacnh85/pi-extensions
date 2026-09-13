@@ -212,6 +212,26 @@ describe("herdr index-level integration", () => {
     assert.ok(!promptCall.args[3]!.includes("ro-1-"));
   });
 
+  it("herdr children inherit a matched candidate's :level pin", async () => {
+    process.env.HERDR_ENV = "1";
+    process.env.HERDR_WORKSPACE_ID = "w1";
+    writeAgent(cwd, "name: pin\ndescription: pin agent\nmodel: \"@smart\"");
+    const { exec, calls } = dispatchExec();
+    herdrCli.exec = exec;
+    const result = await tools.subagent!.execute(
+      "t1", { agent: "pin", task: "t", runner: "herdr", agentScope: "both" },
+      undefined, undefined, fakeCtx(cwd, { subagent: { roles: { smart: ["test/m:high"] } }, allowUnconfirmedProjectAgents: true }),
+    );
+    const details = result.details as { results: Array<{ status?: string }> };
+    assert.equal(details.results[0]?.status, "success");
+    // Drop the thinkingByCandidate lookup in prepareHerdrOne and --thinking
+    // disappears (the agent has no frontmatter thinking to fall back to).
+    const start = calls.find((c) => c.args[1] === "start");
+    assert.ok(start, "agent start issued");
+    const i = start.args.indexOf("--thinking");
+    assert.ok(i >= 0 && start.args[i + 1] === "high", `expected --thinking high, got: ${start.args.join(" ")}`);
+  });
+
   it("status of an evicted task falls back to durable history", async () => {
     const { exec } = fakeExec(() => undefined);
     herdrCli.exec = exec;

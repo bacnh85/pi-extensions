@@ -2,7 +2,7 @@ import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type AgentConfig } from "./agents.ts";
 import { runSubAgent, type SubAgentProgress, type SubAgentResult } from "./runner.ts";
 import { resolveModel, runWithModelFallback } from "./model.ts";
-import { readSubagentRoles, resolveAgentModelChain } from "./roles.ts";
+import { effectiveAgentThinking, readSubagentRoles, resolveAgentModelChain } from "./roles.ts";
 import {
   isRateLimitError,
   validateAgentTools,
@@ -109,7 +109,7 @@ export async function runNamedAgent(options: {
     parentModel: options.ctx.model,
     modelRegistry: options.ctx.modelRegistry,
     thinkingByCandidate: agentChain.thinkingByCandidate,
-    defaultThinking: options.agent.thinking,
+    defaultThinking: effectiveAgentThinking(options.agent, rolesCfg),
     runAttempt: (model, thinkingLevel) =>
       runSubAgent({
         cwd: safeCwd.path,
