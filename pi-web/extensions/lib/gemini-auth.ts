@@ -51,7 +51,8 @@ export type PostFn = (
 // ---------------------------------------------------------------------------
 
 export function defaultStorePath(): string {
-  return process.env.GEMINI_WEB_COOKIE_STORE || path.join(os.homedir(), ".pi", "agent", "gemini-web-cookies.json");
+  // findEnvValue honors process env + .env files like every sibling setting.
+  return findEnvValue("GEMINI_WEB_COOKIE_STORE").value || path.join(os.homedir(), ".pi", "agent", "gemini-web-cookies.json");
 }
 
 export function loadCookieStore(storePath: string = defaultStorePath()): CookieStoreEntry | null {
@@ -68,7 +69,9 @@ export function loadCookieStore(storePath: string = defaultStorePath()): CookieS
 
 export function saveCookieStore(entry: CookieStoreEntry, storePath: string = defaultStorePath()): void {
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
-  fs.writeFileSync(storePath, JSON.stringify(entry, null, 2));
+  // mode at creation — no world-readable window before the chmod (which stays
+  // for rewrites of pre-existing files whose mode may have drifted).
+  fs.writeFileSync(storePath, JSON.stringify(entry, null, 2), { mode: 0o600 });
   fs.chmodSync(storePath, 0o600);
 }
 
@@ -158,10 +161,13 @@ export async function rotateCookies(opts: {
     });
     const fresh = extractSetCookie(res.setCookie, "__Secure-1PSIDTS");
     if (fresh) return { ok: true, psidts: fresh };
-    if (res.status === 401 || res.status === 403) {
+    // Only definitive rejections prove the session dead (store cleared).
+    // 429/5xx/3xx/other are transient or ambiguous — keep the store, like
+    // transport errors.
+    if (res.status === 400 || res.status === 401 || res.status === 403) {
       return { ok: false, stale: true, reason: `unauthorized (${res.status}) — session expired server-side` };
     }
-    return { ok: false, stale: true, reason: `no new __Secure-1PSIDTS in response (status ${res.status}) — the session may be DBSC-bound (Chrome-minted); harvest cookies from a fresh incognito login` };
+    return { ok: false, reason: `no new __Secure-1PSIDTS in response (status ${res.status}) — transient server response; store kept` };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };
   }

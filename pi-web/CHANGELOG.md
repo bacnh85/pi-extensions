@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.11.4 (2026-09-13)
+
+### Fixed
+
+- **Transient rotate failures no longer wipe the cookie store** (reviewer):
+  `stale` (store-clearing) is now reserved for definitive rejections
+  (400/401/403); 429/5xx/3xx/200-without-rotation keep the store like
+  transport errors. Regression-tested with a 503.
+- **Cookie store file is 0600 from creation** (reviewer): `writeFileSync`
+  mode, no world-readable window before the chmod.
+- **`http.request(url, options, cb)` 3-arg form preserved** (reviewer): the
+  header-cap monkeypatch no longer converts string/URL first args when an
+  options object follows — the cap merges into that object instead, so other
+  in-process extensions using that form are unaffected.
+- **`GEMINI_WEB_COOKIE_STORE` now resolves from `.env.local` files**
+  (reviewer) via `findEnvValue`, consistent with every other `GEMINI_WEB_*`
+  setting.
+
 ## 0.11.3 (2026-09-13)
 
 ### Changed

@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  applyHeaderCapArgs,
   extractSources,
   loadGeminiWebConfig,
   loadDefaultFactory,
@@ -115,6 +116,44 @@ describe("loadDefaultFactory 1PSIDTS injection", () => {
     const f = await loadDefaultFactory();
     const c = await f({ secure_1psid: "psid", secure_1psidts: "ts-value" });
     expect((c as unknown as { cookies: Record<string, string> }).cookies["__Secure-1PSIDTS"]).to.equal("ts-value");
+  });
+});
+
+describe("applyHeaderCapArgs (http.request 3-arg safety)", () => {
+  const CAP = 256 * 1024;
+
+  it("mutates the options-object form in place", () => {
+    const opts = { hostname: "gemini.google.com", path: "/x" };
+    const cb = () => {};
+    const out = applyHeaderCapArgs([opts, { method: "POST" }, cb]);
+    expect((opts as { maxHeaderSize?: number }).maxHeaderSize).to.equal(CAP);
+    expect(out[0]).to.equal(opts);
+  });
+
+  it("3-arg (url, options, cb): merges into the follow-on options and keeps the url", () => {
+    const follow: Record<string, unknown> = { method: "POST" };
+    const cb = () => {};
+    const url = "https://gemini.google.com/app";
+    const out = applyHeaderCapArgs([url, follow, cb]);
+    expect(follow.maxHeaderSize).to.equal(CAP);
+    expect(out[0]).to.equal(url);
+    expect(out[1]).to.equal(follow);
+    expect(out[2]).to.equal(cb);
+  });
+
+  it("2-arg (url, cb): replaces the url with options carrying the cap", () => {
+    const cb = () => {};
+    const out = applyHeaderCapArgs(["https://gemini.google.com/app", cb]);
+    expect((out[0] as { hostname?: string }).hostname).to.equal("gemini.google.com");
+    expect((out[0] as { maxHeaderSize?: number }).maxHeaderSize).to.equal(CAP);
+    expect(out[1]).to.equal(cb);
+  });
+
+  it("non-gemini hosts pass through untouched", () => {
+    const opts = { hostname: "example.com" };
+    const out = applyHeaderCapArgs([opts, () => {}]);
+    expect(opts).to.not.have.property("maxHeaderSize");
+    expect(out[0]).to.equal(opts);
   });
 });
 

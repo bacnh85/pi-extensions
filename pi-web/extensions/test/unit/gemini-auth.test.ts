@@ -78,6 +78,18 @@ describe("cookie store", () => {
     if (old === undefined) delete process.env.GEMINI_WEB_COOKIE_STORE;
     else process.env.GEMINI_WEB_COOKIE_STORE = old;
   });
+
+  it("also resolves GEMINI_WEB_COOKIE_STORE from env files", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-auth-env-"));
+    fs.writeFileSync(path.join(dir, ".env.local"), "GEMINI_WEB_COOKIE_STORE=/tmp/from-env-file.json\n");
+    const oldCwd = process.cwd();
+    process.chdir(dir);
+    try {
+      expect(defaultStorePath()).to.equal("/tmp/from-env-file.json");
+    } finally {
+      process.chdir(oldCwd);
+    }
+  });
 });
 
 describe("resolvePsidts", () => {
@@ -111,16 +123,22 @@ describe("rotateCookies", () => {
     expect(capture.opts?.headers.Cookie).to.equal("__Secure-1PSID=p1; __Secure-1PSIDTS=t1");
   });
 
-  it("works without a 1PSIDTS, flags unauthorized as stale, and missing TS as stale", async () => {
+  it("treats 400/401 as definitive but 200-no-TS and 5xx as non-stale", async () => {
     const r = await rotateCookies({ psid: "p1", post: okPost("f2") });
     expect(r.ok).to.equal(true);
     const u = await rotateCookies({ psid: "p1", post: unauthorizedPost() });
     expect(u.ok).to.equal(false);
     expect(u.stale).to.equal(true);
     expect(u.reason).to.match(/unauthorized/);
+    const bad = await rotateCookies({ psid: "p1", post: fakePost({ status: 400, setCookie: [] }) });
+    expect(bad.ok).to.equal(false);
+    expect(bad.stale).to.equal(true);
     const none = await rotateCookies({ psid: "p1", post: fakePost({ status: 200, setCookie: ["NID=x; Path=/"] }) });
     expect(none.ok).to.equal(false);
-    expect(none.stale).to.equal(true);
+    expect(none.stale).to.equal(undefined);
+    const boom = await rotateCookies({ psid: "p1", post: fakePost({ status: 503, setCookie: [] }) });
+    expect(boom.ok).to.equal(false);
+    expect(boom.stale).to.equal(undefined);
   });
 
   it("marks transport errors as NOT stale", async () => {
@@ -146,6 +164,11 @@ describe("refreshGeminiAuth", () => {
 
     saveCookieStore({ psid: "psid-test", psidts: "old", updatedAt: 1 }, p);
     await refreshGeminiAuth(config, { post: async () => { throw new Error("offline"); }, storePath: p });
+    expect(loadCookieStore(p)).to.deep.include({ psidts: "old" });
+
+    // transient 5xx must also keep the store (reviewer: stale is for definitive rejections only)
+    saveCookieStore({ psid: "psid-test", psidts: "old", updatedAt: 1 }, p);
+    await refreshGeminiAuth(config, { post: fakePost({ status: 503, setCookie: [] }), storePath: p });
     expect(loadCookieStore(p)).to.deep.include({ psidts: "old" });
   });
 

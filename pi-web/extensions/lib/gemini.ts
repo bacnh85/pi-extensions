@@ -110,18 +110,45 @@ export function injectGeminiHeaderCap(options: unknown): Record<string, unknown>
   return opts;
 }
 
+/** @internal exported for tests — returns the http.request args to forward with the cap applied */
+export function applyHeaderCapArgs(args: unknown[]): unknown[] {
+  const [options, ...rest] = args;
+  if (options && typeof options === "object" && !(options instanceof URL)) {
+    injectGeminiHeaderCap(options); // options-object form: mutate in place
+    return args;
+  }
+  if (typeof options === "string" || options instanceof URL) {
+    const parsed = urlToHttpOptions(options instanceof URL ? options : new URL(options)) as Record<string, unknown>;
+    if (String(parsed.hostname ?? "").split(":")[0] === "gemini.google.com") {
+      const follow = rest[0];
+      if (follow && typeof follow === "object" && typeof follow !== "function") {
+        // 3-arg request(url, options, cb): merge into the caller's options —
+        // replacing arg1 with a plain object would misbind Node's signature
+        // (the options object would be read as the callback). The follow-on
+        // object legitimately lacks hostname (Node merges it from the URL).
+        if (!(follow as Record<string, unknown>).maxHeaderSize) {
+          (follow as Record<string, unknown>).maxHeaderSize = 256 * 1024;
+        }
+        return args;
+      }
+      const opts = injectGeminiHeaderCap(options); // 2-arg (url, cb): (optionsObj, cb) is valid
+      if (opts) return [opts, ...rest];
+    }
+  }
+  return args;
+}
+
 let headerCapPatched = false;
 function patchHeaderCap(): void {
   if (headerCapPatched) return;
   headerCapPatched = true;
   for (const mod of [http, https]) {
     const real = mod.request as unknown as (...args: unknown[]) => unknown;
-    const patched = function (this: unknown, options: unknown, ...rest: unknown[]) {
+    const patched = function (this: unknown, ...args: unknown[]) {
       try {
-        const override = injectGeminiHeaderCap(options);
-        if (override) return real.call(this, override, ...rest);
+        args = applyHeaderCapArgs(args);
       } catch { /* malformed input — let the real request surface the error */ }
-      return real.call(this, options, ...rest);
+      return real.call(this, ...args);
     } as typeof mod.request;
     mod.request = patched;
   }
