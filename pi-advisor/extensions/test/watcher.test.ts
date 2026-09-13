@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { describe, it, beforeEach } from "mocha";
-import { createRuntime, reviewTurn, SYSTEM, type WatcherHost, type IsolatedCall } from "../lib/watcher";
+import { buildEvidence, createRuntime, reviewTurn, SYSTEM, type WatcherHost, type IsolatedCall } from "../lib/watcher";
 import type { AdvisorConfig } from "../lib/config";
 
 // Injectable fake isolated-model call — tests never hit a provider.
@@ -304,5 +304,28 @@ describe("cursor semantics", () => {
       "prompt must describe both steer and cooldown-deferred delivery");
     assert.ok(!/surfaced as a card|does not interrupt/.test(SYSTEM),
       "prompt must not claim any severity is non-interrupting / card-only");
+  });
+});
+
+describe("buildEvidence model-ref parsing", () => {
+  it("resolves :level-suffixed refs so evidence is sized from the real context window", () => {
+    const seen: string[] = [];
+    const ctx = {
+      modelRegistry: {
+        find: (provider: string, id: string) => {
+          seen.push(`${provider}/${id}`);
+          return { contextWindow: 8192 };
+        },
+      },
+      getSystemPrompt: () => "",
+    } as never;
+    const big = { role: "user", content: [{ type: "text", text: "x".repeat(10_000) }] };
+    const messages = [big, { ...big }, { ...big }];
+    const pinned = buildEvidence(ctx, ["prov/m:high"], messages, "");
+    assert.deepEqual(seen, ["prov/m"], "suffix stripped for the registry lookup");
+    assert.equal(pinned, buildEvidence(ctx, ["prov/m"], messages, ""),
+      "identical sizing with or without the thinking pin (8192 window → smaller budget than the 32k default)");
+    assert.notEqual(pinned, buildEvidence(ctx, undefined, messages, ""),
+      "unresolvable refs fall back to the default budget — the pin must not land there");
   });
 });

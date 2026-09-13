@@ -1,7 +1,7 @@
 import { buildSessionContext, convertToLlm, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runIsolatedChain } from "./isolated-model";
 import { createGuard, guardCheck, nextCycle, parseReviewOutput, type GuardState, type Severity } from "./emission-guard";
-import type { AdvisorConfig } from "./config";
+import { splitThinkingSuffix, type AdvisorConfig } from "./config";
 
 export const REVIEW_ENTRY = "pi-advisor";
 export type { Severity };
@@ -103,9 +103,10 @@ export function buildEvidence(ctx: ExtensionContext, modelId: string | readonly 
 }
 
 function parseModelRef(value: string): { provider: string; id: string } | undefined {
-  const slash = value.indexOf("/");
-  if (slash <= 0 || slash === value.length - 1) return undefined;
-  return { provider: value.slice(0, slash), id: value.slice(slash + 1) };
+  const { name } = splitThinkingSuffix(value);
+  const slash = name.indexOf("/");
+  if (slash <= 0 || slash === name.length - 1) return undefined;
+  return { provider: name.slice(0, slash), id: name.slice(slash + 1) };
 }
 
 function toolCallCount(entries: any[], sinceId: string | undefined): number {

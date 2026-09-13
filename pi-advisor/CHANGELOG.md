@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0 (2026-09-13)
+
+### Added
+
+- **Per-slot thinking levels.** A trailing `:level`
+  (`minimal|low|medium|high|xhigh|max`) on a `pi-advisor.models` entry pins
+  that candidate's thinking; it rides into the stream call as
+  `SimpleStreamOptions.reasoning`. Entries without a suffix (and `:off`)
+  keep the provider default, so each fallback in the chain can carry its own
+  level. Strict trailing match — openrouter `:free` ids stay intact.
+  `/advisor models` gains a thinking row per slot (blank = model default);
+  the chain canonicalizer preserves pinned levels on save.
+
+### Fixed
+
+- Evidence sizing now strips a trailing `:level` before the registry lookup —
+  previously a pinned entry failed `parseModelRef` and the transcript budget
+  silently fell back to the 32k default (over-sizing for small-context
+  fallback models, whose context errors count toward the 3-strike pause).
+
 ## 0.2.4 (2026-09-12)
 
 ### Removed

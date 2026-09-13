@@ -169,3 +169,48 @@ describe("runIsolatedChain candidate deadline", () => {
     assert.deepEqual(calls, 2);
   });
 });
+
+describe("runIsolated thinking suffix", () => {
+  it("passes a pinned :level as options.reasoning, per candidate", async () => {
+    const seen: unknown[] = [];
+    const provider: FakeProvider = (_model, _context, options) => {
+      seen.push((options as Record<string, unknown>).reasoning);
+      return goodResponse("ok");
+    };
+    const result = await runIsolatedChain(
+      fakeCtx(provider) as never,
+      ["fake/timeout-model:high"],
+      { systemPrompt: "s", messages: [] },
+    );
+    assert.equal(result.text, "ok");
+    assert.deepEqual(seen, ["high"]);
+    assert.equal(result.model, "fake/timeout-model:high", "raw entry surfaces for display");
+  });
+
+  it("no suffix and :off leave reasoning unset (provider default)", async () => {
+    const seen: unknown[] = [];
+    let calls = 0;
+    const provider: FakeProvider = (_model, _context, options) => {
+      seen.push((options as Record<string, unknown>).reasoning);
+      calls++;
+      if (calls === 1) throw new Error("rate limited"); // advance to the :off candidate
+      return goodResponse("ok");
+    };
+    const result = await runIsolatedChain(fakeCtx(provider) as never, [MODEL, `${MODEL}:off`], { systemPrompt: "s", messages: [] });
+    assert.equal(result.text, "ok");
+    assert.deepEqual(seen, [undefined, undefined]);
+  });
+
+  it("an invalid trailing segment is not a level — it stays part of the model id", async () => {
+    const seen: unknown[] = [];
+    const provider: FakeProvider = (_model, _context, options) => {
+      seen.push((options as Record<string, unknown>).reasoning);
+      return goodResponse("ok");
+    };
+    const ctx = fakeCtx(provider) as Record<string, any>;
+    ctx.modelRegistry.find = (_p: string, id: string) => (id === "timeout-model:hgh" ? { id, provider: "fake" } : undefined);
+    const result = await runIsolatedChain(ctx as never, ["fake/timeout-model:hgh"], { systemPrompt: "s", messages: [] });
+    assert.equal(result.text, "ok", "`:hgh` rides along in the id (a real registry reports it unresolvable)");
+    assert.deepEqual(seen, [undefined]);
+  });
+});

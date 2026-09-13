@@ -2,7 +2,7 @@ import { buildSessionContext, type ExtensionAPI, type ExtensionContext } from "@
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { runIsolatedChain } from "../lib/isolated-model";
-import { chooseModel, exactModel, firstAvailable, modelRef, modelSearchText } from "../lib/model-picker";
+import { canonicalEntry, chooseModel, exactModel, firstAvailable, modelRef, modelSearchText } from "../lib/model-picker";
 import { buildEvidence } from "../lib/watcher";
 import type { WatcherRuntime } from "../lib/watcher";
 
@@ -153,6 +153,7 @@ export function registerAdvisor(pi: ExtensionAPI, state: AdvisorState): void {
         "Advisor models (ordered fallback, first = primary):",
         ...(models.length > 0 ? models.map((m, i) => `  #${i + 1}  ${m}`) : ["  (none — advisor inactive)"]),
         "",
+        `Append :level (minimal…max) to an entry to pin thinking per slot.`,
         `Edit ~/.pi/agent/settings.json → pi-advisor.models, or run /advisor models in a TUI.`,
       ];
       pi.sendMessage({ customType: "pi-advisor", content: lines.join("\n"), display: true });
@@ -160,10 +161,10 @@ export function registerAdvisor(pi: ExtensionAPI, state: AdvisorState): void {
     }
     const working = panel.buildModelsPanelCfg(models);
     const actions: Record<string, { label: string; run: (prompt: (label: string, onDone: (value: string | undefined) => void) => void) => Promise<void> | void }> = {
-      addModel: { label: "+ Add model slot", run: () => { working.models.push(""); } },
+      addModel: { label: "+ Add model slot", run: () => { working.models.push({ ref: "", thinking: "" }); } },
       removeLast: { label: "− Remove last slot", run: () => {
         const popped = working.models.pop();
-        if (popped) ctx.ui.notify(`Removed slot #${working.models.length + 1} ("${popped}" discarded).`, "warning");
+        if (popped?.ref) ctx.ui.notify(`Removed slot #${working.models.length + 1} ("${popped.ref}" discarded).`, "warning");
       } },
     };
     const panelOptions = { models: () => (registry?.getAvailable() ?? []).map((m) => modelRef(m)) };
@@ -174,6 +175,8 @@ export function registerAdvisor(pi: ExtensionAPI, state: AdvisorState): void {
       title: "Advisor models (ordered fallback)",
       onSave: (saved) => {
         if (!saved) return;
+        const invalid = panel.invalidThinkingSlots(working);
+        if (invalid.length > 0) ctx.ui.notify(`Dropped invalid thinking in slot(s): ${invalid.map((i) => `#${i + 1}`).join(", ")} (valid: minimal…max).`, "warning");
         // set() persists, updates the runtime, syncs tool availability, and
         // notifies; surface unexpected rejections instead of dropping them.
         set(panel.cfgToModels(working), ctx).catch((error) => ctx.ui.notify(`Advisor update failed: ${String(error)}`, "error"));
@@ -229,13 +232,10 @@ export function registerAdvisor(pi: ExtensionAPI, state: AdvisorState): void {
         // chain runner and availability gate skip dead entries at call time).
         // Dedupe here too: two raw spellings can resolve to the same provider/id.
         const available = ctx.modelRegistry.getAvailable();
-        return await set([...new Set(chain.map((entry) => {
-          const match = exactModel(available, entry);
-          return match ? modelRef(match) : entry;
-        }))], ctx);
+        return await set([...new Set(chain.map((entry) => canonicalEntry(available, entry)))], ctx);
       }
       const match = chain.length === 1 ? exactModel(ctx.modelRegistry.getAvailable(), chain[0]) : undefined;
-      if (match) return await set([modelRef(match)], ctx);
+      if (match) return await set([canonicalEntry(ctx.modelRegistry.getAvailable(), chain[0])], ctx);
       if (ctx.mode !== "tui") throw new Error("Usage: /advisor <provider/model[, …]|models|on|off|status>");
       const choice = await chooseModel(ctx, firstAvailable(ctx, state.getModels()), args.trim() || undefined);
       if (!choice) return;

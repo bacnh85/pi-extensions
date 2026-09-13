@@ -108,6 +108,20 @@ export function parseModel(value: string): { provider: string; id: string } | un
   return { provider: value.slice(0, slash), id: value.slice(slash + 1) };
 }
 
+/** Thinking levels accepted as a trailing `:level` on a chain entry.
+ *  `off` maps to "no explicit level" (SimpleStreamOptions.reasoning has no off). */
+export const THINKING_LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** Split a trailing `:thinking` suffix. Strict trailing match only — openrouter
+ *  ids like `model:free` stay intact. */
+export function splitThinkingSuffix(entry: string): { name: string; thinking?: string } {
+  const idx = entry.lastIndexOf(":");
+  if (idx <= 0 || idx >= entry.length - 1) return { name: entry };
+  const suffix = entry.slice(idx + 1);
+  if (!THINKING_LEVELS.includes(suffix)) return { name: entry };
+  return { name: entry.slice(0, idx), thinking: suffix };
+}
+
 /**
  * One-shot legacy migration: if pi-advisor.model is unset, adopt the old
  * pi-plan advisorModel preference so existing users keep their advisor.

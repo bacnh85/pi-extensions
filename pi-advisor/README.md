@@ -44,7 +44,7 @@ npm install -g @bacnh85/pi-advisor
 
 ```bash
 /advisor <provider/model[, …]>  # set the chain (one model or comma-separated fallbacks)
-/advisor models             # edit the full model chain (TUI panel; non-TUI prints it)
+/advisor models             # edit the chain + per-slot thinking rows (TUI panel; non-TUI prints it)
 /advisor status             # model chain, watch state, counters
 /advisor on                 # enable watch for this session (also clears a pause)
 /advisor watch-off          # disable background watch for this session
@@ -57,18 +57,22 @@ Settings live in `~/.pi/agent/settings.json` (global) and `.pi/settings.json`
 ```json
 {
   "pi-advisor": {
-    "models": ["zai-coding-cn/glm-5.3", "opencode-go/deepseek-v4-pro"],
+    "models": ["zai-coding-cn/glm-5.3:high", "opencode-go/deepseek-v4-pro"],
     "watch": { "enabled": true, "minToolCalls": 3, "immuneTurns": 3 }
   }
 }
 ```
 
 - `models` — ordered fallback chain, first entry is primary. Accepts an array
-  or a comma-separated string (`"a/b, c/d"`). Legacy single `model` string is
-  still honored. If the primary is rate-limited or unavailable at review/consult
-  time, the next candidate serves automatically; a whole-chain failure counts
-  as one review failure (the 3-strike pause still applies). The advisor never
-  falls back to the primary model — it must never review its own turns.
+  or a comma-separated string (`"a/b, c/d"`). A trailing `:level`
+  (`minimal|low|medium|high|xhigh|max`) on an entry pins that candidate's
+  thinking; entries without one use the model's provider default, so each
+  fallback can carry its own level (`:high` on a strong primary, none on a
+  flash fallback). Legacy single `model` string is still honored. If the
+  primary is rate-limited or unavailable at review/consult time, the next
+  candidate serves automatically; a whole-chain failure counts as one review
+  failure (the 3-strike pause still applies). The advisor never falls back to
+  the primary model — it must never review its own turns.
 - `watch.enabled` (default `true`) — turn-end reviewing on session start (TUI only — print/rpc/json runs skip the watch; the on-demand advisor tool still works)
 - `watch.minToolCalls` (default `3`, `0` = every turn) — skip trivial turns
 - `watch.immuneTurns` (default `3`) — review window during which the same

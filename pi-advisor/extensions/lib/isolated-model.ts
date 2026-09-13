@@ -1,6 +1,6 @@
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { parseModel } from "./config";
+import { parseModel, splitThinkingSuffix } from "./config";
 
 export interface IsolatedContext {
   systemPrompt: string;
@@ -21,14 +21,19 @@ export async function runIsolated(
   /** Progress hook — every stream event (incl. non-text deltas) resets the caller's idle deadline. */
   onEvent?: () => void,
 ): Promise<string> {
-  const parsed = modelId ? parseModel(modelId) : undefined;
+  // A trailing `:level` on the chain entry pins thinking for this candidate;
+  // `:off` and no suffix fall back to the chain-wide reasoning (or the
+  // provider default when that is unset too).
+  const { name, thinking } = modelId ? splitThinkingSuffix(modelId) : { name: modelId, thinking: undefined };
+  const effectiveReasoning = thinking && thinking !== "off" ? thinking : reasoning;
+  const parsed = name ? parseModel(name) : undefined;
   if (modelId && !parsed) throw new Error(`Invalid model: ${modelId}`);
   const model = parsed ? ctx.modelRegistry.find(parsed.provider, parsed.id) : ctx.model;
   if (!model) throw new Error(`Model unavailable: ${modelId ?? "active"}`);
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) throw new Error(auth.error);
   const provider = ctx.modelRegistry.getRegisteredProviderConfig(model.provider);
-  const options: Record<string, unknown> = { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, signal, reasoning };
+  const options: Record<string, unknown> = { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, signal, reasoning: effectiveReasoning };
   // ponytail: providers accept SimpleStreamOptions which expects ThinkingLevel for reasoning
   const streamOptions = options as any;
   const response = provider?.streamSimple

@@ -1,4 +1,5 @@
 import { ModelSelectorComponent, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { splitThinkingSuffix } from "./config";
 
 export type Model = ReturnType<ExtensionContext["modelRegistry"]["getAvailable"]>[number];
 
@@ -6,9 +7,11 @@ export function modelRef(model: Pick<Model, "provider" | "id">): string {
   return `${model.provider}/${model.id}`;
 }
 
-/** Resolve a `provider/model` (or unambiguous bare id) reference against available models. */
+/** Resolve a `provider/model` (or unambiguous bare id) reference against available models.
+ *  A trailing `:level` thinking suffix is ignored for matching. */
 export function exactModel(models: Model[], reference: string): Model | undefined {
-  const value = reference.trim().toLowerCase();
+  const { name } = splitThinkingSuffix(reference.trim());
+  const value = name.toLowerCase();
   if (!value) return undefined;
   const canonical = models.filter((model) => modelRef(model).toLowerCase() === value);
   if (canonical.length === 1) return canonical[0];
@@ -19,6 +22,15 @@ export function exactModel(models: Model[], reference: string): Model | undefine
 
 export function modelAvailable(ctx: ExtensionContext, modelId: string | undefined): boolean {
   return !!modelId && !!exactModel(ctx.modelRegistry.getAvailable(), modelId);
+}
+
+/** Canonicalize a chain entry: resolve the ref (ignoring a trailing `:level`),
+ *  re-attach the level so a pinned thinking level survives the save. */
+export function canonicalEntry(models: Model[], entry: string): string {
+  const { name, thinking } = splitThinkingSuffix(entry.trim());
+  const match = exactModel(models, name);
+  if (!match) return entry;
+  return thinking ? `${modelRef(match)}:${thinking}` : modelRef(match);
 }
 
 /** First registry-available ref in the chain, or undefined when none resolve. */
