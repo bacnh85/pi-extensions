@@ -79,7 +79,7 @@ pi-config-panel/      # TS library package — shared config-panel kernel (no pi
   .github/workflows/    # ci.yml (matrix, GitHub-hosted runners)
   .agents/skills/       # shared skills (skill-creator)
   .env.local            # shared dev credentials (gitignored)
-  .gitignore            # .agents/ and .env.*
+  .gitignore            # .agents/, .env.*, node_modules/, .pi/, .serena/, images/
 ```
 
 ## Package Structure
