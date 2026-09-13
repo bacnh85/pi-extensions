@@ -17,7 +17,7 @@ Use the **10 unified tools** from the `pi-web` extension for all web-related tas
 | `web_crawl` | Crawl multiple pages from a site | Light (Firecrawl) or Full (Crawl4AI) |
 | `web_screenshot` | Capture page screenshot as PNG | Crawl4AI daemon (public URLs) or local headless Chrome (localhost/LAN/file URLs — auto-detected) |
 | `web_pdf` | Generate page PDF | Crawl4AI daemon (public URLs) or local headless Chrome (localhost/LAN/file URLs — auto-detected) |
-| `web_research` | AI-synthesized research with sources | Gemini web tier: ask = grounded answer (guest OK); research = Deep Research report (cookie + Gemini Advanced) |
+| `web_research` | AI-synthesized research with sources | Gemini web tier: ask = grounded answer (guest OK); research = Deep Research report (fresh cookie; currently refused to non-browser clients with 1184) |
 | `web_image` | Generate images from a text prompt | Gemini web (guest/cookie) → Z.ai GLM-Image (`ZAI_API_KEY`) → custom OpenAI-images endpoint |
 | `web_chat` | One-off chat via an OpenAI-compatible gateway | `WEB_CHAT_API_BASE_URL` (ChatGPT web bridge, official OpenAI, …) |
 | `web_status` | Check provider configuration and health | — |
@@ -59,7 +59,7 @@ What do you need?
 ├── AI-synthesized research with sources (synthesis, comparisons, reports)
 │   → web_research
 │     ├─ quick grounded answer: mode=ask (default; guest OK, Flash-only)
-│     └─ multi-minute Deep Research report: mode=research (needs cookie + Gemini Advanced)
+│     └─ multi-minute Deep Research report: mode=research (fresh cookie; currently blocked by Gemini's non-browser refusal)
 │
 ├── Generate an image from a text prompt (NOT capturing an existing page)
 │   → web_image

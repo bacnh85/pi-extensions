@@ -264,3 +264,11 @@ All notable changes to `pi-web` will be documented in this file.
 
 - Consolidated 14 backend-specific tools into 7 unified tools (`web_search`, `web_extract`, `web_map`, `web_crawl`, `web_screenshot`, `web_pdf`, `web_status`).
 - Auto-selection and adaptive fallback between static (JSDOM), dynamic (Firecrawl), and full (Crawl4AI) backends.
+## 0.10.6
+
+Docs correction: Deep Research is **not** Gemini-Advanced-gated. Live
+verification (2026-09-13, free-tier account): Deep Research plan creation
+succeeds via a browser-impersonating client, while this package's Node
+transport is refused with 1184/FEATURE_NOT_AVAILABLE on the same fresh
+session. The 1184 error is a client-transport artifact; README,
+`web_research` descriptions, and troubleshooting updated accordingly.

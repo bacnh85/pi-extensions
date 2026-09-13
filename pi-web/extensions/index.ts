@@ -114,7 +114,7 @@ const WEB_ROUTING_GUIDANCE = `## Web Tool Routing (pi-web)
 - **web_map** — discover site URLs (Firecrawl Map).
 - **web_crawl** — multi-page crawl: \`mode: "light"\` (Firecrawl, url) or \`mode: "full"\` (Crawl4AI, urls[]).
 - **web_screenshot** / **web_pdf** — page capture (Crawl4AI).
-- **web_research** — AI-synthesized research via Gemini web (mode "ask" = grounded answer, guest OK; mode "research" = Deep Research report, needs cookie + Gemini Advanced, takes minutes).
+- **web_research** — AI-synthesized research via Gemini web (mode "ask" = grounded answer, guest OK; mode "research" = Deep Research report — currently blocked by Gemini's non-browser-client refusal (1184), not by entitlement; takes minutes when available).
 - **web_image** — text→image generation via free upstreams (auto: Gemini web → Z.ai GLM-Image → custom OpenAI-images endpoint; \`model\`/\`n\` params).
 - **web_chat** — one-off chat completion via an OpenAI-compatible gateway (\`WEB_CHAT_API_BASE_URL\`; non-streaming).
 - **web_status** — provider config + health.
@@ -485,7 +485,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
     name: "web_research",
     label: "Web Research (Gemini)",
     description:
-      "AI-synthesized web research via Gemini (gemini.google.com web tier, cookie auth). Mode 'ask' returns a quick grounded answer with source links (works guest-mode, Flash only). Mode 'research' runs Gemini Deep Research — an autonomous agent browses the web for minutes and returns a comprehensive cited report (requires GEMINI_WEB_SECURE_1PSID cookie and a Gemini Advanced subscription).",
+      "AI-synthesized web research via Gemini (gemini.google.com web tier, cookie auth). Mode 'ask' returns a quick grounded answer with source links (works guest-mode, Flash only). Mode 'research' runs Gemini Deep Research — plan, autonomous web browsing, cited report. Requires GEMINI_WEB_SECURE_1PSID and a fresh session; note Gemini currently refuses Deep Research to non-browser clients (1184) — the error is a transport artifact, not an entitlement gate.",
     promptSnippet: "AI-synthesized research with citations",
     promptGuidelines: [
       "Use for AI-synthesized research with sources (mode ask = quick grounded answer; mode research = multi-minute Deep Research report). NOT for URL-list searches (web_search) or single-URL extraction (web_extract). Cite the returned source URLs.",
@@ -494,7 +494,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
       query: Type.String({ description: "Research question or topic." }),
       mode: Type.Optional(Type.Union(
         [Type.Literal("ask"), Type.Literal("research")],
-        { default: "ask", description: "ask = quick grounded answer (guest OK); research = full Deep Research report (cookie + Gemini Advanced required, takes minutes)." },
+        { default: "ask", description: "ask = quick grounded answer (guest OK); research = full Deep Research report (fresh cookie required; currently refused to non-browser clients with 1184)." },
       )),
       model: Type.Optional(Type.String({ description: "Gemini model for ask mode (e.g. gemini-3-flash). Discovered from the account by default." })),
       ...sharedControlSchema,
