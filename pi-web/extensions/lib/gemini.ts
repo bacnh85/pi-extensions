@@ -317,7 +317,7 @@ export function describeGeminiError(err: unknown): string {
     default: {
       const msg = err instanceof Error ? err.message : String(err);
       if (/Unknown API error/.test(msg)) {
-        return `Gemini web rejected the request (${msg}). In research mode this usually means the account lacks a Gemini Advanced subscription (Deep Research is Advanced-only) or the web protocol changed. mode=ask still works.`;
+        return `Gemini web rejected the request (${msg}). For research mode this is a known transport limitation: gemini.google.com serves Deep Research only to browser-grade clients (the 1184 code is a transport artifact, NOT an entitlement gate — plan creation succeeds on free-tier accounts via browser-impersonating clients). mode=ask still works.`;
       }
       return `Gemini web error: ${msg}`;
     }
@@ -441,11 +441,11 @@ export async function geminiGenerateImage(
   const images = out?.generated_images ?? out?.images ?? [];
   const text = String(out?.text ?? "");
   if (!images.length) {
-    throw new Error(
-      text
-        ? `Gemini replied with text but no images: ${text.slice(0, 200)} — image generation is likely unavailable for this account/region (it is for some Google accounts); try provider=zai (ZAI_API_KEY) or provider=custom.`
-        : "Gemini returned no images — generation may be unavailable for this account/region (guest mode may not support it; set GEMINI_WEB_SECURE_1PSID).",
-    );
+      throw new Error(
+        text
+          ? `Gemini replied with text but no images: ${text.slice(0, 200)} — image generation may be unavailable for this account/region, or the web session is degraded (re-paste the cookie from an incognito login if this persists); try provider=zai (ZAI_API_KEY) or provider=custom.`
+          : "Gemini returned no images — generation may be unavailable for this account/region (guest mode may not support it; set GEMINI_WEB_SECURE_1PSID).",
+      );
   }
   const paths: string[] = [];
   for (const img of images) paths.push(await img.save({ path: opts.outDir }));

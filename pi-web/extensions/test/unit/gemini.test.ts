@@ -100,10 +100,11 @@ describe("describeGeminiError", () => {
     expect(describeGeminiError(new Error("boom"))).to.equal("Gemini web error: boom");
   });
 
-  it("maps unknown API errors (e.g. 1184) to an entitlement/protocol hint", () => {
+  it("maps unknown API errors (e.g. 1184) to the transport-artifact hint", () => {
     const msg = describeGeminiError(new Error("Unknown API error: 1184"));
     expect(msg).to.include("1184");
-    expect(msg).to.include("Gemini Advanced");
+    expect(msg).to.include("transport artifact");
+    expect(msg).to.not.match(/Advanced subscription/i);
   });
 });
 

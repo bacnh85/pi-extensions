@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.11.2 (2026-09-13)
+
+### Fixed
+
+- **Corrected the 1184 error message** (missed in the 0.10.6 doc correction):
+  `Unknown API error: 1184` no longer claims Deep Research needs a Gemini
+  Advanced subscription — it is a transport artifact (browser-grade clients
+  succeed on free-tier accounts); live-tested through a herdr pi session.
+- `web_image` gemini no-images error now also mentions a degraded/stale web
+  session as a possible cause (observed: ask works while the image tool is
+  refused on the same half-alive session).
+
 ## 0.11.1 (2026-09-13)
 
 ### Changed
