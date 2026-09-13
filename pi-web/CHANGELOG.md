@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.3 (2026-09-13)
+
+### Fixed
+
+- **Redirect-aware SSRF guard**: image downloads now use `redirect: "manual"`
+  and re-validate every hop with the private/loopback check — a gateway URL
+  that 302s to an internal host (e.g. cloud metadata) can no longer bypass
+  the guard via fetch's default redirect following. Public redirects still
+  work (relative locations resolved per hop, max 3 hops).
+
 ## 0.10.2 (2026-09-13)
 
 ### Fixed

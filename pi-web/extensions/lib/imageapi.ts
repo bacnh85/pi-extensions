@@ -159,8 +159,15 @@ export function imageRateSnapshot(): Record<string, { count: number; day: string
 export interface FetchLike {
   (
     url: string,
-    init?: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal },
-  ): Promise<{ ok: boolean; status: number; statusText?: string; json(): Promise<unknown>; arrayBuffer(): Promise<ArrayBuffer> }>;
+    init?: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal; redirect?: string },
+  ): Promise<{
+    ok: boolean;
+    status: number;
+    statusText?: string;
+    headers?: { get(name: string): string | null };
+    json(): Promise<unknown>;
+    arrayBuffer(): Promise<ArrayBuffer>;
+  }>;
 }
 
 export interface ApiImageResult {
@@ -263,17 +270,30 @@ async function downloadImage(
   signal?: AbortSignal,
   timeoutMs?: number,
 ): Promise<string> {
-  const res = await raceGuard(fetchImpl(url, { method: "GET", signal }), {
-    signal,
-    timeoutMs: timeoutMs ?? 120_000,
-    label: "web_image download",
-  });
-  if (!res.ok) throw new ImageApiError(res.status, `image download failed (HTTP ${res.status})`);
+  // fetch follows redirects by default — follow manually and re-validate each
+  // hop, or a gateway URL that 302s to an internal host bypasses the guard.
+  let current = url;
+  for (let hop = 0; ; hop++) {
+    if (hop > 3) throw new Error("too many image redirects");
+    if (isLocalUrl(current)) throw new Error(`image host is private/loopback (SSRF-guarded): ${current}`);
+    const res = await raceGuard(fetchImpl(current, { method: "GET", redirect: "manual", signal }), {
+      signal,
+      timeoutMs: timeoutMs ?? 120_000,
+      label: "web_image download",
+    });
+    if ([301, 302, 303, 307, 308].includes(res.status)) {
+      const loc = res.headers?.get?.("location") ?? null;
+      if (!loc) throw new ImageApiError(res.status, `image redirect ${res.status} without a location header`);
+      current = new URL(loc, current).toString();
+      continue;
+    }
+    if (!res.ok) throw new ImageApiError(res.status, `image download failed (HTTP ${res.status})`);
   const buf = Buffer.from(await res.arrayBuffer());
   if (buf.length > MAX_DOWNLOAD_BYTES) throw new Error(`image exceeds the ${MAX_DOWNLOAD_BYTES}-byte download cap`);
   const file = path.join(outDir, `pi-web-image-${randomUUID().slice(0, 8)}-${i}${extFor(url)}`);
   fs.writeFileSync(file, buf);
   return file;
+  }
 }
 
 function extFor(url: string): string {

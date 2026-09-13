@@ -696,6 +696,65 @@ describe("generateImageWithFallback cancellation + n handling (review findings)"
     expect(fs.readdirSync(outDir)).to.deep.equal([]); // nothing written
     expect(r.urls).to.deep.equal(["https://cdn.example.com/huge.png"]);
   });
+
+  it("refuses redirects to private hosts (fetch follows redirects by default)", async () => {
+    const outDir = await tmpDir();
+    const gets: string[] = [];
+    const fetchImpl = (async (url: string, init?: { method?: string }) => {
+      if (init?.method === "POST") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ url: "https://cdn.example.com/redirect" }] }),
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      }
+      gets.push(url);
+      return {
+        ok: false,
+        status: 302,
+        headers: { get: (name: string) => (name.toLowerCase() === "location" ? "http://169.254.169.254/latest" : null) },
+        json: async () => ({}),
+        arrayBuffer: async () => new ArrayBuffer(0),
+      };
+    }) as unknown as FetchLike;
+    const r = await apiGenerateImage({ baseUrl: "https://x/v1", prompt: "p", outDir, fetchImpl });
+    expect(gets).to.deep.equal(["https://cdn.example.com/redirect"]); // redirect target never fetched
+    expect(r.urls).to.deep.equal(["https://cdn.example.com/redirect"]);
+    expect(fs.readdirSync(outDir)).to.deep.equal([]);
+  });
+
+  it("follows redirects to public hosts (manual redirect, re-validated per hop)", async () => {
+    const outDir = await tmpDir();
+    const fetchImpl = (async (url: string, init?: { method?: string }) => {
+      if (init?.method === "POST") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ url: "https://cdn.example.com/hop" }] }),
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      }
+      if (String(url).endsWith("/hop")) {
+        return {
+          ok: false,
+          status: 302,
+          headers: { get: (name: string) => (name.toLowerCase() === "location" ? "/real.png" : null) },
+          json: async () => ({}),
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        arrayBuffer: async () => new TextEncoder().encode("pngbytes").buffer as ArrayBuffer,
+      };
+    }) as unknown as FetchLike;
+    const r = await apiGenerateImage({ baseUrl: "https://x/v1", prompt: "p", outDir, fetchImpl });
+    expect(r.paths).to.have.length(1);
+    expect(fs.readFileSync(r.paths[0]).toString()).to.equal("pngbytes");
+  });
 });
 
 describe("toImageBlock mime mapping", () => {
