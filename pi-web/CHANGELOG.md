@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.10.1 (2026-09-13)
+
+### Added
+
+- **Gemini image-refusal session skip** — after 2 consecutive "replied with
+  text but no images" refusals (observed on accounts where the chat path
+  refuses image generation), `provider: auto` skips gemini for the rest of
+  the session and goes straight to `zai`/`custom`; pinned
+  `provider=gemini` always retries, and any gemini success resets the
+  counter. Session-scoped (resets with pi).
+
 ## 0.10.0 (2026-09-13)
 
 ### Added

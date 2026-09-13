@@ -82,6 +82,14 @@ interface RateState {
 const rate = new Map<string, RateState>();
 let nowMs = () => Date.now();
 
+// Gemini chat-path image refusals ("replied with text but no images") are
+// sticky on some accounts — the chat intent classifier refuses while the
+// dedicated /images surface would route fine (hypothesis; wire-unverified).
+// After 2 consecutive refusals, skip gemini in AUTO chains for the session.
+// Pinned provider=gemini always attempts; a success resets the counter.
+const GEMINI_REFUSAL_SKIP_THRESHOLD = 2;
+let geminiRefusals = 0;
+
 /** @internal test hooks */
 export function __setImageRateClock(fn: () => number): void {
   nowMs = fn;
@@ -90,6 +98,7 @@ export function __setImageRateClock(fn: () => number): void {
 /** @internal test hooks */
 export function __resetImageRate(): void {
   rate.clear();
+  geminiRefusals = 0;
   nowMs = () => Date.now();
 }
 
@@ -315,6 +324,10 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
       abortErr.name = "AbortError";
       throw abortErr;
     }
+    if (provider === "gemini" && params.provider === "auto" && geminiRefusals >= GEMINI_REFUSAL_SKIP_THRESHOLD) {
+      attempts.push(`gemini: skipped — refused image generation ${geminiRefusals}× consecutively this session (pin provider=gemini to retry)`);
+      continue;
+    }
     const configured =
       provider === "gemini" ? true : provider === "zai" ? Boolean(params.apiConfig.zai) : Boolean(params.apiConfig.custom);
     if (!configured) {
@@ -363,6 +376,7 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
         });
       }
       imageRateRecord(provider);
+      if (provider === "gemini") geminiRefusals = 0;
       if (provider === "gemini" && params.n && params.n > 1 && result.paths.length < params.n) {
         attempts.push(`gemini: n=${params.n} requested — the gemini web tier returns its own image count (${result.paths.length}); n applies to zai/custom`);
       }
@@ -379,6 +393,7 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
         abortErr.name = "AbortError";
         throw abortErr;
       }
+      if (provider === "gemini" && err instanceof Error && /no images/.test(err.message)) geminiRefusals++;
       // A foreign AbortError-named error (not from the caller's signal) is a
       // provider failure like any other — record it and keep the chain going.
       attempts.push(`${provider}: ${provider === "gemini" ? describeGeminiError(err) : describeImageApiError(err)}`);

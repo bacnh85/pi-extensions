@@ -621,4 +621,33 @@ describe("generateImageWithFallback cancellation + n handling (review findings)"
     expect(calls.n).to.equal(0);
     expect(fetchCalls).to.equal(0);
   });
+
+  it("skips gemini in auto chains after 2 consecutive refusals; pinned still attempts", async () => {
+    const { client, seen } = imageClient({ images: 0, text: "can't create right now" });
+    process.env.ZAI_API_KEY = "zk";
+    const common = baseParams({
+      geminiFactory: factoryFor(client),
+      apiConfig: loadImageApiConfig(ISOLATED, false),
+      rateConfig: { minIntervalMs: 0, dailyCap: 9999 },
+      outDir: await tmpDir(),
+      fetchImpl: routingFetch({ data: [{ b64_json: PNG_B64 }] }),
+    });
+    const first = await generateImageWithFallback(common); // refusal 1 → zai
+    const second = await generateImageWithFallback({ ...common, outDir: await tmpDir() }); // refusal 2 → zai
+    expect(first.provider).to.equal("zai");
+    expect(second.provider).to.equal("zai");
+
+    const third = await generateImageWithFallback({ ...common, outDir: await tmpDir() }); // gemini SKIPPED
+    expect(third.provider).to.equal("zai");
+    expect(third.attempts.join(" ")).to.include("skipped — refused image generation 2×");
+    expect(seen.prompts).to.have.length(2); // gemini never invoked on the third call
+
+    // A pinned provider=gemini always attempts (all-fail error lists it).
+    try {
+      await generateImageWithFallback({ ...common, provider: "gemini", outDir: await tmpDir() });
+      expect.fail("should throw");
+    } catch (e) {
+      expect((e as Error).message).to.include("gemini:");
+    }
+  });
 });
