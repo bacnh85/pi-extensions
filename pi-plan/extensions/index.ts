@@ -30,8 +30,6 @@ const STATUS_KEY = "pi-plan";
 const DEFAULT_PLAN_DIR = ".agents/plans";
 const PLAN_TOOL = "write_plan";
 const ASK_USER_QUESTION_TOOL = "ask_user_question";
-// ponytail: deprecated alias — drop after one release
-const PLAN_QUESTION_TOOL = "ask_plan_question";
 const PLAN_EXECUTE_COMMAND = "plan-execute";
 // ponytail: keep in sync with pi-review/extensions/index.ts REVIEW_EVENT
 const REVIEW_EVENT = "pi-review:run";
@@ -1560,9 +1558,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   }
 
   /**
-   * Shared execute for ask_user_question and the deprecated ask_plan_question alias.
-   * Uses the built-in ctx.ui.select list dialog (same UX as the original ask_plan_question),
-   * with the recommended option marked ★. "Other / type my answer" opens a simple editor.
+   * Shared execute for ask_user_question. Uses the built-in ctx.ui.select list
+   * dialog with the recommended option marked ★. "Other / type my answer"
+   * opens a simple editor.
    */
   // ponytail: typed helper avoids `as const` on every content block
   const textBlock = (text: string) => ({ type: "text" as const, text });
@@ -1573,23 +1571,13 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     _signal: unknown,
     _onUpdate: unknown,
     ctx: ExtensionContext,
-    isAlias: boolean,
   ) {
     const typedParams = params as PlanQuestionParams;
     const { options, recommendedIndex } = validateQuestionParams(typedParams);
 
-    // ponytail: surface deprecation in every mode — notify (UI) + prefix result text (all modes)
-    const deprecateNote = isAlias ? "[Deprecated: use ask_user_question instead] " : "";
-    if (isAlias && ctx.hasUI) {
-      ctx.ui.notify(
-        "ask_plan_question is deprecated; use ask_user_question",
-        "warning",
-      );
-    }
-
     if (!ctx.hasUI) {
       return {
-        content: [textBlock(deprecateNote + "UI is not available. Ask this question directly in chat and wait for the user's answer.")],
+        content: [textBlock("UI is not available. Ask this question directly in chat and wait for the user's answer.")],
         details: {
           question: typedParams.question,
           options,
@@ -1613,7 +1601,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     );
     if (!choice) {
       return {
-        content: [textBlock(deprecateNote + "User cancelled the question.")],
+        content: [textBlock("User cancelled the question.")],
         details: {
           question: typedParams.question,
           options,
@@ -1628,7 +1616,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       const answer = (await ctx.ui.editor("Your answer", ""))?.trim();
       if (!answer) {
         return {
-          content: [textBlock(deprecateNote + "User cancelled the question.")],
+          content: [textBlock("User cancelled the question.")],
           details: {
             question: typedParams.question,
             options,
@@ -1639,7 +1627,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
         };
       }
       return {
-        content: [textBlock(deprecateNote + `User wrote: ${answer}`)],
+        content: [textBlock(`User wrote: ${answer}`)],
         details: {
           question: typedParams.question,
           options,
@@ -1654,7 +1642,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     const selected = options[selectedIndex];
     const answer = selected?.label ?? choice;
     return {
-      content: [textBlock(deprecateNote + `User selected: ${answer}`)],
+      content: [textBlock(`User selected: ${answer}`)],
       details: {
         question: typedParams.question,
         options,
@@ -1684,22 +1672,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     promptGuidelines: askQuestionGuidelines,
     parameters: buildAskQuestionSchema(),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      return executeAskQuestion(toolCallId, params, signal, onUpdate, ctx, false);
-    },
-  });
-
-  // ponytail: deprecated alias — delegates to the same handler, warns on use. Drop after one release.
-  pi.registerTool({
-    name: PLAN_QUESTION_TOOL,
-    label: "Ask Plan Question (deprecated)",
-    description:
-      "Deprecated alias for ask_user_question. Use ask_user_question instead.",
-    promptSnippet:
-      "Deprecated: use ask_user_question instead",
-    promptGuidelines: askQuestionGuidelines,
-    parameters: buildAskQuestionSchema(),
-    async execute(toolCallId, params, signal, onUpdate, ctx) {
-      return executeAskQuestion(toolCallId, params, signal, onUpdate, ctx, true);
+      return executeAskQuestion(toolCallId, params, signal, onUpdate, ctx);
     },
   });
 
@@ -2216,7 +2189,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
    */
   pi.on("tool_call", async (event, ctx) => {
     if (!planModeEnabled) return;
-    if (specGateActive && !READ_ONLY_TOOLS.has(event.toolName) && event.toolName !== ASK_USER_QUESTION_TOOL && event.toolName !== PLAN_QUESTION_TOOL && event.toolName !== PLAN_TOOL) {
+    if (specGateActive && !READ_ONLY_TOOLS.has(event.toolName) && event.toolName !== ASK_USER_QUESTION_TOOL && event.toolName !== PLAN_TOOL) {
       return { block: true, reason: "pi-plan: /specs gate is active. Run /specs-approve before workspace writes." };
     }
 
@@ -2228,8 +2201,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       };
     }
 
-    // ask_user_question (and its deprecated alias) are always allowed — read-only, no mutate.
-    if (event.toolName === ASK_USER_QUESTION_TOOL || event.toolName === PLAN_QUESTION_TOOL) return;
+    // ask_user_question is always allowed — read-only, no mutate.
+    if (event.toolName === ASK_USER_QUESTION_TOOL) return;
 
     if (isToolCallEventType("bash", event)) {
       const disposition = classifyCommand(event.input.command || "");

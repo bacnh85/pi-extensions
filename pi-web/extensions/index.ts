@@ -493,10 +493,10 @@ export default function piWebExtension(pi: ExtensionAPI) {
     ],
     parameters: Type.Object({
       query: Type.String({ description: "Research question or topic." }),
-      mode: Type.Optional(Type.Union(
-        [Type.Literal("ask"), Type.Literal("research")],
-        { default: "ask", description: "ask = quick grounded answer (guest OK); research = full Deep Research report (fresh cookie required; currently refused to non-browser clients with 1184)." },
-      )),
+        mode: Type.Optional(Type.Union(
+          [Type.Literal("ask"), Type.Literal("research")],
+          { default: "ask", description: "ask = quick grounded answer (guest OK); research = full Deep Research report (cookie required; runs the pure-Node DR client — plan/confirm execute on live sessions, degraded sessions return an honest partial result)." },
+        )),
       model: Type.Optional(Type.String({ description: "Gemini model for ask mode (e.g. gemini-3-flash). Discovered from the account by default." })),
       ...sharedControlSchema,
     }),

@@ -26,18 +26,10 @@ function readSettingsJson(): Record<string, unknown> {
   }
 }
 
-/** Persist `router.enableReasoning` to settings.json (merge, never clobber). */
-function writeReasoningFlag(value: boolean): void {
-  const settings = readSettingsJson();
-  const router = (settings.router ?? {}) as Record<string, unknown>;
-  router.enableReasoning = value;
-  settings.router = router;
-  writeFileSync(settingsPath(), JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
-}
-
 /** Read-modify-write non-secret `router` fields into the GLOBAL settings.json
- *  (merge, never clobber). `baseUrl` is normalized (trailing slashes stripped). */
-function writeRouterSection(patch: { baseUrl?: string; enableReasoning?: boolean }): void {
+ *  (merge, never clobber). `baseUrl` is normalized (trailing slashes stripped).
+ *  Atomicity (tmp+rename) is part of the contract — exported for tests. */
+export function writeRouterSection(patch: { baseUrl?: string; enableReasoning?: boolean }): void {
   const settings = readSettingsJson();
   const router = (settings.router ?? {}) as Record<string, unknown>;
   if (patch.baseUrl !== undefined) router.baseUrl = normalizeUrl(patch.baseUrl);
@@ -59,7 +51,7 @@ export function registerCommands(pi: ExtensionAPI): void {
         return;
       }
       const next = !current.enableReasoning;
-      writeReasoningFlag(next);
+      writeRouterSection({ enableReasoning: next });
       // Re-register so refreshModels closure picks up the new flag, then force
       // a provider refresh; the offline phase re-maps persisted models and the
       // network phase re-fetches with the new reasoning flag.

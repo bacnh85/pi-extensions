@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.4 (2026-09-14)
+
+### Fixed
+
+- `callMunin` error handling no longer mutates the caught error's `.message`
+  before rethrowing. Remediation text is now appended into a fresh `Error`
+  (identical message text) with the original preserved as `cause`, keeping
+  the original error's identity and stack intact.
+
 ## 0.5.3 (2026-08-30)
 
 ### Changed

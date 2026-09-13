@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.0 (2026-09-14)
+
+### Removed
+
+- **Deprecated `ask_plan_question` tool alias.** Removed the alias, its
+  deprecation-warning path, and its plan-mode/spec-gate allow-list entries
+  (deprecated 0.9.0 with a "drop after one release" marker). Use
+  `ask_user_question` instead.
+
 ## 0.13.1 (2026-09-12)
 
 ### Fixed

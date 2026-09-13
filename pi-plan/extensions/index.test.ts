@@ -1587,7 +1587,7 @@ describe("tool gating in plan mode", () => {
     assert.equal(r, undefined, "write_plan auto-allowed");
   });
 
-  it("auto-allows ask_user_question (and deprecated alias) in plan mode without confirmation", async () => {
+  it("auto-allows ask_user_question in plan mode without confirmation", async () => {
     // Regression guard: ask_user_question is NOT in READ_ONLY_TOOLS; before the fix it
     // fell through to the confirm branch and prompted the user on every clarifying question.
     const { handlers } = createFakePi(["read"], { plan: true });
@@ -1602,12 +1602,10 @@ describe("tool gating in plan mode", () => {
     assert.ok(tc);
     const r1 = await tc({ toolName: "ask_user_question", input: { question: "Q?", options: [{ label: "A" }, { label: "B" }] } }, ctx);
     assert.equal(r1, undefined, "ask_user_question auto-allowed");
-    const r2 = await tc({ toolName: "ask_plan_question", input: { question: "Q?", options: [{ label: "A" }, { label: "B" }] } }, ctx);
-    assert.equal(r2, undefined, "ask_plan_question alias auto-allowed");
-    assert.deepEqual(confirmCalls, [], "neither tool should prompt for confirmation");
+    assert.deepEqual(confirmCalls, [], "the tool should not prompt for confirmation");
   });
 
-  it("auto-allows ask_user_question and alias under the /specs gate", async () => {
+  it("auto-allows ask_user_question under the /specs gate", async () => {
     // ponytail: specGate hard-blocks everything except known-read + the question tools.
     const specPath = path.join(TMP, ".agents", "specs", "spec.md");
     const { handlers } = createFakePi(["read"], { plan: true });
@@ -1621,8 +1619,6 @@ describe("tool gating in plan mode", () => {
     assert.ok(tc);
     const r1 = await tc({ toolName: "ask_user_question", input: { question: "Q?", options: [{ label: "A" }, { label: "B" }] } }, ctx);
     assert.equal(r1, undefined, "ask_user_question allowed under spec gate");
-    const r2 = await tc({ toolName: "ask_plan_question", input: { question: "Q?", options: [{ label: "A" }, { label: "B" }] } }, ctx);
-    assert.equal(r2, undefined, "ask_plan_question alias allowed under spec gate");
   });
 });
 
@@ -2598,6 +2594,37 @@ describe("plan model and thinking (global, plan-mode only)", () => {
     assert.equal(prefsOnDisk().planThinking, "high", "fresh settings written");
   });
 
+  it("savePreferences removes its tmp file when the final rename fails", async () => {
+    cleanPrefs();
+    // Force the rename to throw twice: settings.json and its .corrupt backup
+    // are both non-empty directories, so the corrupt-backup rename AND the
+    // tmp→settings.json rename both fail (ENOTEMPTY) — driving savePreferences
+    // into the unlink(tmp) cleanup path. Valid legacy prefs force the
+    // migration path that calls savePreferences.
+    const settingsDir = prefsPath();
+    const corruptDir = `${settingsDir}.corrupt`;
+    const legacy = legacyPrefsPath();
+    rmSync(settingsDir, { recursive: true, force: true }); // cleanPrefs() recreated it as a file
+    mkdirSync(path.join(settingsDir, "keep"), { recursive: true });
+    writeFileSync(path.join(settingsDir, "keep", "f.txt"), "x");
+    mkdirSync(path.join(corruptDir, "keep"), { recursive: true });
+    writeFileSync(path.join(corruptDir, "keep", "f.txt"), "x");
+    mkdirSync(path.dirname(legacy), { recursive: true });
+    writeFileSync(legacy, JSON.stringify({ version: 3 }));
+
+    try {
+      const ext = createFakePi(["read"], {});
+      const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
+      await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx); // migration attempts the save
+
+      const tmp = `${prefsPath()}.${process.pid}.tmp`;
+      assert.ok(!existsSync(tmp), "tmp file cleaned up after failed rename");
+    } finally {
+      rmSync(settingsDir, { recursive: true, force: true });
+      rmSync(corruptDir, { recursive: true, force: true });
+    }
+  });
+
   it("/plan-model without a ref opens the picker in the TUI", async () => {
     initTheme("dark");
     cleanPrefs();
@@ -3040,31 +3067,17 @@ describe("ask_user_question validation", () => {
     assert.match(res.content?.[0]?.text ?? "", /UI is not available/);
   });
 
-  it("deprecated ask_plan_question alias still resolves and warns", async () => {
+  it("deprecated ask_plan_question alias is no longer registered", async () => {
     const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
-    const notified: string[] = [];
-    const ctx = fakeCtx({
-      hasUI: true,
-      mode: "tui",
-      ui: {
-        ...fakeCtx().ui,
-        notify: (msg: string) => { notified.push(msg); },
-        select: async () => "A",
-      },
-    });
+    const ctx = fakeCtx({ hasUI: true });
     await handlers.session_start?.[0]({ reason: "startup" }, ctx);
 
-    const qd = toolDefs.ask_plan_question;
-    assert.ok(qd, "deprecated alias should still be registered");
-    const res = await qd.execute("c1", { question: "Q?", options: [{ label: "A" }, { label: "B" }] }, undefined, undefined, ctx);
-    assert.ok(res);
-    assert.ok(notified.some((m) => m.includes("deprecated")), "should warn about deprecation");
-    assert.equal(res.details?.answer, "A");
+    assert.equal(toolDefs.ask_plan_question, undefined, "removed alias must stay removed");
   });
 });
 
 describe("ask_user_question interactive list flow", () => {
-  // Uses the built-in ctx.ui.select dialog (same UX as the original ask_plan_question).
+  // Uses the built-in ctx.ui.select dialog.
   // The recommended option is marked with ★; "Other / type my answer" opens a simple editor.
 
   async function runWithSelect(
@@ -3177,6 +3190,73 @@ describe("ask_user_question interactive list flow", () => {
 });
 
 describe("flow loop regression coverage", () => {
+  it("plan-mode re-entry aborts an in-flight flow's review timer (0.13.1)", async () => {
+    const state = createFakePi(["read"], { plan: false });
+    let reviewSignal: AbortSignal | undefined;
+    // Accept the review but never respond — the review stays in flight with
+    // its idle timer armed.
+    state.onEmit = (event, data) => {
+      if (event === "pi-review:run") {
+        reviewSignal = data.signal;
+        assert.ok(data.accept());
+      }
+    };
+
+    const flowCwd = createGitRepo("pi-plan-flow-reentry-");
+    const planPath = path.join(flowCwd, "plan.md");
+    writeFileSync(planPath, "# Plan");
+
+    const ctx = fakeCtx({
+      cwd: flowCwd,
+      sessionManager: {
+        getBranch: () => [
+          {
+            type: "custom",
+            customType: "pi-plan",
+            data: {
+              enabled: false,
+              lastPlanPath: planPath,
+              lastPlanTitle: "Some Plan",
+              lastPlanStatus: "approved",
+              flow: {
+                phase: "implement",
+                reviewPass: 0,
+                baseline: "abc",
+                initialDirty: "none",
+                initialDirtyPatch: "",
+                initialUntrackedSnapshot: "[]",
+              },
+            },
+          },
+          {
+            type: "message",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "We verified everything. [verification: pass]" }],
+            },
+          },
+        ],
+      },
+    });
+
+    await state.handlers.session_tree?.[0]({}, ctx);
+    const settled = state.handlers.agent_settled?.[0];
+    assert.ok(settled);
+    const settledDone = settled({}, ctx); // enters review, waits for pi-review
+    await new Promise((r) => setTimeout(r, 20));
+    assert.ok(reviewSignal, "flow reached the review phase");
+
+    // Re-enter plan mode while the review is in flight.
+    await state.commands["plan"].handler("", ctx);
+
+    assert.ok(reviewSignal.aborted, "re-entry aborted the in-flight review");
+    await settledDone;
+    assert.equal(state.customMessages.length, 0, "discarded flow emits no result");
+    const lastEntry = state.entries[state.entries.length - 1];
+    assert.equal(lastEntry?.data?.flow, undefined, "flow discarded on re-entry");
+    assert.equal(lastEntry?.data?.lastPlanStatus, undefined, "plan status cleared on re-entry");
+  });
+
   it("stops when verification marker is absent", async () => {
     const state = createFakePi(["read"], { plan: false });
     const ctx = fakeCtx({

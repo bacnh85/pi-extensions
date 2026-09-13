@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.12.0 (2026-09-14)
+
+### Added
+
+- **Pure-Node Deep Research client** (`lib/gemini-dr.ts`) — research mode no
+  longer routes through gemini-reverse's drifted research path (source of the
+  1184 / "research_id missing" failures). The new client speaks the validated
+  wire protocol directly: init with redirect-following cookie jar → plan turn
+  (deep-research flags + Chrome client headers) → "Start research" confirm
+  turn → poll LIST_CONVERSATION_TURNS until the report text lands. Plan and
+  confirm turns are proven live on a stale session (2026-09-14); report
+  polling requires the session XSRF token, so on degraded sessions the tool
+  returns an honest partial result (plan + transcript) instead of 1184.
+  Fixture-tested against captured real responses (279→280 tests).
+
 ## 0.11.9 (2026-09-14)
 
 ### Changed

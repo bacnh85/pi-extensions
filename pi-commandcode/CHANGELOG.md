@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.2 (2026-09-14)
+
+### Changed
+
+- **`COMMAND_CODE_API_KEY` is now read at call time** instead of snapshotted
+  once at module load. Env changes after import (test harnesses, CI exports,
+  shell reloads) are observed by `refreshModels`, background discovery, and
+  the `/commandcode-config` summary; a resolved `/login` credential still
+  takes precedence.
+
+### Tests
+
+- Added regression coverage for both 0.2.1 fixes: offline `refreshModels`
+  returns `undefined` ("keep current") with a missing/corrupt disk cache and
+  restores cached models remapped through `mapModel`; `writeBaseUrl` bails on
+  a corrupt global `settings.json` without overwriting it (unit test plus a
+  fake-pi drive of the `/commandcode-config` panel save path asserting the
+  "Not saved" error, untouched file, and no provider re-registration).
+
 ## 0.2.1 (2026-09-12)
 
 ### Fixed

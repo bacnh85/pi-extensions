@@ -125,11 +125,22 @@ function withMuninClient<T extends Record<string, unknown>>(
   return callback(client, projectId);
 }
 
+/** Fresh Error carrying the sanitized `err.message + remediation` text, with
+ *  the original preserved as `cause` — never mutates the caught error (keeps
+ *  its identity/stack intact for upstream consumers). */
+function remediatedError(err: Error, remediation?: string): Error {
+  return new Error(
+    sanitizeErrorMessage(new Error(err.message + formatRemediation(remediation))),
+    { cause: err },
+  );
+}
+
 /**
  * Core Munin invocation with retry and error sanitization.
  * Some actions like 'delete' are not advertised in server capabilities
  * but are still supported. Pass ensureCapability: false for those.
  */
+
 export async function callMunin(
   client: any,
   projectId: string,
@@ -166,13 +177,11 @@ export async function callMunin(
         const ackResult = await client.invoke(projectId, ackAction, { version }, { ensureCapability: false });
         if (ackResult && typeof ackResult === "object" &&
             ((ackResult as any).ok === false || (ackResult as any).success === false || (ackResult as any).acknowledged === false)) {
-          err.message = sanitizeErrorMessage(new Error(err.message + formatRemediation(remediation)));
-          throw err;
+          throw remediatedError(err, remediation);
         }
       } catch {
         // ack failed (thrown or resolved-failure) → surface remediation, do NOT retry (no infinite loop).
-        err.message = sanitizeErrorMessage(new Error(err.message + formatRemediation(remediation)));
-        throw err;
+        throw remediatedError(err, remediation);
       }
       // Retry the original action exactly once. Wrap in withRetry so a transient
       // network blip during the retry (after ack already succeeded) is tolerated —
@@ -185,14 +194,11 @@ export async function callMunin(
         // A non-stale retry failure (e.g. VALIDATION_ERROR) must surface its own cause, not a
         // handshake that already succeeded.
         const retryIsStale = classifyError(r).type === "stale_protocol";
-        r.message = sanitizeErrorMessage(new Error(r.message + formatRemediation(extractRemediation(r) ?? (retryIsStale ? remediation : undefined))));
-        throw r;
+        throw remediatedError(r, extractRemediation(r) ?? (retryIsStale ? remediation : undefined));
       }
     }
     // Layer 2: surface remediation in the error message even when auto-ack is skipped.
-    const err2 = error instanceof Error ? error : new Error(String(error));
-    err2.message = sanitizeErrorMessage(new Error(err2.message + formatRemediation(remediation)));
-    throw err2;
+    throw remediatedError(err, remediation);
   }
 }
 

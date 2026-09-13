@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.7 (2026-09-14)
+
+### Fixed
+
+- Atomic settings write for `/router-reasoning` — the persist went through a
+  direct (non-atomic) `writeFileSync` while sibling paths used tmp+rename; a
+  crash mid-write could corrupt `settings.json`. The reasoning persist now
+  routes through the same atomic `writeRouterSection` helper (which replaces
+  the deleted `writeReasoningFlag` duplicate).
+
 ## 1.1.6 (2026-09-12)
 
 ### Fixed

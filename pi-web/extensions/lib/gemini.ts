@@ -8,6 +8,7 @@ import https from "node:https";
 import { urlToHttpOptions } from "node:url";
 import { findEnvValue } from "./config";
 import { ensureKeepalive, loadCookieStore, refreshGeminiAuth, resolvePsidts, saveCookieStore, type PostFn } from "./gemini-auth";
+import { DeepResearchError, geminiDeepResearch, type DrHttp } from "./gemini-dr";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -345,6 +346,8 @@ export function describeGeminiError(err: unknown): string {
   switch (errorName(err)) {
     case "AuthError":
       return "Gemini web session expired (auto-rotation could not refresh it — the cookie died, e.g. pi was closed for hours). Re-copy __Secure-1PSID and __Secure-1PSIDTS from a fresh incognito login to gemini.google.com (F12 → Application → Cookies) into ~/.pi/agent/.env.local, restart pi, and make one Gemini call soon after — while pi runs, the session is kept alive automatically (rotated every 10 min via accounts.google.com/RotateCookies, persisted to ~/.pi/agent/gemini-web-cookies.json).";
+    case "DeepResearchError":
+      return `Deep Research transport error: ${err instanceof Error ? err.message : String(err)}. The pure-Node client follows the 2026-09-14-validated wire shapes; repeated failures usually mean the session is stale (re-paste the cookie from an incognito login) or the web protocol drifted.`;
     case "UsageLimitExceeded":
       return "Gemini web usage limit reached. Try again later or pick a different model.";
     case "TemporarilyBlocked":
@@ -400,6 +403,8 @@ export interface GeminiResearchResult {
   eta?: string | null;
   guest: boolean;
   sources: string[];
+  /** Set when the cycle ran but the report could not be retrieved (stale session) — text carries the plan/confirm transcript instead. */
+  partial?: string;
 }
 
 export async function geminiResearch(
@@ -410,6 +415,8 @@ export async function geminiResearch(
     signal?: AbortSignal;
     onStatus?: (s: Record<string, unknown>) => void;
     factory?: GeminiClientFactory;
+    /** @internal test injection — raw DR transport */
+    drHttp?: DrHttp;
   },
 ): Promise<GeminiResearchResult> {
   if (!opts.config.psid) {
@@ -418,28 +425,26 @@ export async function geminiResearch(
     );
   }
   const timeoutMs = opts.timeoutMs ?? 600_000;
-  const result = await raceGuard(
-    withGeminiClient(
-      opts.config,
-      (client) =>
-        client.research(query, {
-          wait: true,
-          pollInterval: 10_000,
-          timeout: timeoutMs,
-          ...(opts.onStatus ? { onStatus: opts.onStatus } : {}),
-        }),
-      opts.factory,
-    ),
-    // +5s grace so the client's own poll-timeout (better semantics) fires first.
+  // Pure-Node DR client (plan → confirm → poll) — gemini-reverse's research
+  // path drifts (1184 / missing research_id, see 0.11.x history).
+  const dr = await raceGuard(
+    geminiDeepResearch({
+      cookie: { psid: opts.config.psid, psidts: resolvePsidts(opts.config.psid, opts.config.psidts) },
+      query,
+      timeoutMs,
+      signal: opts.signal,
+      ...(opts.drHttp ? { http: opts.drHttp } : {}),
+    }),
+    // +5s grace so the DR client's own poll-timeout (better semantics) fires first.
     { signal: opts.signal, timeoutMs: timeoutMs + 5_000, label: "web_research research" },
   );
-  const text = String(result?.text ?? "");
   return {
-    text,
-    title: result?.plan?.title ?? null,
-    eta: result?.plan?.eta_text ?? null,
+    title: dr.title ?? null,
+    eta: null,
+    text: dr.text || dr.partial || "Deep research completed but returned no report text.",
     guest: false,
-    sources: extractSources(text),
+    sources: dr.sources,
+    partial: dr.partial,
   };
 }
 

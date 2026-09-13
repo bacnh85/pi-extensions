@@ -7,6 +7,7 @@ import { expect } from "chai";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   applyHeaderCapArgs,
   extractSources,
@@ -17,10 +18,13 @@ import {
   geminiAsk,
   geminiResearch,
   withGeminiClient,
+  type DrHttp,
   __resetGeminiClientCache,
   type GeminiClientLike,
   type GeminiClientFactory,
 } from "../../lib/gemini";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
 
 function fakeClient(overrides: Partial<GeminiClientLike> = {}): GeminiClientLike {
   return {
@@ -276,22 +280,27 @@ describe("geminiAsk", () => {
 });
 
 describe("geminiResearch", () => {
-  it("passes timeout and returns title/eta/sources", async () => {
+  it("runs the pure-Node DR cycle and returns title/text/sources", async () => {
     __resetGeminiClientCache();
-    let captured: Record<string, unknown> | undefined;
-    const client = fakeClient({
-      research: async (_q: string, opts?: Record<string, unknown>) => {
-        captured = opts;
-        return { text: "Report citing [s](https://r.example/1).", plan: { title: "T", eta_text: "10 min" } };
-      },
-    });
-    const res = await geminiResearch("q", { config: { psid: "p", psidSource: "test" }, timeoutMs: 5000, factory: factoryFor(client) });
-    expect(res.title).to.equal("T");
-    expect(res.eta).to.equal("10 min");
+    const planBuf = fs.readFileSync(path.join(here, "fixtures", "dr-plan.bin"));
+    const reportJson = JSON.stringify([null, [["rc_x", ["Report body citing [s](https://r.example/1) — " + "padding ".repeat(30) + " End of report."]]]]);
+    const reportBuf = Buffer.from(")]}'\n\n" + (Buffer.byteLength(reportJson) + 1) + "\n" + reportJson + "\n");
+    let turns = 0;
+    const drHttp: DrHttp = async (url) => {
+      if (url.startsWith("https://gemini.google.com/app")) {
+        return { status: 200, headers: { get: () => null }, buf: Buffer.from('<html>"SNlM0e":"TOK","cfb2h":"b1","FdrFJe":"7"</html>') };
+      }
+      if (url.includes("StreamGenerate")) {
+        turns++;
+        return { status: 200, headers: { get: () => null }, buf: planBuf };
+      }
+      return { status: 200, headers: { get: () => null }, buf: reportBuf };
+    };
+    const res = await geminiResearch("q", { config: { psid: "p", psidSource: "test" }, timeoutMs: 5000, drHttp });
+    expect(res.title).to.equal("JPEG Compression Research Plan");
+    expect(res.eta).to.equal(null);
     expect(res.sources).to.deep.equal(["https://r.example/1"]);
-    expect(captured?.wait).to.equal(true);
-    expect(captured?.timeout).to.equal(5000);
-    expect(captured?.pollInterval).to.equal(10000);
+    expect(turns).to.equal(2); // plan + confirm turns
   });
 
   it("refuses research in guest mode with a setup message", async () => {

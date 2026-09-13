@@ -1,6 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, unlinkSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, unlinkSync, existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -76,6 +76,30 @@ describe("config", () => {
     assert.equal(maskApiKey(key), key.slice(0, 4) + "●".repeat(key.length - 8) + key.slice(-4));
     assert.equal(maskApiKey(undefined), "(not set)");
     assert.equal(maskApiKey("short"), "short");
+  });
+});
+
+// ── commands (atomic settings write) ─────────────────────────────────────────
+
+describe("commands", () => {
+  it("writeRouterSection replaces settings.json via tmp+rename (not an in-place rewrite)", async () => {
+    const settingsPath = join(TMP_HOME, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ other: true, router: { baseUrl: "http://x" } }));
+    const inoBefore = statSync(settingsPath).ino;
+    const { writeRouterSection } = await import("../commands/commands.js");
+    writeRouterSection({ enableReasoning: true });
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      other: boolean;
+      router: Record<string, unknown>;
+    };
+    assert.equal(settings.other, true); // unrelated keys survive
+    assert.equal(settings.router.baseUrl, "http://x");
+    assert.equal(settings.router.enableReasoning, true);
+    // Rename swaps the directory entry → new inode; a direct writeFileSync
+    // rewrites in place and keeps the inode. Catches regression to the
+    // non-atomic write without fs interception.
+    assert.notEqual(inoBefore, statSync(settingsPath).ino);
+    assert.ok(!existsSync(settingsPath + ".tmp")); // no tmp residue
   });
 });
 
