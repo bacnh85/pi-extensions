@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.4 (2026-09-13)
+
+### Fixed
+
+- **Truthful image extensions**: saved files are typed by magic bytes, not
+  URL/file extension — Z.ai GLM-Image serves JPEG behind a `.png` URL, which
+  previously produced mislabeled files and inline blocks.
+
 ## 0.10.3 (2026-09-13)
 
 ### Fixed

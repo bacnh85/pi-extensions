@@ -238,7 +238,7 @@ export async function apiGenerateImage(opts: {
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     if (typeof item?.b64_json === "string" && item.b64_json) {
-      paths.push(writeB64(opts.outDir, item.b64_json, i));
+      paths.push(writeB64(opts.outDir, Buffer.from(item.b64_json, "base64"), i));
     } else if (typeof item?.url === "string" && item.url) {
       // A failed download must not waste the generation: surface the URL.
       try {
@@ -256,9 +256,19 @@ export async function apiGenerateImage(opts: {
   return { paths, urls, model: typeof payload?.model === "string" ? payload.model : opts.model };
 }
 
-function writeB64(outDir: string, b64: string, i: number): string {
-  const file = path.join(outDir, `pi-web-image-${randomUUID().slice(0, 8)}-${i}.png`);
-  fs.writeFileSync(file, Buffer.from(b64, "base64"));
+// Some gateways serve JPEG/WebP bytes behind a .png URL (Z.ai GLM-Image does) —
+// trust the magic bytes, not the URL/file extension.
+function extFromBytes(buf: Buffer, fallback: string): string {
+  if (buf.length >= 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return ".png";
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return ".jpg";
+  if (buf.length >= 6 && buf.toString("ascii", 0, 3) === "GIF") return ".gif";
+  if (buf.length >= 12 && buf.toString("ascii", 0, 4) === "RIFF" && buf.toString("ascii", 8, 12) === "WEBP") return ".webp";
+  return fallback;
+}
+
+function writeB64(outDir: string, buf: Buffer, i: number): string {
+  const file = path.join(outDir, `pi-web-image-${randomUUID().slice(0, 8)}-${i}${extFromBytes(buf, ".png")}`);
+  fs.writeFileSync(file, buf);
   return file;
 }
 
@@ -290,7 +300,7 @@ async function downloadImage(
     if (!res.ok) throw new ImageApiError(res.status, `image download failed (HTTP ${res.status})`);
   const buf = Buffer.from(await res.arrayBuffer());
   if (buf.length > MAX_DOWNLOAD_BYTES) throw new Error(`image exceeds the ${MAX_DOWNLOAD_BYTES}-byte download cap`);
-  const file = path.join(outDir, `pi-web-image-${randomUUID().slice(0, 8)}-${i}${extFor(url)}`);
+  const file = path.join(outDir, `pi-web-image-${randomUUID().slice(0, 8)}-${i}${extFromBytes(buf, extFor(url))}`);
   fs.writeFileSync(file, buf);
   return file;
   }

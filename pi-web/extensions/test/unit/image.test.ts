@@ -673,6 +673,30 @@ describe("generateImageWithFallback cancellation + n handling (review findings)"
     expect(r.urls).to.deep.equal(["http://169.254.169.254/latest/meta-data"]);
   });
 
+  it("sniffs real image type from bytes (JPEG behind a .png URL saved as .jpg)", async () => {
+    const outDir = await tmpDir();
+    const jpegB64 = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]).toString("base64");
+    const fetchImpl = (async (_url: string, init?: { method?: string }) => {
+      if (init?.method === "POST") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ b64_json: jpegB64 }] }),
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        arrayBuffer: async () => new ArrayBuffer(0),
+      };
+    }) as unknown as FetchLike;
+    const r = await apiGenerateImage({ baseUrl: "https://x/v1", prompt: "p", outDir, fetchImpl });
+    expect(r.paths[0].endsWith(".jpg")).to.equal(true); // not .png
+    expect(fs.readFileSync(r.paths[0])[0]).to.equal(0xff);
+  });
+
   it("caps oversized downloads at MAX_DOWNLOAD_BYTES and surfaces the URL instead", async () => {
     const outDir = await tmpDir();
     const big = Buffer.alloc(MAX_DOWNLOAD_BYTES + 1);
