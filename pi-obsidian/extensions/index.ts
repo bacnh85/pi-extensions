@@ -493,59 +493,70 @@ export function vaultWrite(
       }
     }
 
-    // --- verify: read back and confirm content ---
+    // --- verify: read back via CLI and confirm content externally ---
+    // Obsidian 1.13.x drops eval echo when the async body involves real I/O
+    // (adapter.read, setTimeout) — especially on SMB/network mounts where I/O
+    // latency exceeds the CLI's internal eval-result timeout. The `obsidian read`
+    // CLI command uses a different code path and is reliable. We read the file
+    // content here and compute the hash externally in Node.js.
     let verifyError: Error | undefined;
     try {
+      const readArgs: string[] = [];
+      if (vault) readArgs.push(`vault=${vault}`);
+      readArgs.push("read", `path=${notePath}`);
+      // Retry read up to 3 times with a short gap — SMB/network mounts have
+      // write-visibility propagation delays that can make a just-written file
+      // appear empty on immediate re-read.
+      let fileContent = "";
+      let readStderr = "";
+      for (let rAttempt = 0; rAttempt < 3; rAttempt++) {
+        if (rAttempt > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+        const rr = exec(readArgs, false, timeoutMs);
+        fileContent = rr.stdout.replace(/^=>\s?/, "");
+        readStderr = rr.stderr || "";
+        if (fileContent.length > 0 || !readStderr) break;
+      }
+      // Obsidian's adapter.write() normalizes files to end with a trailing \n.
+      // Strip it for comparison so we don't get false mismatches.
+      if (fileContent.endsWith("\n")) fileContent = fileContent.slice(0, -1);
+      if (readStderr && !fileContent) {
+        throw new Error(`vaultWrite ${effectiveMode} verification failed for "${notePath}": file not found or unreadable`);
+      }
+
       if (effectiveMode === "create" || effectiveMode === "overwrite") {
-        const verResult = run(buildVerifyScript(notePath), "verify");
-        if (verResult.startsWith("Error:")) {
-          throw new Error(`vaultWrite ${effectiveMode} verification failed for "${notePath}": ${verResult}`);
-        }
-        const [verHash, verBytes] = verResult.split(" ", 2).map(Number);
         const expected = djb2Utf8(content);
-        if (verHash !== expected.hash || verBytes !== expected.bytes) {
+        const actual = djb2Utf8(fileContent);
+        if (actual.hash !== expected.hash || actual.bytes !== expected.bytes) {
           throw new Error(
             `vaultWrite ${effectiveMode} verification failed for "${notePath}": ` +
-            `written ${verBytes} bytes (hash ${verHash}), expected ${expected.bytes} bytes (hash ${expected.hash})`
+            `written ${actual.bytes} bytes (hash ${actual.hash}), expected ${expected.bytes} bytes (hash ${expected.hash})`
           );
         }
       } else if (effectiveMode === "append") {
-        // Append: verify the FULL appended content is the file's tail by hashing
-        // the last content.length code units (small script — no content
-        // embedding, stays under the eval payload ceiling). Catches a missing
-        // chunk 0 in multi-chunk append: file = OLD + chunk1..N would not hash
-        // to the full content. Note: the eval's s.slice() uses UTF-16 code
-        // units, so content.length (not byte length) is the correct slice size.
         if (!content) break; // empty append is a no-op
         const contentUnits = content.length;
-        const tailResult = run(buildTailHashScript(notePath, contentUnits), "verify-tail");
-        if (tailResult.startsWith("Error:")) {
-          throw new Error(`vaultWrite ${effectiveMode} verification failed for "${notePath}": ${tailResult}`);
-        }
-        const [tailHash, tailBytes] = tailResult.split(" ", 2).map(Number);
+        const tail = fileContent.slice(-contentUnits);
         const expected = djb2Utf8(content);
-        if (tailHash !== expected.hash || tailBytes !== expected.bytes) {
+        const actual = djb2Utf8(tail);
+        if (actual.hash !== expected.hash || actual.bytes !== expected.bytes) {
           throw new Error(
             `vaultWrite ${effectiveMode} verification failed for "${notePath}": ` +
-            `tail ${tailBytes} bytes (hash ${tailHash}), expected ${expected.bytes} bytes (hash ${expected.hash})`
+            `tail ${actual.bytes} bytes (hash ${actual.hash}), expected ${expected.bytes} bytes (hash ${expected.hash})`
           );
         }
       } else {
-        // Prepend: hash the FULL prepended content (first content.length code
-        // units after any frontmatter) — catches a silently-no-op'd chunk 1..N
-        // that a chunk-0-only prefix check would miss. s.slice() uses UTF-16
-        // code units, so content.length (not byte length) is the slice size.
+        // Prepend: verify the prepended content appears at the start (after frontmatter)
         const contentUnits = content.length;
-        const headResult = run(buildPrefixHashScript(notePath, contentUnits), "verify-prefix-hash");
-        if (headResult.startsWith("Error:")) {
-          throw new Error(`vaultWrite ${effectiveMode} verification failed for "${notePath}": ${headResult}`);
-        }
-        const [headHash, headBytes] = headResult.split(" ", 2).map(Number);
+        let body = fileContent;
+        const fmMatch = body.match(/^---\s*\n[\s\S]*?\n---\s*\n/);
+        if (fmMatch) body = body.slice(fmMatch[0].length);
+        const head = body.slice(0, contentUnits);
         const expected = djb2Utf8(content);
-        if (headHash !== expected.hash || headBytes !== expected.bytes) {
+        const actual = djb2Utf8(head);
+        if (actual.hash !== expected.hash || actual.bytes !== expected.bytes) {
           throw new Error(
             `vaultWrite ${effectiveMode} verification failed for "${notePath}": ` +
-            `head ${headBytes} bytes (hash ${headHash}), expected ${expected.bytes} bytes (hash ${expected.hash})`
+            `head ${actual.bytes} bytes (hash ${actual.hash}), expected ${expected.bytes} bytes (hash ${expected.hash})`
           );
         }
       }
