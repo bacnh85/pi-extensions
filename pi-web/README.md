@@ -279,6 +279,12 @@ long as pi (or the keepalive) runs. If pi stays closed for hours, the stored
 cookie can expire server-side — re-paste when the error tells you to.
 `web_status` reports the store's freshness under `geminiWeb.cookieStore`.
 
+Scope note: rotation is only guaranteed for cookies harvested as recommended
+(incognito/unbound). A third-party experiment reports the same rotation
+endpoint also serves DBSC-bound (daily-Chrome) cookies today, but pi-web does
+not rely on that — if rotation keeps failing with "no new `__Secure-1PSIDTS`",
+your cookie is likely DBSC-bound: re-paste from a fresh incognito login.
+
 Smoke the rotation directly (no prompt needed):
 
 ```bash
@@ -304,6 +310,8 @@ Troubleshooting:
   `__Secure-1PSID` + `__Secure-1PSIDTS` from a fresh **incognito** login. If
   this returns often, your daily browser is competing for the same session —
   keep using the incognito cookie and let pi own the rotation.
+- *"no new `__Secure-1PSIDTS` in response"* — the cookie is likely DBSC-bound
+  (copied from a daily Chrome session): re-paste from a fresh incognito login.
 - *"temporarily blocked this IP"* — set `GEMINI_WEB_PROXY`.
 - *research mode: "Unknown API error: 1184"* — **not** an entitlement error:
   Deep Research plan creation succeeds on free-tier accounts via

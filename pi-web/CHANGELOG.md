@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.1 (2026-09-13)
+
+### Changed
+
+- **Scope the cookie-rotation guarantee precisely** (advisor round): the
+  "works for DBSC-bound sessions too" finding is a single third-party
+  experiment (notebooklm-py#345/#312 — and its "gated off" observation applies
+  to the `CheckCookie` endpoint, not `RotateCookies`); pi-web's supported path
+  remains incognito/unbound cookies. The "no new `__Secure-1PSIDTS`" failure
+  now says so explicitly, and README gained a scope note.
+
 ## 0.11.0 (2026-09-13)
 
 ### Added
@@ -7,7 +18,9 @@
 - **Gemini cookie auto-refresh** — no more re-pasting `GEMINI_WEB_SECURE_1PSID`
   every 15–25 minutes. pi-web now rotates `__Secure-1PSIDTS` itself via
   Google's own rotation endpoint (`POST accounts.google.com/RotateCookies`,
-  the endpoint Chrome calls; validated for DBSC-bound and unbound sessions):
+  the endpoint Chrome calls; a third-party experiment reports it also covers
+  DBSC-bound sessions, but pi-web's supported path is incognito/unbound
+  cookies):
   - background keepalive rotates every 10 min while pi runs (Google's
     declared cadence; `GEMINI_WEB_ROTATE_INTERVAL_MS` to tune,
     `GEMINI_WEB_KEEPALIVE=0` to disable),

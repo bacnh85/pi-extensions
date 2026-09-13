@@ -3,8 +3,9 @@
 // Google rotates __Secure-1PSIDTS on authenticated visits, so a pasted static
 // copy dies within minutes-to-hours. Google also ships the rotation endpoint
 // Chrome itself calls: POST https://accounts.google.com/RotateCookies issues a
-// fresh __Secure-1PSIDTS for the cookie session (works for DBSC-bound and
-// unbound sessions today; 401 = session dead server-side). We rotate on a
+// fresh __Secure-1PSIDTS for the cookie session (a third-party experiment
+// reports this also covers DBSC-bound sessions today, but pi-web's supported
+// path is incognito/unbound cookies; 400/401 = session dead server-side). We rotate on a
 // 10-min keepalive (Google's declared cadence) and persist the rotated value
 // to a 0600 store file so later pi sessions reuse it.
 // Sources: HanaokaYuzu/Gemini-API utils/rotate_1psidts.py + constants.py;
@@ -160,7 +161,7 @@ export async function rotateCookies(opts: {
     if (res.status === 401 || res.status === 403) {
       return { ok: false, stale: true, reason: `unauthorized (${res.status}) — session expired server-side` };
     }
-    return { ok: false, stale: true, reason: `no new __Secure-1PSIDTS in response (status ${res.status})` };
+    return { ok: false, stale: true, reason: `no new __Secure-1PSIDTS in response (status ${res.status}) — the session may be DBSC-bound (Chrome-minted); harvest cookies from a fresh incognito login` };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };
   }
