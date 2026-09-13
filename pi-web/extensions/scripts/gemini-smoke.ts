@@ -4,12 +4,14 @@
 //   npx tsx extensions/scripts/gemini-smoke.ts "query" research   # Deep Research (cookie + Gemini Advanced)
 //   npx tsx extensions/scripts/gemini-smoke.ts "prompt" image     # Gemini web image generation
 //   npx tsx extensions/scripts/gemini-smoke.ts "prompt" zai       # Z.ai GLM-Image (needs ZAI_API_KEY)
+//   npx tsx extensions/scripts/gemini-smoke.ts x auth             # rotate + persist cookie store (no prompt needed)
 // Set GEMINI_WEB_SECURE_1PSID in the environment (or ~/.pi/agent/.env.local)
 // for authed Gemini mode. Prints full answers (no preview slicing).
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { geminiAsk, geminiGenerateImage, geminiResearch, loadGeminiWebConfig } from "../lib/gemini";
+import { refreshGeminiAuth } from "../lib/gemini-auth";
 import { ZAI_PRESET, apiGenerateImage, loadImageApiConfig } from "../lib/imageapi";
 
 function pngMagic(file: string): string {
@@ -22,7 +24,15 @@ async function main() {
   const mode = process.argv[3] ?? "ask";
   const config = loadGeminiWebConfig(process.cwd(), true);
   const t0 = Date.now();
-  if (mode === "research") {
+  if (mode === "auth") {
+    const r = await refreshGeminiAuth(config);
+    if (r.ok) {
+      console.log(`rotate OK in ${Date.now() - t0}ms — fresh __Secure-1PSIDTS persisted to ${r.store}`);
+    } else {
+      console.log(`rotate FAILED — ${r.reason}${r.stale ? " (store cleared)" : ""}. Paste a fresh cookie from an incognito login, then re-run.`);
+      process.exitCode = 1;
+    }
+  } else if (mode === "research") {
     const r = await geminiResearch(query, { config });
     console.log(`research OK in ${Date.now() - t0}ms — title: ${r.title ?? "?"} — sources: ${r.sources.length}`);
     if (r.sources.length) console.log(r.sources.map((s) => `  ${s}`).join("\n"));
@@ -52,7 +62,7 @@ async function main() {
     if (r.sources.length) console.log(r.sources.map((s) => `  ${s}`).join("\n"));
     console.log(r.text);
   }
-  process.exit(0);
+  process.exit(process.exitCode ?? 0);
 }
 
 main();

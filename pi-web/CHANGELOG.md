@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.11.0 (2026-09-13)
+
+### Added
+
+- **Gemini cookie auto-refresh** — no more re-pasting `GEMINI_WEB_SECURE_1PSID`
+  every 15–25 minutes. pi-web now rotates `__Secure-1PSIDTS` itself via
+  Google's own rotation endpoint (`POST accounts.google.com/RotateCookies`,
+  the endpoint Chrome calls; validated for DBSC-bound and unbound sessions):
+  - background keepalive rotates every 10 min while pi runs (Google's
+    declared cadence; `GEMINI_WEB_ROTATE_INTERVAL_MS` to tune,
+    `GEMINI_WEB_KEEPALIVE=0` to disable),
+  - rotated values persist to `~/.pi/agent/gemini-web-cookies.json` (0600,
+    `GEMINI_WEB_COOKIE_STORE` to relocate) and are preferred on the next
+    start; a newly pasted cookie always wins,
+  - every Gemini call persists server-side rotations, and an auth failure
+    triggers one rotate-and-retry before erroring; a server-declared dead
+    session clears the store so a fresh paste is never shadowed,
+  - `web_status` reports store freshness (`geminiWeb.cookieStore`), and
+    `gemini-smoke.ts x auth` smoke-tests rotation directly.
+  Harvest cookies from a fresh **incognito** login (daily-browser cookies are
+  DBSC-capped and compete with the rotation); see README "Keeping the session
+  alive".
+
 ## 0.10.7 (2026-09-13)
 
 ### Fixed

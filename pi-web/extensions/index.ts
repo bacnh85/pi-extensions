@@ -31,6 +31,7 @@ import {
   geminiResearch,
   describeGeminiError,
 } from "./lib/gemini";
+import { cookieStoreSnapshot } from "./lib/gemini-auth";
 import {
   generateImageWithFallback,
   loadImageApiConfig,
@@ -580,7 +581,10 @@ export default function piWebExtension(pi: ExtensionAPI) {
         `Saved: ${result.paths.length} image(s)`,
         ...result.paths.map((p) => `  ${p}`),
         ...(result.urls.length
-          ? [`Not saved (image host unreachable from this machine — open directly):`, ...result.urls.map((u) => `  ${u}`)]
+          ? [
+              "Not saved (download failed — URL openable directly):",
+              ...result.urls.map((u, i) => `  ${u}${result.downloadErrors?.[i] ? `  (${result.downloadErrors[i]})` : ""}`),
+            ]
           : []),
         result.attempts.length ? `Provider notes: ${result.attempts.join(" | ")}` : null,
       ].filter(Boolean).join("\n");
@@ -588,7 +592,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
         { type: "text" as const, text },
         ...blocks,
       ];
-      return { content, details: { provider: result.provider, model: result.model, paths: result.paths, urls: result.urls, attempts: result.attempts } };
+      return { content, details: { provider: result.provider, model: result.model, paths: result.paths, urls: result.urls, downloadErrors: result.downloadErrors, attempts: result.attempts } };
     },
   });
 
@@ -683,7 +687,12 @@ export default function piWebExtension(pi: ExtensionAPI) {
           apiTokenSource: c4aiToken.value ? c4aiToken.source : "not set",
         },
         agy: { installed: isAgyInstalled() },
-        geminiWeb: { configured: Boolean(geminiCfg.psid), cookieSource: geminiCfg.psidSource, proxy: Boolean(geminiCfg.proxy) },
+        geminiWeb: {
+          configured: Boolean(geminiCfg.psid),
+          cookieSource: geminiCfg.psidSource,
+          proxy: Boolean(geminiCfg.proxy),
+          cookieStore: cookieStoreSnapshot(),
+        },
         imageProviders: {
           gemini: { configured: Boolean(geminiCfg.psid), guestPossible: true },
           zai: { configured: Boolean(imageApiCfg.zai) },

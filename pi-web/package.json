@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-web",
-  "version": "0.10.7",
+  "version": "0.11.0",
   "description": "Pi extension for web search, page extraction, Firecrawl scraping/crawling, Crawl4AI headless browser crawling, Gemini web-tier research, free upstream image generation, and one-off gateway chat.",
   "type": "module",
   "license": "MIT",
@@ -49,6 +49,7 @@
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
+    "axios": "^1.20.0",
     "gemini-reverse": "^2.1.0",
     "jsdom": "^27.0.1",
     "turndown": "^7.2.2",

@@ -296,6 +296,10 @@ describe("geminiGenerateImage", () => {
       config: { psid: "psid", psidSource: "t" },
       outDir: await tmpDir(),
       factory: factoryFor(client, calls),
+      auth: {
+        rotatePost: async () => ({ status: 200, setCookie: ["__Secure-1PSIDTS=rotated; Path=/"] }),
+        storePath: path.join(await tmpDir(), "cookies.json"),
+      },
     });
     expect(calls.n).to.equal(2);
     expect(r.paths).to.have.length(1);

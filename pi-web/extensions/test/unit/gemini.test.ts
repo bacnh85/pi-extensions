@@ -4,6 +4,9 @@
  */
 
 import { expect } from "chai";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   extractSources,
   loadGeminiWebConfig,
@@ -90,7 +93,7 @@ describe("loadGeminiWebConfig", () => {
 
 describe("describeGeminiError", () => {
   it("maps upstream error classes by name and constructor", () => {
-    expect(describeGeminiError({ name: "AuthError" })).to.include("cookie expired");
+    expect(describeGeminiError({ name: "AuthError" })).to.include("session expired");
     class UsageLimitExceeded extends Error {}
     expect(describeGeminiError(new UsageLimitExceeded("x"))).to.include("usage limit");
     expect(describeGeminiError({ name: "TemporarilyBlocked" })).to.include("GEMINI_WEB_PROXY");
@@ -287,7 +290,11 @@ describe("withGeminiClient auth retry", () => {
       },
     });
     const calls = { n: 0 };
-    const res = await withGeminiClient({ psid: "p", psidSource: "test" }, (c) => c.ask("q"), factoryFor(client, calls));
+    const auth = {
+      rotatePost: async () => ({ status: 200, setCookie: ["__Secure-1PSIDTS=rotated; Path=/"] }),
+      storePath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "gemini-test-")), "cookies.json"),
+    };
+    const res = await withGeminiClient({ psid: "p", psidSource: "test" }, (c) => c.ask("q"), factoryFor(client, calls), auth);
     expect((res as { text?: string }).text).to.equal("recovered");
     expect(calls.n).to.equal(2);
   });

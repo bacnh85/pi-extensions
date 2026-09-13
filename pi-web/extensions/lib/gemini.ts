@@ -6,6 +6,7 @@ import http from "node:http";
 import https from "node:https";
 import { urlToHttpOptions } from "node:url";
 import { findEnvValue } from "./config";
+import { ensureKeepalive, loadCookieStore, refreshGeminiAuth, resolvePsidts, saveCookieStore, type PostFn } from "./gemini-auth";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -152,11 +153,18 @@ export async function loadDefaultFactory(): Promise<GeminiClientFactory> {
   };
 }
 
-async function getClient(config: GeminiWebConfig, factory?: GeminiClientFactory): Promise<GeminiClientLike> {
-  const key = `${config.psid ?? ""}|${config.psidts ?? ""}|${config.proxy ?? ""}`;
+async function getClient(config: GeminiWebConfig, factory?: GeminiClientFactory, storePath?: string): Promise<GeminiClientLike> {
+  // Store-first: the keepalive keeps __Secure-1PSIDTS rotated and persisted;
+  // the static env copy is only the bootstrap identity (and wins when the
+  // user pastes a fresh cookie, because the store is keyed to the old psid).
+  const psidts = resolvePsidts(config.psid, config.psidts, storePath);
+  const key = `${config.psid ?? ""}|${psidts ?? ""}|${config.proxy ?? ""}`;
   if (cached?.key === key) return cached.client;
   const make = factory ?? (await loadDefaultFactory());
-  const client = await make({ secure_1psid: config.psid, secure_1psidts: config.psidts, proxy: config.proxy });
+  const client = await make({ secure_1psid: config.psid, secure_1psidts: psidts, proxy: config.proxy });
+  // Keepalive arms only for the real transport — fake factories (tests) get
+  // no background rotation timer.
+  if (!factory) ensureKeepalive(config);
   cached = { key, client };
   return client;
 }
@@ -179,21 +187,45 @@ function isAuthError(err: unknown): boolean {
   return errorName(err) === "AuthError";
 }
 
-// One AuthError retry: re-creating the client re-runs init, which absorbs the
-// rotated Set-Cookies (incl. __Secure-1PSIDTS) Google hands back.
+// After a successful run, persist any rotated __Secure-1PSIDTS the client
+// absorbed from response Set-Cookie headers (gemini-reverse merges them into
+// client.cookies). Without this, the rotated value dies with the process —
+// exactly the static-snapshot decay OmniRoute #7676 describes.
+function persistRotatedTs(client: GeminiClientLike, config: GeminiWebConfig, storePath?: string): void {
+  if (!config.psid) return;
+  const ts = (client as unknown as { cookies?: Record<string, string> }).cookies?.["__Secure-1PSIDTS"];
+  if (!ts || ts === config.psidts) return;
+  const store = loadCookieStore(storePath);
+  if (store?.psid === config.psid && store.psidts === ts) return;
+  saveCookieStore({ psid: config.psid, psidts: ts, updatedAt: Date.now() }, storePath);
+}
+
+// One AuthError retry: rotate the cookie via Google's RotateCookies endpoint
+// (refreshGeminiAuth persists a fresh value, or clears the store when the
+// server says the session is dead), then rebuild the client — re-running init
+// also absorbs rotated Set-Cookies Google hands back. Only one retry: a
+// second AuthError propagates.
 export async function withGeminiClient<T>(
   config: GeminiWebConfig,
   run: (client: GeminiClientLike) => Promise<T>,
   factory?: GeminiClientFactory,
+  auth?: { rotatePost?: PostFn; storePath?: string },
 ): Promise<T> {
-  try {
-    return await run(await getClient(config, factory));
-  } catch (err) {
-    if (isAuthError(err) && config.psid) {
+  const attempt = async (client: GeminiClientLike): Promise<T> => {
+    const result = await run(client);
+    persistRotatedTs(client, config, auth?.storePath);
+    return result;
+  };
+  let client = await getClient(config, factory, auth?.storePath);
+  for (let i = 0; ; i++) {
+    try {
+      return await attempt(client);
+    } catch (err) {
+      if (!isAuthError(err) || !config.psid || i > 0) throw err;
+      await refreshGeminiAuth(config, { post: auth?.rotatePost, storePath: auth?.storePath });
       cached = null;
-      return run(await getClient(config, factory));
+      client = await getClient(config, factory, auth?.storePath);
     }
-    throw err;
   }
 }
 
@@ -272,7 +304,7 @@ export function extractSources(text: string, cap = 30): string[] {
 export function describeGeminiError(err: unknown): string {
   switch (errorName(err)) {
     case "AuthError":
-      return "Gemini web cookie expired or invalid. Re-copy __Secure-1PSID from gemini.google.com (F12 → Application → Cookies) into GEMINI_WEB_SECURE_1PSID in ~/.pi/agent/.env.local, then restart pi.";
+      return "Gemini web session expired (auto-rotation could not refresh it — the cookie died, e.g. pi was closed for hours). Re-copy __Secure-1PSID and __Secure-1PSIDTS from a fresh incognito login to gemini.google.com (F12 → Application → Cookies) into ~/.pi/agent/.env.local, restart pi, and make one Gemini call soon after — while pi runs, the session is kept alive automatically (rotated every 10 min via accounts.google.com/RotateCookies, persisted to ~/.pi/agent/gemini-web-cookies.json).";
     case "UsageLimitExceeded":
       return "Gemini web usage limit reached. Try again later or pick a different model.";
     case "TemporarilyBlocked":
@@ -388,6 +420,7 @@ export async function geminiGenerateImage(
     timeoutMs?: number;
     signal?: AbortSignal;
     factory?: GeminiClientFactory;
+    auth?: { rotatePost?: PostFn; storePath?: string };
   },
 ): Promise<GeminiImageResult> {
   const out = await raceGuard(
@@ -401,6 +434,7 @@ export async function geminiGenerateImage(
         return chat.generateContent({ prompt });
       },
       opts.factory,
+      opts.auth,
     ),
     { signal: opts.signal, timeoutMs: opts.timeoutMs ?? 180_000, label: "web_image gemini" },
   );

@@ -32,7 +32,10 @@ Variables:
 | `CRAWL4AI_API_TOKEN` | No (3) | — | Required if Crawl4AI auth enabled |
 | `GEMINI_WEB_SECURE_1PSID` | No (4) | — | `__Secure-1PSID` cookie from gemini.google.com — enables authed `web_research` (Deep Research) |
 | `GEMINI_WEB_PROXY` | No | — | Proxy URL for Gemini web calls (escape hatch if Google blocks the IP) |
-| `GEMINI_WEB_SECURE_1PSIDTS` | No (6) | — | Rotating `__Secure-1PSIDTS` cookie — restores full auth when Google withholds SNlM0e from plain clients (recommended for image surfaces) |
+| `GEMINI_WEB_SECURE_1PSIDTS` | No (6) | — | Rotating `__Secure-1PSIDTS` cookie — bootstrap only; pi re-rotates it automatically (see "Keeping the session alive") |
+| `GEMINI_WEB_COOKIE_STORE` | No | `~/.pi/agent/gemini-web-cookies.json` | Where the auto-refreshed cookie state persists (0600) |
+| `GEMINI_WEB_KEEPALIVE` | No | on | Set `0` to disable background cookie rotation |
+| `GEMINI_WEB_ROTATE_INTERVAL_MS` | No | `600000` | Keepalive rotation cadence (min 60000) |
 | `ZAI_API_KEY` | No (5) | — | Z.ai API key — enables the `web_image` `zai` provider (GLM-Image via the official `api.z.ai`); `Z_AI_API_KEY` also accepted |
 | `WEB_IMAGE_API_BASE_URL` | No | — | `web_image` `custom` provider: any OpenAI-compatible images endpoint (e.g. `https://api.openai.com/v1`) |
 | `WEB_IMAGE_API_KEY` | No | — | Bearer key for the `custom` endpoint |
@@ -252,6 +255,36 @@ Setup (authed mode):
    ```
 4. Restart pi; `web_status` shows `geminiWeb.configured: true`.
 
+**Paste from a fresh incognito login** (sign in, copy both `__Secure-1PSID`
+and `__Secure-1PSIDTS`, close the window). Cookies copied from your daily
+browser are short-lived: Chrome's Device Bound Session Credentials caps them
+at a few hours, and an open Gemini tab keeps rotating the value under you.
+
+### Keeping the session alive (cookie auto-refresh)
+
+Google rotates `__Secure-1PSIDTS` on authenticated visits, so a pasted static
+copy dies within minutes-to-hours. pi-web therefore rotates the cookie itself
+using Google's own rotation endpoint (`POST accounts.google.com/RotateCookies`
+— the same call Chrome makes):
+
+- A background keepalive rotates every **10 minutes** while pi runs and
+  persists the fresh value to `~/.pi/agent/gemini-web-cookies.json` (0600).
+- Every Gemini call also persists any rotation the server hands back, and an
+  auth failure triggers one rotate-and-retry before surfacing an error.
+- On the next start, pi prefers the stored value (when it belongs to the same
+  `__Secure-1PSID` session); a newly pasted cookie always wins.
+
+In practice: paste once, use Gemini soon after, and the session stays alive as
+long as pi (or the keepalive) runs. If pi stays closed for hours, the stored
+cookie can expire server-side — re-paste when the error tells you to.
+`web_status` reports the store's freshness under `geminiWeb.cookieStore`.
+
+Smoke the rotation directly (no prompt needed):
+
+```bash
+npx tsx extensions/scripts/gemini-smoke.ts x auth
+```
+
 Live verification script (also proves the header-cap patch end-to-end — an
 authed failure would surface `HPE_HEADER_OVERFLOW`):
 
@@ -267,7 +300,10 @@ actionable steps (expired cookie → re-copy; IP block → set `GEMINI_WEB_PROXY
 
 Troubleshooting:
 
-- *"cookie expired or invalid"* — re-copy `__Secure-1PSID` (it rotates).
+- *"session expired (auto-rotation could not refresh it)"* — re-copy
+  `__Secure-1PSID` + `__Secure-1PSIDTS` from a fresh **incognito** login. If
+  this returns often, your daily browser is competing for the same session —
+  keep using the incognito cookie and let pi own the rotation.
 - *"temporarily blocked this IP"* — set `GEMINI_WEB_PROXY`.
 - *research mode: "Unknown API error: 1184"* — **not** an entitlement error:
   Deep Research plan creation succeeds on free-tier accounts via
