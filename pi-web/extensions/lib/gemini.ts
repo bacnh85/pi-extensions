@@ -317,7 +317,7 @@ export function describeGeminiError(err: unknown): string {
     default: {
       const msg = err instanceof Error ? err.message : String(err);
       if (/Unknown API error/.test(msg)) {
-        return `Gemini web rejected the request (${msg}). For research mode this is a known transport limitation: gemini.google.com serves Deep Research only to browser-grade clients (the 1184 code is a transport artifact, NOT an entitlement gate — plan creation succeeds on free-tier accounts via browser-impersonating clients). mode=ask still works.`;
+        return `Gemini web rejected the request (${msg}). The 1184 code is unreliable from this client — it also fires on expired-cookie sessions (verified 2026-09-13). For research mode: Deep Research plan creation has succeeded on a free-tier account via a browser-grade client (2026-09-13), but Gemini itself has also described Deep Research as Pro/Ultra-gated, so the tier requirement is unverified. mode=ask still works.`;
       }
       return `Gemini web error: ${msg}`;
     }
@@ -371,7 +371,7 @@ export async function geminiResearch(
 ): Promise<GeminiResearchResult> {
   if (!opts.config.psid) {
     throw new Error(
-      "Deep Research requires GEMINI_WEB_SECURE_1PSID (gemini.google.com cookie) in ~/.pi/agent/.env.local — guest mode does not support it. Deep Research also needs a Gemini Advanced subscription on the account.",
+      "Deep Research requires GEMINI_WEB_SECURE_1PSID (gemini.google.com cookie) in ~/.pi/agent/.env.local — guest mode does not support it. Tier availability is unverified: free-tier plan creation has succeeded via browser-grade clients, but Gemini has also described Deep Research as Pro/Ultra-gated.",
     );
   }
   const timeoutMs = opts.timeoutMs ?? 600_000;

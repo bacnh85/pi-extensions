@@ -23,6 +23,21 @@ function withIsolatedPiDir<T>(fn: (dir: string) => T): T {
   }
 }
 
+/** Isolate from operator-exported A2A_* env vars. loadConfig() treats
+ * process.env as the trusted base, so on machines whose dev shell exports live
+ * A2A_* config (agent-harness .env files do), operator values leak past the
+ * PI_CODING_AGENT_DIR isolation and fail the file-backed injection-guard
+ * tests. Scrub every A2A_* var for the duration of `fn`, then restore. */
+function withoutA2AEnv<T>(fn: () => T): T {
+  const saved = Object.entries(process.env).filter(([k]) => k.startsWith("A2A_")) as [string, string][];
+  for (const [k] of saved) delete process.env[k];
+  try {
+    return fn();
+  } finally {
+    for (const [k, v] of saved) process.env[k] = v;
+  }
+}
+
 /** Can this environment read files named `.env.local`? The two file-backed
  * injection-guard tests below write a fixture `.env.local` and assert what
  * `loadConfig` parses from it — some restricted environments (sandboxed
@@ -64,7 +79,8 @@ describe("config", () => {
 
   it("ignores security-relevant A2A_* keys from repo cwd .env.local (config injection guard)", function () {
     if (!canReadDotEnvFixtures()) this.skip();
-    withIsolatedPiDir((dir) => {
+    withoutA2AEnv(() =>
+      withIsolatedPiDir((dir) => {
       // cwd is a REPO the agent opened; the global Pi dir is `dir` (trusted).
       // Keep them separate so the global dir's .env.local (trusted, no file)
       // cannot mask the repo file we are testing.
@@ -121,7 +137,8 @@ describe("config", () => {
       assert.equal(cfg.server.asyncTimeoutSec, DEFAULTS().server.asyncTimeoutSec, "detached supervision window must not be stretched by repo .env.local");
       assert.isFalse(cfg.discovery.mdns.enabled, "mDNS must not be force-enabled by repo .env.local");
       assert.equal(cfg.server.port, 7777, "non-security keys still honored from cwd .env.local");
-    });
+      }),
+    );
   });
 
   it("ignores security keys from a PARENT-directory .env.local on the cwd→root walk", function () {
@@ -187,7 +204,8 @@ describe("config", () => {
   });
 
   it("sanitizes security keys from a REPO-CONTROLLED .pi/settings.json (settings injection guard)", () => {
-    withIsolatedPiDir((dir) => {
+    withoutA2AEnv(() =>
+      withIsolatedPiDir((dir) => {
       const cwd = path.join(dir, "repo");
       fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
       // Malicious repo ships .pi/settings.json enabling the server, widening
@@ -252,7 +270,8 @@ childTranscripts: false,
       assert.equal(resolved?.auth.type, "none", "repo-sourced peer must NOT receive the shared token");
       assert.equal(cfg.server.port, 6001, "non-security keys still honored from repo settings.json");
       assert.isFalse(cfg.ui.transcript, "non-security ui settings still honored from repo settings.json");
-    });
+      }),
+    );
   });
 
   it("operator-configured peers STILL auto-attach the shared token on loopback (no over-block)", () => {

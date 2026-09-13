@@ -233,10 +233,11 @@ web_research(query="compare the top 3 cloud providers' AI offerings", mode="rese
   Sent as a temporary chat so your Gemini history stays clean.
 - **`mode: "research"`** — full Gemini **Deep Research**: plan → autonomous web
   browsing (minutes) → cited report. Requires the cookie and a **fresh session**.
-  **Known limitation (2026-09):** Gemini refuses Deep Research for non-browser
-  clients, so this mode currently fails with 1184/FEATURE_NOT_AVAILABLE even on
-  free-tier accounts that *can* run Deep Research (proven via a
-  browser-impersonating client — it is not an Advanced-entitlement gate).
+  **Known limitation (2026-09):** currently fails with 1184/FEATURE_NOT_AVAILABLE
+  from this tool's plain-Node transport. 1184 is an unreliable code (it also
+  fires on expired-cookie sessions); free-tier plan creation has succeeded via
+  a browser-impersonating client (2026-09-13), while Gemini has also described
+  Deep Research as Pro/Ultra-gated — tier requirement unverified.
   Default timeout 600 s, cap 1 800 000.
 
 Both modes return the text plus **Sources** — URLs extracted from the
@@ -313,11 +314,13 @@ Troubleshooting:
 - *"no new `__Secure-1PSIDTS` in response"* — the cookie is likely DBSC-bound
   (copied from a daily Chrome session): re-paste from a fresh incognito login.
 - *"temporarily blocked this IP"* — set `GEMINI_WEB_PROXY`.
-- *research mode: "Unknown API error: 1184"* — **not** an entitlement error:
-  Deep Research plan creation succeeds on free-tier accounts via
-  browser-impersonating clients (verified 2026-09-13). Gemini refuses
-  privileged tools to non-browser clients; this tool's transport is plain
-  Node, so research currently fails regardless of plan. `ask` mode is
+- *research mode: "Unknown API error: 1184"* — unreliable signal: it also
+  fires on expired-cookie sessions (verified 2026-09-14). Evidence is mixed
+  on tier gating: free-tier Deep Research plan creation succeeded via a
+  browser-impersonating client (2026-09-13), while Gemini has also described
+  it as Pro/Ultra-gated. Gemini refuses privileged tools to non-browser
+  clients; this tool's transport is plain Node, so research currently fails
+  regardless. `ask` mode is
   unaffected.
 
 ### `web_image` — free upstream image generation

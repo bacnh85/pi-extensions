@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.11.3 (2026-09-13)
+
+### Changed
+
+- **Hedged the Deep Research tier claims** (advisor round): the 1184 message,
+  the `research` guest guard, and README no longer assert "not an entitlement
+  gate" as flat fact. Recorded evidence is mixed — free-tier plan creation
+  succeeded once via a browser-grade client (2026-09-13), while Gemini's own
+  answers described Deep Research as Pro/Ultra-gated — and the only 1184 seen
+  in the 2026-09-14 test round came from a dead-cookie session, where the
+  code is known to be unreliable. All surfaces now state both facts and mark
+  the tier requirement unverified.
+
 ## 0.11.2 (2026-09-13)
 
 ### Fixed
