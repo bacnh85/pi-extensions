@@ -172,8 +172,10 @@ export interface FetchLike {
 
 export interface ApiImageResult {
   paths: string[];
-  /** Image URLs that could not be downloaded (e.g. CDN unreachable) — the generation still happened. */
+  /** Image URLs that could not be downloaded (e.g. CDN unreachable) — the generation still happened. Raw URLs; reasons live in downloadErrors. */
   urls: string[];
+  /** Download failure reason per urls entry (aligned by index), flattened to one line. */
+  downloadErrors?: string[];
   model?: string;
 }
 
@@ -235,6 +237,7 @@ export async function apiGenerateImage(opts: {
   fs.mkdirSync(opts.outDir, { recursive: true });
   const paths: string[] = [];
   const urls: string[] = [];
+  let downloadErrors: string[] | undefined;
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     if (typeof item?.b64_json === "string" && item.b64_json) {
@@ -245,15 +248,18 @@ export async function apiGenerateImage(opts: {
         if (isLocalUrl(item.url)) throw new Error("image host is private/loopback (SSRF-guarded)");
         paths.push(await downloadImage(fetchImpl, item.url, opts.outDir, i, opts.signal, opts.timeoutMs));
       } catch (err) {
+        // Surface WHY the download failed without corrupting the raw-URL
+        // contract: urls stays openable/parsable, reasons live in downloadErrors.
+        const reason = (err instanceof Error ? err.message : String(err)).split("\n").join(" ").slice(0, 200);
         urls.push(item.url);
-        void err;
+        (downloadErrors ??= []).push(reason);
       }
     } else {
       throw new Error(`image item ${i} had neither b64_json nor url`);
     }
   }
   if (!paths.length && !urls.length) throw new Error(`upstream returned no image data (model ${opts.model ?? "default"})`);
-  return { paths, urls, model: typeof payload?.model === "string" ? payload.model : opts.model };
+  return { paths, urls, ...(downloadErrors ? { downloadErrors } : {}), model: typeof payload?.model === "string" ? payload.model : opts.model };
 }
 
 // Some gateways serve JPEG/WebP bytes behind a .png URL (Z.ai GLM-Image does) —
@@ -283,6 +289,7 @@ async function downloadImage(
   // fetch follows redirects by default — follow manually and re-validate each
   // hop, or a gateway URL that 302s to an internal host bypasses the guard.
   let current = url;
+  let notFound = 0;
   for (let hop = 0; ; hop++) {
     if (hop > 3) throw new Error("too many image redirects");
     if (isLocalUrl(current)) throw new Error(`image host is private/loopback (SSRF-guarded): ${current}`);
@@ -295,6 +302,16 @@ async function downloadImage(
       const loc = res.headers?.get?.("location") ?? null;
       if (!loc) throw new ImageApiError(res.status, `image redirect ${res.status} without a location header`);
       current = new URL(loc, current).toString();
+      continue;
+    }
+    if (res.status === 404 && notFound < 3) {
+      // ponytail: UCloud UFile (mfile.z.ai) 404s for ~1-2s right after
+      // generation (edge propagation) — verified empirically; retry with
+      // linear backoff (1s/2s/3s, ≤6s total) instead of wasting generations.
+      notFound++;
+      if (signal?.aborted) throw new Error("web_image download aborted");
+      await new Promise((resolve) => setTimeout(resolve, 1_000 * notFound));
+      hop--; // retry the same URL — doesn't count as a redirect hop
       continue;
     }
     if (!res.ok) throw new ImageApiError(res.status, `image download failed (HTTP ${res.status})`);
@@ -323,6 +340,8 @@ export interface ImageChainResult {
   model?: string;
   paths: string[];
   urls: string[];
+  /** Download failure reason per urls entry (aligned by index) — provider-dependent, so optional. */
+  downloadErrors?: string[];
   attempts: string[];
 }
 
@@ -376,7 +395,7 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
       continue;
     }
     try {
-      let result: { paths: string[]; urls?: string[]; model?: string };
+      let result: { paths: string[]; urls?: string[]; downloadErrors?: string[]; model?: string };
       if (provider === "gemini") {
         result = await geminiGenerateImage(params.prompt, {
           config: params.geminiConfig,
@@ -416,7 +435,7 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
       if (provider === "gemini" && params.n && params.n > 1 && result.paths.length < params.n) {
         attempts.push(`gemini: n=${params.n} requested — the gemini web tier returns its own image count (${result.paths.length}); n applies to zai/custom`);
       }
-      return { provider, model: result.model, paths: result.paths, urls: result.urls ?? [], attempts };
+      return { provider, model: result.model, paths: result.paths, urls: result.urls ?? [], downloadErrors: result.downloadErrors, attempts };
     } catch (err) {
       // Cancellation is not a provider failure: rethrow so aborted tool calls
       // surface as AbortError instead of an "all providers failed" listing —

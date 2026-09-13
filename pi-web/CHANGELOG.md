@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.10.7 (2026-09-13)
+
+### Fixed
+
+- **Image download failures keep their reason**: failed URL downloads no
+  longer discard the underlying error — the cause (DNS, SSRF guard, HTTP
+  status) is exposed to callers/agents via `ApiImageResult.downloadErrors`
+  (aligned with the raw `urls` array, which stays openable/parsable).
+  User-visible rendering of the reasons in the tool's text output lands with
+  the pending `index.ts` update.
+
+### Added
+
+- **404 retry for fresh generations**: CDNs like Z.ai's UCloud UFile serve
+  404 for ~1–2s right after generation (edge propagation); downloads now
+  retry with 1s/2s/3s backoff instead of wasting the generation.
+
 ## 0.10.5 (2026-09-13)
 
 ### Added

@@ -378,7 +378,38 @@ describe("apiGenerateImage", () => {
     }) as unknown as FetchLike;
     const r = await apiGenerateImage({ baseUrl: "https://x/v1", prompt: "p", outDir, fetchImpl: failingDownload });
     expect(r.paths).to.deep.equal([]);
-    expect(r.urls).to.deep.equal(["https://blocked-cdn.example.com/a.png"]);
+    expect(r.urls).to.deep.equal(["https://blocked-cdn.example.com/a.png"]); // raw URL, openable
+    expect(r.downloadErrors).to.have.lengthOf(1);
+  });
+
+  it("retries a 404 and succeeds (CDN edge propagation delay after generation)", async () => {
+    const outDir = await tmpDir();
+    let gets = 0;
+    const fetchImpl = (async (_url: string, init?: { method?: string }) => {
+      if (init?.method === "POST") {
+        return { ok: true, status: 200, json: async () => ({ data: [{ url: "https://cdn.example.com/fresh.png" }] }) };
+      }
+      gets++;
+      if (gets === 1) return { ok: false, status: 404, headers: { get: () => null }, json: async () => ({}) };
+      return { ok: true, status: 200, headers: { get: () => "image/png" }, arrayBuffer: async () => new TextEncoder().encode("pngbytes").buffer as ArrayBuffer };
+    }) as unknown as FetchLike;
+    const r = await apiGenerateImage({ baseUrl: "https://x/v1", prompt: "p", outDir, fetchImpl });
+    expect(gets).to.equal(2);
+    expect(r.paths).to.have.lengthOf(1);
+    expect(fs.readFileSync(r.paths[0]).toString()).to.equal("pngbytes");
+  });
+
+  it("flattens multi-line download errors to one line (reasons render inline)", async () => {
+    const outDir = await tmpDir();
+    const failingDownload = (async (_url: string, init?: { method?: string }) => {
+      if (init?.method === "POST") {
+        return { ok: true, status: 200, json: async () => ({ data: [{ url: "https://blocked.example.com/a.png" }] }) };
+      }
+      throw new Error("line one\nline two\nline three");
+    }) as unknown as FetchLike;
+    const r = await apiGenerateImage({ baseUrl: "https://x/v1", prompt: "p", outDir, fetchImpl: failingDownload });
+    expect(r.urls).to.deep.equal(["https://blocked.example.com/a.png"]); // stays raw
+    expect(r.downloadErrors).to.deep.equal(["line one line two line three"]); // no newlines
   });
 });
 
@@ -670,7 +701,8 @@ describe("generateImageWithFallback cancellation + n handling (review findings)"
     const r = await apiGenerateImage({ baseUrl: "https://x/v1", prompt: "p", outDir, fetchImpl });
     expect(getCalled).to.equal(false);
     expect(r.paths).to.deep.equal([]);
-    expect(r.urls).to.deep.equal(["http://169.254.169.254/latest/meta-data"]);
+    expect(r.urls).to.deep.equal(["http://169.254.169.254/latest/meta-data"]); // raw URL
+    expect(r.downloadErrors?.[0]).to.include("SSRF-guarded");
   });
 
   it("sniffs real image type from bytes (JPEG behind a .png URL saved as .jpg)", async () => {
@@ -718,7 +750,8 @@ describe("generateImageWithFallback cancellation + n handling (review findings)"
     }) as unknown as FetchLike;
     const r = await apiGenerateImage({ baseUrl: "https://x/v1", prompt: "p", outDir, fetchImpl });
     expect(fs.readdirSync(outDir)).to.deep.equal([]); // nothing written
-    expect(r.urls).to.deep.equal(["https://cdn.example.com/huge.png"]);
+    expect(r.urls).to.deep.equal(["https://cdn.example.com/huge.png"]); // raw URL
+    expect(r.downloadErrors?.[0]).to.include("download cap");
   });
 
   it("refuses redirects to private hosts (fetch follows redirects by default)", async () => {
@@ -744,7 +777,8 @@ describe("generateImageWithFallback cancellation + n handling (review findings)"
     }) as unknown as FetchLike;
     const r = await apiGenerateImage({ baseUrl: "https://x/v1", prompt: "p", outDir, fetchImpl });
     expect(gets).to.deep.equal(["https://cdn.example.com/redirect"]); // redirect target never fetched
-    expect(r.urls).to.deep.equal(["https://cdn.example.com/redirect"]);
+    expect(r.urls).to.deep.equal(["https://cdn.example.com/redirect"]); // raw URL, redirect target never fetched
+    expect(r.downloadErrors?.[0]).to.include("SSRF-guarded");
     expect(fs.readdirSync(outDir)).to.deep.equal([]);
   });
 
