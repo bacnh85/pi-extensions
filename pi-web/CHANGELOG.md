@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.2 (2026-09-13)
+
+### Fixed
+
+Review hardening of the `web_image` fallback chain (3 review rounds):
+
+- **Cancellation semantics**: an aborted call now surfaces `AbortError`
+  immediately — before any provider client construction or fetch — instead of
+  walking the chain and reporting "all providers failed". An abort landing
+  mid-generation normalizes to `AbortError` with the in-flight provider error
+  preserved as `cause`; foreign abort-named errors from upstreams are recorded
+  as provider notes and the chain continues.
+- **`n` transparency**: when the gemini web tier returns fewer images than the
+  requested `n`, the result states it explicitly (`n` applies to the
+  `zai`/`custom` API providers; the gemini web tier returns its own count).
+  `out_dir` now resolves against the session cwd, not the process cwd.
+
 ## 0.9.1 (2026-09-13)
 
 ### Fixed
