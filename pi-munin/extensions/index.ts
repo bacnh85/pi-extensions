@@ -15,6 +15,7 @@ import {
   getMuninConfig,
   extractRemediation,
   formatRemediation,
+  type Remediation,
 } from "./lib/helpers";
 import { withRetry } from "./lib/retry";
 
@@ -128,7 +129,7 @@ function withMuninClient<T extends Record<string, unknown>>(
 /** Fresh Error carrying the sanitized `err.message + remediation` text, with
  *  the original preserved as `cause` — never mutates the caught error (keeps
  *  its identity/stack intact for upstream consumers). */
-function remediatedError(err: Error, remediation?: string): Error {
+function remediatedError(err: Error, remediation?: Remediation): Error {
   return new Error(
     sanitizeErrorMessage(new Error(err.message + formatRemediation(remediation))),
     { cause: err },
@@ -140,7 +141,6 @@ function remediatedError(err: Error, remediation?: string): Error {
  * Some actions like 'delete' are not advertised in server capabilities
  * but are still supported. Pass ensureCapability: false for those.
  */
-
 export async function callMunin(
   client: any,
   projectId: string,

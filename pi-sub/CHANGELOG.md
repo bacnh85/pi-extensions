@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.40 (2026-09-14)
+
+### Tests
+
+- Added unit test coverage for the three untested parsers: the OmniRoute
+  om-usage free-text report (`parseOmniUsageText` — four windows, section
+  switching, out-of-range percentages, disabled/no-cache text), the Command
+  Code `/alpha/billing/credits` window mapper (used/cap → remaining%, epoch-ms
+  resetAt, over-cap clamp, bad-window bail), and the `.env.local` parser
+  (extracted as exported `parseEnvText`; `export ` prefix, quoted values,
+  comments, CRLF, `#`-in-value). No behavior changes.
+  One edge case differs from the inline loop it replaces: duplicate keys in a
+  single .env file now resolve last-wins (dotenv convention) instead of
+  first-wins.
+
 ## 0.1.39 (2026-09-12)
 
 ### Fixed

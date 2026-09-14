@@ -77,8 +77,12 @@ export function resolveRule(rules, subject, home) {
 
 /**
  * Expand leading ~ or $HOME in a path pattern.
+ * An empty home (ctx.home undefined + HOME unset) returns the pattern
+ * unchanged — expanding would turn `~/x` into `/x` via join.
+ * Exported for unit testing.
  */
-function expandHome(pattern, home) {
+export function expandHome(pattern, home) {
+  if (!home) return pattern;
   if (pattern === "~") return home;
   if (pattern.startsWith("~/")) return join(home, pattern.slice(2));
   if (pattern.startsWith("$HOME/")) return join(home, pattern.slice(6));

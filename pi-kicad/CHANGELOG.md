@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.5 (2026-09-14)
+
+### Maintenance
+
+- Dead-code removal: the `reused` flag/branch in `KonnectDaemon` could never be
+  true (stranger daemons are never reused), so `DaemonStatus.reused`, the
+  `running: child || reused` disjunct, and the status tool's "reused (external)"
+  label are gone. Header comment in `daemon.ts` now describes current behavior
+  (reuse only our own healthy daemon; strangers are never reused).
+
 ## 0.1.4 (2026-09-12)
 
 ### Fixed

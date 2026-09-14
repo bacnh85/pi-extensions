@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import permissionExtension, { wildcardToRegex, resolveRule, readSettingsKey, persistAllowlistRule } from "../index.js";
+import permissionExtension, { wildcardToRegex, resolveRule, expandHome, readSettingsKey, persistAllowlistRule } from "../index.js";
 
 test("readSettingsKey reads .pi/settings.json from cwd (production path)", () => {
   const dir = mkdtempSync(join(tmpdir(), "perm-settings-"));
@@ -95,6 +95,15 @@ test("resolveRule: .env deny pattern (OpenCode default security)", () => {
   assert.equal(resolveRule(rules, "/proj/.env.local"), "deny");
   assert.equal(resolveRule(rules, "/proj/.env.example"), "allow");
   assert.equal(resolveRule(rules, "/proj/src/index.ts"), "allow");
+});
+
+test("expandHome: empty home leaves the pattern unchanged", () => {
+  // Windows / scrubbed env: ctx.home undefined + HOME unset → "". Expanding
+  // used to turn ~/x into /x via join, silently mismatching the rule.
+  assert.equal(expandHome("~/x", ""), "~/x");
+  assert.equal(expandHome("~", ""), "~");
+  assert.equal(expandHome("$HOME/x", ""), "$HOME/x");
+  assert.equal(expandHome("/abs/path", ""), "/abs/path");
 });
 
 // ── Extension wiring (tool_call handler) ──────────────────────────────────

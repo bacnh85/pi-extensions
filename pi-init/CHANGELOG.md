@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2 (2026-09-14)
+
+### Fixed
+
+- **buildInitPrompt always targeted AGENTS.md, even when the scan detected
+  CLAUDE.md.** Detection was honored in `/init check` only; the generation
+  prompt told the model to write AGENTS.md regardless. The prompt now uses the
+  detected context file (`scan.agentsFile`) as the write target, falling back
+  to AGENTS.md when no context file exists.
+
 ## 0.1.1 (2026-09-12)
 
 ### Fixed

@@ -33,7 +33,7 @@ consult tool. Inspired by the advisor subsystem in
 ## Install
 
 ```
-npm install -g @bacnh85/pi-advisor
+pi install npm:@bacnh85/pi-advisor
 ```
 
 > If you previously used pi-plan's advisor, remove that package's old advisor
@@ -85,4 +85,4 @@ keeps the fuzzy picker fallback for ambiguous hints.
 
 Use a cheap, fast model for the watcher (it reviews every non-trivial turn);
 use a strong reasoner when consulting on demand — both use the same chain in
-this version.
+this version, so pick one that serves both roles.

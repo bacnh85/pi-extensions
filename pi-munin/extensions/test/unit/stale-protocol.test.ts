@@ -99,6 +99,39 @@ describe("callMunin ERR_STALE_PROTOCOL auto-recovery", () => {
     expect((caught as Error).message).to.include("2026-04-17");
   });
 
+  it("never mutates the caught error; the original is preserved as the thrown .cause", async () => {
+    const remediation = {
+      url: "https://munin.kalera.dev/docs/setup/00-index.md",
+      version_to: "2026-04-17",
+      acknowledge_after_reading: { action: "acknowledge_setup", payload: { version: "2026-04-17" } },
+    };
+    // One instance thrown by the "server" — mutation of it would be observable.
+    const original = makeStaleError(remediation);
+    const originalMessage = original.message;
+    const { client } = makeFakeClient({
+      invoke: (_proj, action) => {
+        if (action === "store") throw original;
+        if (action === "acknowledge_setup") throw new Error("ack rejected by server");
+        return undefined;
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await callMunin(client, "proj_test", "store", { key: "k", title: "t", content: "c", tags: "type:f,d:x" });
+    } catch (e) {
+      caught = e;
+    }
+
+    // Fresh error thrown — under the old mutation behavior caught === original.
+    expect(caught).to.not.equal(original);
+    // The server-thrown error's message is untouched.
+    expect((original as Error).message).to.equal(originalMessage);
+    // Original (code/details included) reachable via cause identity.
+    expect((caught as Error).cause).to.equal(original);
+    expect(((caught as Error).cause as { code?: string }).code).to.equal("ERR_STALE_PROTOCOL");
+  });
+
   it("surfaces remediation without auto-acking when acknowledge_after_reading is absent", async () => {
     let storeCount = 0;
     const remediation = {

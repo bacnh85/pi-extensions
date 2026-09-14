@@ -171,6 +171,26 @@ test("buildInitPrompt force mode says regenerate from scratch", () => {
   assert.match(buildInitPrompt(s, "force"), /from scratch/);
 });
 
+test("buildInitPrompt targets the detected context file (CLAUDE.md), not always AGENTS.md", () => {
+  const s = {
+    projectName: "x",
+    languages: new Set(),
+    topDirs: [],
+    keyFiles: [],
+    ci: [],
+    hasAgentsMd: true,
+    agentsFile: "CLAUDE.md",
+  };
+  const prompt = buildInitPrompt(s, "");
+  assert.match(prompt, /write` tool to `CLAUDE\.md`/);
+  assert.match(prompt, /If CLAUDE\.md already exists, improve it in place/);
+  assert.equal(prompt.includes("to `AGENTS.md`"), false, "write target is the detected file");
+  // Force branch must also honor the detected file.
+  const forcePrompt = buildInitPrompt(s, "force");
+  assert.match(forcePrompt, /Regenerate this project's CLAUDE\.md from scratch/);
+  assert.equal(forcePrompt.includes("to `AGENTS.md`"), false);
+});
+
 test("buildInitPrompt emits the detected package manager's run form", () => {
   const s = {
     projectName: "pnpm-app",

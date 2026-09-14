@@ -47,6 +47,9 @@ function legacyPrefsPath(): string {
 function cleanPrefs(): void {
   mkdirSync(path.dirname(prefsPath()), { recursive: true });
   writeFileSync(prefsPath(), "{}\n");
+  // recursive+force: covers the file form the corrupt-backup test leaves and
+  // the dir form the tmp-rename test creates if a crash skips its finally.
+  rmSync(`${prefsPath()}.corrupt`, { recursive: true, force: true });
   try { rmSync(legacyPrefsPath()); } catch { /* absent */ }
   try { rmSync(`${legacyPrefsPath()}.migrated`); } catch { /* absent */ }
 }

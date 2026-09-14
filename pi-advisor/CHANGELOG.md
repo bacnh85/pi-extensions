@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1 (2026-09-14)
+
+### Fixed
+
+- README install command was `npm install -g`; it is `pi install
+  npm:@bacnh85/pi-advisor`.
+
 ## 0.3.0 (2026-09-13)
 
 ### Added

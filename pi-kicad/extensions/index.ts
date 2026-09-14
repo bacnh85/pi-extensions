@@ -204,7 +204,7 @@ export default function piKicadExtension(pi: ExtensionAPI) {
       lines.push(`kicad-cli:       ${cfg.kicadCli ?? "(not found — set KICAD_CLI or install KiCad)"}`);
       lines.push(`ipc socket:      ${cfg.ipcSocket ?? "(auto-detect from KICAD_API_SOCKET)"}`);
       lines.push(`symbol dir:      ${cfg.symbolDir ?? "(none)"}  <- create symbols here (lib_id "<file>:<sym>")`);
-      lines.push(`daemon:          ${status.running ? (status.reused ? "reused (external)" : "managed") : "down"}`);
+      lines.push(`daemon:          ${status.running ? "managed" : "down"}`);
       lines.push(`healthy:         ${status.healthy}`);
       lines.push(`port:            ${status.port ?? "—"}`);
       lines.push(`pid:             ${status.pid ?? "—"}`);

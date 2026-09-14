@@ -4,6 +4,22 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+/** Parse .env-style text into KEY→VALUE entries: `export ` prefix allowed,
+ *  single/double quotes stripped, comment/blank/non-assignment lines ignored.
+ *  No inline-comment stripping (a `#` in the value stays part of the value).
+ *  Exported for tests. */
+export function parseEnvText(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+    if (!m) continue;
+    let v = m[2].trim();
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+    out[m[1]] = v;
+  }
+  return out;
+}
+
 /** Pi config dirs + .env.local/.env discovery (pi-munin convention, stdlib parse). */
 function loadEnvFiles(): void {
   const dirs = process.env.PI_CODING_AGENT_DIR
@@ -14,12 +30,8 @@ function loadEnvFiles(): void {
   for (const file of candidates) {
     try {
       const text = fs.readFileSync(file, "utf8");
-      for (const line of text.split(/\r?\n/)) {
-        const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
-        if (!m) continue;
-        let v = m[2].trim();
-        if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
-        if (process.env[m[1]] === undefined) process.env[m[1]] = v;
+      for (const [key, value] of Object.entries(parseEnvText(text))) {
+        if (process.env[key] === undefined) process.env[key] = value;
       }
     } catch { /* optional file */ }
   }
@@ -437,7 +449,8 @@ export function parseOmniUsageText(text: string): {
   return out;
 }
 
-// ponytail: runnable self-check (pi-sub has no test runner — pack gate only)
+// ponytail: runnable self-check (pack gate; extensions/test covers the same
+// parser paths plus the adapters the self-check doesn't)
 if (process.env.PI_SUB_SELF_CHECK === "1") {
   const sample = [
     "Personal quota", "Daily", "80% left", "⏱ reset in 15h 0m", "",
@@ -850,7 +863,7 @@ interface CommandCodeCreditsApiResponse {
 
 /** Map a Command Code USD window (used/cap in dollars, resetAt in ms) into
  *  the shared UsageWindow shape (remaining%, reset labels). */
-function commandCodeWindowToUsageWindow(window: CommandCodeWindowApi | undefined): UsageWindow | undefined {
+export function commandCodeWindowToUsageWindow(window: CommandCodeWindowApi | undefined): UsageWindow | undefined {
   if (!window || typeof window.used !== "number" || typeof window.cap !== "number" || window.cap <= 0) return undefined;
   const usedPct = Math.round((window.used / window.cap) * 100);
   const percent = Math.min(100, usedPct);

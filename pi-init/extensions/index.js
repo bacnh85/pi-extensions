@@ -139,15 +139,17 @@ export function scanProject(cwd) {
 export function buildInitPrompt(scan, mode) {
   const lines = [];
   const force = mode === "force";
+  // Write target: the detected context file (AGENTS.md or CLAUDE.md), else AGENTS.md.
+  const target = scan.agentsFile || "AGENTS.md";
 
   lines.push(
     force
-      ? "Regenerate this project's AGENTS.md from scratch based on the repo scan below."
-      : "Create or update this project's AGENTS.md based on the repo scan below. " +
-        "If AGENTS.md already exists, improve it in place — do NOT blindly replace it.",
+      ? `Regenerate this project's ${target} from scratch based on the repo scan below.`
+      : `Create or update this project's ${target} based on the repo scan below. ` +
+        `If ${target} already exists, improve it in place — do NOT blindly replace it.`,
   );
   lines.push("");
-  lines.push("Write the file with the `write` tool to `AGENTS.md`. Be concise and factual.");
+  lines.push(`Write the file with the \`write\` tool to \`${target}\`. Be concise and factual.`);
   lines.push("Cover exactly these sections (omit a section only if the scan gives no signal):");
   lines.push("");
   lines.push("- **Project name + one-line purpose** (infer from package.json/dir name)");
