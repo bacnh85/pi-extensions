@@ -33,8 +33,8 @@ Variables:
 | `GEMINI_WEB_SECURE_1PSID` | No (4) | — | `__Secure-1PSID` cookie from gemini.google.com — enables authed `web_research` (Deep Research) |
 | `GEMINI_WEB_PROXY` | No | — | Proxy URL for Gemini web calls (escape hatch if Google blocks the IP) |
 | `GEMINI_WEB_SECURE_1PSIDTS` | No (6) | — | Rotating `__Secure-1PSIDTS` cookie — bootstrap only; keep the source browser session closed so it isn't superseded (see "Keeping the session alive") |
-| `GEMINI_WEB_COOKIE_STORE` | No | `~/.pi/agent/gemini-web-cookies.json` | Where the auto-refreshed cookie state persists (0600) |
-| `GEMINI_WEB_KEEPALIVE` | No | on | Set `0` to disable background cookie rotation |
+| `GEMINI_WEB_COOKIE_STORE` | No | `~/.pi/agent/gemini-web-cookies.json` | Where the pasted/rotated cookie state persists (0600) |
+| `GEMINI_WEB_KEEPALIVE` | No (7) | off | Set `1` to opt in to experimental background cookie rotation (see "Keeping the session alive") |
 | `GEMINI_WEB_ROTATE_INTERVAL_MS` | No | `600000` | Keepalive rotation cadence (min 60000) |
 | `ZAI_API_KEY` | No (5) | — | Z.ai API key — enables the `web_image` `zai` provider (GLM-Image via the official `api.z.ai`); `Z_AI_API_KEY` also accepted |
 | `WEB_IMAGE_API_BASE_URL` | No | — | `web_image` `custom` provider: any OpenAI-compatible images endpoint (e.g. `https://api.openai.com/v1`) |

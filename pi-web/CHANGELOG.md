@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.13.1 (2026-09-14)
+
+### Fixed
+
+- README env table corrected: GEMINI_WEB_KEEPALIVE default is **off**
+  (opt-in via =1), matching the 0.13.0 behavior flip (advisor catch — the
+  table still documented the pre-0.13.0 default).
+
 ## 0.13.0 (2026-09-14)
 
 ### Changed
