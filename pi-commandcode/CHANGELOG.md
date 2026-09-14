@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.3 (2026-09-14)
+
+### Fixed
+
+- Capability table gained `deepseek/deepseek-v4.1-flash` with
+  `vision: true` — V4.1 Flash is natively multimodal, and the previous
+  fallback reported it vision-less, so Pi withheld image input on a
+  vision-capable model.
+
 ## 0.2.2 (2026-09-14)
 
 ### Changed

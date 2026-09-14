@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.3 (2026-09-14)
+
+### Fixed
+
+- `detectFamily` now recognizes the DeepSeek V4.1 Flash canonical model id
+  `deepseek-flash` (and prefixed variants like `ds/deepseek-flash`) via a
+  `-flash` segment match, alongside the existing `deepseek-v4*` patterns.
+  DeepSeek-only support (selection guidance, Super Power Mode, apply_patch
+  preference, semantic-miss steering) previously stayed silently off on the
+  new id across the deepseek, opencode-go, and router providers.
+
 ## 0.8.2 (2026-09-12)
 
 ### Fixed

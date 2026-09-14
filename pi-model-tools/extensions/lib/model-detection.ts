@@ -21,7 +21,9 @@ export function detectFamily(model?: { provider?: string; id?: string }): ModelF
   const id = (model?.id ?? "").toLowerCase();
   if (!id) return null;
   // ponytail: provider-agnostic substring + word-boundary — robust across id formats
-  if (id.includes("deepseek") && /\bv4\b/.test(id)) return "deepseek-v4";
+  // `-flash\b` covers the V4.1 Flash canonical id `deepseek-flash` (incl. prefixed
+  // variants like `ds/deepseek-flash`); `\bv4\b` covers deepseek-v4* incl. v4.1.
+  if (id.includes("deepseek") && (/\bv4\b/.test(id) || /-flash\b/.test(id))) return "deepseek-v4";
   if (id.includes("glm")) return "glm";
   return null;
 }
