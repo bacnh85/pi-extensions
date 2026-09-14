@@ -163,11 +163,11 @@ describe("refreshGeminiAuth", () => {
     expect(loadCookieStore(p)).to.deep.include({ psid: "psid-test", psidts: "fresh-ts" });
   });
 
-  it("clears the store when the server says the session is dead, keeps it on transport errors", async () => {
+  it("never destroys the store on rotation failures (400/401/offline/5xx/403)", async () => {
     const p = tmpStore();
     saveCookieStore({ psid: "psid-test", psidts: "old", updatedAt: 1 }, p);
     await refreshGeminiAuth(config, { post: unauthorizedPost(), storePath: p });
-    expect(loadCookieStore(p)).to.equal(null);
+    expect(loadCookieStore(p)).to.deep.include({ psidts: "old" });
 
     saveCookieStore({ psid: "psid-test", psidts: "old", updatedAt: 1 }, p);
     await refreshGeminiAuth(config, { post: async () => { throw new Error("offline"); }, storePath: p });
@@ -204,7 +204,7 @@ describe("keepaliveOnce", () => {
     expect(called).to.equal(0);
   });
 
-  it("rotates and persists when stale, clears + fails when dead", async () => {
+  it("rotates and persists when stale, fails but keeps the store when dead", async () => {
     const p = tmpStore();
     saveCookieStore({ psid: "psid-test", psidts: "old", updatedAt: 1 }, p);
     expect(await keepaliveOnce(config, { storePath: p, post: okPost("new-ts") })).to.equal(true);
@@ -212,7 +212,7 @@ describe("keepaliveOnce", () => {
 
     saveCookieStore({ psid: "psid-test", psidts: "old", updatedAt: 1 }, p);
     expect(await keepaliveOnce(config, { storePath: p, post: unauthorizedPost() })).to.equal(false);
-    expect(loadCookieStore(p)).to.equal(null);
+    expect(loadCookieStore(p)).to.deep.include({ psidts: "old" });
   });
 
   it("does not skip rotation for a fresh store belonging to a DIFFERENT psid", async () => {
@@ -236,7 +236,7 @@ describe("withGeminiClient auto-heal + passive persist", () => {
     __resetGeminiClientCache();
   });
 
-  it("on AuthError: rotates, rebuilds the client, retries, and persists", async () => {
+  it("on AuthError: rebuild-retries once (rotation is opt-in, not auto-invoked)", async () => {
     const p = tmpStore();
     const calls: GeminiClientLike[] = [];
     const factory = () => {
@@ -254,13 +254,13 @@ describe("withGeminiClient auto-heal + passive persist", () => {
       calls.push(client);
       return client;
     };
-    const result = await withGeminiClient(cfg, (c) => c.ask!("q"), factory, { rotatePost: okPost("healed-ts"), storePath: p });
+    const result = await withGeminiClient(cfg, (c) => c.ask!("q"), factory, { storePath: p });
     expect(result.text).to.equal("ok");
     expect(calls).to.have.length(2);
-    expect(loadCookieStore(p)).to.deep.include({ psidts: "healed-ts" });
+    expect(loadCookieStore(p)).to.equal(null); // no rotation → no store write
   });
 
-  it("on dead rotation: clears the store, rebuilds once, propagates the AuthError", async () => {
+  it("on persistent AuthError: rebuilds once, propagates, and never destroys the store", async () => {
     const p = tmpStore();
     saveCookieStore({ psid: "psid-test", psidts: "old", updatedAt: 1 }, p);
     const calls = { n: 0 };
@@ -283,7 +283,7 @@ describe("withGeminiClient auto-heal + passive persist", () => {
     }
     expect((threw as Error).name).to.equal("AuthError");
     expect(calls.n).to.equal(2);
-    expect(loadCookieStore(p)).to.equal(null);
+    expect(loadCookieStore(p)).to.deep.include({ psid: "psid-test", psidts: "old" }); // store is never destroyed
   });
 
   it("persists a rotated 1PSIDTS absorbed from the client jar", async () => {
@@ -331,7 +331,7 @@ describe("describeGeminiError AuthError guidance", () => {
     e.name = "AuthError";
     const msg = describeGeminiError(e);
     expect(msg).to.match(/incognito/);
-    expect(msg).to.match(/gemini-web-cookies\.json/);
+    expect(msg).to.match(/daily browser/);
   });
 });
 
@@ -347,13 +347,21 @@ describe("ensureKeepalive arming", () => {
     else process.env.GEMINI_WEB_ROTATE_INTERVAL_MS = OLD_INTERVAL;
   });
 
+  it("stays disarmed by default (rotation is opt-in)", () => {
+    delete process.env.GEMINI_WEB_KEEPALIVE;
+    delete process.env.GEMINI_WEB_ROTATE_INTERVAL_MS;
+    ensureKeepalive(config);
+    expect(__keepaliveDebug().armed).to.equal(false);
+  });
+
   it("stays disarmed when GEMINI_WEB_KEEPALIVE=0", () => {
     process.env.GEMINI_WEB_KEEPALIVE = "0";
     ensureKeepalive(config);
     expect(__keepaliveDebug().armed).to.equal(false);
   });
 
-  it("arms with the default 600s cadence, honors env interval, clamps below the floor", () => {
+  it("arms when GEMINI_WEB_KEEPALIVE=1: default 600s cadence, honors env interval, clamps below the floor", () => {
+    process.env.GEMINI_WEB_KEEPALIVE = "1";
     delete process.env.GEMINI_WEB_ROTATE_INTERVAL_MS;
     ensureKeepalive(config);
     expect(__keepaliveDebug().armed).to.equal(true);
@@ -369,6 +377,7 @@ describe("ensureKeepalive arming", () => {
   });
 
   it("re-arms when the psid changes", () => {
+    process.env.GEMINI_WEB_KEEPALIVE = "1";
     ensureKeepalive(config);
     expect(__keepaliveDebug().psid).to.equal("psid-test");
     ensureKeepalive({ ...config, psid: "psid-other" });

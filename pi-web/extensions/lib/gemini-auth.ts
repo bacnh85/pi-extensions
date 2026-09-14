@@ -208,11 +208,10 @@ export async function refreshGeminiAuth(
   const result = await rotateCookies({ psid: cfg.psid, psidts: resolvePsidts(cfg.psid, cfg.psidts, storePath), proxy: cfg.proxy, post: opts.post });
   if (result.ok && result.psidts) {
     saveCookieStore({ psid: cfg.psid, psidts: result.psidts, updatedAt: Date.now() }, storePath);
-  } else if (result.stale) {
-    // Clear only our own dead entry — never another session's store.
-    const store = loadCookieStore(storePath);
-    if (!store || store.psid === cfg.psid) clearCookieStore(storePath);
   }
+  // NOTE: rotation failures never clear the store — the paste TS keeps
+  // serving content even when the rotation endpoint refuses (proven
+  // 2026-09-14: rotation 400/401 while authed ask still worked).
   return { ...result, store: storePath };
 }
 
@@ -237,7 +236,14 @@ export async function keepaliveOnce(
 let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 let keepalivePsid: string | undefined;
 
-/** Arms the background rotation timer (10-min cadence). No-op for guest mode, when disabled, or when already armed for this session. */
+/**
+ * OPT-IN background rotation timer (GEMINI_WEB_KEEPALIVE=1). DEFAULT OFF.
+ * Live testing (2026-09-14) showed RotateCookies-issued __Secure-1PSIDTS are
+ * REJECTED by gemini.google.com's privileged surfaces (Deep Research
+ * no-chat-id / image 403) while the original paste TS keeps serving — i.e.
+ * rotation poisons the session for privileged tools. The paste TS itself
+ * stays valid indefinitely as long as the browser doesn't compete for it.
+ */
 export function ensureKeepalive(
   cfg: { psid?: string; psidts?: string; proxy?: string },
   hooks?: { post?: PostFn; storePath?: string },
@@ -245,7 +251,7 @@ export function ensureKeepalive(
   if (!cfg.psid) return;
   if (keepaliveTimer && keepalivePsid === cfg.psid) return;
   stopKeepalive();
-  if (findEnvValue("GEMINI_WEB_KEEPALIVE").value === "0") return;
+  if (findEnvValue("GEMINI_WEB_KEEPALIVE").value !== "1") return;
   const parsed = Number(findEnvValue("GEMINI_WEB_ROTATE_INTERVAL_MS").value);
   const intervalMs = Number.isFinite(parsed) && parsed >= MIN_ROTATE_GAP_MS ? parsed : DEFAULT_ROTATE_INTERVAL_MS;
   keepalivePsid = cfg.psid;
@@ -253,11 +259,6 @@ export function ensureKeepalive(
     void keepaliveOnce(cfg, hooks).catch(() => {});
   }, intervalMs);
   keepaliveTimer.unref?.();
-  // Rotate immediately too — don't wait a full interval. The pasted TS is
-  // current at paste time; pi must take ownership of the generation before
-  // anything else can supersede it (lesson: a lost generation requires a
-  // full re-paste).
-  void keepaliveOnce(cfg, hooks).catch(() => {});
 }
 
 export function stopKeepalive(): void {

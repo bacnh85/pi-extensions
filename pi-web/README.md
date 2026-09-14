@@ -32,7 +32,7 @@ Variables:
 | `CRAWL4AI_API_TOKEN` | No (3) | — | Required if Crawl4AI auth enabled |
 | `GEMINI_WEB_SECURE_1PSID` | No (4) | — | `__Secure-1PSID` cookie from gemini.google.com — enables authed `web_research` (Deep Research) |
 | `GEMINI_WEB_PROXY` | No | — | Proxy URL for Gemini web calls (escape hatch if Google blocks the IP) |
-| `GEMINI_WEB_SECURE_1PSIDTS` | No (6) | — | Rotating `__Secure-1PSIDTS` cookie — bootstrap only; pi re-rotates it automatically (see "Keeping the session alive") |
+| `GEMINI_WEB_SECURE_1PSIDTS` | No (6) | — | Rotating `__Secure-1PSIDTS` cookie — bootstrap only; keep the source browser session closed so it isn't superseded (see "Keeping the session alive") |
 | `GEMINI_WEB_COOKIE_STORE` | No | `~/.pi/agent/gemini-web-cookies.json` | Where the auto-refreshed cookie state persists (0600) |
 | `GEMINI_WEB_KEEPALIVE` | No | on | Set `0` to disable background cookie rotation |
 | `GEMINI_WEB_ROTATE_INTERVAL_MS` | No | `600000` | Keepalive rotation cadence (min 60000) |
@@ -261,30 +261,32 @@ and `__Secure-1PSIDTS`, close the window). Cookies copied from your daily
 browser are short-lived: Chrome's Device Bound Session Credentials caps them
 at a few hours, and an open Gemini tab keeps rotating the value under you.
 
-### Keeping the session alive (cookie auto-refresh)
+### Keeping the session alive
 
-Google rotates `__Secure-1PSIDTS` on authenticated visits, so a pasted static
-copy dies within minutes-to-hours. pi-web therefore rotates the cookie itself
-using Google's own rotation endpoint (`POST accounts.google.com/RotateCookies`
-— the same call Chrome makes):
+Live testing (2026-09-14) produced a result that reverses the earlier
+auto-rotation design: a `__Secure-1PSIDTS` obtained from Google's own
+`RotateCookies` endpoint is **rejected by gemini.google.com's privileged
+surfaces** (Deep Research returns no plan, image generation 403s), while the
+**original pasted cookie keeps working indefinitely** — as long as the browser
+session it came from doesn't rotate it again.
 
-- A background keepalive rotates every **10 minutes** while pi runs and
-  persists the fresh value to `~/.pi/agent/gemini-web-cookies.json` (0600).
-- Every Gemini call also persists any rotation the server hands back, and an
-  auth failure triggers one rotate-and-retry before surfacing an error.
-- On the next start, pi prefers the stored value (when it belongs to the same
-  `__Secure-1PSID` session); a newly pasted cookie always wins.
+So the default recipe is:
 
-In practice: paste once, use Gemini soon after, and the session stays alive as
-long as pi (or the keepalive) runs. If pi stays closed for hours, the stored
-cookie can expire server-side — re-paste when the error tells you to.
-`web_status` reports the store's freshness under `geminiWeb.cookieStore`.
+1. **Harvest from a fresh incognito login** (sign in, copy
+   `__Secure-1PSID` + `__Secure-1PSIDTS`, close the window).
+2. Paste into `~/.pi/agent/.env.local`, restart pi.
+3. **Never open gemini.google.com in that Google session's browser** — an
+   open Gemini tab supersedes the pasted cookie within minutes (verified).
 
-Scope note: rotation is only guaranteed for cookies harvested as recommended
-(incognito/unbound). A third-party experiment reports the same rotation
-endpoint also serves DBSC-bound (daily-Chrome) cookies today, but pi-web does
-not rely on that — if rotation keeps failing with "no new `__Secure-1PSIDTS`",
-your cookie is likely DBSC-bound: re-paste from a fresh incognito login.
+Under those conditions the pasted cookie stays valid for as long as the
+incognito session lives server-side (observed: 19+ hours of authed `ask`).
+`web_status` reports the cookie store under `geminiWeb.cookieStore`.
+
+**Auto-rotation is now opt-in** (`GEMINI_WEB_KEEPALIVE=1`): it rotates via
+`POST accounts.google.com/RotateCookies` every 10 minutes and persists the
+result, but the rotated value is rejected by gemini's privileged surfaces —
+use it only if you accept losing Deep Research / image generation on that
+session. Rotation failures never delete your stored paste cookie.
 
 Smoke the rotation directly (no prompt needed):
 
@@ -310,11 +312,13 @@ Troubleshooting:
 - *"session expired (auto-rotation could not refresh it)"* — re-copy
   `__Secure-1PSID` + `__Secure-1PSIDTS` from a fresh **incognito** login. If
   this returns often, your daily browser is competing for the same session —
-  keep using the incognito cookie and let pi own the rotation.
-- *"no new `__Secure-1PSIDTS` in response"* — with status 400/401 this means
-  the session is dead server-side: re-paste from a fresh incognito login.
-  403 and other statuses are transient (the cookie store is kept) — retry
-  later.
+- *"session expired"* — re-copy `__Secure-1PSID` + `__Secure-1PSIDTS` from a
+  fresh **incognito** login. If this returns often, your daily browser is
+  competing for the same session — keep using the incognito cookie and never
+  open gemini.google.com there.
+- *"unauthorized (400/401)" from rotation* — the pasted generation was
+  superseded (usually by the daily browser). Content calls may still work;
+  rotation retries later. Your stored paste cookie is never deleted by this.
 - *"temporarily blocked this IP"* — set `GEMINI_WEB_PROXY`.
 - *research mode returns a partial result ("report could not be retrieved")* —
   the plan/confirm turns ran, but report polling needs a live-session token:

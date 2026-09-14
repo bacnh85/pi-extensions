@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.13.0 (2026-09-14)
+
+### Changed
+
+**BREAKING (behavior): cookie auto-rotation is now OPT-IN and off by default**
+(`GEMINI_WEB_KEEPALIVE=1` enables it). Live testing on a fresh cookie produced
+a decisive reversal: a `__Secure-1PSIDTS` issued by Google's RotateCookies
+endpoint is **rejected by gemini.google.com's privileged surfaces** — Deep
+Research returns no plan, image generation 403s — while the **original pasted
+cookie keeps serving content and DR plan/confirm indefinitely** (observed
+19+ hours of authed ask on a static paste). Rotation was poisoning the very
+session it was keeping alive.
+
+- `ensureKeepalive` no longer arms by default and no longer fires an eager
+  first rotation; the interval/cadence knobs remain for opt-in users.
+- Rotation failures (400/401/403/5xx/offline) **never delete the stored
+  paste cookie** — the store is only written by successful rotations or the
+  passive jar persist.
+- `web_research research` runs the pure-Node DR client (0.12.0) which is
+  unaffected by the rotated-TS rejection: on a live session it executes the
+  full cycle; on degraded sessions it returns an honest partial result
+  (plan/confirm transcript) instead of a misleading 1184.
+- README "Keeping the session alive" rewritten: harvest from incognito,
+  keep the source browser session closed, and treat rotation as an
+  experimental diagnostic.
+
 ## 0.12.3 (2026-09-14)
 
 ### Fixed

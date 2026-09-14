@@ -7,7 +7,7 @@ import http from "node:http";
 import https from "node:https";
 import { urlToHttpOptions } from "node:url";
 import { findEnvValue } from "./config";
-import { ensureKeepalive, loadCookieStore, refreshGeminiAuth, resolvePsidts, saveCookieStore, type PostFn } from "./gemini-auth";
+import { ensureKeepalive, loadCookieStore, resolvePsidts, saveCookieStore, type PostFn } from "./gemini-auth";
 import { DeepResearchError, geminiDeepResearch, type DrHttp } from "./gemini-dr";
 
 // ---------------------------------------------------------------------------
@@ -257,7 +257,9 @@ export async function withGeminiClient<T>(
       return await attempt(client);
     } catch (err) {
       if (!isAuthError(err) || !config.psid || i > 0) throw err;
-      await refreshGeminiAuth(config, { post: auth?.rotatePost, storePath: auth?.storePath });
+      // rebuild + retry once: re-running init absorbs fresh Set-Cookies.
+      // (Rotation is deliberately NOT auto-invoked — RotateCookies-issued TS
+      // poison gemini's privileged surfaces; see lib/gemini-auth.ts.)
       cached = null;
       client = await getClient(config, factory, auth?.storePath);
     }
@@ -345,7 +347,7 @@ export function extractSources(text: string, cap = 30): string[] {
 export function describeGeminiError(err: unknown): string {
   switch (errorName(err)) {
     case "AuthError":
-      return "Gemini web session expired (auto-rotation could not refresh it — the cookie died, e.g. pi was closed for hours). Re-copy __Secure-1PSID and __Secure-1PSIDTS from a fresh incognito login to gemini.google.com (F12 → Application → Cookies) into ~/.pi/agent/.env.local, restart pi, and make one Gemini call soon after — while pi runs, the session is kept alive automatically (rotated every 10 min via accounts.google.com/RotateCookies, persisted to ~/.pi/agent/gemini-web-cookies.json).";
+      return "Gemini web session expired. Re-copy __Secure-1PSID and __Secure-1PSIDTS from a fresh incognito login to gemini.google.com (F12 → Application → Cookies) into ~/.pi/agent/.env.local, then restart pi. Important: don't use that Google session in your daily browser — an open Gemini tab supersedes the pasted cookie within minutes (verified 2026-09-14).";
     case "DeepResearchError":
       return `Deep Research transport error: ${err instanceof Error ? err.message : String(err)}. The pure-Node client follows the 2026-09-14-validated wire shapes; repeated failures usually mean the session is stale (re-paste the cookie from an incognito login) or the web protocol drifted.`;
     case "UsageLimitExceeded":
