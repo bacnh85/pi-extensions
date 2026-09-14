@@ -41,8 +41,12 @@ Variables:
 | `WEB_IMAGE_API_KEY` | No | — | Bearer key for the `custom` endpoint |
 | `WEB_IMAGE_API_LABEL` | No | — | Display label for the `custom` endpoint (default: host name) |
 | `WEB_IMAGE_MIN_INTERVAL_MS` | No | `5000` | Min interval between `web_image` calls per provider |
-| `WEB_IMAGE_DAILY_CAP` | No | `20` | Daily soft cap for the Gemini **web tier** `web_image` provider (keyed APIs stay uncapped) |
-| `WEB_CHAT_API_BASE_URL` | No | — | `web_chat`: any OpenAI-compatible `/chat/completions` gateway (a ChatGPT web bridge, `https://api.openai.com/v1`, …) |
+| `WEB_IMAGE_DAILY_CAP` | No | `20` | Daily soft cap for the Gemini **web tier** and ChatGPT web `web_image` providers (keyed APIs stay uncapped) |
+| `CHATGPT_WEB_AUTH_KEY` | No | — | ChatGPT web tier: the OAuth tokens JSON from `codex login` (`~/.codex/auth.json`) or a bare access-token JWT. Unset → falls back to `~/.codex/auth.json`, then Pi auth.json `openai-codex` |
+| `CHATGPT_WEB_CODEX_AUTH` | No | `~/.codex/auth.json` | Alternative codex-login file path to read |
+| `CHATGPT_WEB_AUTH_STORE` | No | `~/.pi/agent/chatgpt-web-auth.json` | Where rotated refresh tokens persist when the source can't be rewritten (0600) |
+| `CHATGPT_WEB_MODEL` | No | `gpt-5.5` | Default `web_chat` model on the ChatGPT web surface |
+| `WEB_CHAT_API_BASE_URL` | No | — | `web_chat` gateway provider: any OpenAI-compatible `/chat/completions` gateway (`https://api.openai.com/v1`, …) |
 | `WEB_CHAT_API_KEY` | No | — | Bearer key for the `web_chat` gateway |
 
 > (1) At least one search backend (SearXNG, Brave, or Firecrawl) must be configured for `web_search`.
@@ -339,6 +343,7 @@ web_image(prompt="...", model="glm-image", n=2, out_dir="/tmp/imgs")
 | Provider | Upstream | Auth | Notes |
 |---|---|---|---|
 | `gemini` (default) | gemini.google.com web tier | none (guest) or `GEMINI_WEB_SECURE_1PSID` | currently refused to non-browser clients (server-side TLS-fingerprint gate, verified 2026-09-14) — `zai` is the working path |
+| `chatgpt` | `chatgpt.com/backend-api/codex/responses` (Codex surface, ChatGPT subscription) | `CHATGPT_WEB_AUTH_KEY` / `codex login` / Pi auth.json | the `image_generation` Responses tool — same gpt-image family as chatgpt.com/images/; bills the metered Codex-usage bucket |
 | `zai` | `https://api.z.ai/api/paas/v4` (official API) | `ZAI_API_KEY` | GLM-Image (`model` default), fully ToS-compliant |
 | `custom` | any OpenAI-compatible `/images/generations` endpoint | `WEB_IMAGE_API_KEY` | e.g. official OpenAI `https://api.openai.com/v1` |
 
@@ -347,13 +352,16 @@ paths **plus inline image blocks** (multimodal models see the render
 immediately). `details` reports the winning provider, model, and fallback
 attempts.
 
-`n` (1–4) applies to the API providers (`zai`/`custom`); the Gemini web tier
-returns its own image count (surfaced as a provider note when fewer than `n`).
+`n` (1–4) applies to the API providers (`zai`/`custom`, and `chatgpt` — one
+image per call, sequentially); the Gemini web tier returns its own image
+count (surfaced as a provider note when fewer than `n`).
 
 **Guardrails** (soft, in-memory): per-provider `WEB_IMAGE_MIN_INTERVAL_MS`
 (default 5 s) and a `WEB_IMAGE_DAILY_CAP` (default 20/day, applied to the
-Gemini web tier only — keyed APIs are billed upstream and stay uncapped).
-Counters reset on restart; `web_status.imageProviders.rate` shows usage.
+Gemini web tier **and** the ChatGPT web provider — the latter bills the
+subscription's metered Codex-usage bucket; keyed APIs are billed upstream
+and stay uncapped). Counters reset on restart;
+`web_status.imageProviders.rate` shows usage.
 
 ⚠️ **ToS reality (read once)**: *every* AI chatbot's terms prohibit automated
 access to its web UI (Google, OpenAI, xAI "unauthorized automated or
@@ -364,29 +372,49 @@ non-human means", Z.ai alike). This tool therefore follows a risk ladder:
 3. **Personal cookie** (Gemini authed) — your own account, single session, low volume; same accepted-risk stance as the web bridges: use a burner/low-value account, never a valued one. No account pools, no commercial use, keep volume human-scale.
 
 Smoke test: `npx tsx extensions/scripts/gemini-smoke.ts "a red cube on white background" image`
-(or `… zai` for the Z.ai path).
+(or `… zai` for the Z.ai path, `… chatgpt-image` for the ChatGPT web path).
 
-### `web_chat` — one-off gateway chat
+### `web_chat` — ChatGPT web / one-off gateway chat
 
-Single non-streaming chat completion against any OpenAI-compatible gateway —
-the in-session equivalent of "ask another model quickly" without switching
-your main provider:
+Single non-streaming chat completion — via the **ChatGPT web tier** (your
+subscription, through the same `backend-api/codex/responses` surface the
+Codex CLI uses) or any OpenAI-compatible gateway. The in-session equivalent
+of "ask another model quickly" without switching your main provider:
 
 ```
 web_chat(prompt="In one sentence: why is idempotency key needed here?")
-web_chat(prompt="Summarize", model="gpt-5.3-mini", system="Be terse")
+web_chat(prompt="Summarize", provider="chatgpt", model="gpt-5.5", system="Be terse")
+web_chat(prompt="Summarize", provider="gateway", model="gpt-5.3-mini")
 ```
 
-Configure once in `~/.pi/agent/.env.local`, then restart pi:
+**ChatGPT web provider** (`provider: "chatgpt"`, the default when a
+credential is found): credential resolution order is `CHATGPT_WEB_AUTH_KEY`
+(the tokens JSON from `codex login`'s `~/.codex/auth.json`, or a bare
+access-token JWT) → `CHATGPT_WEB_CODEX_AUTH`/`~/.codex/auth.json` → Pi
+auth.json `openai-codex`. Expired tokens auto-refresh via
+`auth.openai.com` (rotated tokens persist back to the codex file, or to
+`~/.pi/agent/chatgpt-web-auth.json` when the source is read-only). The
+literal chatgpt.com web UI is Cloudflare-Turnstile-gated and unreachable
+headless — this surface is the reachable headless path on the same
+subscription, and it bills the metered Codex-usage limits (the 5-hour/
+weekly windows pi-sub displays), not the general chat quota. Image requests
+on the free plan typically answer `429 The usage limit has been reached`.
+
+**Gateway provider** (`provider: "gateway"`) — configure once in
+`~/.pi/agent/.env.local`, then restart pi:
 
 ```bash
 WEB_CHAT_API_BASE_URL=https://api.openai.com/v1   # or any OpenAI-compatible gateway
 WEB_CHAT_API_KEY=sk-...                           # if the gateway needs a key
 ```
 
-`web_status.webChat` shows configuration without printing secrets. Chat-only
-by design (no tool calling through gateways); for grounded research with
-sources use `web_research`, and `/model` switches your main model.
+`web_status.webChat` / `web_status.chatgptWeb` show configuration without
+printing secrets. Chat-only by design (no tool calling); for grounded
+research with sources use `web_research`, and `/model` switches your main
+model.
+
+Smoke test: `npx tsx extensions/scripts/gemini-smoke.ts x chatgpt-auth`,
+`… "reply pong" chatgpt`.
 
 ## Library structure
 

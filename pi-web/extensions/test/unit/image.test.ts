@@ -614,8 +614,9 @@ describe("generateImageWithFallback", () => {
     }));
     expect(r.provider).to.equal("zai");
     expect(r.model).to.equal("cogview-4");
-    expect(r.attempts).to.have.length(1);
+    expect(r.attempts).to.have.length(2);
     expect(r.attempts[0]).to.include("gemini:");
+    expect(r.attempts[1]).to.include("chatgpt: not configured");
   });
 
   it("skips a capped gemini (web tier) and uses the next provider", async () => {

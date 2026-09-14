@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.14.0 (2026-09-14)
+
+### Added
+
+- **ChatGPT web tier (`chatgpt` provider) — chat + images, direct, no bridge**:
+  pi-web now talks to `chatgpt.com/backend-api/codex/responses` (the surface
+  the official Codex CLI uses, on your ChatGPT subscription) with plain-Node
+  Bearer auth — the literal web UI is Cloudflare-Turnstile-gated and
+  unreachable headless, this is the reachable headless path on the same
+  subscription.
+  - `web_chat provider=chatgpt` (default when a credential is found): one-off
+    chat on the gpt-5.x codex catalog (default `gpt-5.5`, `CHATGPT_WEB_MODEL`
+    override, fallback to `gpt-5.5` on unknown-model); `system` maps to
+    `instructions` (arbitrary prompts accepted — pi's own openai-codex
+    provider precedent).
+  - `web_image provider=chatgpt` (second in the auto chain: gemini → chatgpt
+    → zai → custom): the `image_generation` Responses tool — the same
+    gpt-image family as chatgpt.com/images/ — returned as base64 PNG and
+    saved to disk; one image per call, `n` loops sequentially, server-rewritten
+    image knobs surfaced as a note; bills the metered Codex-usage bucket and
+    is covered by `WEB_IMAGE_DAILY_CAP` (default 20/day).
+  - Credential resolution: `CHATGPT_WEB_AUTH_KEY` (the tokens JSON from
+    `codex login`, or a bare access-token JWT — opaque bridge/API keys are
+    rejected with an explanatory hint) → `CHATGPT_WEB_CODEX_AUTH`/
+    `~/.codex/auth.json` → Pi auth.json `openai-codex`. Expired tokens
+    auto-refresh via `auth.openai.com` (single-flight; rotated tokens persist
+    back to the codex file, or to `~/.pi/agent/chatgpt-web-auth.json` (0600)
+    when the source can't be rewritten — next session adopts the persisted
+    token via the stored pre-rotation key); 401/403 → one refresh-retry;
+    `invalid_grant` → honest "run codex login again" error.
+  - Security: the auth-store path (`CHATGPT_WEB_AUTH_STORE`) and model
+    override (`CHATGPT_WEB_MODEL`) ignore untrusted project-cwd env files —
+    a repo's `.env.local` can never steer where rotated refresh tokens are
+    written; `CHATGPT_WEB_MODEL` from a project cwd is honored only when the
+    project is trusted.
+  - `web_status`: new `chatgptWeb` block (source/account/plan/token
+    expiry/refresh availability — no secrets) + `imageProviders.chatgpt`.
+  - Smoke modes: `chatgpt-auth`, `chatgpt "…"`, `chatgpt-image "…"`.
+  - Live-verified against chatgpt.com on a real account: auth accepted,
+    request shape validated, quota errors surfaced honestly (429 "The usage
+    limit has been reached" on a free plan).
+
 ## 0.13.4 (2026-09-14)
 
 ### Fixed

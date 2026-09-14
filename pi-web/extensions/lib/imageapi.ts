@@ -14,6 +14,7 @@ import {
   type GeminiClientFactory,
   type GeminiWebConfig,
 } from "./gemini";
+import { chatgptWebGenerateImage, describeChatGptError, type ChatGptAuth, type SSEFetchLike } from "./chatgpt";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -112,7 +113,7 @@ function msUntilUtcRoll(ts: number): number {
 
 export type RateVerdict = { ok: true } | { ok: false; reason: string; retryAfterMs: number };
 
-export function imageRateCheck(provider: "gemini" | "zai" | "custom", rateCfg: ImageRateConfig): RateVerdict {
+export function imageRateCheck(provider: ImageProvider, rateCfg: ImageRateConfig): RateVerdict {
   const state = rate.get(provider);
   const ts = nowMs();
   if (state && rateCfg.minIntervalMs > 0) {
@@ -125,7 +126,9 @@ export function imageRateCheck(provider: "gemini" | "zai" | "custom", rateCfg: I
       };
     }
   }
-  if (provider === "gemini" && state && state.day === utcDay(ts) && state.count >= rateCfg.dailyCap) {
+  // Gemini is the free tier; chatgpt spends the metered Codex bucket — both
+  // get the soft daily cap. Keyed APIs (zai/custom) stay uncapped.
+  if ((provider === "gemini" || provider === "chatgpt") && state && state.day === utcDay(ts) && state.count >= rateCfg.dailyCap) {
     return {
       ok: false,
       reason: `daily soft cap reached (${rateCfg.dailyCap}/day, WEB_IMAGE_DAILY_CAP)`,
@@ -135,7 +138,7 @@ export function imageRateCheck(provider: "gemini" | "zai" | "custom", rateCfg: I
   return { ok: true };
 }
 
-export function imageRateRecord(provider: "gemini" | "zai" | "custom", count = 1): void {
+export function imageRateRecord(provider: ImageProvider, count = 1): void {
   const ts = nowMs();
   const day = utcDay(ts);
   const prev = rate.get(provider);
@@ -285,6 +288,12 @@ function extFromBytes(buf: Buffer, fallback: string): string {
 }
 
 function writeB64(outDir: string, buf: Buffer, i: number): string {
+  return writeImageFile(outDir, buf, i);
+}
+
+/** Save decoded image bytes into outDir (shared with lib/chatgpt.ts). Magic-
+ *  bytes extension sniff — some upstreams serve JPEG/WebP behind .png names. */
+export function writeImageFile(outDir: string, buf: Buffer, i: number): string {
   const file = path.join(outDir, `pi-web-image-${randomUUID().slice(0, 8)}-${i}${extFromBytes(buf, ".png")}`);
   fs.writeFileSync(file, buf);
   return file;
@@ -358,10 +367,11 @@ function extFor(url: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Fallback chain: gemini (free web tier) → zai (official API) → custom
+// Fallback chain: gemini (free web tier) → chatgpt (subscription) →
+// zai (official API) → custom
 // ---------------------------------------------------------------------------
 
-export type ImageProvider = "gemini" | "zai" | "custom";
+export type ImageProvider = "gemini" | "chatgpt" | "zai" | "custom";
 
 export interface ImageChainResult {
   provider: ImageProvider;
@@ -384,18 +394,22 @@ export interface ImageChainParams {
   geminiConfig: GeminiWebConfig;
   apiConfig: ImageApiConfig;
   rateConfig: ImageRateConfig;
+  chatgptAuth?: ChatGptAuth | null;
+  chatgptProblem?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
   /** @internal test injection */
   geminiFactory?: GeminiClientFactory;
   /** @internal test injection */
   fetchImpl?: FetchLike;
+  /** @internal test injection — stream-style fetch for the chatgpt branch */
+  chatgptFetchImpl?: SSEFetchLike;
 }
 
 function chainFor(provider: "auto" | ImageProvider): ImageProvider[] {
   // Auto includes ALL providers: unconfigured ones contribute "not configured
   // (set …)" hints to the aggregated error instead of vanishing silently.
-  return provider === "auto" ? ["gemini", "zai", "custom"] : [provider];
+  return provider === "auto" ? ["gemini", "chatgpt", "zai", "custom"] : [provider];
 }
 
 export async function generateImageWithFallback(params: ImageChainParams): Promise<ImageChainResult> {
@@ -414,9 +428,23 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
       continue;
     }
     const configured =
-      provider === "gemini" ? true : provider === "zai" ? Boolean(params.apiConfig.zai) : Boolean(params.apiConfig.custom);
+      provider === "gemini"
+        ? true
+        : provider === "chatgpt"
+          ? Boolean(params.chatgptAuth)
+          : provider === "zai"
+            ? Boolean(params.apiConfig.zai)
+            : Boolean(params.apiConfig.custom);
     if (!configured) {
-      attempts.push(`${provider}: not configured${provider === "zai" ? " (set ZAI_API_KEY)" : " (set WEB_IMAGE_API_BASE_URL)"}`);
+      attempts.push(
+        `${provider}: not configured${
+          provider === "chatgpt"
+            ? ` (${params.chatgptProblem ?? "set CHATGPT_WEB_AUTH_KEY (OAuth JSON/JWT from codex login) or run codex login"})`
+            : provider === "zai"
+              ? " (set ZAI_API_KEY)"
+              : " (set WEB_IMAGE_API_BASE_URL)"
+        }`,
+      );
       continue;
     }
     const rate = imageRateCheck(provider, params.rateConfig);
@@ -426,7 +454,38 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
     }
     try {
       let result: { paths: string[]; urls?: string[]; downloadErrors?: string[]; note?: string; model?: string };
-      if (provider === "gemini") {
+      if (provider === "chatgpt") {
+        // One image per codex/responses call — loop n sequentially. A mid-way
+        // failure keeps the images already paid for.
+        const paths: string[] = [];
+        let lastModel: string | undefined;
+        let lastNote: string | undefined;
+        let partialFailure: string | undefined;
+        for (let i = 0; i < (params.n ?? 1); i++) {
+          try {
+            const r = await chatgptWebGenerateImage({
+              auth: params.chatgptAuth!,
+              prompt: params.prompt,
+              model: params.model,
+              outDir: params.outDir,
+              timeoutMs: params.timeoutMs,
+              signal: params.signal,
+              fetchImpl: params.chatgptFetchImpl,
+            });
+            paths.push(...r.paths);
+            lastModel = r.model;
+            lastNote = r.note;
+          } catch (err) {
+            if (!paths.length) throw err;
+            partialFailure = err instanceof Error ? err.message : String(err);
+            break;
+          }
+        }
+        const note = partialFailure
+          ? `generated ${paths.length} of ${params.n} requested images before failing: ${partialFailure}`
+          : lastNote;
+        result = { paths, urls: [], model: lastModel, ...(note ? { note } : {}) };
+      } else if (provider === "gemini") {
         result = await geminiGenerateImage(params.prompt, {
           config: params.geminiConfig,
           outDir: params.outDir,
@@ -460,7 +519,7 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
           fetchImpl: params.fetchImpl,
         });
       }
-      imageRateRecord(provider);
+      imageRateRecord(provider, provider === "chatgpt" ? Math.max(1, result.paths.length) : 1);
       if (provider === "gemini") geminiRefusals = 0;
       if (provider === "gemini" && params.n && params.n > 1 && result.paths.length < params.n) {
         attempts.push(`gemini: n=${params.n} requested — the gemini web tier returns its own image count (${result.paths.length}); n applies to zai/custom`);
@@ -481,7 +540,7 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
       if (provider === "gemini" && err instanceof Error && /no images/.test(err.message)) geminiRefusals++;
       // A foreign AbortError-named error (not from the caller's signal) is a
       // provider failure like any other — record it and keep the chain going.
-      attempts.push(`${provider}: ${provider === "gemini" ? describeGeminiError(err) : describeImageApiError(err)}`);
+      attempts.push(`${provider}: ${provider === "gemini" ? describeGeminiError(err) : provider === "chatgpt" ? describeChatGptError(err) : describeImageApiError(err)}`);
     }
   }
   throw new Error(`All image providers failed:\n${attempts.map((a) => `- ${a}`).join("\n")}`);

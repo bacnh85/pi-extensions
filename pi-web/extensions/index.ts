@@ -44,6 +44,12 @@ import {
   describeChatApiError,
   loadChatConfig,
 } from "./lib/chatapi";
+import {
+  chatgptAuthSnapshot,
+  chatgptWebChat,
+  describeChatGptError,
+  loadChatGptAuth,
+} from "./lib/chatgpt";
 import { extractWithDiagnostics, type ExtractMode } from "./lib/extract";
 import { firecrawlRequest, type FirecrawlResult } from "./lib/firecrawl";
 import {
@@ -116,8 +122,8 @@ const WEB_ROUTING_GUIDANCE = `## Web Tool Routing (pi-web)
 - **web_crawl** — multi-page crawl: \`mode: "light"\` (Firecrawl, url) or \`mode: "full"\` (Crawl4AI, urls[]).
 - **web_screenshot** / **web_pdf** — page capture (Crawl4AI).
 - **web_research** — AI-synthesized research via Gemini web (mode "ask" = grounded answer, guest OK; mode "research" = Deep Research report — plan, autonomous web browsing, cited report; takes minutes when available).
-- **web_image** — text→image generation via free upstreams (auto: Gemini web → Z.ai GLM-Image → custom OpenAI-images endpoint; \`model\`/\`n\` params).
-- **web_chat** — one-off chat completion via an OpenAI-compatible gateway (\`WEB_CHAT_API_BASE_URL\`; non-streaming).
+- **web_image** — text→image generation (auto: Gemini web → ChatGPT web via CHATGPT_WEB_AUTH_KEY / codex login → Z.ai GLM-Image → custom OpenAI-images endpoint; \`model\`/\`n\` params).
+- **web_chat** — one-off chat completion — ChatGPT web (CHATGPT_WEB_AUTH_KEY / codex login; default when configured) or an OpenAI-compatible gateway (\`WEB_CHAT_API_BASE_URL\`; non-streaming).
 - **web_status** — provider config + health.
 
 Rules: Firecrawl Search is weak on domain-specific queries — prefer SearXNG/Brave; Firecrawl Scrape fails on bot-protected sites — use Crawl4AI (\`mode: "full"\`) then agy (\`mode: "agy"\`); cite source URLs.`;
@@ -538,16 +544,16 @@ export default function piWebExtension(pi: ExtensionAPI) {
     name: "web_image",
     label: "Web Image Generation",
     description:
-      "Generate images from text via free upstream providers, with fallback: Gemini web (gemini.google.com, guest or cookie auth), Z.ai official API (GLM-Image via ZAI_API_KEY), or any custom OpenAI-compatible images endpoint (WEB_IMAGE_API_BASE_URL). Returns saved file paths plus the images inline.",
-    promptSnippet: "Generate images via free upstreams (Gemini web, Z.ai GLM-Image)",
+      "Generate images from text via free upstream providers, with fallback: Gemini web (gemini.google.com, guest or cookie auth), ChatGPT web (subscription via CHATGPT_WEB_AUTH_KEY / codex login, image_generation tool), Z.ai official API (GLM-Image via ZAI_API_KEY), or any custom OpenAI-compatible images endpoint (WEB_IMAGE_API_BASE_URL). Returns saved file paths plus the images inline.",
+    promptSnippet: "Generate images via free upstreams (Gemini web, ChatGPT web, Z.ai GLM-Image)",
     promptGuidelines: [
-      "Use for image GENERATION from a text prompt. provider auto falls back gemini → zai → custom. Capturing an EXISTING page is web_screenshot, not this.",
+      "Use for image GENERATION from a text prompt. provider auto falls back gemini → chatgpt → zai → custom. Capturing an EXISTING page is web_screenshot, not this.",
     ],
     parameters: Type.Object({
       prompt: Type.String({ description: "Image description." }),
       provider: Type.Optional(Type.Union(
-        [Type.Literal("auto"), Type.Literal("gemini"), Type.Literal("zai"), Type.Literal("custom")],
-        { default: "auto", description: "auto = gemini → zai (if ZAI_API_KEY) → custom (if WEB_IMAGE_API_BASE_URL); pin one to skip fallback." },
+        [Type.Literal("auto"), Type.Literal("gemini"), Type.Literal("chatgpt"), Type.Literal("zai"), Type.Literal("custom")],
+        { default: "auto", description: "auto = gemini → chatgpt (if CHATGPT_WEB_AUTH_KEY/codex login) → zai (if ZAI_API_KEY) → custom (if WEB_IMAGE_API_BASE_URL); pin one to skip fallback." },
       )),
       model: Type.Optional(Type.String({ description: "Provider-specific model (e.g. glm-image, or a Gemini image-capable model id). Omit for the provider default." })),
       n: Type.Optional(Type.Number({ default: 1, description: "Number of images, 1-4 (applies to zai/custom; the gemini web tier returns its own count)." })),
@@ -572,6 +578,10 @@ export default function piWebExtension(pi: ExtensionAPI) {
         geminiConfig: loadGeminiWebConfig(cwd, trusted),
         apiConfig: loadImageApiConfig(cwd, trusted),
         rateConfig: loadImageRateConfig(cwd, trusted),
+        ...(() => {
+          const cgpt = loadChatGptAuth(cwd, trusted);
+          return { chatgptAuth: cgpt.auth, ...(cgpt.problem ? { chatgptProblem: cgpt.problem } : {}) };
+        })(),
         timeoutMs,
         signal,
       });
@@ -600,22 +610,53 @@ export default function piWebExtension(pi: ExtensionAPI) {
   // ── web_chat ─────────────────────────────────────────────────────────
   pi.registerTool({
     name: "web_chat",
-    label: "Web Chat (gateway)",
+    label: "Web Chat (ChatGPT web / gateway)",
     description:
-      "One-off chat completion via an OpenAI-compatible gateway (WEB_CHAT_API_BASE_URL — a ChatGPT web bridge, official OpenAI, or any web2api gateway). Non-streaming Q&A; not a provider — use /model to switch your main model.",
-    promptSnippet: "One-off chat via OpenAI-compatible gateway",
+      "One-off chat completion — ChatGPT web tier (subscription, via CHATGPT_WEB_AUTH_KEY / codex login; default when configured) or any OpenAI-compatible gateway (WEB_CHAT_API_BASE_URL). Non-streaming Q&A; not a provider — use /model to switch your main model.",
+    promptSnippet: "One-off chat via ChatGPT web or an OpenAI-compatible gateway",
     promptGuidelines: [
       "Use for a quick one-off second opinion, classification, or short generation call. Grounded research with sources → web_research; switching your main chat model → /model.",
     ],
     parameters: Type.Object({
       prompt: Type.String({ description: "The question or instruction." }),
-      model: Type.Optional(Type.String({ description: "Gateway model id (e.g. gpt-5.3-mini). Omit for the gateway default." })),
+      provider: Type.Optional(Type.Union(
+        [Type.Literal("chatgpt"), Type.Literal("gateway")],
+        { description: "chatgpt = ChatGPT web (CHATGPT_WEB_AUTH_KEY / codex login); gateway = WEB_CHAT_API_BASE_URL. Default: chatgpt when configured, else gateway." },
+      )),
+      model: Type.Optional(Type.String({ description: "Model id (chatgpt: e.g. gpt-5.5; gateway: e.g. gpt-5.3-mini). Omit for the provider default." })),
       system: Type.Optional(Type.String({ description: "Optional system prompt." })),
       ...sharedControlSchema,
     }),
     async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
       const cwd = cwdFromContext(ctx);
       const trusted = includeProjectEnv(ctx);
+      const wantChatGpt = params.provider === "chatgpt" || (params.provider === undefined && Boolean(loadChatGptAuth(cwd, trusted).auth));
+      if (wantChatGpt) {
+        const cgpt = loadChatGptAuth(cwd, trusted);
+        if (!cgpt.auth) {
+          throw new Error(
+            `ChatGPT web chat is not configured. ${cgpt.problem ?? "Set CHATGPT_WEB_AUTH_KEY (the tokens JSON from ~/.codex/auth.json after `codex login`, or a bare access-token JWT) in ~/.pi/agent/.env.local"} — or run codex login — then restart pi. provider=gateway uses WEB_CHAT_API_BASE_URL instead.`,
+          );
+        }
+        const timeoutMs = Math.min(Math.max((params.timeout_ms as number) ?? 120_000, 10_000), 300_000);
+        try {
+          const result = await chatgptWebChat({
+            auth: cgpt.auth,
+            prompt: params.prompt as string,
+            system: params.system as string | undefined,
+            model: params.model as string | undefined,
+            cwd,
+            includeCwdEnv: trusted,
+            timeoutMs,
+            signal,
+          });
+          const text = `Model: ${result.model ?? "chatgpt default"}\n\n${result.text}`;
+          return { content: [{ type: "text" as const, text: truncateText(text) }], details: { model: result.model, usage: result.usage } };
+        } catch (err) {
+          if ((err as Error)?.name === "AbortError") throw err;
+          throw new Error(describeChatGptError(err));
+        }
+      }
       const config = loadChatConfig(cwd, trusted);
       if (!config) {
         throw new Error(
@@ -634,7 +675,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
           signal,
         });
         const text = `Model: ${result.model ?? "gateway default"}\n\n${result.text}`;
-        return { content: [{ type: "text" as const, text: truncateText(text) }], details: { model: result.model } };
+        return { content: [{ type: "text" as const, text: truncateText(text) }], details: { model: result.model, usage: undefined } };
       } catch (err) {
         if ((err as Error)?.name === "AbortError") throw err;
         throw new Error(describeChatApiError(err));
@@ -664,6 +705,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
       const c4aiToken = findEnvValue("CRAWL4AI_API_TOKEN", cwd, trusted);
       const geminiCfg = loadGeminiWebConfig(cwd, trusted);
       const imageApiCfg = loadImageApiConfig(cwd, trusted);
+      const chatgptCfg = loadChatGptAuth(cwd, trusted);
 
       const { isAgyInstalled } = await import("./lib/agy");
 
@@ -696,6 +738,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
         },
         imageProviders: {
           gemini: { configured: Boolean(geminiCfg.psid), guestPossible: true },
+          chatgpt: { configured: Boolean(chatgptCfg.auth) },
           zai: { configured: Boolean(imageApiCfg.zai) },
           custom: imageApiCfg.custom
             ? { configured: true, label: imageApiCfg.custom.label }
@@ -709,8 +752,10 @@ export default function piWebExtension(pi: ExtensionAPI) {
             baseUrl: cfg?.baseUrl,
             keyFound: Boolean(cfg?.apiKey),
             source: cfg?.source ?? "not set",
+            defaultProvider: loadChatGptAuth(cwd, trusted).auth ? "chatgpt" : "gateway",
           };
         })(),
+        chatgptWeb: chatgptAuthSnapshot(chatgptCfg),
         localChrome: { path: findChromeBinary() ?? "not found" },
       };
 
