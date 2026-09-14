@@ -359,17 +359,22 @@ describe("abort + timeout guarding", () => {
     }
   });
 
-  it("research rejects with AbortError on a pre-aborted signal without awaiting the fake poll", async () => {
+  it("research rejects with AbortError on a pre-aborted signal without real network", async () => {
     __resetGeminiClientCache();
     const controller = new AbortController();
     controller.abort();
-    const never = fakeClient({ research: () => new Promise(() => {}) });
+    let calls = 0;
+    const offlineHttp: DrHttp = () => {
+      calls++;
+      return new Promise(() => {}); // never resolves — any call proves the transport is stubbed, not defaultHttp
+    };
     try {
-      await geminiResearch("q", { config: { psid: "p", psidSource: "test" }, signal: controller.signal, factory: factoryFor(never) });
+      await geminiResearch("q", { config: { psid: "p", psidSource: "test" }, signal: controller.signal, drHttp: offlineHttp });
       expect.fail("should have thrown");
     } catch (err) {
       expect((err as Error).name).to.equal("AbortError");
     }
+    expect(calls).to.equal(1); // init attempted on the stub — no real https.request fired
   });
 
   it("ask enforces timeout_ms (TimeoutError) when the client never resolves", async () => {

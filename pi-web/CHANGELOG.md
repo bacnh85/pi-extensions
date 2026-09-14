@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.13.4 (2026-09-14)
+
+### Fixed
+
+- **defaultHttp cookie jar seeded case-independently** (reviewer): the jar
+  read `headers.Cookie` (capital C) while callers pass lowercase `cookie`
+  (chromeHeaders), so the jar was always empty — requests shipped both the
+  real `cookie:` and an empty `Cookie:` header, and redirect hops rebuilt
+  `Cookie: ""` instead of the session cookie. Now `extractCookieJar`
+  (new, exported) finds the cookie key in any case, seeds the jar, and
+  strips the original header so exactly one Cookie header ships per hop;
+  hop-accumulated cookies now merge with the auth cookie.
+- **DR report poll fails fast on auth rejection** (reviewer): 401/403 from
+  batchexecute broke out of the poll loop immediately and surfaced in the
+  partial-result note (`report poll rejected (HTTP 403) — session cannot
+  read this conversation`) instead of silently re-polling to the full
+  deadline (up to 30 min). 200-with-empty / 429 / 5xx still keep polling
+  (server-state fluctuation is documented behavior).
+- **poll-wait abort listener leak** (reviewer): the 20s wait added a fresh
+  `abort` listener per iteration without removing it — ~30 leaked listeners
+  per 600s run (MaxListenersExceededWarning at 10). Now `abortableSleep`
+  (new, exported) removes the listener whenever the timer wins.
+- **research pre-abort unit test performed real network I/O** (reviewer):
+  it injected a `factory` that `geminiResearch` no longer reads, so the
+  un-awaited DR promise fired a real GET to gemini.google.com from the test
+  suite. Now injects an offline `drHttp` stub and asserts no network path.
+
 ## 0.13.3 (2026-09-14)
 
 ### Fixed

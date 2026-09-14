@@ -66,16 +66,12 @@ export function chromeHeaders(extra: Record<string, string> = {}): Record<string
 /** Default transport: node:https with redirect-following (max 5) + cookie-jar accumulation over the base cookie. */
 export function defaultHttp(): DrHttp {
   return async (url, opts) => {
-    const basePairs = new Map<string, string>();
-    for (const pair of (opts.headers.Cookie ?? "").split("; ")) {
-      const eq = pair.indexOf("=");
-      if (eq > 0) basePairs.set(pair.slice(0, eq).trim(), pair.slice(eq + 1));
-    }
+    const { rest, jar } = extractCookieJar(opts.headers);
     let current = url;
     for (let hop = 0; hop < 5; hop++) {
-      const cookie = [...basePairs].map(([k, v]) => `${k}=${v}`).join("; ");
+      const cookie = [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
       const res = await new Promise<{ status: number; headers: import("node:http").IncomingHttpHeaders; buf: Buffer }>((resolve, reject) => {
-        const req = https.request(new URL(current), { method: opts.method, headers: { ...opts.headers, Cookie: cookie }, maxHeaderSize: 256 * 1024 }, (r) => {
+        const req = https.request(new URL(current), { method: opts.method, headers: { ...rest, Cookie: cookie }, maxHeaderSize: 256 * 1024 }, (r) => {
           const chunks: Buffer[] = [];
           r.on("data", (c: Buffer) => chunks.push(c));
           r.on("end", () => resolve({ status: r.statusCode ?? 0, headers: r.headers, buf: Buffer.concat(chunks) }));
@@ -88,7 +84,7 @@ export function defaultHttp(): DrHttp {
       for (const line of res.headers["set-cookie"] ?? []) {
         const pair = line.split(";")[0];
         const eq = pair.indexOf("=");
-        if (eq > 0) basePairs.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+        if (eq > 0) jar.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
       }
       if ([301, 302, 303, 307, 308].includes(res.status) && res.headers.location) {
         current = new URL(res.headers.location, current).toString();
@@ -104,6 +100,43 @@ export function defaultHttp(): DrHttp {
   };
 }
 
+/** Case-independent Cookie-header extraction + jar seeding. Callers pass the
+ * auth cookie as `cookie` (chromeHeaders) — seeding must not depend on case,
+ * and the original header must be removed so exactly one Cookie header ships
+ * per hop (a stray empty `Cookie:` renders pages logged-out).
+ * @internal exported for tests */
+export function extractCookieJar(headers: Record<string, string>): { rest: Record<string, string>; jar: Map<string, string> } {
+  const rest: Record<string, string> = {};
+  const jar = new Map<string, string>();
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() !== "cookie") {
+      rest[k] = v;
+      continue;
+    }
+    for (const pair of v.split("; ")) {
+      const eq = pair.indexOf("=");
+      if (eq > 0) jar.set(pair.slice(0, eq).trim(), pair.slice(eq + 1));
+    }
+  }
+  return { rest, jar };
+}
+
+/** Sleep that rejects with AbortError if the signal fires; removes its
+ * listener when the timer wins so repeated polls don't leak listeners.
+ * @internal exported for tests */
+export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(t);
+      reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    };
+    const t = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 /** Byte-exact frame splitter: prefix is the byte length INCLUDING the trailing newline. */
 export function parseFrames(buf: Buffer): string[] {
   const start = buf.indexOf(")]}'");
@@ -279,28 +312,41 @@ export async function geminiDeepResearch(opts: DrOptions): Promise<DrResult> {
       headers: chromeHeaders({ cookie, "content-type": "application/x-www-form-urlencoded;charset=utf-8", "x-same-domain": "1" }),
       body: new URLSearchParams({ at: snlM0e, "f.req": fReq }).toString(),
     });
-    if (res.status !== 200) return [];
+    if (res.status === 401 || res.status === 403) {
+      // Hard auth rejection — unlike 200-with-empty (server fluctuation) this
+      // cannot become a report on a later poll; surface it instead of spinning
+      // until the deadline.
+      throw new DeepResearchError(`report poll rejected (HTTP ${res.status}) — session cannot read this conversation`);
+    }
+    if (res.status !== 200) return []; // 429/5xx: transient — keep polling
     return frameStrings(parseFrames(res.buf)).filter((s) => s.length > 200 && !priorTurnStrings.has(s));
   };
 
   let reportStrings: string[] = [];
+  let pollFailure: string | null = null;
   while (Date.now() < deadline) {
     checkAbort();
-    reportStrings = await pollOnce();
+    try {
+      reportStrings = await pollOnce();
+    } catch (err) {
+      if ((err as Error).name === "AbortError") throw err;
+      pollFailure = err instanceof Error ? err.message : String(err);
+      break;
+    }
     if (reportStrings.length) break;
     const wait = Math.min(20_000, Math.max(0, deadline - Date.now()));
     if (wait <= 0) break;
-    await new Promise<void>((resolve, reject) => {
-      const t = setTimeout(resolve, wait);
-      opts.signal?.addEventListener("abort", () => { clearTimeout(t); reject(Object.assign(new Error("web_research aborted"), { name: "AbortError" })); }, { once: true });
-    });
+    await abortableSleep(wait, opts.signal);
   }
 
   const text = reportStrings.join("\n\n");
   const sources = [...new Set((text.match(/https?:\/\/[^\s<>()\[\]{}"'`]+/g) ?? []).map((u) => u.replace(/[.,;:!?)\]]+$/, "")))].slice(0, 30);
   const result: DrResult = { title, text, sources };
   if (!text) {
-    result.partial = `Research executed ("${title ?? opts.query}") and confirmed ("${DR_CONFIRM_PROMPT}"), but the report could not be retrieved on this session (conversation read requires a live-session token). The report remains available in the Gemini web history for chat ${plan.ids.cid}.`;
+    result.partial =
+      `Research executed ("${title ?? opts.query}") and confirmed ("${DR_CONFIRM_PROMPT}"), but the report could not be retrieved` +
+      (pollFailure ? ` (${pollFailure})` : " on this session (conversation read requires a live-session token)") +
+      `. The report remains available in the Gemini web history for chat ${plan.ids.cid}.`;
   }
   return result;
 }

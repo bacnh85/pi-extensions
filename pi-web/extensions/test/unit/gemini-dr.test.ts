@@ -9,7 +9,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  abortableSleep,
   extractChatIds,
+  extractCookieJar,
   extractPlanTitle,
   frameStrings,
   geminiDeepResearch,
@@ -128,5 +130,87 @@ describe("geminiDeepResearch (injected transport, fixture-driven cycle)", () => 
     expect(r.title).to.equal("JPEG Compression Research Plan");
     expect(r.partial).to.match(/could not be retrieved/);
     expect(r.partial).to.include("c_");
+  });
+
+  it("fails fast with an honest partial when the poll is auth-rejected (403)", async function () {
+    this.timeout(10_000);
+    let streamTurns = 0;
+    let polls = 0;
+    const http: DrHttp = async (url) => {
+      if (url.startsWith("https://gemini.google.com/app")) {
+        return {
+          status: 200,
+          headers: { get: () => null, "set-cookie": [] },
+          buf: Buffer.from(')]}\'\n<html>"SNlM0e":"","cfb2h":"boq_test_build","FdrFJe":"1"</html>'),
+        };
+      }
+      if (url.includes("StreamGenerate")) {
+        streamTurns++;
+        return { status: 200, headers: { get: () => null }, buf: streamTurns === 1 ? fixture("dr-plan.bin") : fixture("dr-confirm.bin") };
+      }
+      polls++;
+      return { status: 403, headers: { get: () => null }, buf: Buffer.from("") };
+    };
+    const r = await geminiDeepResearch({ cookie: { psid: "psid-test", psidts: "ts-test" }, query: "q", timeoutMs: 8_000, http });
+    expect(polls).to.equal(1); // first rejection breaks the loop — no re-polling to the deadline
+    expect(r.partial).to.include("report poll rejected (HTTP 403)");
+    expect(r.partial).to.include("c_10950ff6b1b0ebc1"); // chat id still surfaced
+  });
+});
+
+describe("extractCookieJar (case-independent seeding, no duplicate Cookie header)", () => {
+  it("seeds the jar from lowercase and capital Cookie keys, stripping the header from rest", () => {
+    for (const key of ["cookie", "Cookie"]) {
+      const { rest, jar } = extractCookieJar({ [key]: "__Secure-1PSID=abc; NID=zz", "content-type": "x" });
+      expect(jar.get("__Secure-1PSID")).to.equal("abc");
+      expect(jar.get("NID")).to.equal("zz");
+      expect(rest).to.deep.equal({ "content-type": "x" });
+      expect(Object.keys(rest).some((k) => k.toLowerCase() === "cookie")).to.be.false;
+    }
+  });
+
+  it("tolerates a missing cookie header", () => {
+    const { rest, jar } = extractCookieJar({ accept: "*/*" });
+    expect(jar.size).to.equal(0);
+    expect(rest).to.deep.equal({ accept: "*/*" });
+  });
+});
+
+describe("abortableSleep (listener hygiene)", () => {
+  function countingSignal(): { signal: AbortSignal; added: () => number; removed: () => number } {
+    const controller = new AbortController();
+    let added = 0;
+    let removed = 0;
+    const signal = controller.signal as AbortSignal & Record<string, unknown>;
+    const realAdd = signal.addEventListener.bind(signal);
+    const realRemove = signal.removeEventListener.bind(signal);
+    signal.addEventListener = ((...a: unknown[]) => {
+      added++;
+      return (realAdd as (...args: unknown[]) => void)(...a);
+    }) as typeof signal.addEventListener;
+    signal.removeEventListener = ((...a: unknown[]) => {
+      removed++;
+      return (realRemove as (...args: unknown[]) => void)(...a);
+    }) as typeof signal.removeEventListener;
+    return { signal, added: () => added, removed: () => removed };
+  }
+
+  it("removes its abort listener when the timer wins (no leak across polls)", async () => {
+    const { signal, added, removed } = countingSignal();
+    for (let i = 0; i < 3; i++) await abortableSleep(5, signal);
+    expect(added()).to.equal(3);
+    expect(removed()).to.equal(3);
+  });
+
+  it("rejects with AbortError when aborted mid-sleep", async () => {
+    const controller = new AbortController();
+    const p = abortableSleep(60_000, controller.signal);
+    setTimeout(() => controller.abort(), 5);
+    try {
+      await p;
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as Error).name).to.equal("AbortError");
+    }
   });
 });
