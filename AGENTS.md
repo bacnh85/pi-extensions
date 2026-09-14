@@ -40,7 +40,6 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-subagent** | 0.22.1 | Isolated in-process subagents with parallel/chain modes, inspectable threads, git worktree isolation (`sandbox: worktree`), live progress widget, background mode, role-based model routing (`@fast`/`@coder`/`@smart` + `subagent.roles`/`subagent.agentThinking` settings, `/subagent roles` editor), opt-in auto-review after coding turns (`subagent.autoReview`), and herdr pane delegation (`runner: "herdr"` + `herdr` control tool) when pi runs inside herdr. |
 | **pi-web** | 0.7.1 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs with local headless-Chrome capture for localhost/LAN/file URLs (inline PNGs for multimodal models). |
 | **pi-ux** | 0.4.7 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, ships medium-tuned presets (Web/Mobile), runs deterministic slop-audit gates (APCA contrast + tokens + states + slop/taste tells + reduced-motion), taste rules (named cliché clusters, typography/motion/copy), vision render-inspect loop for multimodal models, works with text-only models. |
-| **pi-windows-tools** | 0.5.4 | Windows-specific tools for Pi. |
 
 ## Repository Structure
 
@@ -175,7 +174,7 @@ spec). pi-ponytail uses `node --test` with no mocha or tsx dependency at all.
 A single `.github/workflows/ci.yml` workflow runs on GitHub-hosted runners:
 
 - **Triggers:** push to `main`, pull requests, and manual `workflow_dispatch`.
-- **Runner matrix:** Linux on `ubuntu-latest` for all packages; `windows-latest` for `pi-windows-tools`.
+- **Runner matrix:** Linux on `ubuntu-latest` for all packages.
 - **Changed-package detection:** `dorny/paths-filter` builds a dynamic matrix so only affected packages are tested.
 - **Test commands:** pi-ponytail uses `node --test`; pi-rtk and pi-sub use `npm pack --dry-run`; all others use `npm ci && npm test` (with `npm run typecheck` for TypeScript packages).
 - **Publishing:** On push to `main`, each changed package is published to npm if its version differs from the registry version.

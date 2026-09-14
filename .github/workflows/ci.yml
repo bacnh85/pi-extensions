@@ -64,7 +64,6 @@ jobs:
             pi-sub: pi-sub/**
             pi-model-tools: pi-model-tools/**
             pi-obsidian: pi-obsidian/**
-            pi-windows-tools: pi-windows-tools/**
             pi-kicad: pi-kicad/**
             pi-router: pi-router/**
             pi-commandcode: pi-commandcode/**
@@ -105,7 +104,6 @@ jobs:
               { pkg: 'pi-sub', cmd: 'npm ci && npm test' },
               { pkg: 'pi-model-tools', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-obsidian', cmd: 'npm ci && npm test' },
-              { pkg: 'pi-windows-tools', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-router', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-commandcode', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-kicad', cmd: 'npm ci && npm test && npm run typecheck' },
@@ -133,9 +131,7 @@ jobs:
             const include = selected.map(p => ({
               package: p.pkg,
               'test-command': p.cmd,
-              runner: p.pkg === 'pi-windows-tools'
-                ? '"windows-latest"'
-                : '"ubuntu-latest"',
+              runner: '"ubuntu-latest"',
             }));
 
             core.setOutput('matrix', JSON.stringify({ include }));

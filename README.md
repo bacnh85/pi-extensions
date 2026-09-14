@@ -41,7 +41,6 @@ Each package lives in its own directory and can be installed independently — e
 | [`@bacnh85/pi-themes`](./pi-themes) | 0.2.0 | Pi TUI theme collection — Ayu variants (dark, mirage, light) + Catppuccin Mocha; pure-themes package (no extension code). |
 | [`@bacnh85/pi-ux`](./pi-ux) | 0.4.7 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, ships medium-tuned presets (Web/Mobile), runs deterministic slop-audit gates (APCA contrast + tokens + states + slop/taste tells + reduced-motion), taste rules (named cliché clusters, typography/motion/copy), vision render-inspect loop for multimodal models, works with text-only models. |
 | [`@bacnh85/pi-web`](./pi-web) | 0.7.1 | Unified web search (SearXNG, Brave, Firecrawl), content extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, page screenshots/PDFs with local headless-Chrome capture for localhost/LAN/file URLs (inline PNGs for multimodal models). |
-| [`@bacnh85/pi-windows-tools`](./pi-windows-tools) | 0.5.4 | Windows-specific tools for Pi. |
 
 ## Install
 
@@ -123,7 +122,6 @@ pi-extensions/
   pi-themes/
   pi-ux/
   pi-web/
-  pi-windows-tools/
   .github/workflows/
 ```
 
