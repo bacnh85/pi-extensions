@@ -8,7 +8,7 @@ import https from "node:https";
 import { urlToHttpOptions } from "node:url";
 import { findEnvValue } from "./config";
 import { ensureKeepalive, loadCookieStore, resolvePsidts, saveCookieStore, type PostFn } from "./gemini-auth";
-import { DeepResearchError, geminiDeepResearch, type DrHttp } from "./gemini-dr";
+import { CHROME_UA, DeepResearchError, geminiDeepResearch, type DrHttp } from "./gemini-dr";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -81,21 +81,30 @@ let cached: { key: string; client: GeminiClientLike } | null = null;
 // content-security-policy + 3.9KB reporting-endpoints) — over Node's default
 // 16KB parser cap, so the http parser rejects them (HPE_HEADER_OVERFLOW; the
 // same cap exists in undici, but gemini-reverse uses axios's node http adapter).
-// Node honors a per-request maxHeaderSize override, but axios doesn't forward
-// it — so lazily patch http.request/https.request to inject it for
-// gemini.google.com hosts only.
+// Node honors a per-request maxHeaderSize override, and gemini.google.com also
+// gates privileged surfaces (image gen, DR, RotateCookies) on browser-grade
+// client headers, which gemini-reverse never sends — so lazily patch
+// http.request/https.request to inject both for gemini.google.com hosts only.
 // ponytail: process-wide patch, scoped to one hostname; if it ever misbehaves,
-// revert to launching pi with NODE_OPTIONS=--max-http-header-size=262144.
+// revert to NODE_OPTIONS=--max-http-header-size=262144 (cap) or dropping the
+// UA merge (headers).
 
 /**
- * Returns the request options to pass through with the cap injected when the
- * target host is gemini.google.com, or null when the call must pass through
- * untouched. Normalizes all http.request input forms (options object, string,
- * URL) — string/URL forms become a fresh options object.
+ * Returns the request options to pass through with the cap + browser headers
+ * injected when the target host is gemini.google.com, or null when the call
+ * must pass through untouched. Normalizes all http.request input forms
+ * (options object, string, URL) — string/URL forms become a fresh options
+ * object.
+ *
+ * gemini.google.com gates privileged surfaces (image gen, Deep Research,
+ * RotateCookies) on browser-grade client headers: gemini-reverse sends
+ * axios's default UA, while the Chrome-UA DR client and rotation both work
+ * over plain Node TLS (live-proven 2026-09-13/14). Non-browser user-agents
+ * are replaced; every other key is added only when absent (never clobbered).
  *
  * @internal exported for tests
  */
-export function injectGeminiHeaderCap(options: unknown): Record<string, unknown> | null {
+export function injectGeminiRequestTweaks(options: unknown): Record<string, unknown> | null {
   let opts: Record<string, unknown>;
   if (typeof options === "string") {
     opts = urlToHttpOptions(new URL(options)) as Record<string, unknown>;
@@ -109,14 +118,46 @@ export function injectGeminiHeaderCap(options: unknown): Record<string, unknown>
   const host = String(opts.hostname ?? opts.host ?? "").split(":")[0];
   if (host !== "gemini.google.com" || opts.maxHeaderSize) return null;
   opts.maxHeaderSize = 256 * 1024;
+  mergeBrowserHeaders(opts);
   return opts;
 }
 
-/** @internal exported for tests — returns the http.request args to forward with the cap applied */
+const BROWSER_HEADERS: Record<string, string> = {
+  "user-agent": CHROME_UA,
+  "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not-A.Brand";v="24"',
+  "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-platform": '"Windows"',
+  "sec-fetch-dest": "empty",
+  "sec-fetch-mode": "cors",
+  "sec-fetch-site": "same-origin",
+  "accept-language": "en-US,en;q=0.9",
+};
+
+/** Absent-keys-only merge — except user-agent, which is REPLACED when the
+ * current value is a non-browser UA (axios injects its own default, which
+ * poisons the privileged-surface gate; that replacement is the point).
+ * An existing browser UA (any transport's) is left alone. */
+function mergeBrowserHeaders(opts: Record<string, unknown>): void {
+  const headers = (opts.headers ??= {}) as Record<string, unknown>;
+  const present = new Set(Object.keys(headers).map((k) => k.toLowerCase()));
+  const uaKey = Object.keys(headers).find((k) => k.toLowerCase() === "user-agent");
+  const ua = String(uaKey !== undefined ? headers[uaKey] : "");
+  if (/chrome\//i.test(ua)) {
+    // existing browser UA (any case) — leave exactly as-is
+  } else {
+    if (uaKey !== undefined) delete headers[uaKey]; // drop non-browser UA (any case) — two UA headers is worse than one
+    headers["user-agent"] = CHROME_UA;
+  }
+  for (const [key, value] of Object.entries(BROWSER_HEADERS)) {
+    if (key !== "user-agent" && !present.has(key)) headers[key] = value;
+  }
+}
+
+/** @internal exported for tests — returns the http.request args to forward with the tweaks applied */
 export function applyHeaderCapArgs(args: unknown[]): unknown[] {
   const [options, ...rest] = args;
   if (options && typeof options === "object" && !(options instanceof URL)) {
-    injectGeminiHeaderCap(options); // options-object form: mutate in place
+    injectGeminiRequestTweaks(options); // options-object form: mutate in place
     return args;
   }
   if (typeof options === "string" || options instanceof URL) {
@@ -130,10 +171,11 @@ export function applyHeaderCapArgs(args: unknown[]): unknown[] {
         // object legitimately lacks hostname (Node merges it from the URL).
         if (!(follow as Record<string, unknown>).maxHeaderSize) {
           (follow as Record<string, unknown>).maxHeaderSize = 256 * 1024;
+          mergeBrowserHeaders(follow as Record<string, unknown>);
         }
         return args;
       }
-      const opts = injectGeminiHeaderCap(options); // 2-arg (url, cb): (optionsObj, cb) is valid
+      const opts = injectGeminiRequestTweaks(options); // 2-arg (url, cb): (optionsObj, cb) is valid
       if (opts) return [opts, ...rest];
     }
   }
@@ -498,7 +540,7 @@ export async function geminiGenerateImage(
   if (!images.length) {
       throw new Error(
         text
-          ? `Gemini replied with text but no images: ${text.slice(0, 200)} — image generation may be unavailable for this account/region, or the web session is degraded (re-paste the cookie from an incognito login if this persists); try provider=zai (ZAI_API_KEY) or provider=custom.`
+          ? `Gemini replied with text but no images: ${text.slice(0, 200)} — the Gemini web tier gates image generation on browser-grade TLS fingerprints and refuses plain-Node clients (verified 2026-09-14: identical cookie + payload generate via a chrome-impersonating transport). Use provider=zai (ZAI_API_KEY) or provider=custom; pinning provider=gemini will not change this until pi-web ships an impersonating transport.`
           : "Gemini returned no images — generation may be unavailable for this account/region (guest mode may not support it; set GEMINI_WEB_SECURE_1PSID).",
       );
   }

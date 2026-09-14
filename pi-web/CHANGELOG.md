@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.13.3 (2026-09-14)
+
+### Fixed
+
+- **DR report-poll no longer returns plan transcripts as the report**: strings
+  already seen in the plan/confirm turns are excluded from poll output
+  (exact-match; turn-index filtering if a real fixture ever demands it).
+
+### Changed
+
+- **Browser-UA + client-hint injection for gemini.google.com requests**
+  (`injectGeminiHeaderCap` → `injectGeminiRequestTweaks`): non-browser
+  user-agents (axios's default) are replaced with Chrome-145 UA; sec-ch-ua /
+  sec-fetch / accept-language hints are added when absent. Existing browser
+  UAs are untouched; scope stays gemini.google.com-only (rotation's
+  accounts.google.com call is unaffected). Verified live: ask and DR plan
+  turns unchanged (working), wire-level UA replacement proven.
+
+### Verified live (2026-09-14 fresh-cookie round)
+
+- **Gemini web image generation is gated on browser-grade TLS
+  fingerprints** — plain Node with the identical cookie, payload
+  (`inner[79]=1`), and Chrome UA/client-hints refuses while a
+  chrome-impersonating transport generates on the same cookie minutes
+  apart. Payload and headers are exonerated; pi-web cannot offer Gemini
+  images until it ships an impersonating transport (follow-up plan).
+  `web_image` auto-fallback to `zai` is the working path (verified
+  end-to-end, DNS whitelist permitting).
+- **DR confirm (execution start) is similarly gated**: Node + Chrome UA →
+  in-stream `BardErrorInfo [1097]`; chrome-impersonating transport on the
+  same cookie → execution started. DR plan turns, ask, and rotation smoke
+  behave as documented over Node.
+
 ## 0.13.2 (2026-09-14)
 
 ### Fixed

@@ -13,7 +13,7 @@ import {
   extractSources,
   loadGeminiWebConfig,
   loadDefaultFactory,
-  injectGeminiHeaderCap,
+  injectGeminiRequestTweaks,
   describeGeminiError,
   geminiAsk,
   geminiResearch,
@@ -174,6 +174,7 @@ describe("applyHeaderCapArgs (http.request 3-arg safety)", () => {
     const url = "https://gemini.google.com/app";
     const out = applyHeaderCapArgs([url, follow, cb]);
     expect(follow.maxHeaderSize).to.equal(CAP);
+    expect((follow.headers as Record<string, unknown>)["user-agent"]).to.include("Chrome/145");
     expect(out[0]).to.equal(url);
     expect(out[1]).to.equal(follow);
     expect(out[2]).to.equal(cb);
@@ -195,7 +196,7 @@ describe("applyHeaderCapArgs (http.request 3-arg safety)", () => {
   });
 });
 
-describe("injectGeminiHeaderCap (25KB Google CSP response headers)", () => {
+describe("injectGeminiRequestTweaks (header cap + browser UA for privileged surfaces)", () => {
   const CAP = 256 * 1024;
 
   it("injects the cap for gemini.google.com in all three http.request input forms", () => {
@@ -204,32 +205,63 @@ describe("injectGeminiHeaderCap (25KB Google CSP response headers)", () => {
       new URL("https://gemini.google.com/app"),
       { hostname: "gemini.google.com", path: "/app" },
     ]) {
-      const out = injectGeminiHeaderCap(input);
+      const out = injectGeminiRequestTweaks(input);
       expect(out, String(input)).to.be.an("object");
       expect(out!.maxHeaderSize).to.equal(CAP);
       expect(out!.hostname).to.equal("gemini.google.com");
     }
   });
 
+  it("adds browser UA + client hints to gemini.google.com requests", () => {
+    const opts = { hostname: "gemini.google.com", path: "/app" } as Record<string, unknown>;
+    injectGeminiRequestTweaks(opts);
+    const headers = opts.headers as Record<string, unknown>;
+    expect(headers["user-agent"]).to.include("Chrome/145");
+    expect(headers["sec-ch-ua"]).to.be.a("string");
+    expect(headers["sec-fetch-site"]).to.equal("same-origin");
+    expect(headers["accept-language"]).to.be.a("string");
+  });
+
+  it("replaces a non-browser UA; never clobbers other existing headers (any case)", () => {
+    const opts = {
+      hostname: "gemini.google.com",
+      headers: { "User-Agent": "axios/1.20.0", "content-type": "application/x-www-form-urlencoded;charset=utf-8" },
+    };
+    injectGeminiRequestTweaks(opts);
+    const headers = opts.headers as Record<string, unknown>;
+    expect(headers["User-Agent"]).to.be.undefined; // mixed-case key removed — no duplicate UA headers
+    expect(headers["user-agent"]).to.include("Chrome/145"); // axios default replaced
+    expect(headers["content-type"]).to.equal("application/x-www-form-urlencoded;charset=utf-8");
+    // absent keys still land
+    expect(headers["sec-fetch-mode"]).to.equal("cors");
+  });
+
+  it("leaves an existing browser UA untouched", () => {
+    const opts = { hostname: "gemini.google.com", headers: { "user-agent": "Mozilla/5.0 Chrome/145.0.0.0 mine" } };
+    injectGeminiRequestTweaks(opts);
+    expect((opts.headers as Record<string, unknown>)["user-agent"]).to.equal("Mozilla/5.0 Chrome/145.0.0.0 mine");
+  });
+
   it("passes through non-gemini hosts untouched", () => {
     const opts = { hostname: "example.com", path: "/" };
-    expect(injectGeminiHeaderCap(opts)).to.be.null;
+    expect(injectGeminiRequestTweaks(opts)).to.be.null;
     expect(opts).to.not.have.property("maxHeaderSize");
+    expect(opts).to.not.have.property("headers");
   });
 
   it("preserves a pre-set maxHeaderSize", () => {
     const opts = { hostname: "gemini.google.com", maxHeaderSize: 1024 };
-    expect(injectGeminiHeaderCap(opts)).to.be.null;
+    expect(injectGeminiRequestTweaks(opts)).to.be.null;
     expect(opts.maxHeaderSize).to.equal(1024);
   });
 
   it("rejects non-object non-string input", () => {
-    expect(injectGeminiHeaderCap(undefined)).to.be.null;
-    expect(injectGeminiHeaderCap(42)).to.be.null;
+    expect(injectGeminiRequestTweaks(undefined)).to.be.null;
+    expect(injectGeminiRequestTweaks(42)).to.be.null;
   });
 
   it("parses the host from string/URL forms with ports and paths intact", () => {
-    const out = injectGeminiHeaderCap("https://gemini.google.com:443/app?x=1");
+    const out = injectGeminiRequestTweaks("https://gemini.google.com:443/app?x=1");
     expect(out!.path).to.equal("/app?x=1");
     expect(out!.maxHeaderSize).to.equal(CAP);
   });

@@ -50,7 +50,7 @@ Variables:
 > (3) Required for Crawl4AI v0.9+ default config.
 > (4) Without it `web_research mode=ask` still works in guest mode (Flash-only); `mode=research` errors with setup steps.
 > (6) Copy the current value from DevTools (Application → Cookies) alongside `__Secure-1PSID`; it rotates, so refresh it when auth degrades.
-> (5) `web_image` works with zero config via Gemini guest mode (availability varies by region/account); `zai` activates when `ZAI_API_KEY` is present, `custom` when `WEB_IMAGE_API_BASE_URL` is set.
+> (5) `web_image`'s Gemini provider is currently gated server-side (browser-grade TLS fingerprint required — generation refuses over plain Node even with a valid cookie); `zai` activates when `ZAI_API_KEY` is present and is the reliable path, `custom` when `WEB_IMAGE_API_BASE_URL` is set.
 
 Secrets are never printed; `web_status` reports only presence/source.
 
@@ -338,7 +338,7 @@ web_image(prompt="...", model="glm-image", n=2, out_dir="/tmp/imgs")
 
 | Provider | Upstream | Auth | Notes |
 |---|---|---|---|
-| `gemini` (default) | gemini.google.com web tier | none (guest) or `GEMINI_WEB_SECURE_1PSID` | free ≈ 20 images/day; availability varies by region/account |
+| `gemini` (default) | gemini.google.com web tier | none (guest) or `GEMINI_WEB_SECURE_1PSID` | currently refused to non-browser clients (server-side TLS-fingerprint gate, verified 2026-09-14) — `zai` is the working path |
 | `zai` | `https://api.z.ai/api/paas/v4` (official API) | `ZAI_API_KEY` | GLM-Image (`model` default), fully ToS-compliant |
 | `custom` | any OpenAI-compatible `/images/generations` endpoint | `WEB_IMAGE_API_KEY` | e.g. official OpenAI `https://api.openai.com/v1` |
 

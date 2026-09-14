@@ -21,7 +21,7 @@ const DR_BATCH_URL = "https://gemini.google.com/_/BardChatUi/data/batchexecute";
 const DR_CONFIRM_PROMPT = "Start research";
 const DR_TOKEN_BYTES = 1950; // → 2600 base64url chars, matches gemini_webapi
 
-const CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
+export const CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
 
 export interface DrResult {
   title?: string;
@@ -46,7 +46,7 @@ export interface DrOptions {
   http?: DrHttp;
 }
 
-function chromeHeaders(extra: Record<string, string> = {}): Record<string, string> {
+export function chromeHeaders(extra: Record<string, string> = {}): Record<string, string> {
   return {
     "user-agent": CHROME_UA,
     "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not-A.Brand";v="24"',
@@ -64,7 +64,7 @@ function chromeHeaders(extra: Record<string, string> = {}): Record<string, strin
 }
 
 /** Default transport: node:https with redirect-following (max 5) + cookie-jar accumulation over the base cookie. */
-function defaultHttp(): DrHttp {
+export function defaultHttp(): DrHttp {
   return async (url, opts) => {
     const basePairs = new Map<string, string>();
     for (const pair of (opts.headers.Cookie ?? "").split("; ")) {
@@ -262,9 +262,15 @@ export async function geminiDeepResearch(opts: DrOptions): Promise<DrResult> {
   const plan = await drTurn(opts.query);
   const title = extractPlanTitle(plan.frames);
   // turn 2: confirm — same chat, metadata [cid, rid]
-  await drTurn(DR_CONFIRM_PROMPT, { cid: plan.ids.cid!, rid: plan.ids.rid! });
+  const confirm = await drTurn(DR_CONFIRM_PROMPT, { cid: plan.ids.cid!, rid: plan.ids.rid! });
 
-  // poll: LIST_CONVERSATION_TURNS (hNvQHb) until the report text arrives
+  // poll: LIST_CONVERSATION_TURNS (hNvQHb) until the report text arrives.
+  // Plan/confirm transcripts reappear verbatim in poll output — exclude any
+  // string already seen in those turns so a plan transcript is never
+  // returned as the report.
+  // ponytail: exact-match exclusion; a real multi-turn poll fixture would
+  // allow turn-index filtering instead
+  const priorTurnStrings = new Set([...plan.strings, ...confirm.strings]);
   const pollOnce = async (): Promise<string[]> => {
     const fReq = JSON.stringify([[["hNvQHb", JSON.stringify([plan.ids.cid, 10, null, 1, [1], [4], null, 1]), null, "generic"]]]);
     const params = new URLSearchParams({ bl, hl: "en", _reqid: "200100", rt: "c" });
@@ -274,7 +280,7 @@ export async function geminiDeepResearch(opts: DrOptions): Promise<DrResult> {
       body: new URLSearchParams({ at: snlM0e, "f.req": fReq }).toString(),
     });
     if (res.status !== 200) return [];
-    return frameStrings(parseFrames(res.buf)).filter((s) => s.length > 200);
+    return frameStrings(parseFrames(res.buf)).filter((s) => s.length > 200 && !priorTurnStrings.has(s));
   };
 
   let reportStrings: string[] = [];

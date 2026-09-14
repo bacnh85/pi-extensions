@@ -115,7 +115,7 @@ const WEB_ROUTING_GUIDANCE = `## Web Tool Routing (pi-web)
 - **web_map** — discover site URLs (Firecrawl Map).
 - **web_crawl** — multi-page crawl: \`mode: "light"\` (Firecrawl, url) or \`mode: "full"\` (Crawl4AI, urls[]).
 - **web_screenshot** / **web_pdf** — page capture (Crawl4AI).
-- **web_research** — AI-synthesized research via Gemini web (mode "ask" = grounded answer, guest OK; mode "research" = Deep Research report — currently blocked by Gemini's non-browser-client refusal (1184), not by entitlement; takes minutes when available).
+- **web_research** — AI-synthesized research via Gemini web (mode "ask" = grounded answer, guest OK; mode "research" = Deep Research report — plan, autonomous web browsing, cited report; takes minutes when available).
 - **web_image** — text→image generation via free upstreams (auto: Gemini web → Z.ai GLM-Image → custom OpenAI-images endpoint; \`model\`/\`n\` params).
 - **web_chat** — one-off chat completion via an OpenAI-compatible gateway (\`WEB_CHAT_API_BASE_URL\`; non-streaming).
 - **web_status** — provider config + health.
@@ -486,7 +486,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
     name: "web_research",
     label: "Web Research (Gemini)",
     description:
-      "AI-synthesized web research via Gemini (gemini.google.com web tier, cookie auth). Mode 'ask' returns a quick grounded answer with source links (works guest-mode, Flash only). Mode 'research' runs Gemini Deep Research — plan, autonomous web browsing, cited report. Requires GEMINI_WEB_SECURE_1PSID and a fresh session; research currently fails from this plain-Node transport with 1184 — an unreliable code (it also fires on expired-cookie sessions), and the account-tier requirement is unverified (free-tier plan creation has succeeded via browser-grade clients; Gemini has also described Deep Research as Pro/Ultra-gated).",
+      "AI-synthesized web research via Gemini (gemini.google.com web tier, cookie auth). Mode 'ask' returns a quick grounded answer with source links (works guest-mode, Flash only). Mode 'research' runs Gemini Deep Research — plan turn, 'Start research' confirm, then polls until the cited report lands. Requires GEMINI_WEB_SECURE_1PSID (+ fresh __Secure-1PSIDTS); the plan turn runs over plain Node, but confirm (execution start) and report polling are gated server-side and may refuse from this transport (verified 2026-09-14: confirm needs a browser-grade TLS fingerprint) — refusals return an honest partial result (plan + transcript + note) instead of the report. Takes minutes when available.",
     promptSnippet: "AI-synthesized research with citations",
     promptGuidelines: [
       "Use for AI-synthesized research with sources (mode ask = quick grounded answer; mode research = multi-minute Deep Research report). NOT for URL-list searches (web_search) or single-URL extraction (web_extract). Cite the returned source URLs.",

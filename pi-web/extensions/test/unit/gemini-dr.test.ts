@@ -71,9 +71,14 @@ describe("geminiDeepResearch (injected transport, fixture-driven cycle)", () => 
         const turn = calls.filter((c) => c.url.includes("StreamGenerate")).length;
         return { status: 200, headers: { get: () => null }, buf: turn === 1 ? fixture("dr-plan.bin") : fixture("dr-confirm.bin") };
       }
-      // batchexecute poll: first poll empty, second returns the report
+      // batchexecute poll: first poll echoes the plan transcript (must be
+      // skipped, not returned as the report), second returns the report
       const polls = calls.filter((c) => c.url.includes("batchexecute")).length;
-      if (polls === 1) return { status: 200, headers: { get: () => null }, buf: Buffer.from(")]}'\n\n25\n[[\"e\",4,null,null,25]]\n") };
+      if (polls === 1) {
+        const planTranscript = frameStrings(parseFrames(fixture("dr-plan.bin"))).filter((s) => s.length > 200)[0];
+        const staleJson = JSON.stringify([null, [["rc_old", [planTranscript]]]]);
+        return { status: 200, headers: { get: () => null }, buf: Buffer.from(")]}'\n\n" + (Buffer.byteLength(staleJson) + 1) + "\n" + staleJson + "\n") };
+      }
       const reportJson = JSON.stringify([null, [["rc_test", [REPORT_TEXT]]]]);
       return { status: 200, headers: { get: () => null }, buf: Buffer.from(")]}'\n\n" + (Buffer.byteLength(reportJson) + 1) + "\n" + reportJson + "\n") };
     };
