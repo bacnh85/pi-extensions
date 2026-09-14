@@ -53,3 +53,13 @@ test("supportsFindPassthrough gates on rtk >= 0.46.0", () => {
   assert.equal(supportsFindPassthrough("garbage"), false);
   assert.equal(supportsFindPassthrough(""), false);
 });
+
+test("sibling module export surfaces are frozen (jiti reload staleness)", async () => {
+  // pi's jiti loader pairs a reloaded index.ts with stale cached copies of
+  // existing sibling modules, so a NEW export on these files crashes /reload
+  // in sessions that cached the older shape (0.2.1 regression). Freeze both.
+  const vg = await import("../version-gate.js");
+  assert.deepEqual(Object.keys(vg).sort(), ["RTK_FIND_PASSTHROUGH_VERSION", "parseSemver", "supportsFindPassthrough"]);
+  const ff = await import("../findFallback.js");
+  assert.deepEqual(Object.keys(ff), ["hasUnsupportedRtkFind"]);
+});

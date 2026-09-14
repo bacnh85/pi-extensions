@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.2 (2026-09-13)
+
+### Fixed
+
+- `/reload` crash `(0, _versionGate.isAtLeastVersion) is not a function`: the
+  0.2.1 dedup imported a NEW export from the existing `version-gate.js`, but
+  pi's jiti loader pairs a reloaded `index.ts` with a stale cached copy of
+  existing sibling modules — sessions started before 0.2.1 kept crashing until
+  fully restarted. `isAtLeastVersion` is a local duplicate in `index.ts` again
+  (deliberate, `ponytail:`-marked) and the `version-gate.js` export surface is
+  back to the 0.2.0 shape, so both cached vintages heal on next `/reload`.
+  Sibling export surfaces (`version-gate.js`, `findFallback.js`) are now
+  frozen by a regression test — new helpers must go in brand-new files.
+
 ## 0.2.1 (2026-09-12)
 
 ### Changed

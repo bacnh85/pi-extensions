@@ -1,11 +1,22 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createLocalBashOperations, isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { hasUnsupportedRtkFind } from "./findFallback.js";
-import { isAtLeastVersion, parseSemver, supportsFindPassthrough } from "./version-gate.js";
+import { parseSemver, supportsFindPassthrough } from "./version-gate.js";
 
 const REWRITE_TIMEOUT_MS = 2_000;
 const RTK_UNAVAILABLE_RETRY_MS = 30_000;
 const MIN_SUPPORTED_RTK: [number, number, number] = [0, 23, 0];
+
+// ponytail: deliberate duplicate of version-gate.js's private isAtLeastVersion —
+// pi's jiti loader pairs a reloaded index.ts with stale cached siblings, so
+// importing NEW exports from existing files crashes /reload (0.2.1 regression).
+function isAtLeastVersion(current: [number, number, number], minimum: [number, number, number]): boolean {
+  for (let i = 0; i < minimum.length; i += 1) {
+    if (current[i] > minimum[i]) return true;
+    if (current[i] < minimum[i]) return false;
+  }
+  return true;
+}
 const RTK_STATUS_KEY = "pi-rtk";
 const RTK_SUBCOMMANDS = ["enable", "disable", "status"] as const;
 

@@ -33,7 +33,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-plan** | 0.13.1 | Plan mode with read-only gating and plan → implement → verify → review workflow; global plan-mode model/thinking (`/plan-model`, `/plan-thinking` — normal mode stays stock Pi); fallback model chain on overload. |
 | **pi-ponytail** | 0.1.14 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
 | **pi-review** | 0.2.10 | Isolated read-only code review with corrected same-session fallback. |
-| **pi-rtk** | 0.2.1 | Bash command token rewriting through RTK. |
+| **pi-rtk** | 0.2.2 | Bash command token rewriting through RTK. |
 | **pi-serena** | 0.9.15 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
 | **pi-sub** | 0.1.39 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | **pi-themes** | 0.2.0 | Pi TUI theme collection — Ayu variants (dark, mirage, light) + Catppuccin Mocha; pure-themes package (no extension code). |
@@ -158,7 +158,7 @@ cd pi-<name> && npm test
 # pi-advisor:    cd extensions && mocha                (mocha + tsx)
 # pi-subagent:   cd extensions && mocha                (mocha + tsx)
 # pi-review:     cd extensions && mocha                (mocha + tsx)
-# pi-rtk:        npm pack --dry-run                    (packaging check)
+# pi-rtk:        npm test && npm pack --dry-run      (node --test + packaging check)
 # pi-sub:        cd pi-sub && npm test            (node --import tsx --test; npm ci auto-installs SDK peer)
 # pi-themes:     npm test                               (theme validator + packaging check; pure-themes, no extension code)
 # pi-router:     node --import tsx --test extensions/test/unit.test.ts (node:test + tsx)
@@ -176,7 +176,7 @@ A single `.github/workflows/ci.yml` workflow runs on GitHub-hosted runners:
 - **Triggers:** push to `main`, pull requests, and manual `workflow_dispatch`.
 - **Runner matrix:** Linux on `ubuntu-latest` for all packages.
 - **Changed-package detection:** `dorny/paths-filter` builds a dynamic matrix so only affected packages are tested.
-- **Test commands:** pi-ponytail uses `node --test`; pi-rtk and pi-sub use `npm pack --dry-run`; all others use `npm ci && npm test` (with `npm run typecheck` for TypeScript packages).
+- **Test commands:** pi-ponytail uses `node --test`; pi-rtk uses `npm test && npm pack --dry-run`; all others use `npm ci && npm test` (with `npm run typecheck` for TypeScript packages).
 - **Publishing:** On push to `main`, each changed package is published to npm if its version differs from the registry version.
 
 ### Pi version bumps

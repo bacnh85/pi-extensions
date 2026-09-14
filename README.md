@@ -34,7 +34,7 @@ Each package lives in its own directory and can be installed independently — e
 | [`@bacnh85/pi-ponytail`](./pi-ponytail) | 0.1.14 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
 | [`@bacnh85/pi-references`](./pi-references) | 0.1.2 | External context roots — alias sibling dirs or git repos as `@docs`/`@sdk`; auto-clones repos and injects descriptions into agent context. |
 | [`@bacnh85/pi-review`](./pi-review) | 0.2.10 | Isolated read-only code review with corrected same-session fallback. |
-| [`@bacnh85/pi-rtk`](./pi-rtk) | 0.2.1 | Bash command token rewriting through RTK. |
+| [`@bacnh85/pi-rtk`](./pi-rtk) | 0.2.2 | Bash command token rewriting through RTK. |
 | [`@bacnh85/pi-serena`](./pi-serena) | 0.9.15 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
 | [`@bacnh85/pi-sub`](./pi-sub) | 0.1.39 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | [`@bacnh85/pi-subagent`](./pi-subagent) | 0.22.1 | Isolated in-process subagents with parallel/chain modes, inspectable threads, git worktree isolation (`sandbox: worktree`), opt-in auto-review, and herdr pane delegation (`runner: "herdr"` + `herdr` control tool) when pi runs inside herdr. |
@@ -83,7 +83,7 @@ pi update --extensions   # update packages (or: npx @bacnh85/pi-hub update)
 
 ## Development
 
-Packages are standalone npm packages. Most TypeScript packages use Mocha + `tsx`; `pi-ponytail` uses Node's built-in test runner; `pi-rtk` and `pi-sub` use packaging checks in CI.
+Packages are standalone npm packages. Most TypeScript packages use Mocha + `tsx`; `pi-ponytail` uses Node's built-in test runner; `pi-rtk` runs `npm test` plus a packaging check in CI.
 
 ## Release
 
@@ -139,7 +139,7 @@ Each package is standalone. To work on one:
 ```bash
 cd pi-<name>
 npm install
-npm test                 # or node --test (pi-ponytail) or npm pack --dry-run (pi-rtk, pi-sub)
+npm test                 # or node --test (pi-ponytail) or npm test && npm pack --dry-run (pi-rtk)
 npm run typecheck        # TypeScript packages only
 ```
 
