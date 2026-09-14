@@ -4,6 +4,7 @@
 //   npx tsx extensions/scripts/gemini-smoke.ts "query" research   # Deep Research (cookie + Gemini Advanced)
 //   npx tsx extensions/scripts/gemini-smoke.ts "prompt" image     # Gemini web image generation
 //   npx tsx extensions/scripts/gemini-smoke.ts "prompt" zai       # Z.ai GLM-Image (needs ZAI_API_KEY)
+//   npx tsx extensions/scripts/gemini-smoke.ts "prompt" zai 960x1728  # same, with explicit size
 //   npx tsx extensions/scripts/gemini-smoke.ts x chatgpt-auth     # ChatGPT web auth check (no prompt needed)
 //   npx tsx extensions/scripts/gemini-smoke.ts "query" chatgpt    # ChatGPT web chat (CHATGPT_WEB_AUTH_KEY / codex login)
 //   npx tsx extensions/scripts/gemini-smoke.ts "prompt" chatgpt-image  # ChatGPT web image generation
@@ -26,6 +27,7 @@ function pngMagic(file: string): string {
 async function main() {
   const query = process.argv[2] ?? "What is the capital of France? Answer in one word.";
   const mode = process.argv[3] ?? "ask";
+  const sizeArg = /^\d{3,4}x\d{3,4}$/.test(process.argv[4] ?? "") ? process.argv[4] : undefined;
   const t0 = Date.now();
   if (mode === "chatgpt-auth") {
     const cgpt = loadChatGptAuth(process.cwd(), true);
@@ -87,9 +89,10 @@ async function main() {
       apiKey: cfg.zai.apiKey,
       model: ZAI_PRESET.defaultModel,
       prompt: query,
+      size: sizeArg,
       outDir,
     });
-    console.log(`zai OK in ${Date.now() - t0}ms — model: ${r.model ?? "?"} — files: ${r.paths.length} — unsaved urls: ${r.urls.length}`);
+    console.log(`zai OK in ${Date.now() - t0}ms — model: ${r.model ?? "?"} — size: ${sizeArg ?? "default"} — files: ${r.paths.length} — unsaved urls: ${r.urls.length}`);
     for (const p of r.paths) console.log(`  ${p} — ${fs.statSync(p).size} bytes — ${pngMagic(p)}`);
     for (const u of r.urls) console.log(`  (not saved, host unreachable) ${u}`);
   } else {

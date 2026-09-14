@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.15.0 (2026-09-14)
+
+### Added
+
+- **`web_image` `size` parameter (zai/custom)** — pass-through as `WxH` in the
+  OpenAI-images body; omitted when unset so the server default applies.
+  `glm-image` enums: `1280x1280` (default), `1568x1056`, `1056x1568`,
+  `1472x1088`, `1088x1472`, `1728x960`, `960x1728`. Portrait prompts should
+  pass a portrait size — the default is a square. Verified live end-to-end:
+  `size=960x1728` is honored exactly, and a long artistic portrait prompt
+  generates on-prompt (lighting-drama stochasticity remains — request `n=2-3`
+  and pick, same as the image.z.ai web UI effectively does).
+- `gemini-smoke.ts` zai mode accepts an optional positional size:
+  `npx tsx extensions/scripts/gemini-smoke.ts "prompt" zai 960x1728`.
+- A present-but-invalid `size` (not `WxH`, 3-4 digits each) is rejected with a
+  descriptive error instead of silently generating at the server default; chain
+  pass-through pinned by a `generateImageWithFallback` test.
+
+### Notes
+
+- Quality review vs the image.z.ai web UI (vision critique, same prompt):
+  the official `glm-image` API delivers long artistic prompts faithfully
+  (scene/subject/wardrobe/setting at parity); the residual web-UI edge is
+  lighting drama (branch shadows across the face, blown highlights, flare) —
+  prompt emphasis + multi-sample selection closes most of it client-side.
+  No extra backend wired; the reverse-engineered image.z.ai proxy path stays
+  unwired by decision (gate evidence: official API fit, 1h session-JWT cost).
+
 ## 0.14.0 (2026-09-14)
 
 ### Added

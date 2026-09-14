@@ -495,6 +495,32 @@ describe("apiGenerateImage", () => {
     expect(fs.readFileSync(r.paths[0]).toString()).to.equal("imgbytes");
   });
 
+  it("passes size through in the request body only when set", async () => {
+    const outDir = await tmpDir();
+    const bodies: Array<Record<string, unknown>> = [];
+    const capture = (impl: FetchLike): FetchLike => (url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return impl(url, init);
+    };
+    await apiGenerateImage({
+      baseUrl: "https://api.example.com/v1",
+      model: "glm-image",
+      prompt: "p",
+      size: "960x1728",
+      outDir,
+      fetchImpl: capture(routingFetch({ data: [{ b64_json: PNG_B64 }] })),
+    });
+    expect(bodies[0].size).to.equal("960x1728");
+    await apiGenerateImage({
+      baseUrl: "https://api.example.com/v1",
+      model: "glm-image",
+      prompt: "p",
+      outDir,
+      fetchImpl: capture(routingFetch({ data: [{ b64_json: PNG_B64 }] })),
+    });
+    expect(bodies[1].size).to.be.undefined;
+  });
+
   it("maps HTTP errors into ImageApiError and rejects empty payloads", async () => {
     const outDir = await tmpDir();
     const fail = (status: number, body: unknown) =>
@@ -677,6 +703,31 @@ describe("generateImageWithFallback", () => {
     } catch (e) {
       expect((e as Error).message).to.include("zai: not configured");
     }
+  });
+
+  it("passes size through the chain into the zai request body when set, omits it when unset", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const capture = (impl: FetchLike): FetchLike => (url, init) => {
+      if (init?.method === "POST") bodies.push(JSON.parse(String(init?.body)));
+      return impl(url, init);
+    };
+    const apiConfig: ImageApiConfig = { zai: { apiKey: "k", source: "test" } };
+    const r = await generateImageWithFallback(baseParams({
+      provider: "zai",
+      apiConfig,
+      size: "960x1728",
+      outDir: await tmpDir(),
+      fetchImpl: capture(routingFetch({ data: [{ b64_json: PNG_B64 }] })),
+    }));
+    expect(r.provider).to.equal("zai");
+    expect(bodies[0].size).to.equal("960x1728");
+    await generateImageWithFallback(baseParams({
+      provider: "zai",
+      apiConfig,
+      outDir: await tmpDir(),
+      fetchImpl: capture(routingFetch({ data: [{ b64_json: PNG_B64 }] })),
+    }));
+    expect(bodies[1].size).to.be.undefined;
   });
 });
 

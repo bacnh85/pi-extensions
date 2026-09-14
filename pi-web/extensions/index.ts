@@ -122,7 +122,7 @@ const WEB_ROUTING_GUIDANCE = `## Web Tool Routing (pi-web)
 - **web_crawl** — multi-page crawl: \`mode: "light"\` (Firecrawl, url) or \`mode: "full"\` (Crawl4AI, urls[]).
 - **web_screenshot** / **web_pdf** — page capture (Crawl4AI).
 - **web_research** — AI-synthesized research via Gemini web (mode "ask" = grounded answer, guest OK; mode "research" = Deep Research report — plan, autonomous web browsing, cited report; takes minutes when available).
-- **web_image** — text→image generation (auto: Gemini web → ChatGPT web via CHATGPT_WEB_AUTH_KEY / codex login → Z.ai GLM-Image → custom OpenAI-images endpoint; \`model\`/\`n\` params).
+- **web_image** — text→image generation (auto: Gemini web → ChatGPT web via CHATGPT_WEB_AUTH_KEY / codex login → Z.ai GLM-Image → custom OpenAI-images endpoint; \`model\`/\`n\`/\`size\` params).
 - **web_chat** — one-off chat completion — ChatGPT web (CHATGPT_WEB_AUTH_KEY / codex login; default when configured) or an OpenAI-compatible gateway (\`WEB_CHAT_API_BASE_URL\`; non-streaming).
 - **web_status** — provider config + health.
 
@@ -132,6 +132,14 @@ Rules: Firecrawl Search is weak on domain-specific queries — prefer SearXNG/Br
 // ---------------------------------------------------------------------------
 // Extension entry point
 // ---------------------------------------------------------------------------
+
+/** Validate a requested image size: WxH, 3-4 digits each. Present-but-invalid throws (never silently generates a square). */
+function parseSizeParam(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const s = String(value);
+  if (!/^\d{3,4}x\d{3,4}$/.test(s)) throw new Error(`invalid size "${s}": expected WxH with 3-4 digits each, e.g. 960x1728`);
+  return s;
+}
 
 export default function piWebExtension(pi: ExtensionAPI) {
   // ── web_search ────────────────────────────────────────────────────────
@@ -544,10 +552,10 @@ export default function piWebExtension(pi: ExtensionAPI) {
     name: "web_image",
     label: "Web Image Generation",
     description:
-      "Generate images from text via free upstream providers, with fallback: Gemini web (gemini.google.com, guest or cookie auth), ChatGPT web (subscription via CHATGPT_WEB_AUTH_KEY / codex login, image_generation tool), Z.ai official API (GLM-Image via ZAI_API_KEY), or any custom OpenAI-compatible images endpoint (WEB_IMAGE_API_BASE_URL). Returns saved file paths plus the images inline.",
+      "Generate images from text via free upstream providers, with fallback: Gemini web (gemini.google.com, guest or cookie auth), ChatGPT web (subscription via CHATGPT_WEB_AUTH_KEY / codex login, image_generation tool), Z.ai official API (GLM-Image via ZAI_API_KEY), or any custom OpenAI-compatible images endpoint (WEB_IMAGE_API_BASE_URL). Optional size=WxH for zai/custom (glm-image enums incl. 960x1728 portrait; omit = server default, usually square). Returns saved file paths plus the images inline.",
     promptSnippet: "Generate images via free upstreams (Gemini web, ChatGPT web, Z.ai GLM-Image)",
     promptGuidelines: [
-      "Use for image GENERATION from a text prompt. provider auto falls back gemini → chatgpt → zai → custom. Capturing an EXISTING page is web_screenshot, not this.",
+      "Use for image GENERATION from a text prompt. provider auto falls back gemini → chatgpt → zai → custom. Portrait/aspect-sensitive prompts: pass size (zai/custom), e.g. 960x1728 — default is square. Capturing an EXISTING page is web_screenshot, not this.",
     ],
     parameters: Type.Object({
       prompt: Type.String({ description: "Image description." }),
@@ -557,6 +565,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
       )),
       model: Type.Optional(Type.String({ description: "Provider-specific model (e.g. glm-image, or a Gemini image-capable model id). Omit for the provider default." })),
       n: Type.Optional(Type.Number({ default: 1, description: "Number of images, 1-4 (applies to zai/custom; the gemini web tier returns its own count)." })),
+      size: Type.Optional(Type.String({ pattern: "^\\d{3,4}x\\d{3,4}$", description: "Image size as WxH (zai/custom only). glm-image enums: 1280x1280 (default), 1568x1056, 1056x1568, 1472x1088, 1088x1472, 1728x960, 960x1728. Omit for the provider default." })),
       out_dir: Type.Optional(Type.String({ description: "Directory for saved images (default: fresh temp dir)." })),
       ...sharedControlSchema,
     }),
@@ -573,6 +582,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
         prompt,
         model: params.model as string | undefined,
         n,
+        size: parseSizeParam(params.size),
         outDir,
         provider: (params.provider as "auto" | ImageProvider) ?? "auto",
         geminiConfig: loadGeminiWebConfig(cwd, trusted),

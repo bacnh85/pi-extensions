@@ -336,7 +336,13 @@ self-host services):
 web_image(prompt="isometric cutaway of a container ship, technical illustration")
 web_image(prompt="...", provider="zai")                       # pin GLM-Image via api.z.ai
 web_image(prompt="...", model="glm-image", n=2, out_dir="/tmp/imgs")
+web_image(prompt="...", provider="zai", size="960x1728")       # portrait aspect
 ```
+
+`size` (zai/custom only) is passed through as `WxH`. `glm-image` enums:
+`1280x1280` (default), `1568x1056`, `1056x1568`, `1472x1088`, `1088x1472`,
+`1728x960`, `960x1728` — portrait prompts should pick a portrait size, or the
+server default gives a square.
 
 **Provider chain** (`provider: "auto"` tries in order; pin one to skip):
 

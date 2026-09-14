@@ -18,7 +18,7 @@ Use the **10 unified tools** from the `pi-web` extension for all web-related tas
 | `web_screenshot` | Capture page screenshot as PNG | Crawl4AI daemon (public URLs) or local headless Chrome (localhost/LAN/file URLs — auto-detected) |
 | `web_pdf` | Generate page PDF | Crawl4AI daemon (public URLs) or local headless Chrome (localhost/LAN/file URLs — auto-detected) |
 | `web_research` | AI-synthesized research with sources | Gemini web tier: ask = grounded answer (guest OK); research = full Deep Research via the pure-Node DR client (live cookie; stale sessions return an honest partial result) |
-| `web_image` | Generate images from a text prompt | Z.ai GLM-Image (`ZAI_API_KEY`, working path) → custom OpenAI-images endpoint; Gemini web provider currently refuses non-browser TLS (gated server-side) |
+| `web_image` | Generate images from a text prompt | Z.ai GLM-Image (`ZAI_API_KEY`, working path; `size` param for aspect, e.g. `960x1728` portrait) → custom OpenAI-images endpoint; Gemini web provider currently refuses non-browser TLS (gated server-side) |
 | `web_chat` | One-off chat via an OpenAI-compatible gateway | `WEB_CHAT_API_BASE_URL` (ChatGPT web bridge, official OpenAI, …) |
 | `web_status` | Check provider configuration and health | — |
 
@@ -65,6 +65,7 @@ What do you need?
 ├── Generate an image from a text prompt (NOT capturing an existing page)
 │   → web_image
 │     ├─ default: provider=auto (skips TLS-gated Gemini after refusals → Z.ai GLM-Image → custom endpoint)
+│     ├─ portrait/aspect prompts: pass size (zai/custom), e.g. size=960x1728 — default is square
 │     └─ pin/model: provider=zai model=glm-image, or any custom OpenAI-images endpoint
 │
 ├── One-off chat with another model (second opinion, classification)

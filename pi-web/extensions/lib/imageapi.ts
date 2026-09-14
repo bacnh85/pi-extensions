@@ -212,6 +212,8 @@ export async function apiGenerateImage(opts: {
   model?: string;
   prompt: string;
   n?: number;
+  /** "WxH" — omitted from the body when unset (server default applies). */
+  size?: string;
   outDir: string;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -223,7 +225,12 @@ export async function apiGenerateImage(opts: {
     fetchImpl(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(opts.apiKey ? { Authorization: `Bearer ${opts.apiKey}` } : {}) },
-      body: JSON.stringify({ model: opts.model, prompt: opts.prompt, n: opts.n ?? 1 }),
+      body: JSON.stringify({
+        model: opts.model,
+        prompt: opts.prompt,
+        n: opts.n ?? 1,
+        ...(opts.size ? { size: opts.size } : {}),
+      }),
       signal: opts.signal,
     }),
     { signal: opts.signal, timeoutMs: opts.timeoutMs ?? 180_000, label: "web_image api" },
@@ -389,6 +396,8 @@ export interface ImageChainParams {
   prompt: string;
   model?: string;
   n?: number;
+  /** "WxH" pass-through to zai/custom (OpenAI-images body); gemini/chatgpt ignore it. */
+  size?: string;
   outDir: string;
   provider: "auto" | ImageProvider;
   geminiConfig: GeminiWebConfig;
@@ -501,6 +510,7 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
           model: params.model ?? ZAI_PRESET.defaultModel,
           prompt: params.prompt,
           n: params.n,
+          size: params.size,
           outDir: params.outDir,
           timeoutMs: params.timeoutMs,
           signal: params.signal,
@@ -513,6 +523,7 @@ export async function generateImageWithFallback(params: ImageChainParams): Promi
           model: params.model,
           prompt: params.prompt,
           n: params.n,
+          size: params.size,
           outDir: params.outDir,
           timeoutMs: params.timeoutMs,
           signal: params.signal,
