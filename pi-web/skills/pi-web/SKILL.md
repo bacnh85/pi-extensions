@@ -1,6 +1,6 @@
 ---
 name: pi-web
-description: Web search, content extraction, site crawling, page capture, Gemini web-tier research, free upstream image generation, and one-off gateway chat via the pi-web extension. Use when the user needs current web search results, documentation lookup, factual research, AI-synthesized research with sources (Gemini Deep Research), image generation from text (Gemini web, Z.ai GLM-Image), one-off ChatGPT/gateway chat, source discovery, URL-to-markdown extraction, JSON extraction from websites, site URL discovery, site crawling, or page screenshots/PDFs. Use when the user mentions searching the web, finding docs, looking something up, researching deeply, generating/creating an image, asking another model, scraping/extracting content from a URL, or capturing a page.
+description: Web search, content extraction, site crawling, page capture, Gemini web-tier research, image generation (Z.ai GLM-Image working path), and one-off gateway chat via the pi-web extension. Use when the user needs current web search results, documentation lookup, factual research, AI-synthesized research with sources (Gemini Deep Research), image generation from text (Z.ai GLM-Image; the Gemini web provider is currently TLS-gated), one-off ChatGPT/gateway chat, source discovery, URL-to-markdown extraction, JSON extraction from websites, site URL discovery, site crawling, or page screenshots/PDFs. Use when the user mentions searching the web, finding docs, looking something up, researching deeply, generating/creating an image, asking another model, scraping/extracting content from a URL, or capturing a page.
 ---
 
 # pi-web — Unified Web Tools
@@ -18,7 +18,7 @@ Use the **10 unified tools** from the `pi-web` extension for all web-related tas
 | `web_screenshot` | Capture page screenshot as PNG | Crawl4AI daemon (public URLs) or local headless Chrome (localhost/LAN/file URLs — auto-detected) |
 | `web_pdf` | Generate page PDF | Crawl4AI daemon (public URLs) or local headless Chrome (localhost/LAN/file URLs — auto-detected) |
 | `web_research` | AI-synthesized research with sources | Gemini web tier: ask = grounded answer (guest OK); research = full Deep Research via the pure-Node DR client (live cookie; stale sessions return an honest partial result) |
-| `web_image` | Generate images from a text prompt | Gemini web (guest/cookie) → Z.ai GLM-Image (`ZAI_API_KEY`) → custom OpenAI-images endpoint |
+| `web_image` | Generate images from a text prompt | Z.ai GLM-Image (`ZAI_API_KEY`, working path) → custom OpenAI-images endpoint; Gemini web provider currently refuses non-browser TLS (gated server-side) |
 | `web_chat` | One-off chat via an OpenAI-compatible gateway | `WEB_CHAT_API_BASE_URL` (ChatGPT web bridge, official OpenAI, …) |
 | `web_status` | Check provider configuration and health | — |
 
@@ -64,7 +64,7 @@ What do you need?
 │
 ├── Generate an image from a text prompt (NOT capturing an existing page)
 │   → web_image
-│     ├─ default: provider=auto (Gemini web → Z.ai GLM-Image → custom endpoint)
+│     ├─ default: provider=auto (skips TLS-gated Gemini after refusals → Z.ai GLM-Image → custom endpoint)
 │     └─ pin/model: provider=zai model=glm-image, or any custom OpenAI-images endpoint
 │
 ├── One-off chat with another model (second opinion, classification)
