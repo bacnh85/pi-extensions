@@ -47,7 +47,7 @@ export interface RotateResult {
   ok: boolean;
   psidts?: string;
   reason?: string;
-  /** true when the server itself rejected/returned nothing — the session is dead (store should be cleared). false on transport errors (keep the store). */
+  /** true when the server itself rejected the rotation (400/401/no new TS) — informational only; rotation failures never clear the store (the paste TS keeps serving content). false on transport errors. */
   stale?: boolean;
 }
 
@@ -107,14 +107,20 @@ export function cookieStoreSnapshot(storePath: string = defaultStorePath()): { p
 }
 
 /**
- * The PSIDTS to use: the store's value when it belongs to the same session
- * (psid match), else the env value. A store keyed to an older paste is
- * ignored, so pasting a fresh cookie always wins.
+ * The PSIDTS to use: the ENV value (fresh paste) always wins — a stored TS
+ * can be superseded and must never shadow a re-paste for the same PSID. The
+ * store is only a restart fallback when the env has no TS at all (users who
+ * delegate cookie ownership to pi after a successful opt-in rotation).
  */
-export function resolvePsidts(psid: string | undefined, envPsidts: string | undefined, storePath: string = defaultStorePath()): string | undefined {
-  if (!psid) return envPsidts;
+export function resolvePsidts(
+  psid: string | undefined,
+  envPsidts: string | undefined,
+  storePath: string = defaultStorePath(),
+): string | undefined {
+  if (envPsidts) return envPsidts;
+  if (!psid) return undefined;
   const store = loadCookieStore(storePath);
-  return store && store.psid === psid && store.psidts ? store.psidts : envPsidts;
+  return store && store.psid === psid && store.psidts ? store.psidts : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +136,8 @@ function parseProxy(str: string): { protocol: string; host: string; port: number
   }
 }
 
-async function defaultPost(
+/** @internal exported for tests — the real rotation POST (axios, no-follow) */
+export async function defaultPost(
   url: string,
   opts: { headers: Record<string, string>; body: string; proxy?: string; timeoutMs: number },
 ): Promise<{ status: number; setCookie: string[] }> {
@@ -246,14 +253,19 @@ let keepalivePsid: string | undefined;
  */
 export function ensureKeepalive(
   cfg: { psid?: string; psidts?: string; proxy?: string },
-  hooks?: { post?: PostFn; storePath?: string },
+  hooks?: { post?: PostFn; storePath?: string; intervalMs?: number },
 ): void {
   if (!cfg.psid) return;
   if (keepaliveTimer && keepalivePsid === cfg.psid) return;
   stopKeepalive();
   if (findEnvValue("GEMINI_WEB_KEEPALIVE").value !== "1") return;
   const parsed = Number(findEnvValue("GEMINI_WEB_ROTATE_INTERVAL_MS").value);
-  const intervalMs = Number.isFinite(parsed) && parsed >= MIN_ROTATE_GAP_MS ? parsed : DEFAULT_ROTATE_INTERVAL_MS;
+  const intervalMs =
+    hooks?.intervalMs && hooks.intervalMs >= 1000
+      ? hooks.intervalMs
+      : Number.isFinite(parsed) && parsed >= MIN_ROTATE_GAP_MS
+        ? parsed
+        : DEFAULT_ROTATE_INTERVAL_MS;
   keepalivePsid = cfg.psid;
   keepaliveTimer = setInterval(() => {
     void keepaliveOnce(cfg, hooks).catch(() => {});

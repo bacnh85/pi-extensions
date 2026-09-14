@@ -309,9 +309,6 @@ actionable steps (expired cookie → re-copy; IP block → set `GEMINI_WEB_PROXY
 
 Troubleshooting:
 
-- *"session expired (auto-rotation could not refresh it)"* — re-copy
-  `__Secure-1PSID` + `__Secure-1PSIDTS` from a fresh **incognito** login. If
-  this returns often, your daily browser is competing for the same session —
 - *"session expired"* — re-copy `__Secure-1PSID` + `__Secure-1PSIDTS` from a
   fresh **incognito** login. If this returns often, your daily browser is
   competing for the same session — keep using the incognito cookie and never

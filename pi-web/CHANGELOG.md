@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.13.2 (2026-09-14)
+
+### Fixed
+
+- **resolvePsidts is env-first** (reviewer, fixes a real footgun): a stored TS
+  could permanently shadow a re-pasted env cookie for the same PSID (the
+  poisoned-store trap). Now the env paste ALWAYS wins; the store is only a
+  restart fallback when the env has no TS (users who delegate cookie
+  ownership to pi after an opt-in rotation).
+- RotateResult stale doc corrected: rotation failures never clear the store
+  (informational flag only).
+- ensureKeepalive hooks gained an intervalMs override (tests/power users);
+  tick pass-through and defaultPost redirect/no-follow behavior now
+  socket-tested.
+
 ## 0.13.1 (2026-09-14)
 
 ### Fixed

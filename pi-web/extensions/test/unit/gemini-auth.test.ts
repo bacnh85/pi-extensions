@@ -20,6 +20,7 @@ import {
   rotateCookies,
   saveCookieStore,
   stopKeepalive,
+  defaultPost,
   type PostFn,
 } from "../../lib/gemini-auth";
 import {
@@ -96,16 +97,16 @@ describe("cookie store", () => {
 });
 
 describe("resolvePsidts", () => {
-  it("prefers the store when the psid matches", () => {
+  it("env (fresh paste) always wins over the store", () => {
     const p = tmpStore();
     saveCookieStore({ psid: "psid-test", psidts: "store-ts", updatedAt: 1 }, p);
-    expect(resolvePsidts("psid-test", "env-ts", p)).to.equal("store-ts");
+    expect(resolvePsidts("psid-test", "env-ts", p)).to.equal("env-ts");
   });
 
-  it("falls back to env when the store belongs to an older paste", () => {
+  it("falls back to the store only when env has no TS", () => {
     const p = tmpStore();
-    saveCookieStore({ psid: "old-psid", psidts: "store-ts", updatedAt: 1 }, p);
-    expect(resolvePsidts("psid-test", "env-ts", p)).to.equal("env-ts");
+    saveCookieStore({ psid: "psid-test", psidts: "store-ts", updatedAt: 1 }, p);
+    expect(resolvePsidts("psid-test", undefined, p)).to.equal("store-ts");
   });
 
   it("falls back to env with no store, and passes through guest mode", () => {
@@ -382,5 +383,49 @@ describe("ensureKeepalive arming", () => {
     expect(__keepaliveDebug().psid).to.equal("psid-test");
     ensureKeepalive({ ...config, psid: "psid-other" });
     expect(__keepaliveDebug().psid).to.equal("psid-other");
+  });
+
+  it("tick passes cfg+hooks through (post called, store written)", async function () {
+    this.timeout(5000);
+    process.env.GEMINI_WEB_KEEPALIVE = "1";
+    const p = tmpStore();
+    let called = 0;
+    const post: PostFn = async () => {
+      called++;
+      return { status: 200, setCookie: ["__Secure-1PSIDTS=tick-ts; Path=/"] };
+    };
+    ensureKeepalive(config, { post, storePath: p, intervalMs: 1000 });
+    await new Promise((r) => setTimeout(r, 1300));
+    stopKeepalive();
+    expect(called).to.be.at.least(1);
+    expect(loadCookieStore(p)).to.deep.include({ psidts: "tick-ts" });
+  });
+});
+
+describe('defaultPost (rotation transport)', () => {
+  it('captures Set-Cookie from a redirect without following it', async function () {
+    this.timeout(5000);
+    const { createServer } = await import('node:http');
+    let hits = 0;
+    const server = createServer((req, res) => {
+      hits++;
+      res.writeHead(302, { 'set-cookie': ['__Secure-1PSIDTS=redirect-ts; Path=/'], location: '/should-not-follow' });
+      res.end();
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const res = await defaultPost(`http://127.0.0.1:${port}/rotate`, {
+        headers: { 'Content-Type': 'application/json' },
+        body: '[000,"-0000000000000000000"]',
+        timeoutMs: 2000,
+      });
+      expect(res.status).to.equal(302); // redirect NOT followed
+      expect(res.setCookie.join(' ')).to.include('__Secure-1PSIDTS=redirect-ts');
+      await new Promise((r2) => setTimeout(r2, 100));
+      expect(hits).to.equal(1); // exactly one request
+    } finally {
+      server.close();
+    }
   });
 });
