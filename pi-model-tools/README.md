@@ -141,6 +141,7 @@ Signing is harmless on the default `api.z.ai` route too (the server ignores
 | `ZAI_ANTHROPIC_BASE_URL` | `https://api.z.ai/api/anthropic` | Anthropic-compatible endpoint |
 | `ZAI_ANTHROPIC_SPEED` | `fast` | `standard` to disable the fast serving tier (on pay-per-token plans fast ≈ 6× input price) |
 | `ZAI_ANTHROPIC_SIGNING` | **on** | ZCode parity: identity headers + Client-Signing V4 (Ed25519+PoW) on every request. `0` to disable |
+| `ZAI_ANTHROPIC_MIN_INTERVAL_MS` | `1000` | Cross-process dispatch gate (Z.ai 429/1302 request-rate limit): minimum spacing between request starts across all Pi processes on this machine. `0` disables |
 
 Note: `reasoning strip`/`reasoning_content` handling applies only to the OpenAI
 path — on the Anthropic surface thinking arrives as native thinking blocks and

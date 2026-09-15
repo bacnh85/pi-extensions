@@ -118,7 +118,7 @@ export function unregisterZaiAnthropicProvider(pi: ExtensionAPI): void {
 }
 
 /** Case-insensitive provider match (pi may surface provider ids with different casing). */
-function isZaiAnthropicProvider(provider?: string): boolean {
+export function isZaiAnthropicProvider(provider?: string): boolean {
   return (provider?.toLowerCase() ?? "") === PROVIDER_ID;
 }
 

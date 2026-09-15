@@ -67,6 +67,7 @@ import {
   zaiAnthropicBaseUrl,
   PROVIDER_ID,
 } from "./lib/zai-anthropic.ts";
+import { throttleZaiDispatch } from "./lib/zai-throttle.ts";
 import {
   applyZcodeSigningHeaders,
   getZcodeSigningManager,
@@ -685,8 +686,16 @@ export default function (pi: ExtensionAPI) {
     if (payload !== event.payload) return payload;
   });
 
-  // ── before_provider_headers: fast-mode beta header for zai-anthropic ──
+  // ── before_provider_headers: dispatch gate + fast-mode beta for zai-anthropic ──
   pi.on("before_provider_headers", async (event, ctx) => {
+    // Cross-process dispatch gate (Z.ai 1302 request-rate limit): spaces request
+    // STARTS across all Pi processes on this machine. Holds only for the claim —
+    // released before this hook returns, never during the request/stream.
+    // ZAI_ANTHROPIC_MIN_INTERVAL_MS (default 1000, 0 disables).
+    const waitedMs = await throttleZaiDispatch(ctx.model?.provider, process.env, undefined, {
+      onError: (err) => logWarn("zai-throttle fail-open:", err.message),
+    });
+    if (waitedMs > 0) debugLog(`throttle: waited ${waitedMs}ms for zai-anthropic dispatch slot`);
     applyFastModeHeaders(event.headers, { provider: ctx.model?.provider });
     // ZCode Client-Signing V4 parity — default ON (opt out:
     // ZAI_ANTHROPIC_SIGNING=0): identity headers + x-session-id + Ed25519/PoW

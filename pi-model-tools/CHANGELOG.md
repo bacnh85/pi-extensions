@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.4 (2026-09-14)
+
+### Added
+
+- Cross-process dispatch throttle for `zai-anthropic` (`ZAI_ANTHROPIC_MIN_INTERVAL_MS`,
+  default 1000 ms, `0` disables). Z.ai's coding-plan endpoint enforces a per-key
+  request-rate limit (HTTP 429 code 1302, no retry-after in the body), which
+  multi-agent setups (herdr panes, parallel subagents, advisor) trip by bursting
+  dispatches on one key. The new gate spaces request STARTS across every Pi
+  process on the machine via a shared slot file + short-lived mutex in the Pi
+  agent dir; the mutex is held only for the claim and is always released before
+  the request dispatches — streams are never serialized. Fail-open: any throttle
+  error dispatches unthrottled (reported via `logWarn`) rather than breaking the
+  request. Single-machine scope (machines sharing the key rely on provider-level
+  retries). Lock protocol review-hardened: no retry path can spin past the
+  acquire deadline; mutex holds are capped under the 30s stale threshold (long
+  waits nap, release and re-queue) so a legitimate sleeper is never stale-broken;
+  `release()` deletes only the pid it owns; the agent dir is created before the
+  lock is claimed (fresh installs are not a permanent silent no-op); future/
+  corrupt slot timestamps are ignored instead of causing hour-long waits.
+
 ## 0.8.3 (2026-09-14)
 
 ### Fixed
