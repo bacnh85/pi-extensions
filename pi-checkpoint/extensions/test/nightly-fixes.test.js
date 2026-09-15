@@ -113,6 +113,68 @@ test("snapshot is skipped when git update-ref fails", async () => {
     "failed ref write must not push a checkpoint onto the stack");
 });
 
+test("/undo reports honestly when the restore checkout fails (no false success)", async () => {
+  const t = setup((args) => {
+    if (args[0] === "stash" && args[1] === "create") return { stdout: "treeA\n", stderr: "" };
+    if (args[0] === "checkout") return { stdout: "", stderr: "error: could not checkout", failed: true };
+    return { stdout: "", stderr: "" };
+  });
+  const { ctx, turnStart, undo } = t;
+
+  await turnStart({}, ctx); // checkpoint 0
+  await turnStart({}, ctx); // checkpoint 1 — restore target after undoing 1
+  await undo.handler("1", ctx);
+  const last = ctx.notifies[ctx.notifies.length - 1];
+  assert.equal(last.t, "warning");
+  assert.match(last.m, /restore failed/);
+  assert.match(last.m, /checkout .* failed/);
+  assert.doesNotMatch(ctx.notifies.map((n) => n.m).join("\n"), /file state restored/,
+    "must not claim the restore succeeded");
+});
+
+test("failed /undo rolls the stack back — retry-able, redo buffer untouched", async () => {
+  const t = setup((args) => {
+    if (args[0] === "stash" && args[1] === "create") return { stdout: "tree\n", stderr: "" };
+    if (args[0] === "checkout") return { stdout: "", stderr: "error: could not checkout", failed: true };
+    return { stdout: "", stderr: "" };
+  });
+  const { ctx, turnStart, undo, checkpointCmd } = t;
+
+  await turnStart({}, ctx);
+  await turnStart({}, ctx);
+  await turnStart({}, ctx);
+  await undo.handler("2", ctx);
+  const last = ctx.notifies[ctx.notifies.length - 1];
+  assert.equal(last.t, "warning");
+  await checkpointCmd.handler("", ctx);
+  const report = ctx.notifies[ctx.notifies.length - 1].m;
+  assert.match(report, /turn 2.*head/s, "stack rolled back: all turns still on it");
+  assert.match(report, /Redo buffer: 0/, "popped checkpoints were not stranded in the redo buffer");
+});
+
+test("failed /redo keeps the checkpoint in the redo buffer and counts 0", async () => {
+  let failCheckout = false;
+  const t = setup((args) => {
+    if (args[0] === "checkout" && failCheckout) return { stdout: "", stderr: "error: could not checkout", failed: true };
+    if (args[0] === "stash" && args[1] === "create") return { stdout: "tree\n", stderr: "" };
+    return { stdout: "", stderr: "" };
+  });
+  const { ctx, turnStart, undo, redo, checkpointCmd } = t;
+
+  await turnStart({}, ctx);
+  await turnStart({}, ctx);
+  await undo.handler("1", ctx); // succeeds — redo buffer now holds checkpoint 1
+  failCheckout = true;
+  await redo.handler("1", ctx);
+  const warn = ctx.notifies.find((n) => n.t === "warning");
+  assert.match(warn?.m ?? "", /restore failed/);
+  assert.match(ctx.notifies[ctx.notifies.length - 1].m, /Redid 0 turn\(s\)/);
+  await checkpointCmd.handler("", ctx);
+  const report = ctx.notifies[ctx.notifies.length - 1].m;
+  assert.match(report, /turn 0.*head/s, "failed checkpoint was not pushed onto the stack");
+  assert.match(report, /Redo buffer: 1/, "checkpoint stays redo-able for a retry");
+});
+
 test("a new turn clears the redo buffer (no stale re-apply)", async () => {
   let n = 0;
   const t = setup((args) => {

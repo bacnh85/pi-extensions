@@ -286,7 +286,6 @@ export function unwrapSendMessageResponse(result: any): any {
 export const sendTaskResponse = (task: any): any => ({ task });
 
 // StreamResponse builders (v1.0).
-export const streamTask = (task: any): any => ({ task });
 export const streamMessage = (message: any): any => ({ message });
 
 /** v1.0 TaskStatusUpdateEvent — {taskId, contextId, status, final}. */

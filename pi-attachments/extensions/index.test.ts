@@ -9,7 +9,7 @@ import { after, before, describe, it } from "mocha";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { extractImagePaths, extractTextFilePaths } from "./lib/paths";
+import { extractImagePaths } from "./lib/paths";
 import { parseUriList } from "./lib/clipboard-files";
 import { DEFAULTS, loadSettings } from "./lib/settings";
 import { lookup, remember, registryPath } from "./lib/registry";
@@ -101,16 +101,6 @@ describe("extractImagePaths", () => {
     writeFileSync(spaced, PNG_BYTES);
     const escaped = spaced.replace(/ /g, "\\ "); // Terminal.app pastes "with\ space.png"
     assert.deepEqual(extractImagePaths(`dropped ${escaped}`), [spaced]);
-  });
-});
-
-describe("extractTextFilePaths", () => {
-  it("finds existing absolute text paths, skips images and missing files", () => {
-    assert.deepEqual(extractTextFilePaths(`read ${md} and ${img} and /no/such/file.md`), [md]);
-  });
-
-  it("never matches relative prose mentions", () => {
-    assert.deepEqual(extractTextFilePaths("see main.rs or src/lib.ts for details"), []);
   });
 });
 

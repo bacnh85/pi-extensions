@@ -395,6 +395,50 @@ describe("pi-fff tools", () => {
     await Promise.all([initializing, first, second]);
   });
 
+  it("fff-health awaits the shared in-flight finder instead of reporting not-initialized", async () => {
+    let createCount = 0;
+    let release!: () => void;
+    const scanning = new Promise<void>((resolve) => { release = resolve; });
+    const finder = fakeFinder({
+      waitForScan: () => scanning,
+      healthCheck: () => ({
+        ok: true,
+        value: {
+          version: "9.9.9",
+          git: { repositoryFound: true, workdir: "/repo" },
+          filePicker: { initialized: true, indexedFiles: 5 },
+          frecency: { initialized: false },
+          queryTracker: { initialized: false },
+        },
+      }),
+      getScanProgress: () => ({ ok: true, value: { isScanning: false, scannedFilesCount: 5 } }),
+    });
+    const runtime = harness(finder, undefined, {}, { create: () => { createCount++; return finder; } });
+    const initializing = runtime.started;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(createCount).to.equal(1);
+
+    const notes: string[] = [];
+    await runtime.commands.get("fff-health").handler("", { ui: { notify: (m: string) => notes.push(m) } });
+    expect(createCount).to.equal(1); // shared the in-flight promise — no second spawn
+    release();
+    await initializing;
+    expect(notes).to.have.lengthOf(1);
+    expect(notes[0]).to.contain("FFF v9.9.9");
+  });
+
+  it("fff-health reports initialization failure when re-create fails", async () => {
+    const finder = fakeFinder();
+    const runtime = harness(finder);
+    await runtime.started;
+    (FileFinder as any).create = () => ({ ok: false, error: "boom" });
+    finder.destroy();
+    const notes: string[] = [];
+    await runtime.commands.get("fff-health").handler("", { ui: { notify: (m: string) => notes.push(m) } });
+    expect(notes).to.deep.equal(["FFF initialization failed"]);
+  });
+
   it("reads CLI flags after Pi populates them and before registering tools", async () => {
     let createOptions: any;
     const finder = fakeFinder();

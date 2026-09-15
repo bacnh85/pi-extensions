@@ -19,7 +19,7 @@
  * Zero deps, plain JS (pi-budget pattern).
  */
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve, isAbsolute } from "node:path";
 import os from "node:os";
 
@@ -62,8 +62,10 @@ const CACHE_DIR_SUFFIX = "refs";
  */
 export function normalizeReference(alias, def, cwd, cacheRoot) {
   if (!alias || typeof alias !== "string") return null;
-  // alias must not contain slash/whitespace/backtick/comma (OpenCode rule)
-  if (/[/\s,`]/.test(alias)) return null;
+  // alias must not contain slash/whitespace/backtick/comma (OpenCode rule),
+  // and must not be a dot segment: join(cacheRoot, "..") would resolve the
+  // ref outside the cache root entirely.
+  if (/[/\s,`]/.test(alias) || alias === "." || alias === "..") return null;
 
   const obj = typeof def === "string" ? parseShorthand(def) : { ...def };
   if (!obj || typeof obj !== "object") return null;
@@ -123,6 +125,7 @@ function parseShorthand(s) {
 export async function ensureCloned(ref, execFn) {
   if (!ref?.repository || !ref?.path) return true; // local ref, nothing to clone
   if (existsSync(join(ref.path, ".git"))) return true; // already cloned
+  const existed = existsSync(ref.path);
   try {
     mkdirSync(ref.path, { recursive: true });
   } catch { /* best-effort */ }
@@ -136,12 +139,24 @@ export async function ensureCloned(ref, execFn) {
   if (ref.branch && !String(ref.branch).startsWith("-")) {
     args.splice(1, 0, "--branch", ref.branch);
   }
+  let ok = false;
   try {
-    const res = await execFn("git", args);
-    return !res?.failed;
-  } catch {
-    return false;
+    ok = !(await execFn("git", args))?.failed;
+  } catch { /* clone failed */ }
+  if (!ok) {
+    // Clean up so a retry can re-clone. If WE created the dir this call, a
+    // failed clone may leave a partial .git inside — remove it outright,
+    // or the .git early-return above would report the broken cache as
+    // "already cloned". A pre-existing dir is only removed when empty:
+    // never recursive-delete content we didn't create (a bad alias/config
+    // can point ref.path anywhere). Best-effort.
+    try {
+      if (!existed || readdirSync(ref.path).length === 0) {
+        rmSync(ref.path, { recursive: true, force: true });
+      }
+    } catch { /* dir missing/unreadable — nothing to clean */ }
   }
+  return ok;
 }
 
 /**

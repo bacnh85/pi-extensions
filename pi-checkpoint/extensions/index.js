@@ -93,18 +93,24 @@ export default function checkpointExtension(pi) {
   }
 
   async function restoreRef(ref, ctx) {
-    if (ref === undefined) return; // nothing recorded — nothing known to restore
+    if (ref === undefined) return true; // nothing recorded — nothing known to restore
+    let res;
     if (ref === null) {
       // Target checkpoint was "clean" (stash create empty → tracked state == HEAD).
       // Restoring = discard tracked changes since then; untracked files are left
       // alone (safer than git clean).
-      await git(["checkout", "HEAD", "--", "."], ctx);
-      return;
+      res = await git(["checkout", "HEAD", "--", "."], ctx);
+    } else {
+      // Restore tracked-file state from the snapshot's tree into worktree+index.
+      // `git checkout <tree> -- .` touches only tracked paths at that tree;
+      // untracked files remain.
+      res = await git(["checkout", ref, "--", "."], ctx);
     }
-    // Restore tracked-file state from the snapshot's tree into worktree+index.
-    // `git checkout <tree> -- .` touches only tracked paths at that tree;
-    // untracked files remain.
-    await git(["checkout", ref, "--", "."], ctx);
+    if (res?.failed) {
+      notify(ctx, `pi-checkpoint: restore failed — git checkout ${ref ?? "HEAD"} failed (${(res.stderr || "unknown error").trim()}).`, "warning");
+      return false;
+    }
+    return true;
   }
 
   pi.on("turn_start", async (_event, ctx) => {
@@ -162,7 +168,13 @@ export default function checkpointExtension(pi) {
         notify(ctx, `Undid ${undone.length} turn(s); no earlier checkpoint to restore.`, "info");
         return;
       }
-      await restoreRef(target.ref, ctx);
+      if (!(await restoreRef(target.ref, ctx))) {
+        // The turns were NOT undone — roll the popped checkpoints back so the
+        // stack matches reality and /undo stays retry-able once git is fixed.
+        for (let i = 0; i < undone.length; i++) redoBuffer.pop();
+        while (undone.length > 0) stack.push(undone.pop());
+        return; // restoreRef already warned
+      }
       const label = target.ref
         ? `checkpoint ${target.n}`
         : "clean state (HEAD) — tracked changes discarded";
@@ -190,8 +202,11 @@ export default function checkpointExtension(pi) {
       let done = 0;
       for (let i = 0; i < depth && redoBuffer.length > 0; i++) {
         const top = redoBuffer.pop();
+        if (!(await restoreRef(top.ref, ctx))) {
+          redoBuffer.push(top); // stays redo-able — retry after fixing git
+          break; // restoreRef already warned
+        }
         stack.push(top);
-        await restoreRef(top.ref, ctx);
         done++;
       }
       notify(ctx, `Redid ${done} turn(s).`, "info");

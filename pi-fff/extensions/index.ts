@@ -2008,7 +2008,15 @@ export default function fffExtension(pi: ExtensionAPI) {
     description: "Show FFF file finder health and status",
     handler: async (_args, ctx) => {
       if (!finder || finder.isDestroyed) {
-        ctx.ui.notify("FFF not initialized", "warning");
+        try {
+          await ensureFinder(activeCwd);
+        } catch {
+          ctx.ui.notify("FFF initialization failed", "warning");
+          return;
+        }
+      }
+      if (!finder || finder.isDestroyed) {
+        ctx.ui.notify("FFF initializing", "warning");
         return;
       }
 
@@ -2043,7 +2051,15 @@ export default function fffExtension(pi: ExtensionAPI) {
     description: "Trigger FFF to rescan files",
     handler: async (_args, ctx) => {
       if (!finder || finder.isDestroyed) {
-        ctx.ui.notify("FFF not initialized", "warning");
+        try {
+          await ensureFinder(activeCwd);
+        } catch {
+          ctx.ui.notify("FFF initialization failed", "warning");
+          return;
+        }
+      }
+      if (!finder || finder.isDestroyed) {
+        ctx.ui.notify("FFF initializing", "warning");
         return;
       }
 

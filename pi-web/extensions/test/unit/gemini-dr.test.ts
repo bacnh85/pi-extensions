@@ -9,7 +9,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  abortableSleep,
   extractChatIds,
   extractCookieJar,
   extractPlanTitle,
@@ -18,6 +17,7 @@ import {
   parseFrames,
   type DrHttp,
 } from "../../lib/gemini-dr";
+import { abortableSleep } from "../../lib/retry";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = (name: string): Buffer => fs.readFileSync(path.join(here, "fixtures", name));

@@ -821,10 +821,6 @@ export function writeSettingsA2A(opts: {
  * (same machine, same user, operator-configured) does not hold for them. */
 let repoPeerUrls = new Set<string>();
 
-export function repoControlledPeerUrls(): ReadonlySet<string> {
-  return repoPeerUrls;
-}
-
 /** Normalize a URL for dedupe/comparison (lowercase, trailing slashes stripped). */
 export function normUrl(u: string): string {
   return String(u || "").trim().replace(/\/+$/, "").toLowerCase();

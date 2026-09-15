@@ -3,7 +3,7 @@
 Pi extension that adds a lightweight plan mode inspired by Codex and Claude Code:
 
 - Toggle plan mode with `/plan` or `Ctrl+Alt+P`.
-- Remembers separate thinking/reasoning levels for planning and normal execution across sessions.
+- Remembers the plan-mode model and thinking level globally across sessions; normal mode follows stock Pi (`/model`, `/thinking`).
 - Keeps planning safe: known read/research tools and strict read-only shell commands auto-run, unknown executables and custom tools require confirmation, direct source mutators are blocked.
 - Provides a `write_plan` tool so the agent writes reviewable Markdown plans into `.agents/plans/`.
 - Provides an `ask_user_question` tool for selection-style clarifying questions with an optional recommended default (★-marked) and a free-form "Other" path; works in any mode (not just plan mode).
@@ -27,6 +27,7 @@ pi --plan
 | --- | --- |
 | `/plan` | Toggle plan mode. |
 | `/plan-approve [current|new|flow]` | Open approval choices or execute a specific handoff through Pi's command router. |
+| `/plan-execute new|flow` | Backward-compatible alias: jump straight to fresh-session execution (`new`) or the implement→verify→review workflow (`flow`) for the last approved plan. |
 | `/flow status` | Show the active workflow phase and review pass. |
 | `/flow stop` | Abort review and stop the active workflow. |
 | `/handoff <goal>` | Summarize the session into a reviewable prompt and start a focused new Pi session linked to the parent. |

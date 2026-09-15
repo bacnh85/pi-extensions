@@ -45,6 +45,9 @@ All optional — auto-discovered. Override with environment variables:
 | `KICAD_API_SOCKET` | Konnect auto-detect | KiCad IPC socket, e.g. `ipc:///tmp/kicad/api.sock` |
 | `KICAD_HTTP_PORT` | `31337` | Preferred daemon port (falls back to a free one) |
 | `KICAD_LOG_LEVEL` | `info` | Konnect log level (error/warn/info/debug/trace) |
+| `KICAD10_SYMBOL_DIR` | `~/.pi/kicad-symbols` (managed dir) | Overrides the symbol dir Konnect resolves `lib_id`s from |
+| `KICAD_SHARED_SUPPORT` | auto (per-OS app paths) | Overrides the KiCad SharedSupport dir used for footprints/templates |
+| `KICAD_PROJECT_DIR` | none | KiCad project dir (written to the daemon TOML as `project_dir`) |
 
 ## How it works
 

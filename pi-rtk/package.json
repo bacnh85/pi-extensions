@@ -26,11 +26,13 @@
     "CHANGELOG.md",
     "extensions/index.ts",
     "extensions/findFallback.js",
+    "extensions/safe-rewrite.js",
     "extensions/version-gate.js",
     "extensions/package.json"
   ],
   "scripts": {
-    "test": "node --test extensions/test/*.test.js"
+    "test": "node --test extensions/test/*.test.js",
+    "typecheck": "tsc --noEmit"
   },
   "pi": {
     "extensions": [
@@ -39,5 +41,9 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
   }
 }

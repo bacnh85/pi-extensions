@@ -24,7 +24,6 @@ export interface AdvisorState {
   setWatchEnabled(value: boolean): void;
   /** Called after enabling watch — reseed the cursor so only future turns are reviewed. */
   onEnableWatch?(ctx: ExtensionContext): void;
-  onAvailabilityChange?(available: boolean): void;
 }
 
 export function registerAdvisor(pi: ExtensionAPI, state: AdvisorState): void {
@@ -37,7 +36,6 @@ export function registerAdvisor(pi: ExtensionAPI, state: AdvisorState): void {
     pi.setActiveTools(enabled
       ? [...new Set([...active, TOOL])]
       : active.filter((name) => name !== TOOL));
-    state.onAvailabilityChange?.(enabled);
   }
 
   async function set(models: string[], ctx: ExtensionContext): Promise<void> {

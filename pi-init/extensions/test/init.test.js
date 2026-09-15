@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { scanProject, buildInitPrompt } from "../index.js";
+import { scanProject, buildInitPrompt, checkFindings } from "../index.js";
 
 function fixture(setup) {
   const dir = mkdtempSync(join(tmpdir(), "pi-init-"));
@@ -233,4 +233,30 @@ test("buildInitPrompt handles missing commands gracefully", () => {
   assert.doesNotThrow(() => prompt.split("\n"));
   // No false commands injected when scripts absent
   assert.equal(prompt.includes("npm run test"), false);
+});
+
+test("check findings: non-Node repo not flagged for missing package.json", () => {
+  const dir = fixture((d) => {
+    writeFileSync(join(d, "go.mod"), "module example.com/x\n\ngo 1.22\n");
+  });
+  try {
+    const { missing } = checkFindings(scanProject(dir));
+    assert.ok(!missing.includes("package.json"), `should not flag package.json, got: ${missing.join(", ")}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("check findings: JS repo without package.json still flagged as missing", () => {
+  const dir = fixture((d) => {
+    writeFileSync(join(d, "main.js"), "console.log('hi');\n");
+  });
+  try {
+    const scan = scanProject(dir);
+    assert.ok(scan.languages.has("JavaScript"), "scan detects JS from source files");
+    const { missing } = checkFindings(scan);
+    assert.ok(missing.includes("package.json"), `should flag package.json, got: ${missing.join(", ")}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

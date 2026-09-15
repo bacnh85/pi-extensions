@@ -14,6 +14,7 @@
 import crypto from "node:crypto";
 import https from "node:https";
 import { URL } from "node:url";
+import { abortableSleep } from "./retry";
 
 const DR_APP_URL = "https://gemini.google.com/app";
 const DR_GENERATE_URL = "https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate";
@@ -121,22 +122,6 @@ export function extractCookieJar(headers: Record<string, string>): { rest: Recor
   return { rest, jar };
 }
 
-/** Sleep that rejects with AbortError if the signal fires; removes its
- * listener when the timer wins so repeated polls don't leak listeners.
- * @internal exported for tests */
-export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const onAbort = () => {
-      clearTimeout(t);
-      reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
-    };
-    const t = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
 /** Byte-exact frame splitter: prefix is the byte length INCLUDING the trailing newline. */
 export function parseFrames(buf: Buffer): string[] {
   const start = buf.indexOf(")]}'");

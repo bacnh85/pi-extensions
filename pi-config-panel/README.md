@@ -41,6 +41,8 @@ pi.registerCommand("my-config", {
 | `toInt(v, fallback)` | Integer coercion keeping the fallback on garbage. |
 | `applyRows(cfg, groups)` | Re-apply every row's value (tests / "apply" flows). |
 | `kindValue(kind, raw)` | Coerce a raw input string to a toggle/number/string value. |
+| `filterSuggestions(options, raw, cursor?, emptyQuery?)` | Filter completion options against the cursor's segment (last segment when no cursor); empty segment → full list; case-insensitive substring. |
+| `joinCompletion(raw, itemValue, cursor?)` | Value produced by accepting a suggestion: replaces the cursor's segment (`head + ", " + value`), preserving tail segments; no trailing comma. |
 | `makeOnAction(model, cfg, build, actions, onError)` | Action-row handler factory (rebuilds rows after add/remove actions). |
 | `PanelRow` / `PanelGroup` / `PanelAction` / `BuildRows<T>` | Row-model types. |
 

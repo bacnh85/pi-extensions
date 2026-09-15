@@ -143,7 +143,7 @@ export class KonnectDaemon {
     // Private dir via mkdtemp (issue #20 L1): a predictable flat tmpdir filename
     // is a symlink-clobber target on multi-user hosts. mkdtemp gives us an
     // unpredictable, 0o700 directory — no O_EXCL dance needed.
-    const cfgDir = await mkdtemp(join(this.deps.tmpdir(), "pi-kicad-daemon-"));
+    const cfgDir = await this.deps.mkdtemp(join(this.deps.tmpdir(), "pi-kicad-daemon-"));
     const configPath = join(cfgDir, `daemon-${port}.toml`);
     await this.deps.writeFile(configPath, toml);
 

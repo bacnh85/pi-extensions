@@ -25,6 +25,7 @@ function rs(shell?: WindowsShellKind): WindowsShellKind {
 
 // in-memory audit log
 const _log: { shell: string; command: string; exitCode: number | null; timedOut: boolean }[] = [];
+// ponytail: cap at 200 — audit log is in-memory and unbounded growth is a leak.
 function _fmt() {
   if (!_log.length) return "No commands executed yet.";
   return _log.map((e, i) => {
@@ -90,6 +91,7 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
       try {
         const r = await execCmd(p.command, opts);
         _log.push({ shell: opts.shell as string, command: p.command, exitCode: r.exitCode, timedOut: r.timedOut });
+        if (_log.length > 200) _log.shift();
         let o = `Exit code: ${r.exitCode}\n`;
         if (r.timedOut) o += "Status: TIMED OUT\n";
         if (r.cancelled) o += "Status: CANCELLED\n";
@@ -131,6 +133,7 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
     execute() { try { const d = parseWslDistros(execFileSync(systemExe("wsl.exe"), ["-l", "-q"], { cwd: homedir(), timeout: 5000 })); return tr(d.length ? "Installed WSL distros:\n  \u2022 " + d.join("\n  \u2022 ") : "No WSL distros found."); } catch { return tr("WSL not available."); } } });
 
   // ── Commands ──
+  // stdout is deliberate: the doctor report is a large multi-line dump; ctx.ui.notify is a toast.
   pi.registerCommand("windows-doctor", { description: "Run Windows Tools Doctor.", handler: async (_a, ctx) => { ctx?.ui?.notify?.("Windows Doctor complete.", "info"); process.stdout.write(formatDoctorReport(runDoctor()) + "\n"); } });
   pi.registerCommand("windows-shell", { description: "Show/set default shell.", handler: async (a, ctx) => {
     const arg = (a || "").trim().toLowerCase();

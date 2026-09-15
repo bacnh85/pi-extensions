@@ -4,8 +4,6 @@ Interactive installer for [Pi coding agent](https://github.com/earendil-works/pi
 
 Inspired by [vercel-labs/skills](https://github.com/skills): one command, interactive multi-select, sensible defaults.
 
-Current version: **0.1.4**
-
 ## Quick start
 
 ```bash
@@ -24,7 +22,7 @@ Requirements: Node ≥ 20 and the [`pi` CLI](https://github.com/earendil-works/p
 npx @bacnh85/pi-hub
 ```
 
-- Lists all 30 curated `@bacnh85` packages with full-width descriptions
+- Lists every curated `@bacnh85` package with full-width descriptions
 - `↑`/`↓` move · `space` toggle · `a` toggle all · `enter` confirm · `q` quit
 - The detail line under the list shows the full npm name + description of the highlighted package
 - Confirming the picker installs immediately — `pi install` runs per package (passes through pi's own output)
@@ -85,20 +83,22 @@ npx @bacnh85/pi-hub update                   # runs pi update --extensions
 | Flag | Description |
 |---|---|
 | `-l, --local` | project-local install (`.pi/settings.json`) instead of user scope |
-| `-y, --yes` | skip confirmation |
+| `-y, --yes` | quiet — suppress the "Will install" list (interactive mode) |
 | `--json` | machine-readable output (`find`) |
 | `-h, --help` | help |
 
-## Curated catalog (30 packages)
+## Curated catalog
 
 | Package | Description |
 |---|---|
 | `pi-a2a` | A2A Protocol v1.0 bidirectional — distribute tasks to remote agents, be called by them |
 | `pi-advisor` | Automatic advisor: a second model reviews each settled turn and injects severity-routed notes |
 | `pi-agy` | Google Antigravity CLI bridge — delegate bulk scaffolding, refactors, test generation |
+| `pi-attachments` | Image and file attachments — pastes/drops become file references and inline images |
 | `pi-budget` | Spend cap enforcement — halts the agent when session cost exceeds `--budget` USD |
 | `pi-checkpoint` | Git-backed undo/redo — `/undo` rolls back a message AND its file changes |
 | `pi-commandcode` | Connect to Command Code's OpenAI-compatible Provider API |
+| `pi-cron` | Scheduled jobs — cron-style prompts fired into the live session, with crontab export |
 | `pi-evolve` | Trajectory-based self-learning loop — captures tool calls, extracts and injects learnings |
 | `pi-fff` | FFF-powered fuzzy file and content search |
 | `pi-init` | Guided AGENTS.md generation — `/init` scans the repo and generates/updates AGENTS.md |
@@ -113,6 +113,7 @@ npx @bacnh85/pi-hub update                   # runs pi update --extensions
 | `pi-ponytail` | Lazy senior dev mode — YAGNI/stdlib-first coding discipline |
 | `pi-references` | External context roots — alias sibling dirs or git repos as `@docs`/`@sdk` |
 | `pi-review` | Isolated read-only code review with corrected same-session fallback |
+| `pi-selfskills` | Skill self-improvement — one skill_manage tool to patch, create, and restore skills |
 | `pi-router` | Connect to any OpenAI-compatible AI router via its /v1 API |
 | `pi-rtk` | Bash command token rewriting through RTK |
 | `pi-serena` | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) |

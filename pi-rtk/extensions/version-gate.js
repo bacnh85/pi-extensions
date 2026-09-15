@@ -10,6 +10,10 @@
 export const RTK_FIND_PASSTHROUGH_VERSION = [0, 46, 0];
 
 // Minimal semver triple parse; returns null when unparseable (conservative).
+/** Parse "x.y.z" into a [major, minor, patch] tuple; null when absent.
+ * @param {string} raw
+ * @returns {[number, number, number] | null}
+ */
 export function parseSemver(raw) {
   const match = raw.trim().match(/(\d+)\.(\d+)\.(\d+)/);
   if (!match) return null;

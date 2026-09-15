@@ -174,10 +174,22 @@ function resultText(response: SerenaWorkerResponse): string {
 // child session that loaded pi-serena spawned a separate Python process that leaked on
 // child dispose (no shutdown hook). One worker serves all callers.
 let worker: SerenaWorkerClient | undefined;
+// Most recent session's ctx. The worker's status callback reads this at call
+// time so status updates never land on a stale session's ui after replacement.
+let currentCtx: { ui?: { setStatus?: (key: string, value: string | undefined) => void } } | undefined;
 
 export default function serenaToolsExtension(pi: ExtensionAPI) {
   const getWorker = (ctx?: { ui?: { setStatus?: (key: string, value: string | undefined) => void } }) => {
-    if (!worker) worker = new SerenaWorkerClient((status) => ctx?.ui?.setStatus?.("serena", status ? "serena ✓" : undefined));
+    if (ctx) currentCtx = ctx;
+    if (!worker) {
+      worker = new SerenaWorkerClient((status) => {
+        try {
+          currentCtx?.ui?.setStatus?.("serena", status ? "serena ✓" : undefined);
+        } catch {
+          // stale/tearing-down ctx — status updates are best-effort
+        }
+      });
+    }
     return worker;
   };
 
@@ -594,6 +606,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
       // worker stop failed — proceed with cleanup
     } finally {
       worker = undefined;
+      currentCtx = undefined; // drop the dying session's ctx/UI reference
       // ctx may already be stale/tearing down during shutdown — never throw here.
       try {
         ctx?.ui?.setStatus?.("serena", undefined);

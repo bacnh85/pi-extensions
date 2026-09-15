@@ -115,8 +115,14 @@ export function scanProject(cwd) {
     for (const entry of readdirSync(cwd)) {
       const full = join(cwd, entry);
       try {
-        if (statSync(full).isDirectory() && !noiseDirs.has(entry) && !entry.startsWith(".")) {
-          out.topDirs.push(entry);
+        const st = statSync(full);
+        if (st.isDirectory()) {
+          if (!noiseDirs.has(entry) && !entry.startsWith(".")) out.topDirs.push(entry);
+        } else if (st.isFile()) {
+          // JS/TS signal independent of package.json — keeps checkFindings'
+          // missing-package.json flag reachable for Node repos lacking one.
+          if (/\.(ts|tsx|mts|cts)$/i.test(entry)) out.languages.add("TypeScript");
+          else if (/\.(js|jsx|mjs|cjs)$/i.test(entry)) out.languages.add("JavaScript");
         }
       } catch { /* permission: skip */ }
     }
@@ -183,6 +189,31 @@ export function buildInitPrompt(scan, mode) {
   return lines.join("\n");
 }
 
+/**
+ * check-mode findings: what's present vs missing.
+ * package.json is only flagged missing when the scan detected JS/TS —
+ * a non-Node repo (cargo, go, python, …) shouldn't be marked for it.
+ * Exported for unit testing.
+ */
+export function checkFindings(scan) {
+  const present = [];
+  const missing = [];
+  const nodeRepo = scan.languages.has("JavaScript") || scan.languages.has("TypeScript");
+  if (scan.packageManager) present.push(`pkg manager: ${scan.packageManager}`);
+  else if (nodeRepo) missing.push("package.json");
+  if (scan.testCommand) present.push(`test: ${scan.testCommand}`);
+  else missing.push("test command");
+  if (scan.lintCommand) present.push(`lint: ${scan.lintCommand}`);
+  else missing.push("lint command");
+  if (scan.buildCommand) present.push(`build: ${scan.buildCommand}`);
+  else missing.push("build command");
+  if (scan.hasAgentsMd) present.push(`${scan.agentsFile} exists`);
+  else missing.push("AGENTS.md");
+  if (scan.ci.length) present.push(`CI: ${scan.ci.join(", ")}`);
+  else missing.push("CI config");
+  return { present, missing };
+}
+
 export default function initExtension(pi) {
   pi.registerCommand("init", {
     description: "Generate or update AGENTS.md from a repo scan",
@@ -202,20 +233,7 @@ export default function initExtension(pi) {
 
       // check mode: report without writing
       if (mode === "check") {
-        const present = [];
-        const missing = [];
-        if (scan.packageManager) present.push(`pkg manager: ${scan.packageManager}`);
-        else missing.push("package.json");
-        if (scan.testCommand) present.push(`test: ${scan.testCommand}`);
-        else missing.push("test command");
-        if (scan.lintCommand) present.push(`lint: ${scan.lintCommand}`);
-        else missing.push("lint command");
-        if (scan.buildCommand) present.push(`build: ${scan.buildCommand}`);
-        else missing.push("build command");
-        if (scan.hasAgentsMd) present.push(`${scan.agentsFile} exists`);
-        else missing.push("AGENTS.md");
-        if (scan.ci.length) present.push(`CI: ${scan.ci.join(", ")}`);
-        else missing.push("CI config");
+        const { present, missing } = checkFindings(scan);
 
         const report = [
           `Project: ${scan.projectName} (${[...scan.languages].join(", ") || "unknown"})`,

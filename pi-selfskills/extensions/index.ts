@@ -11,6 +11,7 @@ import {
   latestDeletedSnapshot,
   listBackups,
   listDeletedSnapshots,
+  namedBackup,
   snapshot,
   snapshotDir,
 } from "./lib/backup";
@@ -552,9 +553,8 @@ async function restoreAction(params: any, cwd: string, settings: ReturnType<type
   if (!isValidSkillName(skillName)) {
     return err(`Refusing restore: directory name "${skillName}" is not a valid skill name, so a safe backup path cannot be formed.`);
   }
-  const all = listBackups(skillName, relpath);
-  const wanted = typeof params.backup === "string" && params.backup !== "" ? (params.backup.endsWith(".md") ? params.backup : `${params.backup}.md`) : null;
-  const backupFile = wanted ? (all.find((f) => path.basename(f) === wanted) ?? null) : latestBackupFile(skillName, relpath);
+  const wanted = typeof params.backup === "string" && params.backup !== "" ? params.backup : null;
+  const backupFile = wanted ? namedBackup(skillName, wanted, relpath) : latestBackupFile(skillName, relpath);
   if (!backupFile) {
     return err(
       `No backup${params.backup ? ` named ${params.backup}` : ""} found for ${relpath} of skill "${skillName}" under ${backupRoot()}.`,

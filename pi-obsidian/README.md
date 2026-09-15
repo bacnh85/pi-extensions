@@ -34,6 +34,8 @@ pi install npm:@bacnh85/pi-obsidian
 
 When Pi runs from a directory inside an Obsidian vault (a `.obsidian/` directory is found in the current directory or an ancestor), the extension blocks generic `read`, `write`, `edit`, `ls`, `find`, `grep`, and direct filesystem `bash` operations that target that vault. Use `obsidian` for vault files instead. If that vault is not the currently focused Obsidian vault, pass its explicit `vault=<name>` to prevent an operation from targeting the wrong vault. Normal shell commands and explicit paths outside the vault remain available.
 
+Note that while the CWD is inside a vault, bash commands containing shell operators (`|`, `;`, `&`, `$`, `(`, `)`, backtick) are blocked conservatively — the guard can't reliably tell what a chained command would touch. Workarounds: run the command from outside the vault, or use the `obsidian` tool for vault files.
+
 ## Usage
 
 One tool: `obsidian` with a `run` parameter containing the full CLI command.

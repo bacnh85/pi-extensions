@@ -3,6 +3,9 @@
   "version": "0.8.0",
   "description": "Pi extension: FFF-powered fuzzy file and content search.",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "license": "MIT",
   "publishConfig": {
     "access": "public"

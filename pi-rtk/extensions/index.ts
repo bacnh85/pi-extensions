@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { createLocalBashOperations, isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { hasUnsupportedRtkFind } from "./findFallback.js";
 import { parseSemver, supportsFindPassthrough } from "./version-gate.js";
+import { isSafeRewrite } from "./safe-rewrite.js";
 
 const REWRITE_TIMEOUT_MS = 2_000;
 const RTK_UNAVAILABLE_RETRY_MS = 30_000;
@@ -95,7 +96,7 @@ async function ensureRtkAvailableForRewrite(pi: ExtensionAPI, ctx: ExtensionCont
   return checkRtkAvailable(pi, ctx);
 }
 
-async function rewriteCommand(pi: ExtensionAPI, command: string, signal?: AbortSignal, ctx: ExtensionContext): Promise<string | null> {
+async function rewriteCommand(pi: ExtensionAPI, command: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<string | null> {
   if (!(await ensureRtkAvailableForRewrite(pi, ctx))) return null;
 
   const result = await pi.exec("rtk", ["rewrite", command], {
@@ -126,29 +127,11 @@ async function rewriteCommand(pi: ExtensionAPI, command: string, signal?: AbortS
 }
 
 
-// ponytail: reject RTK rewrites that change the first word or add shell operators
-// Also reject rewrites of eval/script commands (node -e, python -c, etc.)
-// because RTK cannot safely transform arbitrary inline scripts.
-const SCRIPT_COMMAND_RE = /^(?:(?:\/[\w/.-]+)?\b(?:node|python|python3|ruby|perl|php|deno|bun|lua|perl6|raku|tclsh|groovy|julia|Rscript|ghci|dart|swift)\s+)(?:-\S+\s+)*(?:-[pec]{1,3}|--eval|--print)\b/;
-function isEvalCommand(command: string): boolean {
-  return SCRIPT_COMMAND_RE.test(command.trim());
-}
-function isSafeRewrite(original: string, rewritten: string): boolean {
-  // Never rewrite inline script commands — RTK can't transform arbitrary code
-  if (isEvalCommand(original) || isEvalCommand(rewritten)) return false;
-  const oTokens = original.trim().split(/\s+/);
-  const rTokens = rewritten.trim().split(/\s+/);
-  // RTK prepends "rtk" as the first token; compare against the original's first token
-  const rtkIdx = rTokens[0] === "rtk" ? 1 : 0;
-  const o = oTokens[0], n = rTokens[rtkIdx] ?? "";
-  return o === n && !/[|><;&`]/.test(rewritten);
-}
-
-async function maybeRewriteCommand(pi: ExtensionAPI, command: string, signal?: AbortSignal, ctx: ExtensionContext): Promise<string | null> {
+async function maybeRewriteCommand(pi: ExtensionAPI, command: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<string | null> {
   if (!rewritingEnabled()) return null;
   if (typeof command !== "string" || command.trim() === "") return null;
   if (command.trimStart().startsWith("rtk ")) return null;
-  const rewritten = await rewriteCommand(pi, command, signal, ctx);
+  const rewritten = await rewriteCommand(pi, command, ctx, signal);
   if (rewritten && rewritten !== command && !isSafeRewrite(command, rewritten)) return null;
   return rewritten;
 }
@@ -234,7 +217,7 @@ export default function piRtkExtension(pi: ExtensionAPI) {
       if (!isToolCallEventType("bash", event)) return;
 
       const originalCommand = event.input.command;
-      const rewritten = await maybeRewriteCommand(pi, originalCommand, ctx.signal, ctx);
+      const rewritten = await maybeRewriteCommand(pi, originalCommand, ctx, ctx.signal);
       if (rewritten && rewritten !== originalCommand) {
         // Notify when a command is rewritten so the model sees the discrepancy
         if (ctx.hasUI) {
@@ -254,7 +237,7 @@ export default function piRtkExtension(pi: ExtensionAPI) {
       updateStatus(ctx);
       if (event.excludeFromContext) return;
 
-      const rewritten = await maybeRewriteCommand(pi, event.command, ctx.signal, ctx);
+      const rewritten = await maybeRewriteCommand(pi, event.command, ctx, ctx.signal);
       if (!rewritten || rewritten === event.command) return;
       return {
         operations: {

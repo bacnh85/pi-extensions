@@ -51,6 +51,10 @@ agy models
 | `digest` | boolean | mode-based | Compact output; defaults on for `plan`/`sandbox` and off for `accept-edits` |
 | `timeout_ms` | number | `300000` | Timeout in milliseconds |
 
+#### Workspace containment on `dir`
+
+The `dir` parameter is contained to the workspace root: relative and absolute paths are resolved (symlinks included) and anything landing outside the workspace is rejected with an error, because `accept-edits`/`sandbox` modes write files in place. To deliberately work outside the workspace, set `PI_AGY_ALLOW_EXTERNAL_CWD=true` in the environment.
+
 ### Models
 
 Aliases map to agy's canonical machine names (run `agy models` to list them):

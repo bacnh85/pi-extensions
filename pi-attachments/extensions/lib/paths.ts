@@ -37,11 +37,6 @@ export function extractImagePaths(text: string): string[] {
   return out;
 }
 
-/** Distinct existing absolute non-image file paths referenced in text. */
-export function extractTextFilePaths(text: string): string[] {
-  return [...new Set(absolutePathSpans(text).map((s) => s.path))];
-}
-
 /**
  * Existing absolute non-image path tokens with their literal text spans.
  * One greedy regex pass yields disjoint matches, so a span can never be the

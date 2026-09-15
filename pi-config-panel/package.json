@@ -37,7 +37,6 @@
     "CHANGELOG.md",
     "extensions/lib/",
     "extensions/package.json",
-    "extensions/test/",
     "tsconfig.json",
     "extensions/.mocharc.yml"
   ],

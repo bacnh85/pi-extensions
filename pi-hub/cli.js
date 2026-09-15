@@ -264,10 +264,10 @@ Usage:
 
 Flags:
   -l, --local    project-local install (.pi/settings.json) instead of user scope
-  -y, --yes      quiet (suppress the install plan printout; install runs immediately)
+  -y, --yes      quiet (interactive mode: suppress the "Will install" list; installs never prompt)
   --json         machine-readable output (find)
   -h, --help     this help`);
-  if (code !== undefined) process.exitCode = code;
+  process.exitCode = code;
 }
 
 // ---------- entry ----------
