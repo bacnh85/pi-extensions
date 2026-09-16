@@ -1,5 +1,6 @@
 spec:
   - "index.test.ts"
+  - "lib/*.test.ts"
 require:
   - tsx
 timeout: 10000
