@@ -194,9 +194,13 @@ export function deliverFire(
  * full pi host (A2A server + gateway registration), and an unattended job
  * spawning panes multiplied into a 429 gateway-registration storm. An explicit
  * runner:"herdr" pin still degrades to sdk on the missing env (pi-subagent
- * resolveEffectiveRunner returns an error the agent can proceed on). */
+ * resolveEffectiveRunner returns an error the agent can proceed on).
+ *
+ * The ProcessEnv annotation isn't cosmetic: a bare spread of process.env
+ * loses its index signature in the inferred literal type, so `delete
+ * env.HERDR_ENV` fails typecheck (CI failure 2026-09-16). */
 export function childEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env, PI_CRON_DISABLED: "1" };
+  const env: NodeJS.ProcessEnv = { ...process.env, PI_CRON_DISABLED: "1" };
   delete env.HERDR_ENV;
   return env;
 }
