@@ -10,7 +10,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-router** | 1.1.7 | Connect to any OpenAI-compatible AI router (9router, omniroute, …) via its /v1 API; API key via built-in /login, URL in settings.json (`/router-config` panel), models auto-cached in models-store.json. |
 | **pi-commandcode** | 0.2.3 | Connect to Command Code's OpenAI-compatible Provider API; API key via built-in `/login`, base URL in settings.json (`/commandcode-config` panel), models auto-cached. |
 | **pi-checkpoint** | 0.1.2 | Git-backed undo/redo — snapshots file state per turn into a dedicated ref namespace so `/undo` rolls back a message AND its file changes. |
-| **pi-cron** | 0.3.1 | Scheduled jobs — cron-style jobs fire a prompt into the live session while pi is running (30s timer, past-due catch-up, loop guard); per-job model/thinking pins run headless; `cron export` emits crontab lines for 24/7 coverage. |
+| **pi-cron** | 0.3.2 | Scheduled jobs — cron-style jobs fire a prompt into the live session while pi is running (30s timer, past-due catch-up, loop guard); per-job model/thinking pins run headless; `cron export` emits crontab lines for 24/7 coverage. |
 | **pi-notify** | 0.1.2 | Desktop notifications and sounds — fires on task completion, errors, and questions; cross-platform (macOS/Linux/Windows + terminal OSC). |
 | **pi-references** | 0.1.2 | External context roots — alias sibling dirs or git repos as `@docs`/`@sdk`; auto-clones repos and injects descriptions into agent context. |
 | **pi-budget** | 0.1.3 | Spend cap enforcement — `--budget <usd>` aborts the agent at the cap; companion to pi-sub (render vs enforce). |

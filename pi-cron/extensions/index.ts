@@ -189,9 +189,16 @@ export function deliverFire(
 }
 
 /** Env for headless children: disables the cron scheduler inside the child so
- * parent/child ticks never race on the shared jobs.json. */
+ * parent/child ticks never race on the shared jobs.json, and strips HERDR_ENV
+ * so the subagent runner auto-detect can't pick herdr — each herdr pane is a
+ * full pi host (A2A server + gateway registration), and an unattended job
+ * spawning panes multiplied into a 429 gateway-registration storm. An explicit
+ * runner:"herdr" pin still degrades to sdk on the missing env (pi-subagent
+ * resolveEffectiveRunner returns an error the agent can proceed on). */
 export function childEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, PI_CRON_DISABLED: "1" };
+  const env = { ...process.env, PI_CRON_DISABLED: "1" };
+  delete env.HERDR_ENV;
+  return env;
 }
 
 export interface HeadlessDeps {

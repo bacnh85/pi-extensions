@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2
+
+- Headless (pinned-job) children no longer inherit `HERDR_ENV`, so the
+  subagent runner auto-detect can't pick the herdr runner inside an unattended
+  run — each herdr pane is a full interactive pi host that starts its own A2A
+  server and registers with every configured gateway, and an overnight job
+  delegating to workers multiplied into a gateway `429` registration storm
+  (12+ concurrent registrations, one port-climbing peer each). An explicit
+  `runner:"herdr"` pin in a job prompt still degrades safely: pi-subagent
+  returns an sdk-runner error the agent proceeds on. Interactive sessions are
+  unaffected — `HERDR_ENV` only stops propagating into cron's headless
+  children.
+
 ## 0.3.1
 
 - `cron.timeoutMs` setting — the headless (pinned-job) child run cap is now configurable instead of hardwired at 10min (clamped 1min–24h, default unchanged). A pinned nightly review job was getting SIGTERM'd at exactly 10min (exit 143, empty log) because reviewing/upgrading a 30-package monorepo can't finish in 10 minutes. Set e.g. `{ "cron": { "timeoutMs": 10800000 } }` for a 3h leash.

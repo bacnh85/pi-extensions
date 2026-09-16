@@ -457,6 +457,21 @@ describe("guards and rendering", () => {
     assert.equal(childEnv().PI_CRON_DISABLED, "1");
   });
 
+  it("childEnv strips HERDR_ENV: headless children must never auto-pick the herdr subagent runner", () => {
+    // each herdr pane is a full pi host (A2A server + gateway registration);
+    // an overnight job spawning panes multiplied into a 429 registration storm
+    const prev = process.env.HERDR_ENV;
+    process.env.HERDR_ENV = "1";
+    try {
+      const env = childEnv();
+      assert.equal(env.HERDR_ENV, undefined);
+      assert.equal(env.PI_CRON_DISABLED, "1");
+    } finally {
+      if (prev === undefined) delete process.env.HERDR_ENV;
+      else process.env.HERDR_ENV = prev;
+    }
+  });
+
   it("runHeadless: captures output, logs it, delivers result, arms guard", async () => {
     const logsDir = join(tmpAgentDir(), "logs");
     const state = { lastFireArmAt: 0 };
