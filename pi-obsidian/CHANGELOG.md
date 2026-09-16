@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **SMB/NFS vaults: write verification no longer false-fails after writes.**
+  Obsidian 1.13.x drops eval echoes when the async body does real I/O, and
+  network mounts delay read-back propagation, so the old in-eval verify
+  (`adapter.read` + hash inside the eval) saw empty output and reported
+  create/write/append/prepend as failed even though the note was written.
+  Verification now reads the note back through the CLI (`obsidian read`)
+  and hashes it in Node.js, with up to 3 attempts (500 ms apart) to ride out
+  propagation delays. Notes ending in a trailing newline verify byte-exact
+  (the CLI printer's added newline is inverted instead of stripped), missing
+  files produce an actionable error, and `create` on an existing file fails
+  fast with a clear message.
+
 ## 0.8.14 (2026-08-17)
 
 ### Fixed
