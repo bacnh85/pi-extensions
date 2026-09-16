@@ -11,7 +11,7 @@ import * as path from "node:path";
 
 import { DEFAULTS } from "./helpers";
 import { makeTempDir } from "./tmp";
-import { GatewayUpstream, isSelfEntry, mergeGatewayPeers } from "../lib/gateway";
+import { GatewayUpstream, backoffDelayMs, isSelfEntry, mergeGatewayPeers } from "../lib/gateway";
 import { resolvePeer, setGatewayPeers, getGatewayPeers, updateGatewayPeers, type Peer } from "../lib/config";
 import { a2aCall, metrics } from "../lib/client";
 
@@ -35,10 +35,11 @@ function merge(
   });
 }
 
-function makeResp(body: any, status: number): any {
+function makeResp(body: any, status: number, headers?: Headers): any {
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: headers ?? new Headers(),
     json: async () => body,
     text: async () => JSON.stringify(body),
   };
@@ -163,6 +164,99 @@ describe("gateway peer discovery", () => {
     it("drops malformed entries and tolerates a non-array peers field", () => {
       assert.deepEqual(merge([{ url: "/peer/x/" }, { name: "a/b", url: "/x" }, { name: "no-url" }, null]), {});
       assert.deepEqual(merge("not-an-array" as any), {});
+    });
+  });
+
+  describe("register backoff (429 / rate-limit)", () => {
+    const savedFetch = globalThis.fetch;
+    afterEach(() => {
+      globalThis.fetch = savedFetch as any;
+    });
+
+    it("backoffDelayMs: exponential growth, 5-min cap, jitter bounds, Retry-After wins when larger", () => {
+      for (let fails = 1; fails <= 4; fails++) {
+        const base = Math.min(300_000, 60_000 * 2 ** (fails - 1));
+        const d = backoffDelayMs(fails, 60_000, null);
+        assert.isAtLeast(d, Math.floor(base * 0.8));
+        assert.isAtMost(d, Math.ceil(base * 1.2));
+      }
+      // Deep failure chain clamps at the 5-min cap (±jitter).
+      assert.isAtMost(backoffDelayMs(50, 60_000, null), Math.ceil(300_000 * 1.2));
+      assert.isAtLeast(backoffDelayMs(50, 60_000, null), Math.floor(300_000 * 0.8));
+      // Retry-After only wins when larger than the jittered exponential (48–72s here).
+      assert.equal(backoffDelayMs(1, 60_000, 90), 90_000);
+      const ignored = backoffDelayMs(1, 60_000, -5); // non-positive Retry-After ignored
+      assert.isAtLeast(ignored, 48_000);
+      assert.isAtMost(ignored, 72_000);
+      // A buggy/hostile Retry-After (10 days) is capped — it must not suppress
+      // re-registration indefinitely.
+      assert.equal(backoffDelayMs(1, 60_000, 86_400), 300_000);
+    });
+
+    it("a failed register schedules a backoff; a later success resets it", async () => {
+      let status = 429;
+      globalThis.fetch = (async (url: any) => {
+        const u = String(url);
+        if (u.endsWith("/register")) return makeResp({}, status);
+        return makeResp({ peers: [] }, 200);
+      }) as any;
+      const gw = new GatewayUpstream(
+        { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60, key: "k1", channel: false },
+        () => ({}),
+        () => {},
+        () => {},
+      );
+      assert.isFalse(await gw.register("http://127.0.0.1:9911"));
+      assert.equal(gw["beatFails"], 1);
+      assert.isTrue(gw["backoffUntil"] > Date.now());
+      assert.isFalse(await gw.register("http://127.0.0.1:9911"));
+      assert.equal(gw["beatFails"], 2);
+      status = 200;
+      assert.isTrue(await gw.register("http://127.0.0.1:9911"));
+      assert.equal(gw["beatFails"], 0);
+      assert.equal(gw["backoffUntil"], 0);
+    });
+
+    it("Retry-After header (seconds) extends the backoff", async () => {
+      globalThis.fetch = (async (url: any) => {
+        const u = String(url);
+        if (u.endsWith("/register")) return makeResp({}, 429, new Headers({ "retry-after": "90" }));
+        return makeResp({ peers: [] }, 200);
+      }) as any;
+      const gw = new GatewayUpstream(
+        { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60, key: "k1", channel: false },
+        () => ({}),
+        () => {},
+        () => {},
+      );
+      assert.isFalse(await gw.register("http://127.0.0.1:9911"));
+      // jittered exponential is 48–72s; the header must push it to ~90s
+      assert.isAtLeast(gw["backoffUntil"], Date.now() + 89_000);
+    });
+
+    it("heartbeat (maybeBeat) skips while backed off, retries exactly once after it lapses", async () => {
+      const status = 429;
+      let registerCalls = 0;
+      globalThis.fetch = (async (url: any) => {
+        const u = String(url);
+        if (u.endsWith("/register")) {
+          registerCalls += 1;
+          return makeResp({}, status);
+        }
+        return makeResp({ peers: [] }, 200);
+      }) as any;
+      const gw = new GatewayUpstream(
+        { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60, key: "k1", channel: false },
+        () => ({}),
+        () => {},
+        () => {},
+      );
+      assert.isFalse(await gw.register("http://127.0.0.1:9911")); // registerCalls: 1, backoff armed
+      await gw["maybeBeat"]("http://127.0.0.1:9911"); // inside the backoff window → skipped
+      assert.equal(registerCalls, 1, "beat must not hit /register while backed off");
+      gw["backoffUntil"] = Date.now() - 1; // lapse
+      await gw["maybeBeat"]("http://127.0.0.1:9911");
+      assert.equal(registerCalls, 2, "exactly one retry after the backoff lapses");
     });
   });
 

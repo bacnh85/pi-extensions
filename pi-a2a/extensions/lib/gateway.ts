@@ -55,6 +55,34 @@ export interface GatewayConfig {
 
 const DEREG_TIMEOUT_MS = 1500; // best-effort DELETE; stale entries decay via gateway health probing
 
+const MAX_BACKOFF_MS = 300_000; // heartbeat backoff cap: a healed gateway is re-registered within ≤5 min
+
+/** Numeric `Retry-After` seconds from a response header (null when absent/non-numeric). */
+function retryAfterSeconds(v: string | null): number | null {
+  if (!v) return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Heartbeat backoff for failed registers: baseMs · 2^(fails−1), capped at
+ *  5 min, ±20% jitter; a numeric Retry-After header wins when larger but is
+ *  capped at MAX_BACKOFF_MS too — a buggy or hostile gateway value must not
+ *  suppress re-registration indefinitely. The gateway rate-limits /register
+ *  per client IP with a fixed window that counts rejected requests, so
+ *  fixed-cadence retries keep that budget saturated (livelock) — backing off
+ *  lets it drain. Pure; exported for tests. */
+export function backoffDelayMs(
+  fails: number,
+  baseMs: number,
+  retryAfterSec?: number | null,
+): number {
+  const exp = Math.max(0, fails - 1);
+  let delay = Math.min(MAX_BACKOFF_MS, baseMs * 2 ** exp) * (0.8 + Math.random() * 0.4);
+  const retryMs = Math.min(MAX_BACKOFF_MS, (retryAfterSec ?? 0) * 1000);
+  if (retryMs > delay) delay = retryMs;
+  return Math.round(delay);
+}
+
 // ---------------------------------------------------------------------------
 // Peer directory merge (pure — no I/O, no global state)
 // ---------------------------------------------------------------------------
@@ -362,8 +390,27 @@ export class GatewayUpstream {
    *  bad URL) would repeat every beat — log on change only; reset on
    *  success so a recovered-then-broken gateway re-logs immediately. */
   private lastFailLabel: string | null = null;
+  /** Consecutive failed registers + the wall-clock instant the next beat is
+   *  allowed at (0 = now). The heartbeat timer skips while backed off. */
+  private beatFails = 0;
+  private backoffUntil = 0;
 
-  private logFailure(label: string): void {
+  /** Failure handling shared by every register() exit: schedule exponential
+   *  backoff for the heartbeat, then log (deduped on the failure label, so
+   *  the growing delay doesn't defeat the dedup — it's shown on first emit). */
+  private noteFailure(label: string, res: Response | null): void {
+    const baseMs = Math.max(15, this.cfg.heartbeatSec ?? 60) * 1000;
+    const delay = backoffDelayMs(
+      this.beatFails + 1,
+      baseMs,
+      retryAfterSeconds(res?.headers.get("retry-after") ?? null),
+    );
+    this.beatFails += 1;
+    this.backoffUntil = Date.now() + delay;
+    this.logFailure(label, ` — backing off ${Math.round(delay / 1000)}s`);
+  }
+
+  private logFailure(label: string, suffix = ""): void {
     if (label === this.lastFailLabel) return;
     this.lastFailLabel = label;
     // darwin only: on Linux EHOSTUNREACH is genuine routing, but on macOS it
@@ -374,7 +421,7 @@ export class GatewayUpstream {
       process.platform === "darwin" && label.includes("EHOSTUNREACH")
         ? " — likely macOS Local Network privacy blocking this binary. Fix: System Settings → Privacy & Security → Local Network → allow the hosting app (Terminal/herdr). Apple-signed curl works, masking the cause"
         : "";
-    this.log(`[a2a-gateway:${this.label}] register failed: ${label}${hint}`);
+    this.log(`[a2a-gateway:${this.label}] register failed: ${label}${suffix}${hint}`);
   }
 
   /** POST /register with our current card. Idempotent: gateway updates in place.
@@ -399,7 +446,7 @@ export class GatewayUpstream {
       ({ res, err } = await this.send("PATCH", "/register", this.callerToken, body));
       if (at !== this.epoch) return false; // stop() raced us — registration is dead
       if (!res) {
-        this.logFailure(this.failLabel(res, err));
+        this.noteFailure(this.failLabel(res, err), res);
         return false;
       }
       if (res.status === 405) {
@@ -415,7 +462,7 @@ export class GatewayUpstream {
         } else {
           // 403 (revoked peer) / 409 etc.: a shared-token POST is not a valid
           // rescue for this admission state — fail the beat.
-          this.logFailure(String(res.status));
+          this.noteFailure(String(res.status), res);
           return false;
         }
       }
@@ -442,10 +489,12 @@ export class GatewayUpstream {
         }
         return this.register(url);
       }
-      this.logFailure(this.failLabel(res, err));
+      this.noteFailure(this.failLabel(res, err), res);
       return false;
     }
     this.lastFailLabel = null; // recovered — a later failure re-logs immediately
+    this.beatFails = 0;
+    this.backoffUntil = 0;
     try {
       const j = (await res.clone?.().json?.().catch?.(() => null)) ?? (await res.json().catch(() => null));
       this.lastState = String(j?.state ?? "");
@@ -520,13 +569,14 @@ export class GatewayUpstream {
   async start(url: string): Promise<boolean> {
     this.onPeers({});
     this.wasRegistered = false;
+    this.beatFails = 0;
+    this.backoffUntil = 0;
     const ok = await this.register(url);
     if (ok) this.openChannel(url);
     if (!this.timer) {
       const intervalMs = Math.max(15, this.cfg.heartbeatSec ?? 60) * 1000;
       this.timer = setInterval(() => {
-        if (this.stopped) return;
-        void this.beat(url);
+        void this.maybeBeat(url);
       }, intervalMs);
       this.timer.unref?.();
     }
@@ -535,7 +585,13 @@ export class GatewayUpstream {
 
   /** One heartbeat beat — the timer's unit of work. Never throws (a beat
    *  error must not surface as an unhandled rejection); opens the reverse
-   *  channel on the first successful register after a failed start. */
+   *  channel on the first successful register after a failed start. Skipped
+   *  entirely while stopped or backed off. */
+  private async maybeBeat(url: string): Promise<void> {
+    if (this.stopped || Date.now() < this.backoffUntil) return;
+    await this.beat(url);
+  }
+
   private async beat(url: string): Promise<void> {
     let ok = false;
     try {

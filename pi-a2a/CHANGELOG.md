@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- **Failed gateway registers now back off exponentially instead of retrying at
+  a fixed cadence.** The a2a-switchboard rate-limits `/register` per client IP
+  (20 req/60s fixed window counting rejected requests), so N sessions blindly
+  PATCHing every 60s keep that budget saturated forever — livelock — and every
+  new session's first register fails with `register failed: 429`. Consecutive
+  failures now back off (base heartbeat · 2^(fails−1), ±20% jitter, capped at
+  5 min; a numeric `Retry-After` header wins when larger, capped at the same
+  5-min ceiling so a buggy/hostile value can't suppress registration), the
+  heartbeat timer skips while backed off, and success resets the chain. The
+  backoff delay is shown once per failure label
+  (`register failed: 429 — backing off 240s`).
 - **Gateway registration self-heals after a failed first register.**
   `GatewayUpstream.start()` armed the heartbeat timer only when the initial
   registration succeeded, so a transient failure at session start (gateway
