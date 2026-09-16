@@ -1,5 +1,100 @@
 # Changelog
 
+## 0.5.0 (2026-09-16)
+
+### Added
+
+- **Step 1.5 — Derive a direction** in the ux-design skill: the positive
+  counterpart to the guardrail. From the brief's subject material, commit —
+  before any markup — to mood adjectives, a one-line visual concept, a type
+  voice, a color mood (hex), and exactly one signature element. Test for a
+  real direction: two different designers following it must produce visibly
+  different pages. Replaces the passive generic-default check.
+- **Direction playbook** (injected, ux-design): the positive layer the skill
+  previously lacked. Typography-voice pairing table (editorial → Newsreader +
+  Source Sans 3, ledger → Spline Sans pair, technical → IBM Plex pair, warm
+  consumer → DM Sans, …) with off-table alternatives; color-mood construction
+  (temperature first, every neutral tinted, committed accent posture, band
+  rhythm); composition anatomy (hierarchy by scale/weight/color, hero formula,
+  rows-over-card-grids, shaped whitespace, depth via composition); the
+  signature element how-to; default-vs-directed contrast snippets.
+- **Step 4 render-inspect is REQUIRED in strict mode** for multimodal models,
+  with a concrete LOOK checklist (squint test, dead zones, monotony, timidity
+  — "cover the logo, could this page belong to anyone?", type sizes, mood
+  visibility) instead of the previous "fix what regex gates can't see".
+- **Style-direction starters** in ux-presets (Option B+): S1 Editorial print
+  (Newsreader + Source Sans 3, paper/ink/oxblood), S2 Ledger (Spline Sans
+  pair, desk/rule/tabular-nums, stamp badges), S3 Warm consumer (DM Sans,
+  linen/basil, category spines, freshness badges). All color pairs verified
+  against the shipped APCA implementation (Lc ≥75 body, ≥60 small-bold
+  badges). B1/B2 remain as neutral fallbacks.
+- **`ux-routing` skill** — the model-routing table moved out of the injected
+  body into a consult-when-delegating reference skill (offsets the added
+  injection weight; routing prose was irrelevant to most non-delegating
+  turns).
+- **`bench/` design-quality harness**: three fixed briefs (landing page,
+  dashboard, mobile screen), `run.sh` (headless pi run with pinned model +
+  screenshot capture at desktop/mobile widths), and a fixed six-axis rubric
+  (hierarchy, composition, typography, color/mood, copy, feel). Results are
+  gitignored; see bench/README section in the main README.
+- **ux-capture: layout probe + viewport-truth section.** Headless Chrome
+  clamps window width to 500px, so a `--window-size=390` capture renders at
+  500 and crops the PNG — right-edge "cuts" that aren't in your CSS. The
+  skill now documents the clamp and prescribes a 390×844 iframe-wrapper probe
+  (an iframe is a true 390px CSS viewport) that measures
+  `scrollWidth`/viewport honestly on the delivered file. Capturing mobile via
+  the wrapper is also required: never widen a viewport to make a problem
+  invisible.
+- **ux-capture: capture with entrance animations disabled**
+  (`--force-prefers-reduced-motion`). Staggered page-load reveals with
+  `opacity:0` backwards-fill screenshot as blank sections otherwise — the
+  forced query doubles as a reduced-motion audit (every section must remain
+  fully readable with animations off).
+- **ux-design LOOK checklist** is now pinned to the brief's target viewport,
+  with an explicit dead-zone check for app screens (content must not leave a
+  large empty region below the last element at the target height).
+- **Polish pass (critic-driven):** a glm-5.3-flash calibration review against
+  a reference-grade page named five half-point gaps; each became a rule in
+  the Direction playbook — display scale floor (h1 ≥ clamp(2.75rem, 7vw,
+  6.75rem), 3–4× body), signature elements at composition scale (≥25vw,
+  edge-bleeding, reduced contrast), a three-surface color budget (header
+  inherits the base), repeating rows as fixed column grids with a shared
+  terminal axis, and a 2–3-mark "punctuation kit" (accent H1 terminal,
+  framed pull quotes, stamps, texture glyphs — placeholder monograms banned).
+
+### Changed
+
+- Step 0 rung 4 reframed: a preset is a **floor, not an identity** — after
+  dropping one in, the direction step must still bend display face, neutrals,
+  and accent until the page could not be mistaken for the stock preset.
+- Step 5 gate table now lists exactly what `ux_audit` implements (contrast /
+  tokens / states+motion / slop tells); the unimplemented rows (token
+  coverage, shadow recipes, component hygiene) are documented as model-side
+  checks instead of implying mechanical enforcement.
+- ux_audit tool description fixed: "block handoff until this fails to pass"
+  → "handoff is blocked until this passes".
+
+### Why
+
+Field benchmarking (`bench/`, glm-5.3-flash, three briefs, fixed rubric —
+hierarchy / composition / typography / color-mood / copy / feel, 1–5 each)
+showed the 0.4.x skill produced correct-but-forgettable pages: ~70% of the
+injected guidance was prohibitions, so the model played safe (uniform
+sections, no signature, cream-clay/broadsheet cliché drift on landing pages).
+Discipline without direction is half the method; 0.5.0 ships the other half.
+
+**Measured:** baseline 0.4.7 = 60.5/90 → 0.5.0 = 79.5/90 (+19); after the
+critic-driven polish pass, **landing = 29.5 and 29 on two consecutive runs
+(goal ≥29)**, run total 84/90, and three new case types (portfolio, pricing,
+settings-form) scored 28–28.5 on first try — all 15 scored pages pass
+`ux_audit`, and a non-UI task with pi-ux active shows zero derailment.
+Winning directions each run were distinct and subject-grounded (alpine
+expedition log with route-card signature; white/ink/vermilion with an
+elevation-profile card; forest-green badge-stamp identity; ink-ledger
+dashboard with OVERDUE stamps; grocer's stock-card mobile screen; printed
+monograph portfolio). Per-run evidence in `bench/results/*/SCORES.md`
+(gitignored; scores reproduced here).
+
 ## 0.4.7 (2026-09-12)
 
 ### Fixed

@@ -3,11 +3,12 @@ name: ux-presets
 description: >
   Reference design-system presets for ux-design. Anti-slop shortcuts: instead of
   inventing tokens, elevation, and state contracts from scratch, reuse one of
-  these battle-tested systems (shadcn/ui, Material 3, Radix) or drop in a
-  medium-tuned DESIGN.md starter (Web or Mobile) as the implicit system when no
-  DESIGN.md exists. Use when starting a new UI project with no existing design
-  system, when Step 0 (Own the system) of the ux-design method has nothing to
-  reuse, or when asked for a starter token set. These are REFERENCES only —
+  these battle-tested systems (shadcn/ui, Material 3, Radix), drop in a
+  medium-tuned DESIGN.md starter (Web or Mobile), or adopt a style-direction
+  starter (Editorial print, Ledger, Warm consumer) that already carries a point
+  of view. Use when starting a new UI project with no existing design system,
+  when Step 0 (Own the system) of the ux-design method has nothing to reuse,
+  or when asked for a starter token set. These are REFERENCES only —
   pi-ux never bundles CSS.
 argument-hint: ""
 license: MIT
@@ -172,7 +173,6 @@ Map EVERY shadow to a named level — never invent blur/opacity per component:
 ```
 
 ### B2 — Mobile preset (touch-first, native / RN / mobile web)
-
 ```markdown
 ---
 name: Mobile Baseline
@@ -275,6 +275,130 @@ is nearer than the page — keep it that way.
 - iOS vs Android: follow the host platform — iOS HIG (SF symbols, larger corner radius, sheet) vs Material 3 (FAB, ripple, top app bar).
 ```
 
+## Option B+ — style-direction starters (a floor WITH a point of view)
+
+B1/B2 are deliberately neutral — they pass the gates but carry no identity, and
+a project that keeps them untouched ships the "correct but forgettable" page.
+The three starters below pair the same gate-hardened token structure with a
+**subject material and type voice**, so Step 1.5 starts from a direction
+instead of a blank. Pick the one whose material matches the brief; then still
+bend it (Step 1.5): swap the accent to the subject's world, adjust the mood
+adjectives, and commit a signature element of your own. All pairs below were
+verified against the APCA ladder (Lc ≥75 body · ≥45 large · ≥60 small-bold
+badges).
+
+### S1 — Editorial print (journal, heritage brand, long-form, portfolio)
+
+Material: the printed page — warm paper, ink, hairline rules. Near-square
+corners; separation by rules and whitespace, elevation almost never. Display
+**Newsreader** (500–600, tight leading) over **Source Sans 3** body.
+
+```yaml
+name: Editorial Print
+colors:
+  bg: "#F6F2E9"          # warm paper
+  surface: "#EEE8DA"     # shaded paper band
+  text: "#20241F"        # ink
+  text-muted: "#565B50"
+  accent: "#7D2B25"      # oxblood — links, rules, stamps
+  accent-hover: "#67241E"
+  border: "#DBD3C2"      # hairline
+  danger: "#9B2C20"
+typography:
+  body:   { fontFamily: "Source Sans 3", fontSize: 1.0625rem, lineHeight: 1.65 }
+  h1:     { fontFamily: Newsreader, fontSize: 3rem, fontWeight: 600, lineHeight: 1.1 }
+  h2:     { fontFamily: Newsreader, fontSize: 2.1rem, fontWeight: 600 }
+  label:  { fontFamily: "Source Sans 3", fontSize: 0.85rem, fontWeight: 600 }
+rounded:  { sm: 2px, md: 2px, lg: 3px }   # print is square
+components:
+  ruled-row:   { borderTop: "1.5px solid {colors.text}", padding: "{spacing.md} 0" }
+  link:        { color: "{colors.accent}", textDecorationThickness: "1px" }
+  button-quiet: { border: "1.5px solid {colors.text}", color: "{colors.text}", rounded: "{rounded.sm}" }
+  stamp:       { color: "{colors.accent}", border: "2px solid {colors.accent}", transform: "rotate(-2deg)" }
+```
+
+Do: rules over shadows (border hierarchy); generous margins around display
+type; numerals and folios as design objects. Don't: shadows bigger than
+`--elev-sm`; rounded-2xl softness; dark mode (this system IS paper).
+
+### S2 — Ledger (finance, invoicing, dense data, legal, ops dashboards)
+
+Material: the accountant's desk — desk paper, cards, ruled columns, stamps.
+Every numeral in the mono face with `font-variant-numeric: tabular-nums`.
+Display **Spline Sans** + **Spline Sans Mono** for all data.
+
+```yaml
+name: Ledger
+colors:
+  bg: "#F3F1EA"          # desk
+  surface: "#FCFBF7"     # card
+  text: "#1C211E"        # ink
+  text-muted: "#5B625D"
+  accent: "#1E6B50"      # ledger green — buttons, positive
+  accent-text: "#17573F" # green as TEXT on desk/card (Lc 79-81)
+  accent-hover: "#155640"
+  danger: "#B0362A"      # stamp text on #F4E3E0 (small-bold ≥600)
+  warning: "#8A6210"     # stamp text on #F2EAD4 (small-bold ≥600)
+  border: "#E0DDD2"
+  rule: "#1C211E"        # 1.5px structural rules — the branding
+typography:
+  body:   { fontFamily: "Spline Sans", fontSize: 0.9rem, lineHeight: 1.5 }
+  data:   { fontFamily: "Spline Sans Mono", fontWeight: 500, fontVariantNumeric: tabular-nums }
+  h1:     { fontFamily: "Spline Sans", fontSize: 1.5rem, fontWeight: 700, letterSpacing: "-0.015em" }
+  label:  { fontFamily: "Spline Sans Mono", fontSize: 0.6875rem, fontWeight: 500, letterSpacing: "0.08em", textTransform: uppercase }
+rounded:  { sm: 3px, md: 6px, lg: 8px }
+components:
+  panel:        { backgroundColor: "{colors.surface}", border: "1.5px solid {colors.rule}", rounded: "{rounded.md}" }
+  kpi-value:    { font: "{typography.data}", fontSize: 1.6875rem, fontWeight: 600 }
+  status-paid:  { color: "{colors.accent-text}", backgroundColor: "#E2EEE7", fontWeight: 700, fontSize: "0.65rem" }
+  status-overdue: { color: "{colors.danger}", backgroundColor: "#F4E3E0", fontWeight: 700, fontSize: "0.65rem", transform: "rotate(-2deg)" }
+  table-head:   { font: "{typography.label}", borderBottom: "1.5px solid {colors.rule}" }
+```
+
+Do: structural 1.5px rules; status badges as stamps (soft bg + dark text);
+KPI strip as one ruled panel, not four floating cards. Don't: pastel
+dashboards with soft shadows everywhere; chart fills lighter than 3:1 against
+the track; intercom-blue accents.
+
+### S3 — Warm consumer (food, home, family, habits, kitchen/bath apps)
+
+Material: warm kitchen linen. Chunky friendly radii, one deep green spine,
+freshness told in color (fresh/expiring/expired), oversized action. Display
+**DM Sans** 700–800.
+
+```yaml
+name: Warm Consumer
+colors:
+  bg: "#FAF6EE"          # linen
+  surface: "#FFFFFF"     # card
+  text: "#27302A"
+  text-muted: "#5C6457"  # passes on BOTH linen and white
+  accent: "#2F6B3C"      # basil — FAB, primary actions
+  accent-pressed: "#245430"
+  accent-soft: "#E5F0E2"
+  danger: "#A93222"      # expired badge text on #F8E3DD (bold)
+  warning: "#8A5D0B"     # expiring badge text on #F7ECD4 (bold)
+  border: "#EAE4D6"
+typography:
+  body:   { fontFamily: "DM Sans", fontSize: 1rem, lineHeight: 1.45 }
+  h1:     { fontFamily: "DM Sans", fontSize: 1.4375rem, fontWeight: 800, letterSpacing: "-0.02em" }
+  badge:  { fontFamily: "DM Sans", fontSize: 0.65625rem, fontWeight: 700, letterSpacing: "0.03em" }
+rounded:  { sm: 12px, md: 16px, lg: 22px }
+components:
+  list-row:    { backgroundColor: "{colors.surface}", border: "1.5px solid {colors.border}", rounded: "{rounded.md}", padding: "12px 14px" }
+  category-spine: { position: absolute, left: 0, width: 5px, backgroundColor: "{category-color}" }
+  fab:         { backgroundColor: "{colors.accent}", color: "#F2F7EE", rounded: 999px, padding: "16px 26px", fontWeight: 800 }
+  badge-soon:  { color: "{colors.warning}", backgroundColor: "#F7ECD4" }
+  badge-expired: { color: "{colors.danger}", backgroundColor: "#F8E3DD" }
+```
+
+Do: category color spines (5px, left edge); FAB as the page's one loud
+element; header bands in the accent color. Don't: neon or candy gradients;
+hover-only feedback (touch medium — use B2's tap rules); body below 16px.
+
+Mobile adaptation: any S-starter keeps its palette/type and takes B2's
+mechanics (44pt targets, `:active` states, safe areas, thumb zone).
+
 ## Option C — minimal `:root` token set (CSS-only, no DESIGN.md)
 
 For CSS-only projects that do not adopt DESIGN.md, drop this compact baseline
@@ -330,10 +454,12 @@ into the project's `:root`. It satisfies the token + elevation + state gates of
 
 1. Run **Step 0** of ux-design. If the project already has a DESIGN.md / tokens / elevation / states → use them.
 2. If not, pick **Option A** — reuse an installed system (shadcn/Material/Radix) when the stack matches, OR pull a named style (Claymorphism, Brutalism, …) from the design.md library. Both reuse-before-invent; both still must pass `ux_audit`.
-3. Otherwise pick **Option B** — infer the medium (Web B1 vs Mobile B2) from the task, use the starter in-context as the implicit system, and keep generating. Only ASK if web-vs-mobile is unclear.
+3. Otherwise pick **Option B** — infer the medium (Web B1 vs Mobile B2) from the task, use the starter in-context as the implicit system, and keep generating. Only ASK if web-vs-mobile is unclear. When the subject's material clearly matches a style-direction starter (**S1 Editorial print / S2 Ledger / S3 Warm consumer**), prefer it over the neutral B-starter — it hands Step 1.5 a direction for free.
 4. Only for CSS-only projects that won't adopt DESIGN.md, use **Option C** (`:root` block).
 5. Generate screens with any text-only model (DeepSeek-v4 / GLM-5.2 / Kimi K3) INSIDE these constraints.
 6. Run `ux_audit` with the CSS + the most common text colour pairs before handoff.
+
+**Floors, not identities:** whichever starter you pick, Step 1.5 of ux-design still bends it — accent toward the subject's world, mood adjectives committed, one signature element named. The finished page must not be recognisable as the stock starter.
 
 ## Audit-ready pairs
 
@@ -354,3 +480,4 @@ into the project's `:root`. It satisfies the token + elevation + state gates of
 - Not a CSS framework — reference only. Don't bundle it; copy what you need.
 - Not themeable at runtime — it's a baseline to extend, not a product.
 - Not opinionated about the accent — `accent` / `{colors.accent}` is the ONE knob you turn for brand.
+- Not an identity — even the S-starters are floors. A finished page that looks exactly like its starter means Step 1.5 was skipped.

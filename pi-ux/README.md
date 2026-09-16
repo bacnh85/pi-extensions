@@ -1,10 +1,10 @@
 # pi-ux
 
-Anti-slop UI/UX design discipline for the [Pi coding agent](https://pi.dev). Anchors a lintable **DESIGN.md**, runs **deterministic** slop-audit gates (APCA contrast + tokens + states + slop tells), and works **with text-only models** (DeepSeek-v4, GLM-5.2, Kimi K3) — `agy`/Gemini/Claude is optional polish, never the review gate.
+Anti-slop UI/UX design discipline for the [Pi coding agent](https://pi.dev). Anchors a lintable **DESIGN.md**, **derives a design direction** (mood, type voice, color mood, signature element) from the subject, runs **deterministic** slop-audit gates (APCA contrast + tokens + states + slop tells), and works **with text-only models** (DeepSeek-v4, GLM-5.2, Kimi K3) — `agy`/Gemini/Claude is optional polish, never the review gate.
 
 ## Why
 
-AI-generated UI converges on the same defaults — purple/indigo glow, shadow-heavy cards, missing focus/disabled/error states — because under vague direction, models reach for high-frequency statistical patterns. Slop is an **ownership problem**: "the design has no owner at the system level." The fix is shift-left: own the system in a DESIGN.md, then gate deterministically.
+AI-generated UI fails in two directions. Without discipline it converges on slop — purple/indigo glow, shadow-heavy cards, missing focus/disabled/error states. Without direction it converges on the *correct but forgettable* default — Inter, a blue accent, white cards, timid sizes — which passes every lint and still has no feel, because under vague direction models reach for high-frequency statistical patterns either way. The fix is both halves: **own the system** in a DESIGN.md, **derive a direction** from the subject, then gate deterministically.
 
 **Text-only models now lead frontend** (Kimi K3, an open MIT model, is #1 on the Arena.ai Frontend Code Arena, ahead of Claude Fable 5). Inside a fully-specified system they produce non-slop UI — which means the review gate can be mechanical, not a vision-LLM call.
 
@@ -45,14 +45,15 @@ The injected skill enforces **Constraint-First Design Generation**:
    ```bash
    npx @google/design.md lint DESIGN.md
    ```
-   If absent, reuse a preset (`ux-presets` skill: shadcn/Material/Radix) or scaffold one once. pi-ux orchestrates `@google/design.md` via shell-out — **not** a runtime dependency.
+   If absent, reuse a preset or style-direction starter (`ux-presets` skill: shadcn/Material/Radix; S1 Editorial print / S2 Ledger / S3 Warm consumer) or scaffold one once. Presets are floors, not identities. pi-ux orchestrates `@google/design.md` via shell-out — **not** a runtime dependency.
 1. **5-field brief per screen** — user job, inventory, token constraints, required states, one reference.
+1.5. **Derive a direction** — from the subject's material, commit to mood adjectives, a one-line visual concept, a type voice (pairing table), a color mood (hex), and one signature element — before any markup. The test: two different designers following the direction must produce visibly different pages.
 2. **Generate fast, converge early** — text-only models inside the locked system; 2-loop convergence trigger.
 3. **Normalise** the draft back into tokens/elevation/spacing.
-4. **Render & Inspect** (multimodal models) — reference-first capture, then screenshot your own build and LOOK. Default: local headless-Chrome capture read back inline (offline, no daemon); alternative: `web_screenshot` (pi-web 0.6.2+, PNG returned inline) at a daemon-reachable address (LAN IP / host.docker.internal — SSRF-protected daemons block private ranges; cloudflared tunnel as last resort). Judge at viewer resolution (1×–3×); never chase sub-visible precision. Skip when text-only — the deterministic gates are the whole loop.
+4. **Render & Inspect** (multimodal models; required in strict mode) — reference-first capture, then screenshot your own build and LOOK against a concrete checklist (squint test, dead zones, monotony, timidity, type, mood). Default: local headless-Chrome capture read back inline (offline, no daemon); alternative: `web_screenshot` (pi-web 0.6.2+, PNG returned inline) at a daemon-reachable address. Judge at viewer resolution (1×–3×); never chase sub-visible precision. Skip when text-only — the deterministic gates are the whole loop.
 5. **Slop-audit gate** — run `ux_audit` (measurable): APCA contrast, token coverage, state coverage, slop tells, tracked-eyebrow/near-black taste tells, reduced-motion coverage.
 
-Taste rules ship in the skill: named cliché clusters (the cream/terracotta "Claude look", acid-on-black, broadsheet kit, SaaS-card kit, template chrome), typography-as-personality, one-orchestrated-motion, design-writing rules, and the generic-default check ("would I produce this plan for any similar brief?").
+The **Direction playbook** ships in the skill as the positive layer: a typography-voice pairing table (editorial → Newsreader + Source Sans 3, ledger → Spline Sans pair, …), color-mood construction (temperature, tinted neutrals, committed accent posture, band rhythm), composition anatomy (hero formula, rows-over-card-grids, shaped whitespace), the signature element, and default-vs-directed contrast snippets. Taste rules add the named cliché clusters (the cream/terracotta "Claude look", acid-on-black, broadsheet kit, SaaS-card kit, template chrome), typography-as-personality, one-orchestrated-motion, and design-writing rules.
 
 ## The `ux_audit` tool
 
@@ -75,25 +76,18 @@ Returns pass/fail per gate + a formatted report. In `strict` mode this is the ga
 
 ## Model routing (deterministic-first)
 
-The skill tells the agent which model to use for each step. The gate is mechanical, not a vision-LLM call:
-
-| Step | Best tool/model |
-|------|-----------------|
-| Define system (DESIGN.md) | Reuse a preset OR `agy_execute mode=plan pro-high` (Gemini) **once** |
-| Lint system | `npx @google/design.md lint DESIGN.md` (shell-out) |
-| Per-screen brief | **GLM-5.2** (1M ctx) |
-| Generate variants | **DeepSeek-v4**, **GLM-5.2**, or **Kimi K3** (text-only, inside constraints) |
-| Normalise into system | **DeepSeek-v4** or **GLM-5.2** |
-| Slop audit | `ux_audit` tool (deterministic) + DESIGN.md lint |
-| Optional polish (never a gate) | `agy_execute mode=accept-edits sonnet` (Claude) |
-
-**The inversion rule:** the cheaper/weaker the model, the MORE you must externalise constraints. **The deterministic-first principle:** don't spend vision-model quota on what `ux_audit` computes for free.
+The full who-does-what table lives in the **`ux-routing`** skill (not injected — consulted when delegating). The gate is mechanical, not a vision-LLM call. **The inversion rule:** the cheaper/weaker the model, the MORE you must externalise constraints. **The deterministic-first principle:** don't spend vision-model quota on what `ux_audit` computes for free.
 
 ## Skills
 
-- **`ux-design`** — the Constraint-First method + deterministic-first model routing (auto-injected by the hook when active).
-- **`ux-presets`** — reference design-system presets for Step 0: a lintable DESIGN.md starter, the shadcn/Material/Radix reuse table, and a CSS-only `:root` fallback. Reference only — no bundled CSS.
+- **`ux-design`** — the Constraint-First method + Direction playbook (auto-injected by the hook when active).
+- **`ux-presets`** — reference presets for Step 0: neutral Web/Mobile DESIGN.md starters, three style-direction starters (S1 Editorial print, S2 Ledger, S3 Warm consumer — APCA-verified pairs), the shadcn/Material/Radix reuse table, and a CSS-only `:root` fallback. Reference only — no bundled CSS.
 - **`ux-capture`** — the Step 4 render-and-inspect capture playbook: local headless-Chrome capture read inline vs daemon-rendered `web_screenshot`, LAN IP/host.docker.internal addressing, SSRF-blocked daemons, cloudflared tunnel as last resort.
+- **`ux-routing`** — the model-routing table for delegating design steps (Define/Generate/Inspect/Audit) across agy/Gemini, Claude, DeepSeek, GLM, Kimi. Not injected.
+
+## Benchmark
+
+`bench/` holds a design-quality harness: three fixed briefs (landing, dashboard, mobile), `run.sh` (headless `pi` run with the same model + screenshot capture), and a fixed scoring rubric. Used to measure output quality across pi-ux versions; results are gitignored.
 
 ## Configuration
 

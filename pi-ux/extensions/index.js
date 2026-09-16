@@ -170,7 +170,7 @@ export default function uxExtension(pi) {
     name: "ux_audit",
     label: "UX Slop Audit",
     description:
-      "Run deterministic slop-audit gates on CSS: APCA contrast (perceptual; WCAG sidecar), off-system token values (hardcoded hex / ad-hoc shadows), missing interaction states (:focus-visible / :disabled + prefers-reduced-motion), and named AI slop tells (glassmorphism, gradient orbs, neon glow, default-card, tracked-out eyebrows, tinted near-black). No model needed — all gates are computable. In strict mode, block handoff until this fails to pass. AUDIT THE COMPLETE STYLESHEET, not fragments. If no contrast pairs are supplied, they are auto-extracted from rules that declare both colour and background.",
+      "Run deterministic slop-audit gates on CSS: APCA contrast (perceptual; WCAG sidecar), off-system token values (hardcoded hex / ad-hoc shadows), missing interaction states (:focus-visible / :disabled + prefers-reduced-motion), and named AI slop tells (glassmorphism, gradient orbs, neon glow, default-card, tracked-out eyebrows, tinted near-black). No model needed — all gates are computable. In strict mode, handoff is blocked until this passes. AUDIT THE COMPLETE STYLESHEET, not fragments. If no contrast pairs are supplied, they are auto-extracted from rules that declare both colour and background.",
     promptSnippet: "Run deterministic UX slop-audit (APCA contrast + tokens + states + slop tells)",
     promptGuidelines: [
       "Contrast, token-coverage, and slop-tells are computable, not judgement — use this tool instead of eyeballing or calling a vision model.",
