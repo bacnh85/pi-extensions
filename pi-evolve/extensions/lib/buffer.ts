@@ -81,10 +81,6 @@ export class TrajectoryBuffer {
   }
 }
 
-// Known secret key names — matched as JSON/YAML/header keys (with a following
-// quote + delimiter), NOT as bare prose substrings, to avoid false positives.
-const SECRET_KEY_RE = /("(?:api[_-]?key|token|password|passwd|secret|credential[s]?|authorization)"\s*[:=]\s*"|"?(?:api[_-]?key|token|password|passwd|secret|credential[s]?)\s*[:=]\s*"?)/gi;
-
 /** Truncate + redact a tool input object into a ≤maxLen char digest string.
  *  Strips common secret patterns before stringifying. Never preserves raw values. */
 export function digestInput(input: unknown, maxLen = 200): string {
@@ -143,6 +139,5 @@ export function categorizeError(toolName: string, result: unknown): ErrorInfo | 
   return { category: "unknown", hint: "Previous tool call(s) had errors. Use simpler inputs." };
 }
 
-// keep SECRET_KEY_RE referenced for documentation; the inline regex in digestInput
-// is the active one. ponytail: extracted list mirrors the inline alternation.
-void SECRET_KEY_RE;
+// Known secret key names are matched INLINE in digestInput (single alternation);
+// there is deliberately no extracted named regex — see digestInput.

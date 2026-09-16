@@ -2,7 +2,7 @@
 
 Pi extension that shows subscription usage for the currently selected supported model provider.
 
- Supports OpenAI Codex (`openai-codex`) with live usage windows from ChatGPT's usage endpoint, OpenCode Go (`opencode-go`) with session cost tracking, and Z.ai GLM Coding Plan — both the international (`zai`) and China (`zai-coding-cn`, `open.bigmodel.cn`) endpoints — with quota monitoring. Also tracks Command Code (`commandcode`) 5-hour/weekly windows and monthly credit balance. Displays a subscription footer status after Pi's built-in status/token usage line.
+ Supports OpenAI Codex (`openai-codex`) with live usage windows from ChatGPT's usage endpoint, OpenCode Go (`opencode-go`) with session cost tracking, and Z.ai GLM Coding Plan — both the international (`zai`) and China (`zai-coding-cn`, `open.bigmodel.cn`) endpoints — with quota monitoring. Also tracks Router (pi-router, `router` provider) with response-speed tracking and optional OmniRoute quota windows, and Command Code (`commandcode`) 5-hour/weekly windows and monthly credit balance. Displays a subscription footer status after Pi's built-in status/token usage line.
 
 ## Install
 
@@ -49,6 +49,14 @@ The built-in `zai-coding-cn` provider targets the domestic BigModel endpoint (`o
 
 ```text
 (Z.ai (CN) key#1a2b3c4d) R:55%/2H W:80%/3D 42 tok/s
+```
+
+### Z.ai via Anthropic endpoint
+
+The `zai-anthropic` provider (registered by pi-model-tools, GLM through `api.z.ai/api/anthropic`) is tracked the same way — same api.z.ai quota monitor as the international `zai` provider, keyed by the auth.json `zai-anthropic` credential, labeled `Z.ai (Anthropic)`:
+
+```text
+(Z.ai (Anthropic) key#1a2b3c4d) R:55%/2H W:80%/3D 42 tok/s
 ```
 
 ### Router (pi-router — formerly 9router)

@@ -12,7 +12,7 @@ export function normalizePathConstraint(
   trimmed = trimmed.replaceAll("\\", "/");
   if (/^[a-zA-Z]:/.test(trimmed) && !path.isAbsolute(trimmed)) {
     throw new Error(
-      `Path constraint must be relative to the workspace: ${pathConstraint}`,
+      `Path constraint must be relative to the workspace: ${pathConstraint}. Use grep or find for paths outside the workspace, or pass a workspace-relative path.`,
     );
   }
 
@@ -21,7 +21,7 @@ export function normalizePathConstraint(
     if (relative === "") return null;
     if (relative.split("/").some(s => s === "..") || path.isAbsolute(relative)) {
       throw new Error(
-        `Path constraint must be relative to the workspace: ${pathConstraint}`,
+        `Path constraint must be relative to the workspace: ${pathConstraint}. Use grep or find for paths outside the workspace, or pass a workspace-relative path.`,
       );
     }
     trimmed = relative;
@@ -29,7 +29,7 @@ export function normalizePathConstraint(
 
   if (trimmed.split("/").some(s => s === "..")) {
     throw new Error(
-      `Path constraint must be relative to the workspace: ${pathConstraint}`,
+      `Path constraint must be relative to the workspace: ${pathConstraint}. Use grep or find for paths outside the workspace, or pass a workspace-relative path.`,
     );
   }
 

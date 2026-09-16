@@ -6,6 +6,7 @@ model: "@smart"
 thinking: high
 color: purple
 sandbox: read-only
+timeout: 10
 ---
 
 You are an independent senior code reviewer. Inspect the requested Git scope with read-only tools.

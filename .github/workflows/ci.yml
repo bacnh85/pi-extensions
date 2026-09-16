@@ -22,9 +22,14 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
       # Supply-chain guard (issue #16): every lockfile entry with a `resolved`
       # URL must carry an `integrity` hash — otherwise npm ci installs an
-      # unverifiable tarball. Runs before any package install.
+      # unverifiable tarball. Runs after checkout (it was originally placed
+      # before checkout and scanned an empty workspace, i.e. never ran).
       - name: Verify lockfile integrity coverage
         run: |
           python3 - <<'EOF'
@@ -39,9 +44,6 @@ jobs:
               sys.exit(1)
           print(f"All lockfile entries carry integrity hashes.")
           EOF
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
 
       - uses: dorny/paths-filter@9d7afb8d214ad99e78fbd4247752c4caed2b6e4c # v4.0.0
         id: filter
@@ -62,10 +64,8 @@ jobs:
             pi-sub: pi-sub/**
             pi-model-tools: pi-model-tools/**
             pi-obsidian: pi-obsidian/**
-            pi-windows-tools: pi-windows-tools/**
             pi-kicad: pi-kicad/**
             pi-router: pi-router/**
-            pi-chatgpt-web: pi-chatgpt-web/**
             pi-commandcode: pi-commandcode/**
             pi-ux: pi-ux/**
             pi-budget: pi-budget/**
@@ -79,6 +79,9 @@ jobs:
             pi-a2a: pi-a2a/**
             pi-config-panel: pi-config-panel/**
             pi-hub: pi-hub/**
+            pi-attachments: pi-attachments/**
+            pi-selfskills: pi-selfskills/**
+            pi-cron: pi-cron/**
 
       - name: Build matrix
         id: set-matrix
@@ -97,18 +100,16 @@ jobs:
               { pkg: 'pi-review', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-fff', cmd: 'npm ci && npm test' },
               { pkg: 'pi-notebooklm', cmd: 'npm ci && npm test' },
-              { pkg: 'pi-rtk', cmd: 'npm pack --dry-run' },
-              { pkg: 'pi-sub', cmd: 'npm pack --dry-run' },
+              { pkg: 'pi-rtk', cmd: 'npm test && npm pack --dry-run' },
+              { pkg: 'pi-sub', cmd: 'npm ci && npm test' },
               { pkg: 'pi-model-tools', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-obsidian', cmd: 'npm ci && npm test' },
-              { pkg: 'pi-windows-tools', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-router', cmd: 'npm ci && npm test && npm run typecheck' },
-              { pkg: 'pi-chatgpt-web', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-commandcode', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-kicad', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-ux', cmd: 'node --test extensions/test/*.test.js' },
               { pkg: 'pi-budget', cmd: 'node --test extensions/test/*.test.js' },
-              { pkg: 'pi-themes', cmd: 'npm pack --dry-run' },
+              { pkg: 'pi-themes', cmd: 'npm test' },
               { pkg: 'pi-init', cmd: 'node --test extensions/test/*.test.js' },
               { pkg: 'pi-permission', cmd: 'node --test extensions/test/*.test.js' },
               { pkg: 'pi-checkpoint', cmd: 'node --test extensions/test/*.test.js' },
@@ -118,6 +119,9 @@ jobs:
               { pkg: 'pi-a2a', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-config-panel', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-hub', cmd: 'node --test extensions/test/*.test.js' },
+              { pkg: 'pi-attachments', cmd: 'npm ci && npm test && npm run typecheck' },
+              { pkg: 'pi-selfskills', cmd: 'npm ci && npm test' },
+            { pkg: 'pi-cron', cmd: 'npm ci && npm test && npm run typecheck' },
             ];
 
             const selected = '${{ github.event_name }}' === 'workflow_dispatch'
@@ -127,9 +131,7 @@ jobs:
             const include = selected.map(p => ({
               package: p.pkg,
               'test-command': p.cmd,
-              runner: p.pkg === 'pi-windows-tools'
-                ? '"windows-latest"'
-                : '"ubuntu-latest"',
+              runner: '"ubuntu-latest"',
             }));
 
             core.setOutput('matrix', JSON.stringify({ include }));

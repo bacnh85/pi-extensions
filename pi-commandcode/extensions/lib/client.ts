@@ -55,8 +55,8 @@ const CONTEXT_OVERRIDES: { pattern: RegExp; contextWindow: number; maxTokens?: n
 // authoritative fallback. Source: https://commandcode.ai/docs/reference/cli/models
 // — the docs page embeds a caps:{text,vision,reasoning} registry (the same one
 // backing `cmd --list-models` and the `/model` picker).
-// ponytail: flat Record keyed by normalized id, not regex — 52 known models,
-// zero ordering pitfalls (vision/reasoning combos cluster across families in
+// ponytail: flat Record keyed by normalized id, not regex — zero ordering
+// pitfalls (vision/reasoning combos cluster across families in
 // ways that make regex fragile), and trivially diffable against the docs table.
 const CAPABILITIES: Record<string, { vision: boolean; reasoning: boolean }> = {
   "claude-fable-5": { vision: true, reasoning: true },
@@ -68,6 +68,8 @@ const CAPABILITIES: Record<string, { vision: boolean; reasoning: boolean }> = {
   "claude-sonnet-5": { vision: true, reasoning: true },
   "deepseek/deepseek-v4-flash": { vision: false, reasoning: true },
   "deepseek/deepseek-v4-pro": { vision: false, reasoning: true },
+  // V4.1 Flash is natively multimodal (unlike V4 Flash's bolted-on vision-exp).
+  "deepseek/deepseek-v4.1-flash": { vision: true, reasoning: true },
   "google/gemini-3.1-flash-lite": { vision: true, reasoning: true },
   "google/gemini-3.5-flash": { vision: true, reasoning: true },
   "google/gemini-3.5-flash-lite": { vision: true, reasoning: true },

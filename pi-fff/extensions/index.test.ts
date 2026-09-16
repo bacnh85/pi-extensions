@@ -395,6 +395,50 @@ describe("pi-fff tools", () => {
     await Promise.all([initializing, first, second]);
   });
 
+  it("fff-health awaits the shared in-flight finder instead of reporting not-initialized", async () => {
+    let createCount = 0;
+    let release!: () => void;
+    const scanning = new Promise<void>((resolve) => { release = resolve; });
+    const finder = fakeFinder({
+      waitForScan: () => scanning,
+      healthCheck: () => ({
+        ok: true,
+        value: {
+          version: "9.9.9",
+          git: { repositoryFound: true, workdir: "/repo" },
+          filePicker: { initialized: true, indexedFiles: 5 },
+          frecency: { initialized: false },
+          queryTracker: { initialized: false },
+        },
+      }),
+      getScanProgress: () => ({ ok: true, value: { isScanning: false, scannedFilesCount: 5 } }),
+    });
+    const runtime = harness(finder, undefined, {}, { create: () => { createCount++; return finder; } });
+    const initializing = runtime.started;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(createCount).to.equal(1);
+
+    const notes: string[] = [];
+    await runtime.commands.get("fff-health").handler("", { ui: { notify: (m: string) => notes.push(m) } });
+    expect(createCount).to.equal(1); // shared the in-flight promise — no second spawn
+    release();
+    await initializing;
+    expect(notes).to.have.lengthOf(1);
+    expect(notes[0]).to.contain("FFF v9.9.9");
+  });
+
+  it("fff-health reports initialization failure when re-create fails", async () => {
+    const finder = fakeFinder();
+    const runtime = harness(finder);
+    await runtime.started;
+    (FileFinder as any).create = () => ({ ok: false, error: "boom" });
+    finder.destroy();
+    const notes: string[] = [];
+    await runtime.commands.get("fff-health").handler("", { ui: { notify: (m: string) => notes.push(m) } });
+    expect(notes).to.deep.equal(["FFF initialization failed"]);
+  });
+
   it("reads CLI flags after Pi populates them and before registering tools", async () => {
     let createOptions: any;
     const finder = fakeFinder();
@@ -479,5 +523,34 @@ describe("pi-fff tools", () => {
     expect(result.details.truncation.truncated).to.equal(true);
     expect(text(result)).to.include("[Output truncated:");
     expect(result.details.truncation.outputLines).to.be.at.most(2000);
+  });
+});
+
+describe("before_agent_start search guidance", () => {
+  const PHRASE = "Search tools: ffgrep/fffind";
+
+  it("appends the ffgrep/fffind paragraph in default mode", async () => {
+    const { events, started } = harness(fakeFinder());
+    await started;
+    const handler = events.get("before_agent_start")![0];
+    const result = await handler({ systemPrompt: "BASE", systemPromptOptions: { selectedTools: ["ffgrep", "fffind"] } });
+    expect(result?.systemPrompt.startsWith("BASE")).to.equal(true);
+    expect(result?.systemPrompt).to.include(PHRASE);
+  });
+
+  it("returns undefined when the fff tools are not active", async () => {
+    const { events, started } = harness(fakeFinder());
+    await started;
+    const handler = events.get("before_agent_start")![0];
+    const result = await handler({ systemPrompt: "BASE", systemPromptOptions: { selectedTools: ["read", "bash"] } });
+    expect(result).to.equal(undefined);
+  });
+
+  it("returns undefined in override mode even with ffgrep listed", async () => {
+    const { events, started } = harness(fakeFinder(), "override");
+    await started;
+    const handler = events.get("before_agent_start")![0];
+    const result = await handler({ systemPrompt: "BASE", systemPromptOptions: { selectedTools: ["ffgrep"] } });
+    expect(result).to.equal(undefined);
   });
 });

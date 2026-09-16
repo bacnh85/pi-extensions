@@ -260,8 +260,9 @@ test("PI_UX_HIDE_STATUS hides the indicator but keeps ux active", async () => wi
 
 // --- helpers ---
 
-test("parseUxCommand falls back to strict when invoked bare and default is off", () => {
-  assert.deepEqual(parseUxCommand("", "off"), { type: "set-mode", mode: "strict" });
+test("parseUxCommand bare resets to the configured default (including off)", () => {
+  assert.deepEqual(parseUxCommand("", "off"), { type: "set-mode", mode: "off" });
+  assert.deepEqual(parseUxCommand("", "lite"), { type: "set-mode", mode: "lite" });
 });
 
 test("parseUxCommand parses modes, status, and default subcommand", () => {

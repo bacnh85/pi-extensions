@@ -8,6 +8,8 @@ describe("config-panel", () => {
   it("buildRows covers server, discovery, gateway, gateways, identity, peers, ui groups", () => {
     const cfg = DEFAULTS();
     cfg.peers = { hermes: { url: "http://localhost:9900", auth: { type: "none" }, timeout: 120000, capabilities: [] } };
+    // Legacy gateway block must be LIVE to render (0.7.6: inert placeholder hidden).
+    cfg.discovery.gateway = { enabled: true, url: "http://legacy:9920", token: "t" };
     const groups = buildRows(cfg);
     const keys = groups.map((g) => g.key);
     assert.deepEqual(keys, ["server", "discovery", "gateway", "gateways", "identity", "peers", "ui"]);
@@ -28,6 +30,40 @@ describe("config-panel", () => {
     assert.deepEqual(peerRows, ["peer.hermes.url"]);
   });
 
+  it("hides an inert legacy gateway block; labels carry settings-key hints", () => {
+    const cfg = DEFAULTS();
+    cfg.discovery.gateway = { enabled: false, url: "", token: "" };
+    cfg.discovery.gateways = { remote: { enabled: true, url: "http://10.0.0.5:9920", token: "t" } };
+    const groups = buildRows(cfg);
+    const keys = groups.map((g) => g.key);
+    assert.notInclude(keys, "gateway", "inert legacy block must not render");
+    const allRowKeys = groups.flatMap((g) => g.rows.map((r) => r.key));
+    assert.notInclude(allRowKeys.filter((k) => k.startsWith("gateway.")) as string[], "gateway.enabled");
+    assert.include(allRowKeys, "gw.remote.enabled");
+    const labels = groups.map((g) => g.label);
+    assert.include(labels, "Gateways (discovery.gateways)");
+    assert.notInclude(labels, "Gateway (discovery.gateway)", "legacy label only when live");
+  });
+
+  it("renders a live legacy gateway block with its key-hinted label", () => {
+    const cfg = DEFAULTS();
+    cfg.discovery.gateway = { enabled: false, url: "http://legacy:9920", token: "" };
+    const groups = buildRows(cfg);
+    const legacy = groups.find((g) => g.key === "gateway")!;
+    assert.equal(legacy.label, "Gateway (discovery.gateway)");
+    assert.include(legacy.rows.map((r) => r.key), "gateway.url");
+  });
+
+  it("non-default name/heartbeat/channel make an otherwise-empty block live", () => {
+    const cfg = DEFAULTS();
+    cfg.discovery.gateway = { enabled: false, url: "", token: "", name: "mygateway", heartbeatSec: 120, channel: false };
+    const groups = buildRows(cfg);
+    const legacy = groups.find((g) => g.key === "gateway");
+    assert.isOk(legacy, "non-default fields carry real config — must render");
+    const row = legacy!.rows.find((r) => r.key === "gateway.heartbeatSec")!;
+    assert.equal(row.value, 120);
+  });
+
   it("gateways group renders per-entry rows + add/remove actions", () => {
     const cfg = DEFAULTS();
     cfg.discovery.gateways = {
@@ -37,7 +73,7 @@ describe("config-panel", () => {
       addGateway: { label: "+ Add gateway", run: () => {} },
       removeGateway: { label: "− Remove gateway", run: () => {} },
     });
-    const gwRows = groups[3]!.rows.map((r) => r.key);
+    const gwRows = groups.find((g) => g.key === "gateways")!.rows.map((r) => r.key);
     assert.deepEqual(gwRows, [
       "gw.work.enabled",
       "gw.work.url",
@@ -50,7 +86,7 @@ describe("config-panel", () => {
       "action.removeGateway",
     ]);
     // Setters materialize on edit.
-    const row = groups[3]!.rows.find((r) => r.key === "gw.work.url")!;
+    const row = groups.find((g) => g.key === "gateways")!.rows.find((r) => r.key === "gw.work.url")!;
     row.set("http://new");
     assert.equal(cfg.discovery.gateways!.work.url, "http://new");
   });
@@ -58,7 +94,7 @@ describe("config-panel", () => {
   it("gateways rows are masked for token fields", () => {
     const cfg = DEFAULTS();
     cfg.discovery.gateways = { lab: { enabled: true, url: "http://g", token: "labsecret" } };
-    const rows = buildRows(cfg)[3]!.rows;
+    const rows = buildRows(cfg).find((g) => g.key === "gateways")!.rows;
     const tokenRow = rows.find((r) => r.key === "gw.lab.token")!;
     assert.equal(tokenRow.value, "labsecret");
     assert.isTrue(tokenRow.mask, "gateway token row must be masked");
@@ -71,15 +107,22 @@ describe("config-panel", () => {
 
 
 
-  it("gateway rows materialize discovery.gateway on edit (enabled toggle)", () => {
+  it("gateway rows edit a live legacy block in place (enabled toggle)", () => {
+    const cfg = DEFAULTS();
+    cfg.discovery.gateway = { enabled: false, url: "http://legacy:9920", token: "" };
+    const groups = buildRows(cfg);
+    const row = groups.find((g) => g.key === "gateway")!.rows.find((r) => r.key === "gateway.enabled")!;
+    assert.equal(row.value, false);
+    row.set(true);
+    assert.equal((cfg.discovery.gateway as { enabled: boolean }).enabled, true, "edits land on the existing block");
+  });
+
+  it("legacy gateway group stays hidden when only env-vars could supply it", () => {
+    // No block + no env → nothing renders; discovery edits must not create one.
     const cfg = DEFAULTS();
     assert.isUndefined(cfg.discovery.gateway);
     const groups = buildRows(cfg);
-    const row = groups[2]!.rows.find((r) => r.key === "gateway.enabled")!;
-    assert.equal(row.value, false, "default view: disabled");
-    row.set(true);
-    assert.isDefined(cfg.discovery.gateway, "setter materializes the block");
-    assert.equal((cfg.discovery.gateway as { enabled: boolean }).enabled, true);
+    assert.notInclude(groups.map((g) => g.key), "gateway");
   });
 
 
@@ -90,7 +133,7 @@ describe("config-panel", () => {
     const groups = buildRows(cfg, {
       addPeer: { label: "Add peer", run: () => { ran++; } },
     });
-    const actionRow = groups[5]!.rows.find((r) => r.key === "action.addPeer")!;
+    const actionRow = groups.find((g) => g.key === "peers")!.rows.find((r) => r.key === "action.addPeer")!;
     assert.equal(actionRow.kind, "action");
     await actionRow.set(undefined);
     assert.equal(ran, 1);
@@ -125,9 +168,12 @@ describe("config-panel", () => {
     // setGroups rebuild inside makeOnAction must fail this test.
     model.onAction = makeOnAction(model, cfg, buildRows, actions, () => {});
     // No gateway rows yet.
-    assert.ok(!model.groups[3].rows.some((r) => r.key.startsWith("gw.")), "no gateway rows before add");
-    // Navigate to the add-gateway action row: server(10)+discovery(6)+gateway(7) = index 23.
-    for (let i = 0; i < 23; i++) model.handleInput("\u001b[B");
+    const gatewaysGroup = () => model.groups.find((g) => g.key === "gateways")!;
+    assert.ok(!gatewaysGroup().rows.some((r) => r.key.startsWith("gw.")), "no gateway rows before add");
+    // Navigate to the add-gateway action row (last row of the gateways group).
+    const addGwIndex = model.groups.slice(0, model.groups.indexOf(gatewaysGroup())).reduce((n, g) => n + g.rows.length, 0)
+      + gatewaysGroup().rows.findIndex((r) => r.key === "action.addGateway");
+    for (let i = 0; i < addGwIndex; i++) model.handleInput("\u001b[B");
     model.handleInput("\r"); // activate → prompt opens
     for (const ch of "new1") model.handleInput(ch);
     model.handleInput("\r"); // confirm key
@@ -139,7 +185,7 @@ describe("config-panel", () => {
     // after the synchronous keystroke stream — flush it before asserting.
     await new Promise((r) => setTimeout(r, 0));
     // Rows were rebuilt via onAction → the new entry is editable now.
-    const gwKeys = model.groups[3].rows.map((r) => r.key);
+    const gwKeys = gatewaysGroup().rows.map((r) => r.key);
     assert.ok(gwKeys.includes("gw.new1.url"), "new gateway rows appear after rebuild: " + gwKeys.join(","));
     assert.ok(gwKeys.includes("gw.new1.token"), "new gateway token row appears");
     assert.equal(cfg.discovery.gateways!.new1.token, "tok123");
@@ -168,8 +214,11 @@ describe("config-panel", () => {
       });
       model.requestRender();
     };
-    // Navigate to the add-peer action row: server(10) + discovery(6) + gateway(7) + identity(1) + peers(0) = index 24.
-    for (let i = 0; i < 24; i++) model.handleInput("\u001b[B");
+    // Navigate to the add-peer action row (only row of the peers group here).
+    const peersGroup = () => model.groups.find((g) => g.key === "peers")!;
+    const addPeerIndex = model.groups.slice(0, model.groups.indexOf(peersGroup())).reduce((n, g) => n + g.rows.length, 0)
+      + peersGroup().rows.findIndex((r) => r.key === "action.addPeer");
+    for (let i = 0; i < addPeerIndex; i++) model.handleInput("\u001b[B");
     model.handleInput("\r"); // activate → prompt opens
     for (const ch of "newpeer") model.handleInput(ch);
     model.handleInput("\r"); // confirm
@@ -191,7 +240,10 @@ describe("config-panel", () => {
       });
       model.requestRender();
     };
-    for (let i = 0; i < 24; i++) model.handleInput("\u001b[B");
+    const peersGroup = () => model.groups.find((g) => g.key === "peers")!;
+    const addPeerIndex = model.groups.slice(0, model.groups.indexOf(peersGroup())).reduce((n, g) => n + g.rows.length, 0)
+      + peersGroup().rows.findIndex((r) => r.key === "action.addPeer");
+    for (let i = 0; i < addPeerIndex; i++) model.handleInput("\u001b[B");
     model.handleInput("\r");
     for (const ch of "cancelled") model.handleInput(ch);
     model.handleInput("\u001b"); // cancel
@@ -217,8 +269,11 @@ describe("config-panel", () => {
       const cfg = DEFAULTS();
       const model = new ConfigPanelModel(buildRows(cfg), null);
       model.onChanged = () => { model.dirty = true; };
-      // Navigate to identity.selfIdentity (index: server 10 + discovery 6 + gateway 7 = 23).
-      for (let i = 0; i < 23; i++) model.handleInput("\u001b[B");
+      // Navigate to identity.selfIdentity (last row before peers).
+      const identityGroup = model.groups.find((g) => g.key === "identity")!;
+      const selfIdx = model.groups.slice(0, model.groups.indexOf(identityGroup)).reduce((n, g) => n + g.rows.length, 0)
+        + identityGroup.rows.findIndex((r) => r.key === "selfIdentity");
+      for (let i = 0; i < selfIdx; i++) model.handleInput("\u001b[B");
       model.handleInput("\r"); // start inline edit
       // The panel now routes keys to the embedded Input: type + submit.
       for (const ch of "session-b") model.handleInput(ch);
@@ -230,7 +285,10 @@ describe("config-panel", () => {
     it("Esc during inline edit cancels without changing the value", () => {
       const cfg = DEFAULTS();
       const model = new ConfigPanelModel(buildRows(cfg), null);
-      for (let i = 0; i < 23; i++) model.handleInput("\u001b[B");
+      const identityGroup = model.groups.find((g) => g.key === "identity")!;
+      const selfIdx = model.groups.slice(0, model.groups.indexOf(identityGroup)).reduce((n, g) => n + g.rows.length, 0)
+        + identityGroup.rows.findIndex((r) => r.key === "selfIdentity");
+      for (let i = 0; i < selfIdx; i++) model.handleInput("\u001b[B");
       model.handleInput("\r"); // start edit
       for (const ch of "changed") model.handleInput(ch);
       model.handleInput("\u001b"); // cancel edit
@@ -289,8 +347,11 @@ describe("config-panel", () => {
         },
       };
       const model = new ConfigPanelModel(buildRows(cfg), null);
-      // Navigate to the peer URL row (server 10 + discovery 6 + gateway 7 + identity 1 = 24).
-      for (let i = 0; i < 24; i++) model.handleInput("\u001b[B");
+      // Navigate to the peer URL row (last row before peers group).
+      const peersGroup = model.groups.find((g) => g.key === "peers")!;
+      const peerIdx = model.groups.slice(0, model.groups.indexOf(peersGroup)).reduce((n, g) => n + g.rows.length, 0)
+        + peersGroup.rows.findIndex((r) => r.key.startsWith("peer."));
+      for (let i = 0; i < peerIdx; i++) model.handleInput("\u001b[B");
       model.handleInput("\r"); // start edit
       const width = 60;
       for (const line of model.render(width)) {
@@ -309,7 +370,7 @@ describe("config-panel", () => {
       // appears must be followed by ALL of its rows before the next header
       // or the footer — i.e. no split group with a detached header.
       const expected: Record<string, number> = {
-        SERVER: 10, DISCOVERY: 6, GATEWAY: 7, IDENTITY: 1, PEERS: 1, UI: 1,
+        SERVER: 11, DISCOVERY: 6, GATEWAY: 7, IDENTITY: 1, PEERS: 1, UI: 1,
       };
       const steps = 8; // render + scroll several times to hit every window
       for (let step = 0; step < steps; step++) {
@@ -338,15 +399,35 @@ describe("config-panel", () => {
       }
     });
 
-    it("initial view shows SERVER + DISCOVERY together (no split)", () => {
+    it("initial view shows SERVER whole; DISCOVERY follows whole (no split)", () => {
+      // Since asyncTimeoutSec joined the SERVER group (#340), SERVER is 12
+      // lines (header + 11 rows) and SERVER+DISCOVERY no longer fit the panel
+      // kernel's 18-row budget together — screen 1 is SERVER alone, and the
+      // next scroll step brings DISCOVERY whole. The property under test is
+      // the 0.5.1 invariant: whole groups only, never a split group.
       const cfg = DEFAULTS();
       const model = new ConfigPanelModel(buildRows(cfg), null);
       const out = model.render(80).join("\n");
       assert.ok(out.includes("SERVER"), "SERVER header present");
-      assert.ok(out.includes("DISCOVERY"), "DISCOVERY header present on first screen");
+      // Every SERVER row is on screen (group not truncated mid-way).
+      for (const label of [
+        "Server enabled", "Port", "Port fallback", "Bind host", "Agent name",
+        "Reply timeout (s)", "Async timeout (s)", "Max concurrent",
+        "Allow all users", "Max ping-pong turns", "Rate limit /min",
+      ]) {
+        assert.ok(out.includes(label), `SERVER row '${label}' visible on first screen`);
+      }
+      // Navigate until the window slides to DISCOVERY (the window follows the
+      // selection; it slides once the cursor leaves the SERVER group).
+      let out2 = "";
+      for (let i = 0; i < 40 && !out2.includes("DISCOVERY"); i++) {
+        model.handleInput("\u001b[B");
+        out2 = model.render(80).join("\n");
+      }
+      assert.ok(out2.includes("DISCOVERY"), "DISCOVERY header reachable by scrolling");
       // Every discovery row is on screen (group not truncated mid-way).
       for (const label of ["Local registry", "Heartbeat (s)", "Registry TTL (s)", "mDNS broadcast", "mDNS service type", "Enrich Agent Card"]) {
-        assert.ok(out.includes(label), `DISCOVERY row '${label}' visible on first screen`);
+        assert.ok(out2.includes(label), `DISCOVERY row '${label}' visible on the next screen`);
       }
     });
   });

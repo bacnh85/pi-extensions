@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -212,6 +212,9 @@ export function requiresYesFlag(args: string[]): boolean {
   return !hasRealFlag(args, ["-y", "--yes"]);
 }
 
+// Directory of the most recent truncation temp file, for one-generation-behind cleanup.
+let lastTruncationDir: string | null = null;
+
 /** Check if args contain interactive setup commands that require a terminal. */
 export function isBlockedInteractive(args: string[]): { blocked: boolean; message?: string } {
   // --help / -h is read-only, but only before `--` (Click convention)
@@ -258,7 +261,17 @@ export function truncateOutput(text: string): { text: string; truncated: boolean
     return { text, truncated: false };
   }
 
+  // Best-effort cleanup: the previous truncation dir is removed when the next
+  // truncation happens (the newest one must stay alive for the model to read).
+  if (lastTruncationDir) {
+    try {
+      rmSync(lastTruncationDir, { recursive: true, force: true });
+    } catch {
+      // best-effort — a stray temp dir is never worth failing the call over
+    }
+  }
   const dir = mkdtempSync(join(tmpdir(), "pi-notebooklm-"));
+  lastTruncationDir = dir;
   const tempPath = join(dir, "full-output.txt");
   writeFileSync(tempPath, text, "utf8");
 
@@ -442,8 +455,8 @@ export default function piNotebooklmExtension(pi: ExtensionAPI) {
         if (requiresYesFlag(args)) {
           throw new Error(
             "This destructive command can prompt for confirmation and hang. " +
-              "Add `--yes` (or `-y`) to the args array to confirm non-interactively. " +
-              `Example: args: ${JSON.stringify(formatArgsForError(args))} plus --yes`,
+              "Append `--yes` as the last element of the args array to skip " +
+              "confirmation for destructive paths like delete/remove.",
           );
         }
       }

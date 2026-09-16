@@ -1,10 +1,11 @@
 // KonnectDaemon — spawn and manage the Konnect binary in HTTP mode.
 //
 // One daemon per Pi process (module singleton via getDaemon()). On ensure():
-//   1. reuse if already running + healthy
-//   2. reuse a healthy daemon already on the preferred port
-//   3. pick a free port, write a temp TOML, spawn `konnect --config <toml>`,
-//      poll GET /health until "ok" or timeout
+//   1. reuse the daemon we spawned this session if still healthy
+//   2. otherwise pick a free port, write a temp TOML, spawn
+//      `konnect --config <toml>`, poll GET /health until "ok" or timeout
+// A stranger daemon already on the preferred port is never reused (stale-env
+// risk); pickFreePort avoids it and we spawn our own.
 // The child is killed on process exit. Stderr is captured so a startup failure
 // surfaces a useful message instead of a bare timeout.
 //   // ponytail: single global daemon, non-detached (dies with Pi on exit kill);
@@ -36,7 +37,7 @@ export const HEALTH_POLL_INTERVAL_MS = 200;
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-export function buildSpawnArgs(binary: string, configPath: string): string[] {
+export function buildSpawnArgs(configPath: string): string[] {
   return ["--config", configPath];
 }
 
@@ -84,7 +85,6 @@ export interface DaemonStatus {
   port: number | null;
   pid: number | null;
   startedAt: number | null;
-  reused: boolean;
   config: ResolvedConfig;
 }
 
@@ -94,7 +94,6 @@ export class KonnectDaemon {
   private child: ChildProcess | null = null;
   private port: number | null = null;
   private startedAt: number | null = null;
-  private reused = false;
   private stderrTail = "";
   private exitHandlerBound = false;
 
@@ -144,12 +143,12 @@ export class KonnectDaemon {
     // Private dir via mkdtemp (issue #20 L1): a predictable flat tmpdir filename
     // is a symlink-clobber target on multi-user hosts. mkdtemp gives us an
     // unpredictable, 0o700 directory — no O_EXCL dance needed.
-    const cfgDir = await mkdtemp(join(this.deps.tmpdir(), "pi-kicad-daemon-"));
+    const cfgDir = await this.deps.mkdtemp(join(this.deps.tmpdir(), "pi-kicad-daemon-"));
     const configPath = join(cfgDir, `daemon-${port}.toml`);
     await this.deps.writeFile(configPath, toml);
 
     this.stderrTail = "";
-    this.child = this.deps.spawnImpl(this.config.konnectBinary, buildSpawnArgs(this.config.konnectBinary, configPath), {
+    this.child = this.deps.spawnImpl(this.config.konnectBinary, buildSpawnArgs(configPath), {
       stdio: ["ignore", "ignore", "pipe"],
       // Standalone Konnect doesn't inherit KiCad's data-dir env vars the way a
       // plugin-mode launch would; provide them so the symbol resolver works.
@@ -171,7 +170,6 @@ export class KonnectDaemon {
       if (await probeHealth(port, { fetchImpl: this.deps.fetchImpl, timeoutMs: 1000 })) {
         this.port = port;
         this.startedAt = this.deps.now();
-        this.reused = false;
         return port;
       }
       await this.deps.sleep(HEALTH_POLL_INTERVAL_MS);
@@ -192,12 +190,11 @@ export class KonnectDaemon {
   async getStatus(): Promise<DaemonStatus> {
     const healthy = this.port !== null && (await this.isHealthy());
     return {
-      running: this.child !== null || this.reused,
+      running: this.child !== null,
       healthy,
       port: this.port,
       pid: this.child?.pid ?? null,
       startedAt: this.startedAt,
-      reused: this.reused,
       config: this.config,
     };
   }
@@ -206,7 +203,6 @@ export class KonnectDaemon {
   async restart(): Promise<number> {
     this.killChild();
     this.port = null;
-    this.reused = false;
     return this.ensure();
   }
 

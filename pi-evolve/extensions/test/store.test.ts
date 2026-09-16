@@ -49,12 +49,14 @@ describe("store config", () => {
 
   it("activeBackend falls back to local when Munin is not configured", () => {
     const cwd = tmpCwd();
+    const saved = saveEnv(); // isolate from host MUNIN_* env (dev machines often have it)
     try {
       expect(activeBackend({}, resolveStoreConfig({ store: "auto" }), cwd)).to.equal("local");
       expect(activeBackend({}, resolveStoreConfig({ store: "local" }), cwd)).to.equal("local");
       // forced munin without config still falls back (graceful)
       expect(activeBackend({}, resolveStoreConfig({ store: "munin" }), cwd)).to.equal("local");
     } finally {
+      restoreEnv(saved);
       rmSync(cwd, { recursive: true, force: true });
     }
   });
@@ -346,6 +348,28 @@ describe("Munin backend (mocked)", () => {
     expect(invokeCalls[0].action).to.equal("search");
     expect(invokeCalls[0].payload.tags).to.deep.equal(["type:learning"]);
     expect(results[0].lesson).to.equal("invoke path works");
+  });
+
+  it("regression 0.3.3: trusted=true + Munin configured ONLY via cwd .env resolves munin (write + search)", async () => {
+    // Note: this describe's beforeEach sets MUNIN_API_KEY/MUNIN_PROJECT in
+    // process.env — clear them so the ONLY config source is cwd/.env.
+    delete process.env.MUNIN_API_KEY;
+    delete process.env.MUNIN_PROJECT;
+    writeFileSync(join(cwd, ".env"), "MUNIN_API_KEY=dotenv-key\nMUNIN_PROJECT=dotenv-project\n", "utf8");
+    const cfg = resolveStoreConfig({ store: "auto" });
+    // Untrusted (default): cwd .env is NOT read → local backend, no Munin call.
+    await writeLearning(sampleLearning, {}, cfg, cwd);
+    expect(storeCalls).to.have.length(0);
+    // Trusted: cwd .env IS read → munin backend for both write and search.
+    const stored = await writeLearning(sampleLearning, {}, cfg, cwd, true);
+    expect(storeCalls).to.have.length(1);
+    expect(stored.key).to.include("learning/recovery/");
+    (MuninClient.prototype as any).search = async function () {
+      return { data: { memories: [{ key: "learning/strategy/x", title: "t", content: "Kind: strategy\nTrigger: x\nLesson: munin search ran", storedAt: "2025-01-01" }] } };
+    };
+    const results = await searchLearnings("docker", 5, {}, cfg, cwd, true);
+    expect(results).to.have.length(1);
+    expect(results[0].lesson).to.equal("munin search ran");
   });
 });
 

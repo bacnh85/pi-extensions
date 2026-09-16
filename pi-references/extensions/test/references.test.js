@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import os from "node:os";
 import { join } from "node:path";
 
 import referencesExtension, {
@@ -58,6 +59,12 @@ test("normalizeReference: local relative path resolved against cwd", () => {
 test("normalizeReference: absolute path kept as-is", () => {
   const r = normalizeReference("docs", "/abs/path", "/proj", "/cache");
   assert.equal(r.path, "/abs/path");
+});
+
+test("normalizeReference: ~-prefixed path expands to the real home dir", () => {
+  const r = normalizeReference("notes", "~/docs/notes", "/proj", "/cache");
+  assert.equal(r.path, join(os.homedir(), "docs/notes"));
+  assert.equal(normalizeReference("h", "~", "/proj", "/cache").path, os.homedir());
 });
 
 test("normalizeReference: local path object form", () => {
@@ -178,6 +185,62 @@ test("ensureCloned: returns false when git clone fails", async () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("ensureCloned: failed clone removes the created cache dir so a retry can re-clone", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "refs-"));
+  try {
+    const ref = { alias: "sdk", path: join(dir, "sdk"), repository: "owner/repo" };
+    const exec = async () => ({ failed: true, stderr: "network down" });
+    assert.equal(await ensureCloned(ref, exec), false);
+    assert.equal(existsSync(ref.path), false, "partial cache dir removed for retry");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// git sees the dir we mkdir'd as pre-existing, so on mid-fetch failure it
+// leaves a partial .git behind — that dir must not be reported as cloned.
+test("ensureCloned: partial .git from a failed clone in a created dir is fully removed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "refs-"));
+  try {
+    const ref = { alias: "sdk", path: join(dir, "sdk"), repository: "owner/repo" };
+    const exec = async (_cmd, _args) => {
+      mkdirSync(join(ref.path, ".git"), { recursive: true }); // git's partial init
+      writeFileSync(join(ref.path, ".git", "config"), "partial", "utf8");
+      return { failed: true, stderr: "fatal: early EOF" };
+    };
+    assert.equal(await ensureCloned(ref, exec), false);
+    assert.equal(existsSync(ref.path), false, "partial clone dir removed entirely");
+    // A retry must not take the .git early-return — it would claim success.
+    const execOk = async () => ({ failed: false });
+    assert.equal(await ensureCloned(ref, execOk), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureCloned: failed clone never touches a non-empty cache dir (no recursive delete)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "refs-"));
+  const cache = join(dir, "cache");
+  mkdirSync(join(cache, "precious"), { recursive: true });
+  writeFileSync(join(cache, "precious", "data"), "keep", "utf8");
+  try {
+    // The "alias .." escape: ref.path points at a non-empty existing dir.
+    const ref = { alias: "..", path: cache, repository: "owner/repo" };
+    const exec = async () => ({ failed: true });
+    assert.equal(await ensureCloned(ref, exec), false);
+    assert.equal(readFileSync(join(cache, "precious", "data"), "utf8"), "keep",
+      "existing content must survive a failed clone");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("normalizeReference rejects dot-segment aliases (cache-root escape)", () => {
+  assert.equal(normalizeReference("..", { repository: "owner/repo" }, "/p", "/cache"), null);
+  assert.equal(normalizeReference(".", { repository: "owner/repo" }, "/p", "/cache"), null);
+  assert.notEqual(normalizeReference("docs", { repository: "owner/repo" }, "/p", "/cache"), null);
 });
 
 // ── Extension wiring ──────────────────────────────────────────────────────

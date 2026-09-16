@@ -24,6 +24,8 @@ export interface AgentConfig {
   thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   sandbox?: "read-only" | "workspace-write" | "worktree";
   color?: AgentColor;
+  /** Per-agent default inactivity timeout in minutes (1–60). Per-call timeout overrides. */
+  timeout?: number;
   systemPrompt: string;
   source: "user" | "project" | "bundled";
   filePath: string;
@@ -224,6 +226,30 @@ function loadAgentsFromDir(
       });
     }
 
+    // Per-agent inactivity timeout (minutes) — lets slow-thinking agents
+    // (thinking: high) raise the 3-min default without per-call params.
+    let timeout: number | undefined;
+    if (frontmatter.timeout !== undefined && typeof frontmatter.timeout !== "boolean" && !Array.isArray(frontmatter.timeout)) {
+      const t = Number(frontmatter.timeout);
+      if (Number.isInteger(t) && t >= 1 && t <= 60) {
+        timeout = t;
+      } else {
+        diagnostics.push({
+          filePath,
+          issue: `Invalid timeout "${frontmatter.timeout}". Must be an integer 1–60 (minutes). Ignoring.`,
+          severity: "warn",
+        });
+      }
+    } else if (frontmatter.timeout !== undefined) {
+      // Booleans/arrays/objects: Number() would coerce (true→1, [10]→10), so
+      // reject up front with the same diagnostic instead of silently accepting.
+      diagnostics.push({
+        filePath,
+        issue: `Invalid timeout "${String(frontmatter.timeout)}". Must be an integer 1–60 (minutes). Ignoring.`,
+        severity: "warn",
+      });
+    }
+
     agents.push({
       name: frontmatter.name,
       description: frontmatter.description,
@@ -239,6 +265,7 @@ function loadAgentsFromDir(
       color: typeof frontmatter.color === "string" && VALID_COLORS.includes(frontmatter.color as any)
         ? frontmatter.color as AgentColor
         : undefined,
+      timeout,
       systemPrompt: body,
       source,
       filePath,

@@ -330,6 +330,15 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
 
   pi.registerCommand("review", {
     description: "Run an isolated read-only review, with local fallback",
+    getArgumentCompletions: (prefix) => {
+      // Only the optional leading thinking level is completable; the target
+      // (git ref / free text) is not.
+      if (/\s/.test(prefix)) return null;
+      const items = THINKING_LEVELS
+        .filter((k) => k.startsWith(prefix.trim().toLowerCase()))
+        .map((k) => ({ value: k, label: k, description: "thinking level" }));
+      return items.length > 0 ? items : null;
+    },
     handler: async (args, ctx) => {
       await ctx.waitForIdle();
       if (reviewModeEnabled) return ctx.ui.notify("A review is already running.", "warning");

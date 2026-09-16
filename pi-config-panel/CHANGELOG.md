@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.6 (2026-09-12)
+
+### Fixed
+
+- Removed the phantom `extensions/tsconfig.json` from `files[]` (the file
+  does not exist; npm pack warned and the tarball shipped nothing for it).
+
+## 0.1.5 (2026-09-11)
+
+### Changed
+
+- Dropped the `pi-package` npm keyword: pi-config-panel is a library dependency
+  of other extensions (no `pi` field), not a user-installable pi package, and
+  should not surface in pi-hub / `keywords:pi-package` discovery.
+
+## 0.1.4 (2026-08-29)
+
+### Changed
+
+- The inline picker is now cursor-aware: it edits whichever comma-separated
+  entry the cursor sits in, not just the last one. Arrow left/right into an
+  earlier entry retargets the list live (full list on a pure cursor move;
+  typing filters as usual), Tab replaces that entry and PRESERVES the other
+  segments, and the cursor parks at the end of the replaced segment.
+  filterSuggestions/joinCompletion take an optional cursor (legacy two-arg
+  calls keep last-segment behavior). Tests: helper cases + component flow
+  (30 total).
+
 ## 0.1.3 (2026-08-29)
 
 ### Changed

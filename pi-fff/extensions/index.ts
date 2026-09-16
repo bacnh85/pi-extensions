@@ -934,6 +934,22 @@ export default function fffExtension(pi: ExtensionAPI) {
     type: "boolean",
   });
 
+  pi.on("before_agent_start", async (event) => {
+    // Skip in override mode: the tools already carry builtin grep/find names there.
+    if (currentMode === "override") return;
+    // Skip when the fff tools aren't active for this turn (user disabled via
+    // /tools) or init failed — don't advertise tools that can't run.
+    const active = event.systemPromptOptions?.selectedTools ?? pi.getActiveTools();
+    if (!active.includes("ffgrep") && !active.includes("fffind")) return;
+    return {
+      systemPrompt:
+        event.systemPrompt +
+        "\n\nSearch tools: ffgrep/fffind (FFF engine) are the preferred content/file search — " +
+        "frecency-ranked, paginated, lower token cost than `bash grep`/`find`. " +
+        "Use plain grep/find only for pipelines (sort/uniq/wc) or paths outside the workspace.",
+    };
+  });
+
   pi.on("session_start", async (_event, ctx) => {
     try {
       activeCwd = ctx.cwd;
@@ -1045,8 +1061,9 @@ export default function fffExtension(pi: ExtensionAPI) {
     name: grepName,
     label: grepName,
     description: `Grep contents. Smart-case, regex auto-detect, git-aware, frecency-ranked.`,
-    promptSnippet: "Grep contents",
+    promptSnippet: "Grep contents (FFF: paginated, frecency-ranked — prefer over bash grep)",
     promptGuidelines: [
+      "Preferred content search: paginated with cursor, lower token cost than bash grep.",
       "Bare identifiers preferred. Literal queries most efficient.",
       "Use path/include, exclude/noise.",
       "caseSensitive=true for exact case (smart-case by default).",
@@ -1331,8 +1348,9 @@ export default function fffExtension(pi: ExtensionAPI) {
     name: findName,
     label: findName,
     description: `Fuzzy path/glob search. Whole-path matching, frecency-ranked, git-aware.`,
-    promptSnippet: "Find files by path or glob",
+    promptSnippet: "Find files by path or glob (FFF: frecency-ranked — prefer over bash find)",
     promptGuidelines: [
+      "Preferred file search: frecency-ranked whole-path matching, lower token cost than bash find.",
       "Whole-path matching: 'profile' hits 'chrome/browser/profiles/x.cc' too.",
       "1-2 terms best; extra words narrow.",
       "Use for paths, use grep for content.",
@@ -1945,6 +1963,12 @@ export default function fffExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("fff-mode", {
     description: "Show or set FFF mode: /fff-mode [tools-and-ui | tools-only | override]",
+    getArgumentCompletions: (prefix) => {
+      const items = VALID_MODES
+        .filter((k) => k.startsWith(prefix.trim().toLowerCase()))
+        .map((k) => ({ value: k, label: k }));
+      return items.length > 0 ? items : null;
+    },
     handler: async (args, ctx) => {
       const arg = (args || "").trim();
 
@@ -1984,7 +2008,15 @@ export default function fffExtension(pi: ExtensionAPI) {
     description: "Show FFF file finder health and status",
     handler: async (_args, ctx) => {
       if (!finder || finder.isDestroyed) {
-        ctx.ui.notify("FFF not initialized", "warning");
+        try {
+          await ensureFinder(activeCwd);
+        } catch {
+          ctx.ui.notify("FFF initialization failed", "warning");
+          return;
+        }
+      }
+      if (!finder || finder.isDestroyed) {
+        ctx.ui.notify("FFF initializing", "warning");
         return;
       }
 
@@ -2019,7 +2051,15 @@ export default function fffExtension(pi: ExtensionAPI) {
     description: "Trigger FFF to rescan files",
     handler: async (_args, ctx) => {
       if (!finder || finder.isDestroyed) {
-        ctx.ui.notify("FFF not initialized", "warning");
+        try {
+          await ensureFinder(activeCwd);
+        } catch {
+          ctx.ui.notify("FFF initialization failed", "warning");
+          return;
+        }
+      }
+      if (!finder || finder.isDestroyed) {
+        ctx.ui.notify("FFF initializing", "warning");
         return;
       }
 

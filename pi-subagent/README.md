@@ -16,7 +16,8 @@ in `~/.pi/agent/settings.json` under `subagent.roles`:
       "coder": "zai-coding-cn/glm-5.1, opencode-go/deepseek-v4-flash",
       "smart": "*"
     },
-    "agentModels": { "reviewer": "@smart:high" }
+    "agentModels": { "reviewer": "@smart:high" },
+    "agentThinking": { "reviewer": "low" }
   }
 }
 ```
@@ -30,13 +31,19 @@ in `~/.pi/agent/settings.json` under `subagent.roles`:
 - `subagent.agentModels` overrides a single agent's models without editing its
   file. Repo `.pi/settings.json` overlays the global mapping when the project
   is trusted (read-only; saves go to the global file).
+- `subagent.agentThinking` overrides a single agent's thinking without
+  editing its file. Precedence: matched candidate's `:level` suffix →
+  `agentThinking` → agent frontmatter `thinking`.
 - Without any settings, bundled defaults reproduce today's chains exactly.
 
 `/subagent` opens the interactive role editor (TUI panel via the shared
 `@bacnh85/pi-config-panel` kernel; prints the effective mapping headless).
-`/subagent list` lists agents, `/subagent <name>` shows an agent's resolved
-chain, and `/subagent @role` (or `/subagent fast`) shows a role's chain and
-the agents using it.
+The panel supports `+ Add role` / `− Remove role` (custom roles are deletable,
+built-ins reset to their bundled default) and shows each agent's default
+(no-override) chain on its row, plus a thinking row per agent (blank = file
+default). `/subagent list` lists agents, `/subagent <name>` shows an agent's
+resolved chain and effective thinking, and `/subagent @role` (or
+`/subagent fast`) shows a role's chain and the agents using it.
 
 ## Live progress widget
 
@@ -63,6 +70,98 @@ subagent({ operation: "cancel", taskId: "bg-..." })   // abort a running task
 ```
 
 You will be notified on completion — do not poll or sleep.
+
+## Herdr delegation
+
+When pi runs inside [herdr](https://herdr.dev), subagent tasks are delegated to
+**visible interactive pi sessions in herdr panes** instead of in-process SDK
+sessions. Detection is automatic: `HERDR_ENV=1` + a working `herdr` binary.
+
+Topology — one **tab per agent type** (tab label = agent name), one **pane per
+agent instance**:
+
+```text
+┌─ tab "scout" ──────────┬─ tab "tester" ─────────┐
+│ ┌────────┐ ┌────────┐  │ ┌────────┐             │
+│ │scout-1 │ │scout-2 │  │ │tester-1│   main pi   │
+│ │  (pi)  │ │  (pi)  │  │ │  (pi)  │   (you)     │
+│ └────────┘ └────────┘  │ └────────┘             │
+└────────────────────────┴────────────────────────┘
+```
+
+Each pane runs a full `pi` child with the agent's persona applied via CLI
+flags (`--append-system-prompt` pointing at a persona file — herdr's arg
+encoder rejects multi-line strings — plus `--model`, `--thinking`, `--tools`). Results come
+back through a **report-file contract**: the task prompt asks the child to
+write its final report as Markdown to a known path, and the parent reads that
+file when the pane settles (pane scrollback is only a best-effort fallback —
+TUI agents render on the alternate screen, which never reaches herdr's
+scrollback).
+
+The **`herdr` tool** gives the main session oversight of every delegated pane:
+
+```ts
+herdr({ action: "list" })                                  // delegated agents + live states
+herdr({ action: "status", name: "scout-1" })               // lifecycle state
+herdr({ action: "prompt", name: "scout-1", text: "...", wait: true })  // follow-up (continues the child's session)
+herdr({ action: "cancel", name: "scout-1" })               // esc, then ctrl+c if still working
+herdr({ action: "focus", name: "scout-1" })                // raise the agent's tab
+herdr({ action: "close-tab", name: "scout-1" })            // close the tab (only session-created tabs)
+```
+
+Trade-offs to know:
+
+- **Shared working tree** — herdr children edit the parent's checkout
+  directly; there is no worktree isolation. That is inherent to visible
+  sibling agents.
+- **Full pi children** — they load AGENTS.md, extensions, and skills, so they
+  cost more than the lean SDK runner. Pass `runner: "sdk"` per call for cheap
+  routine delegation, or set `subagent.herdr: "off"` in settings.json to
+  disable herdr delegation entirely.
+- **Permission prompts** — children run with the normal pi approvals; a child
+  waiting on a confirmation shows as `blocked`, and a human answers it in the
+  pane. Delegated children set `PI_SUBAGENT_HERDR=off` so they never recurse
+  into herdr dispatch themselves.
+- `background: true` always uses the in-process SDK runner; herdr tasks are
+  foreground (all panes are created up front, prompts start under the usual
+  concurrency limit).
+- **Mid-task user questions**: herdr 0.9.0 does not classify pi's
+  `ask_user_question` dialogs as `blocked`, so a delegating parent waits
+  until the hard timeout. Answer the question in the pane (the child
+  completes and the parent returns), or avoid mid-task questions in herdr
+  children.
+- **`/reload-runtime` while panes are in flight**: observed behavior —
+  mutating control actions (`cancel`/`close-tab`/`forget`) then refuse for
+  pre-reload panes ("not delegated by this session"), while
+  `status`/`read` keep working by name. Close in-flight panes before
+  reloading, or afterwards with `herdr tab close <tabId>`.
+
+Outside herdr nothing changes: the in-process SDK runner is the default.
+
+## Auto-review
+
+Opt-in workflow automation (`subagent.autoReview: true` in settings.json,
+default off): after a **user-initiated** turn that made ≥3 file-mutation tool
+calls (`edit`, `write`, `apply_patch`, `str_replace_editor`) in an interactive
+(TUI) session, the read-only `reviewer` agent is dispatched automatically as a
+background task reviewing the current uncommitted diff of the files the turn
+touched (new/untracked files are read directly by the reviewer). Its findings
+arrive as a background follow-up turn, so an independent review follows every
+real coding turn without asking. Precedence: global settings.json → trusted
+repo `.pi/settings.json` overlay.
+
+Guards keep it bounded:
+
+- Turns woken by auto-injected messages never trigger a review — custom
+  wake-ups (`pi-subagent-complete`) by role, and pi-advisor blocker/concern
+  steers by their fixed `Advisor review (` content prefixes (those are plain
+  user messages) — so review→fix→review ping-pong can't start.
+- Max 3 auto-reviews per session; never while another background task runs.
+- The cursor tracks the transcript tail while the setting is off, so enabling
+  mid-session never replays accumulated history; `session_start` (startup and
+  reload) reseeds it, and a fresh session's first coding turn is reviewed from
+  entry zero. Reviewer timeout is 10 minutes; failures are non-blocking. Set
+  `PI_SUBAGENT_AUTOREVIEW_DEBUG=1` to trace dispatch decisions on stderr.
 
 ## History
 
@@ -151,7 +250,7 @@ Child agent tools are validated against a fixed allowlist:
 
 - **Allowed:** `read`, `grep`, `find`, `ls`, `bash`, `edit`, `write`
 - **Always rejected:** `subagent` (prevents recursive delegation)
-- **Read-only restriction:** When a service requests read-only execution, only `read`, `grep`, `find`, `ls` are permitted. `bash`, `edit`, and `write` are rejected.
+- **Read-only restriction:** When a service requests read-only execution, only the built-in reads plus the read-only extension allowlist (FFF, Windows, web, Serena, Munin — see `READ_ONLY_TOOLS` in `extensions/security.ts`) are permitted. `bash`, `edit`, and `write` are rejected.
 
 Unknown or misspelled tool names produce clear diagnostics. Duplicate tool names are deduplicated.
 
@@ -164,10 +263,18 @@ two `worker` agents editing the same files can no longer clobber each other —
 each writes into its own checkout.
 
 - All file mutations land in the worktree; the main checkout stays untouched.
-- On completion, a unified diff of the child's changes is returned in the
-  result and shown in the thread viewer as a `🌿 worktree` badge.
-- **Merging is explicit**: the parent receives the diff and applies it via
-  `apply_patch` / cherry-pick / discard. Nothing is auto-merged.
+- On completion, the unified diff of the child's changes is included in the
+  tool result as a `🌿 worktree patch` block (capped at the per-task output
+  limit) and shown in the thread viewer as a `🌿 worktree` badge.
+- **Merging**: by default the parent merges explicitly via `apply_patch` /
+  `git apply` / discard. Pass `merge: "3way"` (per call/item) to have the diff
+  applied automatically to the parent checkout via `git apply --3way` once the
+  child completes — conflicts leave git's conflict markers in place, are
+  reported in the result (`mergeStatus: "conflict"`), and the patch is still
+  delivered for manual merging. Nothing is ever silently resolved. Applies are
+  serialized so parallel siblings cannot race the checkout.
+- Children start from `HEAD`: uncommitted changes in the parent checkout are
+  invisible to the child and will surface as apply conflicts when merging.
 - The worktree is removed on completion (success, error, or abort).
 - Requires git; when the cwd is not a git repo, the agent falls back to
   in-process execution with a warning (`ponytail`: isolation optimization,
@@ -268,10 +375,10 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Compatibility
 
-- Requires `@earendil-works/pi-coding-agent >=0.80.0 <0.85.0`
-- Requires `@earendil-works/pi-ai >=0.80.0 <0.85.0`
-- Requires `@earendil-works/pi-agent-core >=0.80.0 <0.85.0`
-- Requires `@earendil-works/pi-tui >=0.80.0 <0.85.0`
+- Requires `@earendil-works/pi-coding-agent >=0.80.0 <0.86.0`
+- Requires `@earendil-works/pi-ai >=0.80.0 <0.86.0`
+- Requires `@earendil-works/pi-agent-core >=0.80.0 <0.86.0`
+- Requires `@earendil-works/pi-tui >=0.80.0 <0.86.0`
 - Requires `typebox >=1.3.0 <2.0.0`
 - Requires Node.js >= 20.18
 

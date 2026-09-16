@@ -1,5 +1,137 @@
 # Changelog
 
+## 0.8.4 (2026-09-14)
+
+### Added
+
+- Cross-process dispatch throttle for `zai-anthropic` (`ZAI_ANTHROPIC_MIN_INTERVAL_MS`,
+  default 1000 ms, `0` disables). Z.ai's coding-plan endpoint enforces a per-key
+  request-rate limit (HTTP 429 code 1302, no retry-after in the body), which
+  multi-agent setups (herdr panes, parallel subagents, advisor) trip by bursting
+  dispatches on one key. The new gate spaces request STARTS across every Pi
+  process on the machine via a shared slot file + short-lived mutex in the Pi
+  agent dir; the mutex is held only for the claim and is always released before
+  the request dispatches — streams are never serialized. Fail-open: any throttle
+  error dispatches unthrottled (reported via `logWarn`) rather than breaking the
+  request. Single-machine scope (machines sharing the key rely on provider-level
+  retries). Lock protocol review-hardened: no retry path can spin past the
+  acquire deadline; mutex holds are capped under the 30s stale threshold (long
+  waits nap, release and re-queue) so a legitimate sleeper is never stale-broken;
+  `release()` deletes only the pid it owns; the agent dir is created before the
+  lock is claimed (fresh installs are not a permanent silent no-op); future/
+  corrupt slot timestamps are ignored instead of causing hour-long waits.
+
+## 0.8.3 (2026-09-14)
+
+### Fixed
+
+- `detectFamily` now recognizes the DeepSeek V4.1 Flash canonical model id
+  `deepseek-flash` (and prefixed variants like `ds/deepseek-flash`) via a
+  `-flash` segment match, alongside the existing `deepseek-v4*` patterns.
+  DeepSeek-only support (selection guidance, Super Power Mode, apply_patch
+  preference, semantic-miss steering) previously stayed silently off on the
+  new id across the deepseek, opencode-go, and router providers.
+
+## 0.8.2 (2026-09-12)
+
+### Fixed
+
+- `turn_end` cache stats coalesce missing `usage.input`/`cacheRead`/
+  `cacheWrite` to `0` before the zero-guard and accumulation — optional fields
+  no longer poison the aggregates to `NaN`.
+- npm `files[]` no longer lists a `LICENSE` file (none exists).
+- README: `PI_MODEL_TOOLS_STRIP_REASONING` documented with its real default
+  (`1`, on); reasoning-strip feature row no longer calls it opt-in; Super Power
+  Mode prose corrected from "enabled by default" to opt-in.
+
+## 0.8.1 (2026-09-10)
+
+### Fixed
+
+- **apply_patch: bare `@@` now actually separates hunks.** `parsePatch`
+  documented a bare `@@` as a hunk separator, but `assembleHunks` treated the
+  empty hunk as a no-op — so consecutive context-free hunks
+  (`@@ / -A +A' / @@ / -B +B'`) fused into one hunk whose match block spanned
+  non-adjacent file lines, and hunk N's trailing context glued onto hunk N+1's
+  leading context. Both shapes guaranteed `Hunk context not found` (recurring
+  on multi-line prose updates; session-evidenced on `tong-luan.md`,
+  `nsfw-writer.md`, plan files). A bare `@@` now commits the pending hunk and
+  drops the previous hunk's trailing context, while leading context no payload
+  has claimed yet (`@@ anchor` / `@@` / payload) is preserved. Bare `@@` at
+  section start, doubled, or trailing remains a harmless no-op.
+- **apply_patch: `@@ <text>` used as a git-diff label is demoted to a hint.**
+  Models sometimes emit `@@ paraphrased fragment` — a label that is not a
+  verbatim file line — failing the hunk even when the removed payload matches
+  uniquely. When the full block matches nothing and the removed lines alone
+  match exactly once, the anchor is ignored and the edit applies (reported as
+  fuzzy via the `exact: false` result flag). Ambiguous payloads still error.
+  Unique-match safety is unchanged: the fallback only fires on a zero-match
+  hard error, never re-routes a patch that already matched. Hunks that resolve
+  to overlapping spans (e.g. two failing labels demoting to the same lines)
+  now error instead of silently discarding one hunk's added content during
+  reverse-order application.
+
+## 0.8.0 (2026-09-06)
+
+### Added
+
+- **ZCode parity mode for `zai-anthropic`, ON by default** (opt out:
+  `ZAI_ANTHROPIC_SIGNING=0`): ZCode identity headers + `X-Session-Id` +
+  per-request Client-Signing V4 (Ed25519 signatures + 8-bit PoW) ported from
+  TriDefender/zcode-api (MIT). Signing key is provisioned by Z.ai's
+  `get_sign_key` handshake to the user's own two-part coding-plan key
+  (handshake plane: api.z.ai — 404 on zcode.z.ai); every failure path fails
+  open (unsigned). Live-verified 2026-09-06: signed requests accepted with
+  HTTP 200 on the `zcode.z.ai/api/v1/ultra-zai` route; same-window A/B shows
+  identical billing to the unsigned api route (578k tokens → +2pt both), and
+  a full cache matrix shows prefix caching behaves identically signed vs
+  unsigned (headers/route/TTL/fast-mode/streamed usage all verified).
+  Also: ultra route added to `KNOWN_BASE_URLS`; probe leg L6 (signed
+  ultra-zai quota measurement) and `scripts/bench-zcode-signing.mjs`
+  (landing-proof + TTFT/throughput + cache matrix) added. Review-hardened:
+  z.ai-origin allowlist (no credential egress for other base URLs), env-var
+  credential fallback, 401-ladder success reset, handshake backoff, cached
+  identity resolution. `PI_MODEL_TOOLS_DEBUG=1` now logs per-response usage
+  (incl. cacheRead) for glm-family providers.
+
+## 0.7.1 (2026-09-06)
+
+### Fixes
+
+- **First-tool hints no longer re-inject on every provider round** (loop fix).
+  The `⚠️ RUN/BUILD/EXECUTE → FIRST tool call MUST be bash` reminder (and the
+  git-clone / find-first hints) was re-appended to the last user message on
+  every round of a turn for prefix-cache byte-stability. On mid-turn rounds
+  the payload tail is a tool result — on anthropic-style payloads (GLM via
+  `zai-anthropic`) the reminder landed directly after each tool result and read
+  as a fresh repeated demand, so strict instruction-followers re-ran bash /
+  kept acknowledging the reminder instead of settling (observed as a wasted
+  "I've been complying" loop on a remote peer). Hints now fire only while the
+  payload tail is still the plain user prompt (turn's first round, including
+  provider retries). Cache impact is a tail-only divergence of ~one user
+  message per round; the cache head (system prompt) stays byte-stable. New
+  regression tests cover OpenAI-style and anthropic-style mid-turn rounds and
+  later-turn round-1 injection.
+
+## 0.7.0 (2026-09-05)
+
+### Added
+
+- **`zai-anthropic` provider (ZCode parity)** — GLM-5.3 / GLM-5.3-Flash /
+  GLM-5-Turbo via the Z.ai **Anthropic Messages API** coding-plan endpoint
+  (`https://api.z.ai/api/anthropic`), the surface ZCode uses instead of the
+  OpenAI-compatible `paas/v4` path. Gains: explicit `cache_control` prompt
+  caching (live-verified: repeat prompt re-reads 675 → 35 input tokens),
+  effort-based reasoning via `output_config.effort` (`thinkingLevelMap`
+  low/high/max), and a **fast serving tier** (`speed: "fast"` body +
+  `anthropic-beta: fast-mode-2026-02-01` header, on by default —
+  `ZAI_ANTHROPIC_SPEED=standard` to disable; live-measured 63.5 vs 38.6 tok/s
+  on GLM-5.3). Provider registers unconditionally — `apiKey:
+  "$ZAI_ANTHROPIC_API_KEY"` makes `/login zai-anthropic` auto-available; the key
+  resolves from auth.json or env at request time. Endpoint overridable via
+  `ZAI_ANTHROPIC_BASE_URL` (BigModel plan and ZCode Start Plan endpoints
+  documented). Probe script: `extensions/scripts/probe-zai-anthropic.mjs`.
+
 ## 0.6.1 (2026-08-25)
 
 ### Fixes

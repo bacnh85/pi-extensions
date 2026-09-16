@@ -7,8 +7,9 @@ import assert from "node:assert/strict";
 import { after, afterEach, before, describe, it } from "mocha";
 import os from "node:os";
 import path from "node:path";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import piPlanExtension, { isInsidePlansDir, snapshotUntrackedFiles } from "./index";
 import { BLOCKED_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
@@ -22,19 +23,40 @@ import { parseModel, loadUtilityConfig } from "./lib/utility-config";
 /** Real temp directory for tests that write files. */
 const TMP = path.join(os.tmpdir(), "pi-plan-test-" + process.pid);
 const REAL_HOMEDIR = os.homedir;
+const REAL_AGENT_DIR_ENV = process.env.PI_CODING_AGENT_DIR;
 before(() => {
-  os.homedir = () => TMP; // isolate ~/.pi/agent/pi-plan/preferences.json from the real home
+  // getAgentDir() snapshots homedir at SDK load — the env override is the
+  // reliable way to point pi-plan's settings.json at the temp home.
+  process.env.PI_CODING_AGENT_DIR = path.join(TMP, ".pi", "agent");
+  os.homedir = () => TMP; // still isolate other homedir-based code paths
   mkdirSync(TMP, { recursive: true });
 });
-after(() => { os.homedir = REAL_HOMEDIR; });
-afterEach(cleanPrefs); // keep the isolated preferences file hermetic between tests
+after(() => {
+  os.homedir = REAL_HOMEDIR;
+  if (REAL_AGENT_DIR_ENV === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = REAL_AGENT_DIR_ENV;
+});
+afterEach(cleanPrefs); // keep the isolated settings file hermetic between tests
 
 function prefsPath(): string {
+  return path.join(TMP, ".pi", "agent", "settings.json");
+}
+function legacyPrefsPath(): string {
   return path.join(TMP, ".pi", "agent", "pi-plan", "preferences.json");
 }
 function cleanPrefs(): void {
   mkdirSync(path.dirname(prefsPath()), { recursive: true });
-  writeFileSync(prefsPath(), JSON.stringify({ version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {} }));
+  writeFileSync(prefsPath(), "{}\n");
+  // recursive+force: covers the file form the corrupt-backup test leaves and
+  // the dir form the tmp-rename test creates if a crash skips its finally.
+  rmSync(`${prefsPath()}.corrupt`, { recursive: true, force: true });
+  try { rmSync(legacyPrefsPath()); } catch { /* absent */ }
+  try { rmSync(`${legacyPrefsPath()}.migrated`); } catch { /* absent */ }
+}
+/** Write pi-plan prefs into settings.json under the "pi-plan" key. */
+function writePrefs(json: string): void {
+  mkdirSync(path.dirname(prefsPath()), { recursive: true });
+  writeFileSync(prefsPath(), JSON.stringify({ "pi-plan": JSON.parse(json) }, null, 2) + "\n");
 }
 
 function createGitRepo(prefix: string): string {
@@ -42,6 +64,9 @@ function createGitRepo(prefix: string): string {
   execFileSync("git", ["init", "--quiet"], { cwd });
   execFileSync("git", ["config", "user.email", "test@test"], { cwd });
   execFileSync("git", ["config", "user.name", "Test"], { cwd });
+  // The dev machine's global config signs commits via an agent that is not
+  // always reachable in tests — sign nothing here.
+  execFileSync("git", ["config", "commit.gpgsign", "false"], { cwd });
   writeFileSync(path.join(cwd, "README.md"), "# test");
   execFileSync("git", ["add", "-A"], { cwd });
   execFileSync("git", ["commit", "-m", "initial"], { cwd });
@@ -270,6 +295,9 @@ function createFakePi(
     setThinkingLevel(level: string) {
       state.thinkingLevel = level;
     },
+    getThinkingLevel() {
+      return state.thinkingLevel ?? "medium";
+    },
     setModel(model: any) {
       state.modelSets.push(model);
       // Real Pi setModel returns Promise<boolean> — false on missing auth,
@@ -488,7 +516,7 @@ describe("plan-mode guidance", () => {
     assert.ok(PLAN_MODE_SERENA_GUIDANCE.includes("serena_get_symbols_overview"));
     assert.ok(PLAN_MODE_SERENA_GUIDANCE.includes("serena_find_symbol"));
     assert.ok(PLAN_MODE_SERENA_GUIDANCE.includes("Use read for docs/config/non-code files"));
-    assert.ok(PLAN_MODE_SERENA_GUIDANCE.includes("Prefer the dedicated ls/grep/find tools"));
+    assert.ok(PLAN_MODE_SERENA_GUIDANCE.includes("Prefer the dedicated ls/ffgrep/fffind tools (FFF: frecency-ranked, paginated) over shell commands"));
     assert.ok(PLAN_MODE_SERENA_GUIDANCE.includes("test, build, and package scripts require confirmation"));
   });
 });
@@ -1212,6 +1240,7 @@ describe("tool gating in plan mode", () => {
     ["sed backup", "sed -i.bak 's/foo/bar/g' file.txt"],
     ["sed long option", "sed --in-place 's/foo/bar/g' file.txt"],
     ["sed write", "sed -n '1w output.txt' input.txt"],
+    ["sed glued w write", "sed -n '1wout' input.txt"],
     ["tee", "echo data | tee output.txt"],
     ["find delete", "find . -delete"],
     ["find exec", "find . -exec touch marker +"],
@@ -1235,11 +1264,25 @@ describe("tool gating in plan mode", () => {
     ["writer in pipeline", "cat file.txt | tee out.txt"],
     ["writer in chain", "ls -la; cp a b"],
     ["mixed chain with redirect", "grep foo src | head > out.txt"],
+    ["fd-dup with extra redirect", "grep foo src 2>&1 > out.txt"],
+    ["stderr to file", "grep foo src 2> err.log"],
+    ["stdin redirect", "grep foo < input.txt"],
+    ["command wrapper runs a writer", "command rm -rf src/"],
+    ["command -p wrapper", "command -p bash -c 'touch x'"],
+    ["redirect to /dev/null-prefixed file", "grep -n x src/*.ts >/dev/null2 && echo done"],
+    ["append stderr to file", "sort data 2>>err.log"],
+    ["quoted string with redirect-ish text plus real redirect", "echo 'use 2>&1 here' > real.txt"],
+    ["git -C quoted path push", "git -C \"my repo\" push origin main"],
     ["command substitution", "echo $(touch marker)"],
     ["command substitution in pipeline", "grep foo src | echo $(touch marker)"],
     ["awk print redirect", "awk '{print $1 > \"out.txt\"}' file"],
     ["sort combined -no", "sort -no output.txt input.txt"],
     ["sort combined -on", "sort -on output.txt input.txt"],
+    // 0.12.0: a raw newline is a separator, not a write — each line still classifies
+    ["newline-separated writer", "echo hi\nrm -rf x"],
+    ["assignment-prefixed writer", "VAR=x rm -rf x"],
+    ["xargs writer payload", "grep -rl foo . | xargs rm -rf"],
+    ["writer after flow keyword", "while read -r f; do rm -rf $f; done"],
   ];
 
   for (const [label, cmd] of WRITE_CASES) {
@@ -1273,7 +1316,21 @@ describe("tool gating in plan mode", () => {
     const tc = handlers.tool_call?.[0];
     assert.ok(tc);
 
-    for (const cmd of ["ls -la", "grep -R foo src/", "find . -name '*.ts'", "git status --short", "cat index.ts", "/bin/ls -la", "/usr/bin/grep foo src/", "sort -n input.txt", "git blame file.ts", "git log --oneline -5", "git ls-tree HEAD", "git cat-file -p HEAD:file.ts", "git remote -v", "git remote show origin", "git config --get user.email", "git config --list", "git describe --tags", "git tag -l", "git tag --list", "git for-each-ref", "git rev-list --count HEAD", "git shortlog -sne", "git branch -v", "git branch -vv", "git reflog", "git reflog show", "git ls-files", "git ls-remote", "git name-rev HEAD", "git show-ref", "git symbolic-ref HEAD"]) {
+    for (const cmd of ["ls -la", "grep -R foo src/", "find . -name '*.ts'", "git status --short", "cat index.ts", "/bin/ls -la", "/usr/bin/grep foo src/", "sort -n input.txt", "git blame file.ts", "git log --oneline -5", "git ls-tree HEAD", "git cat-file -p HEAD:file.ts", "git remote -v", "git remote show origin", "git config --get user.email", "git config --list", "git describe --tags", "git tag -l", "git tag --list", "git for-each-ref", "git rev-list --count HEAD", "git shortlog -sne", "git branch -v", "git branch -vv", "git reflog", "git reflog show", "git ls-files", "git ls-remote", "git name-rev HEAD", "git show-ref", "git symbolic-ref HEAD",
+      // regression: falsely blocked in live sessions (2026-08 analysis)
+      "git -C /Volumes/Dev/agents/pi-extensions status --short", "git -C repo log --oneline -8", "git -C repo remote get-url origin", "git -c color.ui=always diff", "find . -name '*.ts' 2>/dev/null | head -20", "grep -rn foo src/ 2>&1 | head -10", "ls /tmp 2>/dev/null", "command -v pi", "command -V pi", "which pi", "type node",
+      // regression: chained git + fd-dup across separators (segment split must use the stripped string)
+      "git ls-remote origin 2>&1 | head -20; git remote -v", "git remote -v && git ls-remote origin 2>&1 | head -20", "ls .agents/plans/ 2>/dev/null; git log --oneline -3; grep -n 'X' src/a.rs | head -4",
+      // regression: 0.12.0 session analysis — top confirm sources now read-classified
+      "sed -n 140,200p src/index.ts", "sed -n 's/foo/bar/gp' file.txt", "cd /tmp && grep -n x file.txt",
+      "sed -n '/twelve/p' notes.txt",
+      "D=/tmp; ls $D", "S=/tmp/x.json; jq -r '.type' $S", "jq -r '.type' file.json",
+      "grep -rl foo . | xargs grep -l bar", "find . -name '*.ts' -print0 | xargs -0 grep -l foo",
+      "tar -tzf archive.tgz", "tar -xzOf archive.tgz package/dist/index.js | diff - dist/index.js",
+      "ls -la\ngrep -n foo file.txt",
+      "jq -r 'if .type==\"x\"\n  then .a\n  else empty\n  end' file.json",
+      // regression: reviewer findings (0.11.3) — anchored null target, append-to-null, quoted -C, --no-pager, fd dups
+      "grep foo src 2>>/dev/null", "git -C \"my repo\" status", "git --no-pager diff", "echo err 1>&2", "grep x f >&2", "cat f 2>&-"]) {
       assert.equal(await tc({ toolName: "bash", input: { command: cmd } }, ctx), undefined, `${cmd} auto-allowed`);
     }
     assert.equal(confirmations, 0);
@@ -1299,6 +1356,50 @@ describe("tool gating in plan mode", () => {
       assert.equal(await tc({ toolName: "bash", input: { command: cmd } }, ctx), undefined, `${cmd} confirmed then allowed`);
     }
     assert.equal(confirmations, 3, "every awk command required confirmation");
+  });
+
+  it("requires confirmation for ambiguous sed forms, xargs interpreters, and one-off scripts", async () => {
+    let confirmations = 0;
+    const { handlers } = createFakePi(["read", "bash"], { plan: true });
+    const ctx = fakeCtx({
+      hasUI: true,
+      ui: {
+        confirm: async () => { confirmations++; return true; },
+        select: async () => { confirmations++; return "Allow once"; }, editor: async () => "",
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+    // These must neither hard-block (write tier) nor auto-run — they confirm first.
+    // Includes the session-analysis pipeline shape that transiently hard-blocked
+    // before 0.12.0 (multi-line command with quoted jq + awk program).
+    for (const cmd of [
+      "sed -f gen.sed input.txt",
+      "sed 's/x/y/e' input.txt",
+      "sed 's/x/y/ge' input.txt",
+      "sed 's/x/y/gw out.txt' input.txt",
+      "sed 's|x|y|pew' input.txt",
+      "sed 's/x/y/e;p' input.txt",
+      "sed 's/a/b/ew out.txt' input.txt",
+      "sed 'e;p' input.txt",
+      "tar -xzOf a.tgz --to-command=sh",
+      "tar -tf a.tar -I sh",
+      "tar -tzf a.tgz --use-compress-program=sh",
+      "xargs sh -c 'echo hi'",
+      "find . -name '*.log' | xargs sh -c 'cat'",
+      "python3 -c \"print(1)\"",
+      "node -e \"console.log(1)\"",
+      "for f in *; do echo $f; done",
+      "curl https://example.com",
+      "tar -xzf archive.tgz",
+      "cd /tmp && find . -name '*.jsonl' -print0 | xargs -0 grep -l pattern | while IFS= read -r f; do jq -r '.id' \"$f\" | awk '/^id/{print}'; done | sort | uniq -c",
+    ]) {
+      assert.equal(await tc({ toolName: "bash", input: { command: cmd } }, ctx), undefined, `${cmd} confirmed then allowed`);
+    }
+    assert.equal(confirmations, 19, "every ambiguous command required confirmation");
   });
 
   it("auto-allows read-only pipelines and chains (segment-level classification)", async () => {
@@ -1489,7 +1590,7 @@ describe("tool gating in plan mode", () => {
     assert.equal(r, undefined, "write_plan auto-allowed");
   });
 
-  it("auto-allows ask_user_question (and deprecated alias) in plan mode without confirmation", async () => {
+  it("auto-allows ask_user_question in plan mode without confirmation", async () => {
     // Regression guard: ask_user_question is NOT in READ_ONLY_TOOLS; before the fix it
     // fell through to the confirm branch and prompted the user on every clarifying question.
     const { handlers } = createFakePi(["read"], { plan: true });
@@ -1504,12 +1605,10 @@ describe("tool gating in plan mode", () => {
     assert.ok(tc);
     const r1 = await tc({ toolName: "ask_user_question", input: { question: "Q?", options: [{ label: "A" }, { label: "B" }] } }, ctx);
     assert.equal(r1, undefined, "ask_user_question auto-allowed");
-    const r2 = await tc({ toolName: "ask_plan_question", input: { question: "Q?", options: [{ label: "A" }, { label: "B" }] } }, ctx);
-    assert.equal(r2, undefined, "ask_plan_question alias auto-allowed");
-    assert.deepEqual(confirmCalls, [], "neither tool should prompt for confirmation");
+    assert.deepEqual(confirmCalls, [], "the tool should not prompt for confirmation");
   });
 
-  it("auto-allows ask_user_question and alias under the /specs gate", async () => {
+  it("auto-allows ask_user_question under the /specs gate", async () => {
     // ponytail: specGate hard-blocks everything except known-read + the question tools.
     const specPath = path.join(TMP, ".agents", "specs", "spec.md");
     const { handlers } = createFakePi(["read"], { plan: true });
@@ -1523,8 +1622,6 @@ describe("tool gating in plan mode", () => {
     assert.ok(tc);
     const r1 = await tc({ toolName: "ask_user_question", input: { question: "Q?", options: [{ label: "A" }, { label: "B" }] } }, ctx);
     assert.equal(r1, undefined, "ask_user_question allowed under spec gate");
-    const r2 = await tc({ toolName: "ask_plan_question", input: { question: "Q?", options: [{ label: "A" }, { label: "B" }] } }, ctx);
-    assert.equal(r2, undefined, "ask_plan_question alias allowed under spec gate");
   });
 });
 
@@ -1742,6 +1839,25 @@ describe("write_plan lifecycle", () => {
     // ponytail: write_plan is available in any mode
     const result = await wd.execute("c1", { title: "Test", content: "# Test" }, undefined, undefined, fakeCtx());
     assert.ok(result);
+  });
+
+  it("derives title from first '# Heading' when title arg omitted (regression: validation failures in live sessions)", async () => {
+    const { toolDefs } = createFakePi(["read"], {});
+    const wd = toolDefs.write_plan;
+    assert.ok(wd);
+    const ctx = fakeCtx({ cwd: TMP });
+
+    // No title arg — model sent only content (3 live failures: 2026-07-12, 2026-08-29)
+    const result = await wd.execute("c1", { content: "# Pi 0.84.4 compat\n## Goal\nCheck all packages." }, undefined, undefined, ctx);
+    assert.ok(result);
+    assert.equal(result.details?.title, "Pi 0.84.4 compat");
+    const written = readFileSync(result.details?.path, "utf8");
+    assert.match(written, /^# Pi 0.84.4 compat/);
+
+    // Neither title nor heading — falls back to "Plan"
+    const r2 = await wd.execute("c2", { content: "Just some notes without a heading." }, undefined, undefined, ctx);
+    assert.ok(r2);
+    assert.equal(r2.details?.title, "Plan");
   });
 
   it("directs approval to /plan-approve, not to ask_user_question options", async () => {
@@ -2229,36 +2345,12 @@ describe("rewind checkpoints", () => {
   });
 });
 
-describe("thinking level preferences", () => {
-  it("includes 'max' in valid thinking levels", () => {
-    assert.ok(["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes("max"));
-  });
-
-  it("preserves per-model thinking on model_select", async () => {
-    const { handlers } = createFakePi(["read"], {});
-
-    const ctx = fakeCtx({
-      model: { provider: "test", id: "m1" },
-    });
-
-    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
-
-    const ms = handlers.model_select?.[0];
-    if (ms) {
-      await ms(
-        { model: { provider: "test2", id: "m2" }, previousModel: { provider: "test", id: "m1" } },
-        ctx,
-      );
-    }
-    // No crash = success
-  });
-});
-
-describe("per-mode model preferences", () => {
+describe("plan model and thinking (global, plan-mode only)", () => {
   function modelCtx(model: any): any {
     const models = [
-      { provider: "zai-coding-cn", id: "glm-5.2" },
-      { provider: "opencode-go", id: "deepseek-v4-flash" },
+      { provider: "test", id: "model-1" },
+      { provider: "zai-anthropic", id: "glm-5.3" },
+      { provider: "opencode-go", id: "deepseek-v4.1-flash" },
     ];
     return fakeCtx({
       model,
@@ -2270,299 +2362,290 @@ describe("per-mode model preferences", () => {
     });
   }
 
-  it("records a plan-mode model and re-applies it on re-entry", async () => {
+  function prefsOnDisk(): any {
+    return JSON.parse(readFileSync(prefsPath(), "utf8"))["pi-plan"] ?? {};
+  }
+
+  it("/plan-model sets the plan model globally without touching the active model in normal mode", async () => {
     cleanPrefs();
-    const ext = createFakePi(["read"], {});
-    const ctx = modelCtx({ provider: "test", id: "model-1" });
-    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
-
-    await ext.commands["plan"].handler("", ctx); // enter plan mode
-    // user picks glm-5.2 via /model while in plan mode -> recorded as planModel
-    await ext.handlers.model_select?.[0]({ model: { provider: "zai-coding-cn", id: "glm-5.2" }, previousModel: { provider: "test", id: "model-1" }, source: "set" }, ctx);
-
-    await ext.commands["plan"].handler("", ctx); // leave (normalModel unset -> no switch)
-    ext.modelSets.length = 0;
-    await ext.commands["plan"].handler("", ctx); // re-enter -> applyModeModel switches to planModel
-    assert.ok(ext.modelSets.some((m: any) => m.provider === "zai-coding-cn" && m.id === "glm-5.2"),
-      "re-entering plan mode switches to the recorded plan model");
-  });
-
-  it("keeps plan and normal model selections separate", async () => {
-    cleanPrefs();
-    const ext = createFakePi(["read"], {});
-    const ctx = modelCtx({ provider: "test", id: "model-1" });
-    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
-
-    // normal mode: pick deepseek -> normalModel
-    await ext.handlers.model_select?.[0]({ model: { provider: "opencode-go", id: "deepseek-v4-flash" }, previousModel: { provider: "test", id: "model-1" }, source: "set" }, ctx);
-    // enter plan mode and pick glm-5.2 -> planModel
-    await ext.commands["plan"].handler("", ctx);
-    await ext.handlers.model_select?.[0]({ model: { provider: "zai-coding-cn", id: "glm-5.2" }, previousModel: { provider: "test", id: "model-1" }, source: "set" }, ctx);
-
-    ext.modelSets.length = 0;
-    await ext.commands["plan"].handler("", ctx); // leave -> applyModeModel targets normalModel
-    assert.ok(ext.modelSets.some((m: any) => m.provider === "opencode-go" && m.id === "deepseek-v4-flash"),
-      "leaving plan mode restores the normal/execute model");
-  });
-
-  it("does not record model on session restore (source restore)", async () => {
-    cleanPrefs();
-    const ext = createFakePi(["read"], {});
-    const ctx = modelCtx({ provider: "test", id: "model-1" });
-    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
-    await ext.commands["plan"].handler("", ctx); // enter plan mode
-    await ext.handlers.model_select?.[0]({ model: { provider: "zai-coding-cn", id: "glm-5.2" }, previousModel: { provider: "test", id: "model-1" }, source: "set" }, ctx);
-    await ext.commands["plan"].handler("", ctx); // leave (records normalModel=glm-5.2 from set)
-
-    // Simulate a different model being restored
-    ext.modelSets.length = 0;
-    await ext.handlers.model_select?.[0]({ model: { provider: "opencode-go", id: "deepseek-v4-flash" }, previousModel: { provider: "test", id: "model-1" }, source: "restore" }, ctx);
-
-    // Normal mode should still be the SET one (glm-5.2), not the restored one
-    await ext.commands["plan"].handler("", ctx); // enter -> applyModeModel targets planModel (set as glm-5.2)
-    await ext.commands["plan"].handler("", ctx); // leave -> applyModeModel targets normalModel (should be glm-5.2, not deepseek)
-    assert.ok(ext.modelSets.some((m: any) => m.provider === "zai-coding-cn" && m.id === "glm-5.2"),
-      "restored model did not overwrite the previously set normal preference");
-  });
-
-  it("survives a model switch failure (missing auth) without throwing", async () => {
-    cleanPrefs();
-    const ext = createFakePi(["read"], {});
-    ext.setModelReject = true;
-    const notices: string[] = [];
-    const ctx = modelCtx({ provider: "test", id: "model-1" });
-    ctx.ui.notify = (m: string) => notices.push(m);
-    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
-    await ext.commands["plan"].handler("", ctx);
-    await ext.handlers.model_select?.[0]({ model: { provider: "zai-coding-cn", id: "glm-5.2" }, previousModel: { provider: "test", id: "model-1" }, source: "set" }, ctx);
-
-    await assert.doesNotReject(ext.commands["plan"].handler("", ctx)); // leave (normalModel unset)
-    await assert.doesNotReject(ext.commands["plan"].handler("", ctx)); // re-enter -> setModel rejects -> caught
-    assert.ok(notices.some((n) => /switch failed/i.test(n)), "failure is reported as a warning");
-  });
-
-  it("skips setModel when the configured model is already active", async () => {
-    cleanPrefs();
-    const ext = createFakePi(["read"], {});
-    const ctx = modelCtx({ provider: "test", id: "model-1" });
-    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
-    await ext.commands["plan"].handler("", ctx);
-    await ext.handlers.model_select?.[0]({ model: { provider: "zai-coding-cn", id: "glm-5.2" }, previousModel: { provider: "test", id: "model-1" }, source: "set" }, ctx);
-    ctx.model = { provider: "zai-coding-cn", id: "glm-5.2" }; // active == configured planModel
-
-    ext.modelSets.length = 0;
-    await ext.commands["plan"].handler("", ctx); // leave (normalModel unset -> no switch)
-    await ext.commands["plan"].handler("", ctx); // re-enter: target == current -> short-circuit
-    assert.equal(ext.modelSets.length, 0, "no switch when the configured model is already active");
-  });
-
-  it("notifies when applyModeModel switches on mode toggle", async () => {
-    cleanPrefs();
-    mkdirSync(path.dirname(prefsPath()), { recursive: true });
-    writeFileSync(prefsPath(), JSON.stringify({
-      version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {},
-      planModel: "zai-coding-cn/glm-5.2",
-    }));
     const notices: string[] = [];
     const ext = createFakePi(["read"], {});
-    const ctx = modelCtx({ provider: "test", id: "model-1" });
+    const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
     ctx.ui.notify = (m: string) => notices.push(m);
     await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
-    await ext.commands["plan"].handler("", ctx); // enter plan mode -> applyModeModel switches
-    assert.ok(notices.some((n) => /Switched to plan model/i.test(n)), "notifies on model switch");
+    ext.modelSets.length = 0;
+
+    await ext.commands["plan-model"].handler("zai-anthropic/glm-5.3", ctx);
+    assert.equal(prefsOnDisk().planModel, "zai-anthropic/glm-5.3", "plan model persisted");
+    assert.equal(ext.modelSets.length, 0, "normal mode is untouched");
+    assert.ok(notices.some((n) => /applies in plan mode/.test(n)), "explains it applies in plan mode");
   });
 
-  it("tolerates a legacy prefs file, then restores a persisted planModel on startup", async () => {
-    cleanPrefs(); // legacy file: no planModel/normalModel
+  it("entering plan mode switches to the plan model; leaving restores the previous model", async () => {
+    cleanPrefs();
+    writePrefs(JSON.stringify({ version: 3, planModel: "zai-anthropic/glm-5.3", planThinking: "high" }));
+    const ext = createFakePi(["read"], {});
+    const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    ext.modelSets.length = 0;
+    await ext.commands["plan"].handler("", ctx); // enter plan mode
+    const last = ext.modelSets[ext.modelSets.length - 1];
+    assert.ok(last && last.provider === "zai-anthropic" && last.id === "glm-5.3", "plan model applied on enter");
+    assert.equal(ext.thinkingLevel, "high", "plan thinking applied on enter");
+
+    ext.modelSets.length = 0;
+    ctx.model = { provider: "zai-anthropic", id: "glm-5.3" }; // core switched
+    await ext.commands["plan"].handler("", ctx); // leave plan mode
+    const restored = ext.modelSets[ext.modelSets.length - 1];
+    assert.ok(restored && restored.provider === "opencode-go" && restored.id === "deepseek-v4.1-flash",
+      "pre-plan model restored on leave");
+  });
+
+  it("a model picked while planning is session-temporary (plan config unchanged, restored on leave)", async () => {
+    cleanPrefs();
+    writePrefs(JSON.stringify({ version: 3, planModel: "zai-anthropic/glm-5.3" }));
+    const ext = createFakePi(["read"], {});
+    const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.commands["plan"].handler("", ctx); // enter plan mode -> glm-5.3
+    ctx.model = { provider: "zai-anthropic", id: "glm-5.3" }; // core switched on enter
+    ext.modelSets.length = 0;
+
+    // User picks another model with the built-in /model while in plan mode.
+    ctx.model = { provider: "test", id: "model-1" };
+    await ext.handlers.model_select?.[0]({
+      model: { provider: "test", id: "model-1" }, previousModel: { provider: "zai-anthropic", id: "glm-5.3" }, source: "set",
+    }, ctx);
+    assert.equal(prefsOnDisk().planModel, "zai-anthropic/glm-5.3", "plan config unchanged by an in-plan pick");
+
+    // Leaving restores the pre-plan model, not the temporary pick.
+    ext.modelSets.length = 0;
+    await ext.commands["plan"].handler("", ctx);
+    const restored = ext.modelSets[ext.modelSets.length - 1];
+    assert.ok(restored && restored.provider === "opencode-go", "pre-plan model restored on leave");
+  });
+
+  it("a model picked in normal mode never changes the plan model", async () => {
+    cleanPrefs();
+    writePrefs(JSON.stringify({ version: 3, planModel: "zai-anthropic/glm-5.3" }));
+    const ext = createFakePi(["read"], {});
+    const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    await ext.handlers.model_select?.[0]({
+      model: { provider: "test", id: "model-1" }, previousModel: { provider: "opencode-go", id: "deepseek-v4.1-flash" }, source: "set",
+    }, ctx);
+    assert.equal(prefsOnDisk().planModel, "zai-anthropic/glm-5.3", "plan model untouched by a normal-mode pick");
+  });
+
+  it("/plan-thinking sets the plan thinking level globally", async () => {
+    cleanPrefs();
+    const notices: string[] = [];
+    const ext = createFakePi(["read"], {});
+    const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
+    ctx.ui.notify = (m: string) => notices.push(m);
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    await ext.commands["plan-thinking"].handler("xhigh", ctx);
+    assert.equal(prefsOnDisk().planThinking, "xhigh", "plan thinking persisted");
+    assert.ok(notices.some((n) => /applies in plan mode/.test(n)), "explains it applies in plan mode");
+
+    // Entering plan mode applies it; leaving restores the pre-plan level.
+    await ext.commands["plan"].handler("", ctx);
+    assert.equal(ext.thinkingLevel, "xhigh", "plan thinking applied on enter");
+    await ext.commands["plan"].handler("", ctx);
+    assert.notEqual(ext.thinkingLevel, "xhigh", "pre-plan thinking restored on leave");
+  });
+
+  it("/plan-model clear removes the global plan model and restores in-session", async () => {
+    cleanPrefs();
+    writePrefs(JSON.stringify({ version: 3, planModel: "zai-anthropic/glm-5.3" }));
+    const ext = createFakePi(["read"], {});
+    const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.commands["plan"].handler("", ctx); // enter plan mode -> glm-5.3
+    ctx.model = { provider: "zai-anthropic", id: "glm-5.3" };
+
+    ext.modelSets.length = 0;
+    await ext.commands["plan-model"].handler("clear", ctx);
+    assert.equal(prefsOnDisk().planModel, undefined, "plan model cleared");
+    const restored = ext.modelSets[ext.modelSets.length - 1];
+    assert.ok(restored && restored.provider === "opencode-go", "pre-plan model restored on clear");
+  });
+
+  it("plan model set while plan mode is active applies immediately", async () => {
+    cleanPrefs();
+    const ext = createFakePi(["read"], {});
+    const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await ext.commands["plan"].handler("", ctx); // enter plan mode (no plan model yet)
+    ext.modelSets.length = 0;
+
+    await ext.commands["plan-model"].handler("zai-anthropic/glm-5.3", ctx);
+    const last = ext.modelSets[ext.modelSets.length - 1];
+    assert.ok(last && last.provider === "zai-anthropic", "applied immediately while planning");
+  });
+
+  it("plan-mode starts with --plan apply the plan config; normal starts stay stock Pi", async () => {
+    cleanPrefs();
+    writePrefs(JSON.stringify({ version: 3, planModel: "zai-anthropic/glm-5.3", planThinking: "high" }));
     const ext = createFakePi(["read"], { plan: true });
-    const ctx = modelCtx({ provider: "test", id: "model-1" });
-    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx); // --plan, planModel unset -> no switch
-    assert.equal(ext.modelSets.length, 0, "no switch when planModel is absent (backward compatible)");
+    const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    assert.ok(ext.modelSets.some((m: any) => m.provider === "zai-anthropic" && m.id === "glm-5.3"),
+      "--plan start applies the plan model");
 
-    mkdirSync(path.dirname(prefsPath()), { recursive: true });
-    writeFileSync(prefsPath(), JSON.stringify({ version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {}, planModel: "zai-coding-cn/glm-5.2" }));
-    const fresh = createFakePi(["read"], { plan: true });
-    const ctx2 = modelCtx({ provider: "test", id: "model-1" });
-    await fresh.handlers.session_start?.[0]({ reason: "startup" }, ctx2);
-    assert.ok((fresh as any).modelSets.some((m: any) => m.provider === "zai-coding-cn" && m.id === "glm-5.2"),
-      "session_start applies a persisted planModel under --plan");
+    const ext2 = createFakePi(["read"], {});
+    const ctx2 = modelCtx({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
+    await ext2.handlers.session_start?.[0]({ reason: "startup" }, ctx2);
+    assert.equal(ext2.modelSets.length, 0, "normal start leaves the active model alone");
   });
 
-  it("applies the plan model's per-model thinking on plan-mode entry", async () => {
+  it("resume keeps the session model (no plan/global override)", async () => {
     cleanPrefs();
-    writeFileSync(prefsPath(), JSON.stringify({
+    writePrefs(JSON.stringify({ version: 3, planModel: "zai-anthropic/glm-5.3" }));
+    const ext = createFakePi(["read"], {});
+    const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
+    await ext.handlers.session_start?.[0]({ reason: "resume" }, ctx);
+    assert.equal(ext.modelSets.length, 0, "resume does not switch models");
+  });
+
+  it("legacy v2 preferences migrate to v3 (plan model + thinking kept, normal-mode prefs dropped)", async () => {
+    cleanPrefs();
+    writePrefs(JSON.stringify({
       version: 2,
-      defaults: { planThinking: "high", normalThinking: "medium" },
-      perModel: {
-        "opencode-go/deepseek-v4-flash": { planThinking: "off", normalThinking: "high" },
-        "zai-coding-cn/glm-5.2": { planThinking: "high", normalThinking: "high" },
-      },
-      planModel: "zai-coding-cn/glm-5.2",
-      normalModel: "opencode-go/deepseek-v4-flash",
+      defaults: { planThinking: "high", normalThinking: "low" },
+      perModel: { "test/model-1": { planThinking: "low", normalThinking: "low" } },
+      planModel: "zai-anthropic/glm-5.3",
+      normalModel: "opencode-go/deepseek-v4.1-flash",
     }));
-    const ext = createFakePi(["read"], {});
-    const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4-flash" });
+    const ext = createFakePi(["read"], { plan: true });
+    const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
     await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
-    // normal mode starts with deepseek; thinking should be deepseek's normal
-    assert.equal(ext.thinkingLevel, "high", "normal mode uses normal model's thinking");
+    assert.ok(ext.modelSets.some((m: any) => m.provider === "zai-anthropic"), "v2 plan model honored");
 
-    // enter plan mode — should switch to glm-5.2 and apply ITS planThinking
-    await ext.commands["plan"].handler("", ctx);
-    assert.equal(ext.thinkingLevel, "high", "plan mode applies plan model's planThinking, not the normal model's stale planThinking");
+    await ext.commands["plan-model"].handler("test/model-1", ctx); // rewrite -> v3 on disk
+    const saved = prefsOnDisk();
+    assert.equal(saved.version, 3, "rewritten as v3");
+    assert.equal(saved.normalModel, undefined, "normal-mode model dropped");
+    assert.equal(saved.defaults, undefined, "v2 defaults dropped");
   });
 
-  it("defers applyModeModel when the configured model is not yet in the registry", async () => {
+  it("a plan model missing from the registry warns once, then retries silently (bounded)", async function () {
+    this.timeout(8000);
     cleanPrefs();
-    writeFileSync(prefsPath(), JSON.stringify({
-      version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {},
-      planModel: "router/glm/glm-5.2",
-    }));
+    writePrefs(JSON.stringify({ version: 3, planModel: "ghost/model" }));
     const notices: string[] = [];
-    const ext = createFakePi(["read"], { plan: true });
-    // Registry starts EMPTY (9router models not loaded yet)
+    const ext = createFakePi(["read"], {});
+    const models = [{ provider: "opencode-go", id: "deepseek-v4.1-flash" }];
     const ctx = fakeCtx({
-      model: { provider: "test", id: "model-1" },
-      modelRegistry: { getAvailable: () => [], refresh: async () => {}, find: () => undefined },
-    });
-    ctx.ui.notify = (m: string) => notices.push(m); // preserve theme.fg from fakeCtx
-    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
-    // No switch happened (model not found), but a retry is scheduled
-    assert.equal(ext.modelSets.length, 0, "no switch when model not in registry");
-    assert.ok(notices.some((n) => /not loaded yet/i.test(n)), "notifies that a retry is scheduled");
-  });
-
-  it("applies the deferred model when router:models-loaded fires", async () => {
-    cleanPrefs();
-    writeFileSync(prefsPath(), JSON.stringify({
-      version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {},
-      planModel: "router/glm/glm-5.2",
-    }));
-    const ext = createFakePi(["read"], { plan: true });
-    const glmModel = { provider: "router", id: "glm/glm-5.2" };
-    // Registry starts empty; find() will return the model only AFTER we flip a flag
-    let loaded = false;
-    const ctx = fakeCtx({
-      model: { provider: "test", id: "model-1" },
+      model: { provider: "opencode-go", id: "deepseek-v4.1-flash" },
       modelRegistry: {
-        getAvailable: () => (loaded ? [glmModel] : []),
+        getAvailable: () => models,
         refresh: async () => {},
-        find: (p: string, i: string) => loaded && p === "router" && i === "glm/glm-5.2" ? glmModel : undefined,
+        find: (p: string, i: string) => models.find((m) => m.provider === p && m.id === i),
       },
     });
-    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
-    assert.equal(ext.modelSets.length, 0, "no switch yet — model not loaded");
-
-    // Simulate router finishing its model load
-    loaded = true;
-    for (const h of ext.eventHandlers?.["router:models-loaded"] ?? []) h({ provider: "router", count: 1 });
-    // The event handler runs synchronously inside applyModeModel; await a microtask
-    await new Promise((r) => setTimeout(r, 0));
-    assert.ok(ext.modelSets.some((m: any) => m.provider === "router" && m.id === "glm/glm-5.2"),
-      "deferred model applies after the models-loaded signal");
-  });
-
-  it("reports a warning (not 'switched') when setModel returns false (no auth)", async () => {
-    cleanPrefs();
-    writeFileSync(prefsPath(), JSON.stringify({
-      version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {},
-      planModel: "zai-coding-cn/glm-5.2",
-    }));
-    const notices: string[] = [];
-    const ext = createFakePi(["read"], { plan: true });
-    ext.setModelFalse = true; // setModel returns false — no API key
-    const ctx = modelCtx({ provider: "test", id: "model-1" });
     ctx.ui.notify = (m: string) => notices.push(m);
     await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
-    assert.ok(notices.some((n) => /No API key/i.test(n)), "warns about missing auth");
-    assert.ok(!notices.some((n) => /Switched to/i.test(n)), "does NOT report a successful switch");
+
+    await ext.commands["plan"].handler("", ctx); // enter plan mode -> ghost model missing
+    const notLoaded = () => notices.filter((n) => /not loaded yet/.test(n)).length;
+    assert.equal(notLoaded(), 1, "warns exactly once");
+    assert.equal(ext.modelSets.length, 0);
+
+    // Simulate the retry timer + router:models-loaded firing repeatedly.
+    await new Promise((r) => setTimeout(r, 1700));
+    ext.pi.events.emit("router:models-loaded", {});
+    await new Promise((r) => setTimeout(r, 1700));
+    ext.pi.events.emit("router:models-loaded", {});
+    await new Promise((r) => setTimeout(r, 1700));
+    assert.equal(notLoaded(), 1, "retries stay silent — no toast loop");
+    assert.equal(ext.modelSets.length, 0);
   });
 
-  it("retries the skipped per-mode model apply on the next prompt after /login", async () => {
+  it("session_tree to a non-plan branch restores the pre-plan model and thinking", async () => {
     cleanPrefs();
-    writeFileSync(prefsPath(), JSON.stringify({
-      version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {},
-      normalModel: "zai-coding-cn/glm-5.2",
-    }));
-    const notices: string[] = [];
+    writePrefs(JSON.stringify({ version: 3, planModel: "zai-anthropic/glm-5.3", planThinking: "high" }));
     const ext = createFakePi(["read"], {});
-    ext.setModelFalse = true; // no API key yet — apply is skipped at startup
-    const ctx = modelCtx({ provider: "test", id: "model-1" });
-    ctx.ui.notify = (m: string) => notices.push(m);
+    const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
     await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
-    assert.ok(notices.some((n) => /No API key/i.test(n)), "warns about missing auth at startup");
-    assert.ok(!notices.some((n) => /Switched to/i.test(n)), "does NOT switch while auth is missing");
-    assert.equal(ext.modelSets.length, 1, "exactly one (failed) apply attempt at startup");
-
-    // User runs /login; on the next prompt, the deferred apply succeeds.
-    ext.setModelFalse = false;
-    await ext.handlers["before_agent_start"]?.[0]({ prompt: "hi", systemPrompt: "" }, ctx);
-    await new Promise((r) => setTimeout(r, 0));
-    assert.ok(ext.modelSets.some((m: any) => m.provider === "zai-coding-cn" && m.id === "glm-5.2"),
-      "deferred model applies on the next prompt after auth is configured");
-    assert.ok(notices.some((n) => /Switched to/i.test(n)), "reports the successful switch");
-
-    // A second prompt must not re-apply (authApplyDone set after the one-shot retry).
-    const appliedAfterRetry = ext.modelSets.length;
-    await ext.handlers["before_agent_start"]?.[0]({ prompt: "again", systemPrompt: "" }, ctx);
-    await new Promise((r) => setTimeout(r, 0));
-    assert.equal(ext.modelSets.length, appliedAfterRetry, "no re-apply once the one-shot retry has fired");
-  });
-
-  it("one-shot retry does not loop or override an in-session /model pick", async () => {
-    cleanPrefs();
-    writeFileSync(prefsPath(), JSON.stringify({
-      version: 2, defaults: { planThinking: "high", normalThinking: "medium" }, perModel: {},
-      normalModel: "zai-coding-cn/glm-5.2",
-    }));
-    const notices: string[] = [];
-    const ext = createFakePi(["read"], {});
-    ext.setModelFalse = true; // glm-5.2 has no auth yet → apply skipped + retry armed
-    const ctx = modelCtx({ provider: "test", id: "model-1" });
-    ctx.ui.notify = (m: string) => notices.push(m);
-    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
-    assert.ok(notices.some((n) => /No API key/i.test(n)), "startup warns about missing auth");
-
-    // User picks a DIFFERENT model (deepseek-v4-flash) via /model mid-session.
-    // recordActiveModel updates normalModel — the pending retry must respect it.
-    await ext.handlers.model_select?.[0]({ model: { provider: "opencode-go", id: "deepseek-v4-flash" }, previousModel: { provider: "test", id: "model-1" }, source: "set" }, ctx);
-    // Simulate that model now having auth; the one-shot retry fires on next prompt.
-    ext.setModelFalse = false;
-    await ext.handlers["before_agent_start"]?.[0]({ prompt: "hi", systemPrompt: "" }, ctx);
-    await new Promise((r) => setTimeout(r, 0));
-
-    // The retry applied the user's pick (deepseek-v4-flash), NOT the original glm-5.2.
-    const lastSet = ext.modelSets[ext.modelSets.length - 1];
-    assert.ok(lastSet && lastSet.provider === "opencode-go" && lastSet.id === "deepseek-v4-flash",
-      "retry respects an in-session /model pick, does not revert to the stale normalModel");
-
-    // Even if auth is still missing on subsequent prompts, no further retries fire.
-    ext.setModelFalse = true;
-    const appliedAfterRetry = ext.modelSets.length;
-    await ext.handlers["before_agent_start"]?.[0]({ prompt: "again", systemPrompt: "" }, ctx);
-    await new Promise((r) => setTimeout(r, 0));
-    assert.equal(ext.modelSets.length, appliedAfterRetry, "one-shot: no re-arm or loop after consumption");
-  });
-
-  it("does not record a model_select with an unknown source", async () => {
-    cleanPrefs();
-    const ext = createFakePi(["read"], {});
-    const ctx = modelCtx({ provider: "test", id: "model-1" });
-    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
-    await ext.commands["plan"].handler("", ctx); // enter plan mode
-
-    // An extension emits model_select with a non-user source (e.g. "refresh")
-    await ext.handlers.model_select?.[0](
-      { model: { provider: "opencode-go", id: "deepseek-v4-flash" }, previousModel: { provider: "test", id: "model-1" }, source: "refresh" },
-      ctx,
-    );
-
-    // Re-enter plan mode: planModel should NOT be deepseek (the unknown-source pick)
+    await ext.commands["plan"].handler("", ctx); // enter plan mode -> glm-5.3 + high
+    ctx.model = { provider: "zai-anthropic", id: "glm-5.3" };
     ext.modelSets.length = 0;
-    await ext.commands["plan"].handler("", ctx); // leave
-    await ext.commands["plan"].handler("", ctx); // re-enter
-    assert.equal(ext.modelSets.length, 0, "unknown-source model_select was not recorded as planModel");
+
+    // Switch to a branch with no pi-plan entry (leaves plan mode implicitly).
+    const branchCtx = modelCtx({ provider: "zai-anthropic", id: "glm-5.3" });
+    await ext.handlers.session_tree?.[0]({}, branchCtx);
+
+    const restored = ext.modelSets[ext.modelSets.length - 1];
+    assert.ok(restored && restored.provider === "opencode-go", "pre-plan model restored on branch switch");
+    assert.equal(ext.thinkingLevel, "medium", "pre-plan thinking restored on branch switch");
+  });
+
+  it("a corrupt settings.json is backed up before being replaced", async () => {
+    cleanPrefs();
+    writeFileSync(prefsPath(), "{ this is not json ");
+    const ext = createFakePi(["read"], {});
+    const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx); // loads defaults
+    await ext.commands["plan-thinking"].handler("high", ctx); // triggers a save
+
+    assert.ok(existsSync(`${prefsPath()}.corrupt`), "corrupt file backed up");
+    assert.equal(readFileSync(`${prefsPath()}.corrupt`, "utf8"), "{ this is not json ", "original bytes retained");
+    assert.equal(prefsOnDisk().planThinking, "high", "fresh settings written");
+  });
+
+  it("savePreferences removes its tmp file when the final rename fails", async () => {
+    cleanPrefs();
+    // Force the rename to throw twice: settings.json and its .corrupt backup
+    // are both non-empty directories, so the corrupt-backup rename AND the
+    // tmp→settings.json rename both fail (ENOTEMPTY) — driving savePreferences
+    // into the unlink(tmp) cleanup path. Valid legacy prefs force the
+    // migration path that calls savePreferences.
+    const settingsDir = prefsPath();
+    const corruptDir = `${settingsDir}.corrupt`;
+    const legacy = legacyPrefsPath();
+    rmSync(settingsDir, { recursive: true, force: true }); // cleanPrefs() recreated it as a file
+    mkdirSync(path.join(settingsDir, "keep"), { recursive: true });
+    writeFileSync(path.join(settingsDir, "keep", "f.txt"), "x");
+    mkdirSync(path.join(corruptDir, "keep"), { recursive: true });
+    writeFileSync(path.join(corruptDir, "keep", "f.txt"), "x");
+    mkdirSync(path.dirname(legacy), { recursive: true });
+    writeFileSync(legacy, JSON.stringify({ version: 3 }));
+
+    try {
+      const ext = createFakePi(["read"], {});
+      const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
+      await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx); // migration attempts the save
+
+      const tmp = `${prefsPath()}.${process.pid}.tmp`;
+      assert.ok(!existsSync(tmp), "tmp file cleaned up after failed rename");
+    } finally {
+      rmSync(settingsDir, { recursive: true, force: true });
+      rmSync(corruptDir, { recursive: true, force: true });
+    }
+  });
+
+  it("/plan-model without a ref opens the picker in the TUI", async () => {
+    initTheme("dark");
+    cleanPrefs();
+    const ext = createFakePi(["read"], {});
+    const ctx = modelCtx({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
+    ctx.mode = "tui";
+    ctx.ui.custom = async (factory: any) => new Promise<any>((resolve) => {
+      const done = (result: any) => resolve(result);
+      const component = factory({ requestRender() {} }, {}, {}, done);
+      setTimeout(() => component.handleInput("\r"), 0);
+    });
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    await ext.commands["plan-model"].handler("", ctx);
+    assert.ok(prefsOnDisk().planModel, "picker selection saved as the plan model");
   });
 });
+
 
 describe("fallback model chain", () => {
   function fallbackCtx(model: any): any {
@@ -2591,7 +2674,7 @@ describe("fallback model chain", () => {
 
   it("switches to the first fallback on overload", async () => {
     cleanPrefs();
-    writeFileSync(prefsPath(), JSON.stringify({
+    writePrefs(JSON.stringify({
       version: 2,
       defaults: { planThinking: "high", normalThinking: "medium" },
       perModel: {},
@@ -2609,7 +2692,7 @@ describe("fallback model chain", () => {
 
   it("advances through the chain when each fallback also overloads (review: CRITICAL)", async () => {
     cleanPrefs();
-    writeFileSync(prefsPath(), JSON.stringify({
+    writePrefs(JSON.stringify({
       version: 2,
       defaults: { planThinking: "high", normalThinking: "medium" },
       perModel: {},
@@ -2633,7 +2716,7 @@ describe("fallback model chain", () => {
 
   it("skips a fallback missing from the registry (review: MEDIUM)", async () => {
     cleanPrefs();
-    writeFileSync(prefsPath(), JSON.stringify({
+    writePrefs(JSON.stringify({
       version: 2,
       defaults: { planThinking: "high", normalThinking: "medium" },
       perModel: {},
@@ -2651,7 +2734,7 @@ describe("fallback model chain", () => {
 
   it("restores the primary model on a successful message (review: HIGH)", async () => {
     cleanPrefs();
-    writeFileSync(prefsPath(), JSON.stringify({
+    writePrefs(JSON.stringify({
       version: 2,
       defaults: { planThinking: "high", normalThinking: "medium" },
       perModel: {},
@@ -2674,7 +2757,7 @@ describe("fallback model chain", () => {
 
   it("resets the chain on a successful message so the next overload switches again", async () => {
     cleanPrefs();
-    writeFileSync(prefsPath(), JSON.stringify({
+    writePrefs(JSON.stringify({
       version: 2,
       defaults: { planThinking: "high", normalThinking: "medium" },
       perModel: {},
@@ -2696,7 +2779,7 @@ describe("fallback model chain", () => {
 
   it("does not trigger on non-overload errors (e.g. context overflow)", async () => {
     cleanPrefs();
-    writeFileSync(prefsPath(), JSON.stringify({
+    writePrefs(JSON.stringify({
       version: 2,
       defaults: { planThinking: "high", normalThinking: "medium" },
       perModel: {},
@@ -2726,7 +2809,7 @@ describe("fallback model chain", () => {
 
   it("restores the primary on the NEXT turn when a turn ended on a fallback (review: HIGH)", async () => {
     cleanPrefs();
-    writeFileSync(prefsPath(), JSON.stringify({
+    writePrefs(JSON.stringify({
       version: 2,
       defaults: { planThinking: "high", normalThinking: "medium" },
       perModel: {},
@@ -2756,13 +2839,13 @@ describe("fallback model chain", () => {
       "before_agent_start restores the primary after a turn ended on a fallback");
     // The model_select emission during restore must NOT have overwritten the
     // persisted per-mode preference.
-    const saved = JSON.parse(readFileSync(prefsPath(), "utf8"));
+    const saved = JSON.parse(readFileSync(prefsPath(), "utf8"))["pi-plan"];
     assert.equal(saved.normalModel, "test/model-1", "restore did not corrupt normalModel");
   });
 
   it("does not corrupt per-mode model preferences on fallback switch (review: MEDIUM)", async () => {
     cleanPrefs();
-    writeFileSync(prefsPath(), JSON.stringify({
+    writePrefs(JSON.stringify({
       version: 2,
       defaults: { planThinking: "high", normalThinking: "medium" },
       perModel: {},
@@ -2784,13 +2867,13 @@ describe("fallback model chain", () => {
     await ext.handlers.before_agent_start?.[0]({ prompt: "task" }, ctx);
 
     await ext.handlers.message_end?.[0]({ message: overloadMsg() }, ctx);
-    const saved = JSON.parse(readFileSync(prefsPath(), "utf8"));
+    const saved = JSON.parse(readFileSync(prefsPath(), "utf8"))["pi-plan"];
     assert.equal(saved.normalModel, "test/model-1", "per-mode pick not overwritten by fallback switch");
   });
 
   it("exhausts the chain without looping when all fallbacks overload (review: LOW)", async () => {
     cleanPrefs();
-    writeFileSync(prefsPath(), JSON.stringify({
+    writePrefs(JSON.stringify({
       version: 2,
       defaults: { planThinking: "high", normalThinking: "medium" },
       perModel: {},
@@ -2809,7 +2892,7 @@ describe("fallback model chain", () => {
 
   it("notifies and keeps the reference when the primary is not in the registry (review: MEDIUM)", async () => {
     cleanPrefs();
-    writeFileSync(prefsPath(), JSON.stringify({
+    writePrefs(JSON.stringify({
       version: 2,
       defaults: { planThinking: "high", normalThinking: "medium" },
       perModel: {},
@@ -2987,31 +3070,17 @@ describe("ask_user_question validation", () => {
     assert.match(res.content?.[0]?.text ?? "", /UI is not available/);
   });
 
-  it("deprecated ask_plan_question alias still resolves and warns", async () => {
+  it("deprecated ask_plan_question alias is no longer registered", async () => {
     const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
-    const notified: string[] = [];
-    const ctx = fakeCtx({
-      hasUI: true,
-      mode: "tui",
-      ui: {
-        ...fakeCtx().ui,
-        notify: (msg: string) => { notified.push(msg); },
-        select: async () => "A",
-      },
-    });
+    const ctx = fakeCtx({ hasUI: true });
     await handlers.session_start?.[0]({ reason: "startup" }, ctx);
 
-    const qd = toolDefs.ask_plan_question;
-    assert.ok(qd, "deprecated alias should still be registered");
-    const res = await qd.execute("c1", { question: "Q?", options: [{ label: "A" }, { label: "B" }] }, undefined, undefined, ctx);
-    assert.ok(res);
-    assert.ok(notified.some((m) => m.includes("deprecated")), "should warn about deprecation");
-    assert.equal(res.details?.answer, "A");
+    assert.equal(toolDefs.ask_plan_question, undefined, "removed alias must stay removed");
   });
 });
 
 describe("ask_user_question interactive list flow", () => {
-  // Uses the built-in ctx.ui.select dialog (same UX as the original ask_plan_question).
+  // Uses the built-in ctx.ui.select dialog.
   // The recommended option is marked with ★; "Other / type my answer" opens a simple editor.
 
   async function runWithSelect(
@@ -3124,6 +3193,73 @@ describe("ask_user_question interactive list flow", () => {
 });
 
 describe("flow loop regression coverage", () => {
+  it("plan-mode re-entry aborts an in-flight flow's review timer (0.13.1)", async () => {
+    const state = createFakePi(["read"], { plan: false });
+    let reviewSignal: AbortSignal | undefined;
+    // Accept the review but never respond — the review stays in flight with
+    // its idle timer armed.
+    state.onEmit = (event, data) => {
+      if (event === "pi-review:run") {
+        reviewSignal = data.signal;
+        assert.ok(data.accept());
+      }
+    };
+
+    const flowCwd = createGitRepo("pi-plan-flow-reentry-");
+    const planPath = path.join(flowCwd, "plan.md");
+    writeFileSync(planPath, "# Plan");
+
+    const ctx = fakeCtx({
+      cwd: flowCwd,
+      sessionManager: {
+        getBranch: () => [
+          {
+            type: "custom",
+            customType: "pi-plan",
+            data: {
+              enabled: false,
+              lastPlanPath: planPath,
+              lastPlanTitle: "Some Plan",
+              lastPlanStatus: "approved",
+              flow: {
+                phase: "implement",
+                reviewPass: 0,
+                baseline: "abc",
+                initialDirty: "none",
+                initialDirtyPatch: "",
+                initialUntrackedSnapshot: "[]",
+              },
+            },
+          },
+          {
+            type: "message",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "We verified everything. [verification: pass]" }],
+            },
+          },
+        ],
+      },
+    });
+
+    await state.handlers.session_tree?.[0]({}, ctx);
+    const settled = state.handlers.agent_settled?.[0];
+    assert.ok(settled);
+    const settledDone = settled({}, ctx); // enters review, waits for pi-review
+    await new Promise((r) => setTimeout(r, 20));
+    assert.ok(reviewSignal, "flow reached the review phase");
+
+    // Re-enter plan mode while the review is in flight.
+    await state.commands["plan"].handler("", ctx);
+
+    assert.ok(reviewSignal.aborted, "re-entry aborted the in-flight review");
+    await settledDone;
+    assert.equal(state.customMessages.length, 0, "discarded flow emits no result");
+    const lastEntry = state.entries[state.entries.length - 1];
+    assert.equal(lastEntry?.data?.flow, undefined, "flow discarded on re-entry");
+    assert.equal(lastEntry?.data?.lastPlanStatus, undefined, "plan status cleared on re-entry");
+  });
+
   it("stops when verification marker is absent", async () => {
     const state = createFakePi(["read"], { plan: false });
     const ctx = fakeCtx({
@@ -3392,5 +3528,52 @@ describe("flow loop regression coverage", () => {
     const stoppedEntry = state.entries[state.entries.length - 1];
     assert.equal(stoppedEntry?.data?.flow?.phase, "stopped");
     assert.equal(state.customMessages.length, 0, "malformed review never reports clean completion");
+  });
+});
+
+describe("slash-argument completions", () => {
+  it("/plan-fallback set preserves the typed head in completion values", async () => {
+    const { commands, handlers } = createFakePi([]);
+    const ctx = fakeCtx({
+      modelRegistry: {
+        getAvailable: () => [
+          { provider: "prov", id: "m1", contextWindow: 8_000 },
+          { provider: "prov", id: "m2", contextWindow: 8_000 },
+        ],
+        find: () => undefined,
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const cmd = commands["plan-fallback"];
+    const first = cmd.getArgumentCompletions("set");
+    assert.deepEqual(first.map((i: any) => i.value), ["set", "clear"].filter((v) => v.startsWith("set")));
+    const items = cmd.getArgumentCompletions("set ") as Array<{ value: string; label: string }>;
+    assert.ok(items.length >= 2);
+    for (const item of items) {
+      assert.ok(item.value.startsWith("set "), `head preserved: ${item.value}`);
+    }
+    assert.ok(items.some((i) => i.value === "set prov/m1"));
+    const narrowed = cmd.getArgumentCompletions("set prov/m1 ") as Array<{ value: string }>;
+    assert.ok(narrowed.every((i) => i.value.startsWith("set prov/m1 ")), "second-chain refs keep first ref in head");
+  });
+
+  it("/plan-approve and /goal offer their keyword vocabularies", () => {
+    const { commands } = createFakePi([]);
+    const approve = commands["plan-approve"].getArgumentCompletions("") as Array<{ value: string }>;
+    assert.deepEqual(approve.map((i) => i.value), ["current", "new", "flow"]);
+    const goal = commands["goal"].getArgumentCompletions("") as Array<{ value: string }>;
+    assert.deepEqual(goal.map((i) => i.value), ["status", "pause", "resume", "clear"]);
+    assert.equal(commands["goal"].getArgumentCompletions("fix the bug"), null, "free-text objective → no popup");
+  });
+
+  it("/plan-model and /plan-thinking offer their value vocabularies", () => {
+    const { commands } = createFakePi([]);
+    const model = commands["plan-model"].getArgumentCompletions("") as Array<{ value: string }>;
+    assert.deepEqual(model.map((i) => i.value), ["clear"], "no -g anymore; models resolve inline");
+    assert.equal(commands["plan-model"].getArgumentCompletions("opencode"), null, "no registry primed -> no model popup");
+    const thinking = commands["plan-thinking"].getArgumentCompletions("x") as Array<{ value: string }>;
+    assert.deepEqual(thinking.map((i) => i.value), ["xhigh"]);
+    const thinkingAll = commands["plan-thinking"].getArgumentCompletions("") as Array<{ value: string }>;
+    assert.ok(thinkingAll.some((i) => i.value === "clear") && !thinkingAll.some((i) => i.value === "-g"));
   });
 });

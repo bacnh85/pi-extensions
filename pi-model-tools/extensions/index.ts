@@ -34,7 +34,7 @@ import {
   normalizeToLF,
 } from "./lib/edit-repair.ts";
 import { parsePatch, applyPatchToFiles, PatchParseError } from "./lib/apply-patch.ts";
-import { stripReasoningContent, cleanLeakedContentFromMessages, appendGuidanceToLastUserMessage } from "./lib/reasoning-content.ts";
+import { stripReasoningContent, cleanLeakedContentFromMessages, appendGuidanceToLastUserMessage, tailIsPlainUserPrompt } from "./lib/reasoning-content.ts";
 import {
   looksLikeCodePath,
   isSemanticMissToolCall,
@@ -47,6 +47,8 @@ import {
   type ErrorCategory,
 } from "./lib/shell-helpers.ts";
 import { debugLog, logWarn } from "./lib/logger.ts";
+import { readStoredCredential } from "@earendil-works/pi-coding-agent";
+
 import {
   MINIMAL_SYSTEM_PROMPT,
   BOOTSTRAP_TOOLS,
@@ -58,6 +60,20 @@ import {
   WE_NEED_DIRECTIVE,
 } from "./lib/ds-anchor.ts";
 import { createStrReplaceEditorToolDefinition } from "./lib/str-replace-editor.ts";
+import {
+  registerZaiAnthropicProvider,
+  applyFastModeHeaders,
+  applyFastModeBody,
+  zaiAnthropicBaseUrl,
+  PROVIDER_ID,
+} from "./lib/zai-anthropic.ts";
+import { throttleZaiDispatch } from "./lib/zai-throttle.ts";
+import {
+  applyZcodeSigningHeaders,
+  getZcodeSigningManager,
+  pickZcodeCredential,
+  zcodeSigningEnabled,
+} from "./lib/zcode-signing.ts";
 import {
   deepSeekSelectionGuidance,
   clearGuidanceCache,
@@ -119,7 +135,7 @@ async function readFileForRetry(filePath: string, cwd: string): Promise<string |
   }
 }
 
-function wrapToolDefinition(base: any, factory: (cwd: string) => any, shouldRepair: () => boolean, onRepair: (toolName: string, repairs: readonly RepairKind[]) => void): any {
+function wrapToolDefinition(base: any, factory: (cwd: string) => any, shouldRepair: () => boolean, onRepair: (toolName: string, repairs: readonly RepairKind[]) => void, editMismatchCounts?: Map<string, number>, activeToolNames?: () => readonly string[]): any {
   return {
     ...base,
     prepareArguments(args: unknown) {
@@ -144,8 +160,21 @@ function wrapToolDefinition(base: any, factory: (cwd: string) => any, shouldRepa
       if (isRecord(params)) delete params.__mtReadNote;
 
       if (base.name !== "edit") {
-        const result = await freshDef.execute(toolCallId, params, signal, onUpdate, ctx);
-        return base.name === "read" ? appendReadNote(result, readNote) : result;
+        try {
+          const result = await freshDef.execute(toolCallId, params, signal, onUpdate, ctx);
+          return base.name === "read" ? appendReadNote(result, readNote) : result;
+        } catch (err: any) {
+          // Session mining: "(no output) / Command exited with code 1" after a
+          // search reads as a crash, so models retry the same command. Annotate
+          // it as a no-match result — but only for search-like commands; for
+          // predicates (git diff --quiet, test -f, kill -0) exit 1 IS the answer.
+          const message: string = err?.message ? String(err.message) : "";
+          const command = typeof params?.command === "string" ? params.command : "";
+          if (base.name === "bash" && /\b(rg|grep|find|fd|ls|which|whereis|ag|ack)\b/.test(command) && /^\(no output\)\s*\n*\s*Command exited with code \d+/.test(message)) {
+            throw new Error(`${message}\n\nNote: no output with a non-zero exit usually means the search/lookup found no matches — change the pattern or tool instead of retrying the same command.`);
+          }
+          throw err;
+        }
       }
 
       // edit: try once; on a match-failure, retry once with trim-tolerant
@@ -153,10 +182,12 @@ function wrapToolDefinition(base: any, factory: (cwd: string) => any, shouldRepa
       // error that shows the nearest region.
       try {
         const result = await freshDef.execute(toolCallId, params, signal, onUpdate, ctx);
+        editMismatchCounts?.delete(resolvePath(cwd, typeof params?.path === "string" ? params.path : ""));
         return result;
-      } catch (err: any) {
-        const message: string = err?.message ? String(err.message) : "";
-        if (!isEditMismatchError(message)) throw err;
+      } catch (catchedErr: any) {
+        let err: any = catchedErr;
+        const initialMessage: string = err?.message ? String(err.message) : "";
+        if (!isEditMismatchError(initialMessage)) throw err;
 
         const filePath = typeof params?.path === "string" ? params.path : "";
         if (!filePath) throw err;
@@ -168,7 +199,7 @@ function wrapToolDefinition(base: any, factory: (cwd: string) => any, shouldRepa
           : (typeof params?.oldText === "string" ? [{ oldText: params.oldText, newText: params.newText }] : []);
         if (edits.length === 0) throw err;
 
-        const retry = computeRetryEdit(fileContent, edits, parseFailedEditIndex(message));
+        const retry = computeRetryEdit(fileContent, edits, parseFailedEditIndex(initialMessage));
         if (retry) {
           // Rebuild oldText from the file's real bytes (real indentation) so the
           // core exact matcher succeeds; keep the model's newText as-is.
@@ -176,22 +207,43 @@ function wrapToolDefinition(base: any, factory: (cwd: string) => any, shouldRepa
           if (Array.isArray(fixedParams.edits)) fixedParams.edits = retry.fixedEdits;
           else fixedParams.oldText = retry.fixedEdits[0].oldText;
           onRepair(base.name, ["trim-match-retry"]);
-          return await freshDef.execute(toolCallId, fixedParams, signal, onUpdate, ctx);
+          try {
+            return await freshDef.execute(toolCallId, fixedParams, signal, onUpdate, ctx);
+          } catch (retryErr: any) {
+            // A failed trim-retry is still a miss — fall through to the
+            // unresolvable path below so it counts toward escalation.
+            err = retryErr;
+          }
         }
 
         // Unresolvable: enrich the error with the nearest region so the model
         // can copy verbatim on the next turn. categorizeToolError checks
         // edit_mismatch before rate_limit/timeout for the edit tool, so a snippet
         // containing 'timeout'/'429' cannot misclassify this.
+        const message: string = err?.message ? String(err.message) : "";
         const failing = edits[Math.min(parseFailedEditIndex(message), edits.length - 1)];
         const nearest = failing ? nearestBlock(fileContent, stripReadContamination(failing.oldText).text) : "";
-        throw new Error(nearest ? `${message}\n\n${nearest}` : message);
+        // Session mining: 26% of mismatches fail again on retry (wrong content,
+        // not whitespace). Escalate to apply_patch after the second miss on the
+        // same file — different strategy beats a third exact-match attempt.
+        const misses = editMismatchCounts ? (editMismatchCounts.get(resolvePath(cwd, filePath)) ?? 0) + 1 : 1;
+        editMismatchCounts?.set(resolvePath(cwd, filePath), misses);
+        const escalate = misses >= 2 && (!activeToolNames || activeToolNames().includes("apply_patch"))
+          ? `\n\nedit has failed ${misses}× on this file. Switch to apply_patch with a small V4D diff (context + -/+ lines) — it does not require exact oldText.`
+          : "";
+        throw new Error(nearest ? `${message}\n\n${nearest}${escalate}` : `${message}${escalate}`);
       }
     },
   };
 }
 
 export default function (pi: ExtensionAPI) {
+  // GLM Coding Plan via the Anthropic endpoint (ZCode parity). Registered
+  // unconditionally — `apiKey: "$ZAI_ANTHROPIC_API_KEY"` makes /login
+  // auto-available; the key resolves from auth.json or env at request time.
+  // Guarded: minimal fake-pi test harnesses don't stub registerProvider.
+  registerZaiAnthropicProvider?.(pi);
+
   let repairThisTurn = false;
   let hasErrorThisTurn = false;
   let lastErrorInfo: ErrorInfo | null = null;
@@ -284,12 +336,16 @@ export default function (pi: ExtensionAPI) {
     // generally useful view/create/replace/insert editor in the full catalog).
     str_replace_editor: createStrReplaceEditorToolDefinition,
   };
+  // Session mining: per-file edit-mismatch counters — escalate to apply_patch
+  // after repeated unresolvable misses on the same file (26% retry-fail tail).
+  const editMismatchCounts = new Map<string, number>();
+  const activeToolsRef = () => pi.getActiveTools();
   for (const f of Object.values(toolFactories)) {
     const template = f(process.cwd());
     pi.registerTool(wrapToolDefinition(template, f, () => repairThisTurn, (toolName) => {
       repairCounts.set(toolName, (repairCounts.get(toolName) ?? 0) + 1);
       debugLog("repair:", toolName, repairCounts.get(toolName));
-    }));
+    }, editMismatchCounts, activeToolsRef));
   }
 
   // ── apply_patch: Codex-style diff/patch tool (robust for weak models) ──
@@ -396,6 +452,7 @@ export default function (pi: ExtensionAPI) {
   // ── session_start ──
   pi.on("session_start", (_event, ctx) => {
     sessionModel = ctx.model ? { id: ctx.model.id, provider: ctx.model.provider } : undefined;
+    editMismatchCounts.clear(); // per-session — misses from a prior session must not escalate
     // ds-anchor: reset and init from durable state (resume of a session that
     // already has an assistant reply = instantly promoted, no bootstrap).
     anchorReady = anchorTarget(ctx.model);
@@ -489,7 +546,10 @@ export default function (pi: ExtensionAPI) {
     }
 
     activeFamily = family(ctx.model);
-    repairThisTurn = activeFamily !== null && repairEnabled();
+    // Session mining: schema-driven TypeBox repair is deterministic and safe for
+    // ALL models — only steering/guidance stays family-gated. gpt-5.6-* sessions
+    // had edit/munin/serena validation errors that repair would have fixed.
+    repairThisTurn = repairEnabled();
     remindedThisTurn = false;
 
     if (!activeFamily) { debugLog("guidance: skipped (no family detected)"); return; }
@@ -527,15 +587,14 @@ export default function (pi: ExtensionAPI) {
 
     let systemPrompt = event.systemPrompt;
 
-    // apply_patch preference — all DeepSeek V4 (flash+pro); GLM excluded per
-    // eval. Eval (2026-07-29, 15 trials, 3 targets) showed all models use edit
-    // with zero edit_mismatch errors. DeepSeek keeps guidance as a safety net
-    // for real-world multi-file/frontmatter edits beyond the eval's scope; GLM
-    // excluded because it doesn't receive the suite of DeepSeek-specific
-    // steering (Super Power, selection guidance, semantic-miss blocking) and
-    // thus doesn't need the companion hint. Static per session (depends only
-    // on the active-tool set).
-    if (activeFamily === "deepseek-v4") {
+    // apply_patch preference — DeepSeek V4 (flash+pro) + GLM. DeepSeek keeps
+    // it as a safety net for real-world multi-file/frontmatter edits; GLM was
+    // excluded per the 2026-07-29 eval (edit-only usage), but 2026-09 session
+    // evidence showed GLM flash models falling back to bash heredocs
+    // (cat/python) for file creation without any steering — the hint (now
+    // with a create→write line) covers both families. Static per session
+    // (depends only on the active-tool set), so the prefix cache is unaffected.
+    if (activeFamily === "deepseek-v4" || activeFamily === "glm") {
       const patchHint = applyPatchPreferenceGuidance(activeForHint);
       if (patchHint) systemPrompt = `${systemPrompt}\n\n${patchHint}`;
     }
@@ -605,14 +664,13 @@ export default function (pi: ExtensionAPI) {
     // Append per-turn dynamic guidance to the current user message (request
     // tail) so the system-prompt cache head stays byte-identical across turns
     // (both DeepSeek exact-prefix and GLM Z.ai content-similarity caches).
-    // NOT cleared here: each provider round rebuilds the payload from canonical
-    // (guidance-free) context.messages, so re-appending the same guidance string
-    // produces byte-identical user messages every round. Clearing after round 1
-    // would make the user message exist in two byte forms within one turn
-    // (guided round 1, bare round 2+) and break the prefix cache at that
-    // boundary — the gap vs reasonix's >99% hit. pendingGuidance is reset at the
-    // next before_agent_start.
-    if (pendingGuidance) {
+    // FIRST ROUND OF THE TURN ONLY (payload tail is still the plain user
+    // prompt): mid-turn rounds end with tool results, where re-appending the
+    // hint reads as a fresh repeated demand and loops strict models into
+    // re-running bash ("I've been complying") instead of settling. Cache cost
+    // of skipping: a tail-only divergence of ~one user message per round; the
+    // cache head stays byte-stable.
+    if (pendingGuidance && tailIsPlainUserPrompt(payload)) {
       const withGuidance = appendGuidanceToLastUserMessage(payload, pendingGuidance);
       if (withGuidance !== payload) { debugLog("guidance: injected into user message"); payload = withGuidance; }
     }
@@ -621,14 +679,58 @@ export default function (pi: ExtensionAPI) {
       const cleaned = stripReasoningContent(payload);
       if (cleaned !== payload) { debugLog("reasoning: stripped"); payload = cleaned; }
     }
+    // Fast mode (speed:"fast") for the zai-anthropic provider — the speed tier
+    // ZCode uses. Header merge happens in before_provider_headers below; here
+    // we add the top-level body field only.
+    payload = applyFastModeBody(payload, { provider: ctx.model?.provider });
     if (payload !== event.payload) return payload;
+  });
+
+  // ── before_provider_headers: dispatch gate + fast-mode beta for zai-anthropic ──
+  pi.on("before_provider_headers", async (event, ctx) => {
+    // Cross-process dispatch gate (Z.ai 1302 request-rate limit): spaces request
+    // STARTS across all Pi processes on this machine. Holds only for the claim —
+    // released before this hook returns, never during the request/stream.
+    // ZAI_ANTHROPIC_MIN_INTERVAL_MS (default 1000, 0 disables).
+    const waitedMs = await throttleZaiDispatch(ctx.model?.provider, process.env, undefined, {
+      onError: (err) => logWarn("zai-throttle fail-open:", err.message),
+    });
+    if (waitedMs > 0) debugLog(`throttle: waited ${waitedMs}ms for zai-anthropic dispatch slot`);
+    applyFastModeHeaders(event.headers, { provider: ctx.model?.provider });
+    // ZCode Client-Signing V4 parity — default ON (opt out:
+    // ZAI_ANTHROPIC_SIGNING=0): identity headers + x-session-id + Ed25519/PoW
+    // signature, fail-open on every precondition. Awaited on purpose: the
+    // runner serializes headers right after handlers resolve, so the crypto
+    // must finish inside this hook.
+    if (zcodeSigningEnabled() && family(ctx.model)) {
+      // Header read first (what's on the wire); auth.json only touched when
+      // header and env both miss (avoids a sync read per provider request).
+      const credential = pickZcodeCredential(event.headers, process.env, () => {
+        const stored = readStoredCredential(PROVIDER_ID);
+        return stored?.type === "api_key" ? stored.key : undefined;
+      });
+      await applyZcodeSigningHeaders(event.headers, {
+        provider: ctx.model?.provider,
+        baseUrl: zaiAnthropicBaseUrl(),
+        sessionId:
+          typeof ctx.sessionManager?.getSessionId === "function" ? ctx.sessionManager.getSessionId() : undefined,
+        credential,
+      });
+    }
+  });
+
+  // ── after_provider_response: 401 ladder for the signing state ──
+  pi.on("after_provider_response", (event, ctx) => {
+    if (!zcodeSigningEnabled() || !family(ctx.model)) return;
+    if (event.status === 401) getZcodeSigningManager().noteResponse401();
+    else getZcodeSigningManager().noteResponseOk();
   });
 
   // ── tool_execution_end: categorize errors ──
   pi.on("tool_execution_end", (event, ctx) => {
     if (!event.isError || !family(ctx.model)) return;
     hasErrorThisTurn = true;
-    const info = categorizeToolError(event.toolName, event.result);
+    const info = categorizeToolError(event.toolName, event.result, pi.getActiveTools());
     lastErrorInfo = info;
     recordError(event.toolName, info.category);
     logWarn(event.toolName, info.category);
@@ -642,7 +744,21 @@ export default function (pi: ExtensionAPI) {
   //    normal tool errors (those arrive via tool_execution_end).
   pi.on("message_end", (event, ctx) => {
     if (!family(ctx.model)) return;
-    const msg = event.message as { role?: string; stopReason?: string; errorMessage?: string };
+    const msg = event.message as {
+      role?: string;
+      stopReason?: string;
+      errorMessage?: string;
+      usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
+    };
+    // Cache-visibility aid for the ZCode-parity testing circle: per-response
+    // usage incl. cacheRead, when debug logging is on.
+    if (msg.role === "assistant" && msg.usage && process.env.PI_MODEL_TOOLS_DEBUG) {
+      const u = msg.usage;
+      debugLog(
+        "provider usage:",
+        `in=${u.input ?? "?"} out=${u.output ?? "?"} cacheRead=${u.cacheRead ?? 0} cacheWrite=${u.cacheWrite ?? 0}`,
+      );
+    }
     if (msg.role !== "assistant" || msg.stopReason !== "error") return;
     const errorText = String(msg.errorMessage ?? "");
     if (!detectReasoningRejection(errorText)) return;
@@ -690,9 +806,9 @@ export default function (pi: ExtensionAPI) {
     if (event.message.role !== "assistant") return;
     const usage = event.message.usage;
     if (!usage) return;
-    const input = usage.input;
-    const cacheRead = usage.cacheRead;
-    const cacheWrite = usage.cacheWrite;
+    const input = usage.input ?? 0;
+    const cacheRead = usage.cacheRead ?? 0;
+    const cacheWrite = usage.cacheWrite ?? 0;
     if (input === 0 && cacheRead === 0 && cacheWrite === 0) return;
     cacheStats.input += input;
     cacheStats.cacheRead += cacheRead;

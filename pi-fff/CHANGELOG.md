@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.8.0 (2026-08-31)
+
+### Changed
+
+- Upgraded `@ff-labs/fff-node` `^0.9.6` → `^0.10.6` (additive API: `followSymlinks`, `watch()`; dot-directory glob matching fix; ffgrep per-file cap decoupled from page size).
+- Tool discoverability: `ffgrep`/`fffind` prompt snippets now state the FFF advantage (paginated, frecency-ranked, prefer over bash grep/find).
+
+### Added
+
+- `before_agent_start` system-prompt note (all modes except `override`): ffgrep/fffind are the preferred search tools; plain grep/find reserved for pipelines and outside-workspace paths.
+
+## 0.7.10 (2026-08-29)
+
+### Added
+
+- `/fff-mode` argument completion offers `tools-and-ui|tools-only|override`.
+
 ## 0.7.9 (2026-08-05)
 
 ### Improvements

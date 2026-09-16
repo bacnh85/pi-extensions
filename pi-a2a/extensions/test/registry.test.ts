@@ -1,7 +1,7 @@
 import { assert } from "chai";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+import { makeTempDir } from "./tmp";
 
 import {
   heartbeat,
@@ -12,7 +12,7 @@ import {
 } from "../lib/registry";
 
 function tmpPiDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-registry-"));
+  return makeTempDir("pi-a2a-registry-");
 }
 
 function desc(pid: number, overrides: Partial<SessionDescriptor> = {}): SessionDescriptor {

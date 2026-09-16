@@ -4,8 +4,15 @@ import * as path from "node:path";
 
 const _require = createRequire(import.meta.url);
 
-// Official install is a Go binary (not pipx). macOS/Linux; Windows uses the .ps1 script.
-const INSTALL_HINT = "Install agy: curl -fsSL https://antigravity.google/cli/install.sh | bash";
+// Official install is a Go binary (not pipx). macOS/Linux: the curl installer;
+// Windows: the .ps1 one-liner. Resolved per platform — all 3 ENOENT error
+// paths use installHint().
+const INSTALL_HINT_POSIX = "Install agy: curl -fsSL https://antigravity.google/cli/install.sh | bash";
+const INSTALL_HINT_WIN32 =
+  'Install agy: powershell -ExecutionPolicy ByPass -c "irm https://antigravity.google/cli/install.ps1 | iex"';
+function installHint(): string {
+  return process.platform === "win32" ? INSTALL_HINT_WIN32 : INSTALL_HINT_POSIX;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -117,11 +124,13 @@ export async function detectVerifyCommand(cwd: string): Promise<string | null> {
   return null;
 }
 
-// agy --output-format json emits {status,response,usage,...}; fall back to raw on schema drift
+// agy --output-format json emits {status,response,usage,...}; fall back to raw
+// on schema drift or a non-string .response (which must not bypass the caller's
+// string handling).
 export function parseJsonResponse(raw: string): string {
   try {
     const parsed = JSON.parse(raw);
-    return parsed.response ?? raw;
+    return typeof parsed.response === "string" ? parsed.response : raw;
   } catch {
     return raw;
   }
@@ -176,7 +185,7 @@ export async function checkAgyHealth(cwd: string, signal?: AbortSignal): Promise
         } else if ((err as NodeJS.ErrnoException).code === "ENOENT") {
           reject(
             new Error(
-              `Antigravity CLI is not installed. ${INSTALL_HINT}`,
+              `Antigravity CLI is not installed. ${installHint()}`,
             ),
           );
         } else {
@@ -261,7 +270,7 @@ export async function checkAgyConnectivity(cwd: string, signal?: AbortSignal): P
         } else if ((err as NodeJS.ErrnoException).code === "ENOENT") {
           reject(
             new Error(
-              `Antigravity CLI is not installed. ${INSTALL_HINT}`,
+              `Antigravity CLI is not installed. ${installHint()}`,
             ),
           );
         } else {
@@ -316,7 +325,7 @@ export function spawnAgy(options: AgyOptions, signal: AbortSignal): Promise<stri
         if (signal.aborted) {
           reject(new Error("agy was cancelled"));
         } else if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-          reject(new Error(`Antigravity CLI not found in PATH. ${INSTALL_HINT}`));
+          reject(new Error(`Antigravity CLI not found in PATH. ${installHint()}`));
         } else {
           reject(new Error(`agy spawn failed: ${err.message}`));
         }

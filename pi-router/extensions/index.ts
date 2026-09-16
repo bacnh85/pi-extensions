@@ -29,7 +29,7 @@ export default function (pi: ExtensionAPI) {
     registerProvider(pi, settings);
   }
 
-  registerCommands(pi, () => getSettings());
+  registerCommands(pi);
 
   pi.on("session_start", async (_event, ctx) => {
     const s = getSettings();

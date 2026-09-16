@@ -13,6 +13,10 @@ const {
   writeDefaultMode,
 } = require("../hooks/ponytail-config.js");
 const { getPonytailInstructions, filterSkillBodyForMode } = require("../hooks/ponytail-instructions.js");
+const { getSubagentInstructions, shouldInjectSubagentInstructions } = require("../hooks/ponytail-subagent.js");
+
+// ponytail: must match pi-subagent security.ts MAX_INSTRUCTIONS_LENGTH (instructions cap).
+const SUBAGENT_INSTRUCTIONS_CAP = 16 * 1024;
 
 export { filterSkillBodyForMode };
 export const readDefaultMode = getDefaultMode;
@@ -33,12 +37,12 @@ export function resolveSessionMode(entries, fallbackMode = DEFAULT_MODE) {
   return fallback;
 }
 
-export function parsePonytailCommand(text, defaultMode = DEFAULT_MODE) {
-  const fallback = normalizePersistedMode(defaultMode) || DEFAULT_MODE;
+export function parsePonytailCommand(text) {
   const normalizedText = String(text || "").trim().toLowerCase();
 
   if (!normalizedText) {
-    return { type: "set-mode", mode: fallback === "off" ? "full" : fallback };
+    // ponytail: bare invocation reports status instead of resetting (#99); explicit mode to change level.
+    return { type: "status" };
   }
 
   const [primary, secondary] = normalizedText.split(/\s+/);
@@ -89,11 +93,17 @@ export default function ponytailExtension(pi) {
 
   pi.registerCommand("ponytail", {
     description: `Set mode: ${RUNTIME_MODES.join("|")}. Commands: status, default <mode>`,
+    getArgumentCompletions: (prefix) => {
+      const q = String(prefix || "").trim().toLowerCase();
+      const vocab = [...RUNTIME_MODES, "status", "default"];
+      const items = vocab.filter((k) => k.startsWith(q)).map((k) => ({ value: k, label: k }));
+      return items.length > 0 ? items : null;
+    },
     handler: async (args, ctx) => {
-      const parsed = parsePonytailCommand(args, configuredDefaultMode);
+      const parsed = parsePonytailCommand(args);
 
       if (parsed.type === "status") {
-        ctx?.ui?.notify?.(`Ponytail: current ${currentMode} • default ${configuredDefaultMode}`, "info");
+        ctx?.ui?.notify?.(`Ponytail: current ${currentMode} • default ${configuredDefaultMode} • /ponytail <mode> to change`, "info");
         return;
       }
 
@@ -127,8 +137,6 @@ export default function ponytailExtension(pi) {
         ctx?.ui?.notify?.(msg, "warning");
         return;
       }
-
-      ctx?.ui?.notify?.("Unknown or unsupported /ponytail mode.", "warning");
     },
   });
 
@@ -169,8 +177,31 @@ export default function ponytailExtension(pi) {
 
   pi.on("before_agent_start", async (event) => {
     if (!currentMode || currentMode === "off") return;
+    // ponytail: extension-loaded children carry the injected marker in their Task Contract — don't double-inject.
+    if (event?.systemPrompt?.includes("PONYTAIL MODE ACTIVE")) return;
     // Guard null/undefined event and missing systemPrompt (#439, #440).
     const base = event?.systemPrompt ? `${event.systemPrompt}\n\n` : "";
     return { systemPrompt: `${base}${getPonytailInstructions(currentMode)}` };
+  });
+
+  // ponytail: subagents run with loadExtensions:false, so the ruleset never reaches them (#254).
+  // Prepend a compact block to the subagent tool's instructions; pi-subagent applies it to every child.
+  pi.on("tool_call", async (event) => {
+    if (event?.toolName !== "subagent") return;
+    // ponytail: off and review skip injection; review defers to the /ponytail-review skill,
+    // which lean (extension-less) children cannot load.
+    if (!currentMode || currentMode === "off" || currentMode === "review") return;
+    if (!shouldInjectSubagentInstructions()) return;
+    const input = event?.input;
+    if (!input || typeof input !== "object") return;
+    const existing = typeof input.instructions === "string" ? input.instructions : "";
+    // ponytail: startsWith, not includes — an incidental mid-text mention must not suppress injection.
+    if (existing.startsWith("PONYTAIL MODE ACTIVE")) return;
+    const block = getSubagentInstructions(currentMode);
+    const candidate = block + (existing ? "\n\n" + existing : "");
+    // ponytail: pi-subagent slices instructions at SUBAGENT_INSTRUCTIONS_CAP; skip rather
+    // than silently truncating the caller's contract to fit the injected block.
+    if (candidate.length > SUBAGENT_INSTRUCTIONS_CAP) return;
+    input.instructions = candidate;
   });
 }

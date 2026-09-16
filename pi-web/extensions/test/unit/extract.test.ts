@@ -80,6 +80,35 @@ describe("extractWithDiagnostics", () => {
     expect(diagnostics.result.markdown).to.include("static article");
   });
 
+  it("passes raw text/plain and JSON bodies through without Readability", async () => {
+    installMockFetch((url) => {
+      if (url === "https://raw.test/code.js") {
+        return new Response("// A module used by tests.\n" + "export function boot() { return 42; }\n".repeat(6), { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
+      }
+      if (url === "https://raw.test/data.json") {
+        return new Response(JSON.stringify({ name: "pi-fff", stars: 99, description: "Fuzzy file and content search for Pi, well over the useful-content threshold for extraction." }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url === "https://raw.test/page.html") {
+        return htmlResponse("<html><head><title>Page</title></head><body><main><h1>Page</h1><p>This ordinary web page has plenty of readable content to pass the useful-content threshold in auto mode. Additional sentences ensure the extracted text is long enough to be considered useful by the extraction pipeline.</p><p>More filler keeps the article comfortably above the minimum length so the static path succeeds without falling through.</p></main></body></html>");
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+
+    const textDiag = await extractWithDiagnostics({ url: "https://raw.test/code.js" });
+    expect(textDiag.selectedMode).to.equal("static");
+    expect(textDiag.result.markdown).to.include("return 42;");
+
+    const jsonDiag = await extractWithDiagnostics({ url: "https://raw.test/data.json" });
+    expect(jsonDiag.result.markdown).to.include('"stars":99');
+    expect(jsonDiag.result.markdown.indexOf("```json")).to.equal(0);
+
+    // text/html must still go through Readability → markdown, not raw source
+    const htmlDiag = await extractWithDiagnostics({ url: "https://raw.test/page.html" });
+    expect(htmlDiag.result.markdown).to.not.include("<main>");
+    expect(htmlDiag.result.title).to.equal("Page");
+    expect(htmlDiag.result.markdown).to.include("plenty of readable content");
+  });
+
   it("falls through from short static content to dynamic extraction", async () => {
     const calls = installMockFetch((url) => {
       if (url === "https://example.com/short") return htmlResponse("<html><body><main>short</main></body></html>");

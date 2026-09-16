@@ -125,6 +125,22 @@ describe("pi-evolve extension", () => {
     expect(recent[0].lesson).to.equal("re-export from index.ts");
   });
 
+  it("evolve_save is blocked in plan mode (mutation gate)", async () => {
+    const { tools } = harness(cwd, undefined, { plan: true });
+    const result = await tools.evolve_save.execute(
+      "id",
+      { kind: "strategy", trigger: "t", lesson: "l" },
+      undefined,
+      undefined,
+      { cwd },
+    );
+    expect(result.content[0].text).to.include("Plan mode active");
+    expect(result.details.error).to.equal(true);
+    // Nothing was persisted.
+    const { localPath } = await import("../lib/store");
+    expect(existsSync(localPath(cwd))).to.equal(false);
+  });
+
   it("evolve_save rejects missing trigger or lesson", async () => {
     const { tools } = harness(cwd);
     const result = await tools.evolve_save.execute(

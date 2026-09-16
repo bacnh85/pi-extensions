@@ -1,7 +1,7 @@
 import { buildSessionContext, convertToLlm, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { runIsolated } from "./isolated-model";
+import { runIsolatedChain } from "./isolated-model";
 import { createGuard, guardCheck, nextCycle, parseReviewOutput, type GuardState, type Severity } from "./emission-guard";
-import type { AdvisorConfig } from "./config";
+import { splitThinkingSuffix, type AdvisorConfig } from "./config";
 
 export const REVIEW_ENTRY = "pi-advisor";
 export type { Severity };
@@ -31,40 +31,53 @@ export interface WatcherStats {
   blockers: number;
   parseFailures: number;
   modelFailures: number;
+  /** Model ref that served the last successful review. */
+  lastModel: string | undefined;
   paused: boolean;
 }
 
 export function createStats(): WatcherStats {
-  return { reviews: 0, skippedTrivial: 0, nits: 0, concerns: 0, blockers: 0, parseFailures: 0, modelFailures: 0, paused: false };
+  return { reviews: 0, skippedTrivial: 0, nits: 0, concerns: 0, blockers: 0, parseFailures: 0, modelFailures: 0, lastModel: undefined, paused: false };
 }
 
 export interface WatcherRuntime {
   config: AdvisorConfig;
-  model: string | undefined;
+  /** Ordered model fallback chain; empty = advisor inactive. */
+  models: string[];
   /** Entry id up to which the transcript has been reviewed (cursor). */
   cursor: string | undefined;
   guard: GuardState;
   stats: WatcherStats;
   failures: number;
+  /** Set while a review is in flight — per-runtime so a stale session's
+   *  draining review never blocks the new session's first review. */
+  reviewing: boolean;
   /** OMP-parity post-steer cooldown: remaining settled turns during which
    *  non-blocker notes are deferred to next-turn asides instead of steering. */
   steerCooldownTurns: number;
 }
 
-export function createRuntime(config: AdvisorConfig, model: string | undefined): WatcherRuntime {
-  return { config, model, cursor: undefined, guard: createGuard(), stats: createStats(), failures: 0, steerCooldownTurns: 0 };
+export function createRuntime(config: AdvisorConfig, models: string[]): WatcherRuntime {
+  return { config, models, cursor: undefined, guard: createGuard(), stats: createStats(), failures: 0, steerCooldownTurns: 0, reviewing: false };
 }
 
 /**
  * Sanitized bounded transcript evidence — moved verbatim from the pi-plan advisor
  * tool (image-stripping, thinking/signature omission, first + recent window).
+ * Sized from the SMALLEST resolvable context window in the list: the chain may
+ * serve with a fallback that has less room than the primary.
  */
-export function buildEvidence(ctx: ExtensionContext, modelId: string | undefined, messages: any[], systemPrompt: string): string {
-  const parsed = modelId ? parseModelRef(modelId) : undefined;
-  const model = parsed && ctx.modelRegistry.find(parsed.provider, parsed.id);
+export function buildEvidence(ctx: ExtensionContext, modelId: string | readonly string[] | undefined, messages: any[], systemPrompt: string): string {
+  const refs = modelId === undefined ? [] : Array.isArray(modelId) ? modelId : [modelId];
+  const windows = refs
+    .map((ref) => parseModelRef(ref))
+    .filter((parsed): parsed is { provider: string; id: string } => !!parsed)
+    .map((parsed) => ctx.modelRegistry.find(parsed.provider, parsed.id)?.contextWindow)
+    .filter((w): w is number => typeof w === "number" && w > 0);
+  const contextWindow = windows.length > 0 ? Math.min(...windows) : undefined;
   const reserveTokens = 4_096 + Math.ceil((systemPrompt.length + ctx.getSystemPrompt().length) / 4);
   // ponytail: bounded evidence leaves headroom for the primary instructions and advisor response.
-  const maxBytes = Math.min(48 * 1024, Math.max(1_024, ((model?.contextWindow ?? 32_768) - reserveTokens) * 4));
+  const maxBytes = Math.min(48 * 1024, Math.max(1_024, ((contextWindow ?? 32_768) - reserveTokens) * 4));
   const entryLimit = Math.max(256, Math.floor(maxBytes / 2));
   const sanitized = convertToLlm(messages).map((message) => {
     const safe = JSON.parse(JSON.stringify(message, (key, value) => {
@@ -90,9 +103,10 @@ export function buildEvidence(ctx: ExtensionContext, modelId: string | undefined
 }
 
 function parseModelRef(value: string): { provider: string; id: string } | undefined {
-  const slash = value.indexOf("/");
-  if (slash <= 0 || slash === value.length - 1) return undefined;
-  return { provider: value.slice(0, slash), id: value.slice(slash + 1) };
+  const { name } = splitThinkingSuffix(value);
+  const slash = name.indexOf("/");
+  if (slash <= 0 || slash === name.length - 1) return undefined;
+  return { provider: name.slice(0, slash), id: name.slice(slash + 1) };
 }
 
 function toolCallCount(entries: any[], sinceId: string | undefined): number {
@@ -121,19 +135,20 @@ export interface WatcherHost {
   /** Defer a note as an LLM-visible next-turn aside (never wakes the agent now). */
   sendMessage(message: { customType: string; content: string; display: boolean; details?: unknown }, options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" }): void;
   sendUserMessage(content: string, options?: { deliverAs?: "steer" | "followUp" }): void;
+  /** Display-only immediate card (session entry; never enters LLM context). */
+  appendEntry<T = unknown>(customType: string, data?: T): void;
+  /** Error/status toast, liveness-gated by the caller (never leaks into a replaced session). */
+  notify(message: string): void;
 }
 
-/** Injectable isolated-model call — defaults to the real one; tests pass a fake. */
-export type IsolatedCall = typeof runIsolated;
+/** Injectable isolated-model call — defaults to the chain runner; tests pass a fake. */
+export type IsolatedCall = typeof runIsolatedChain;
 
 /** One review step, called from the agent_settled handler while watching is active. */
-// ponytail: module-level guard — one review at a time across the single session
-let reviewing = false;
-
-export async function reviewTurn(rt: WatcherRuntime, ctx: ExtensionContext, host: WatcherHost, isolated: IsolatedCall = runIsolated): Promise<void> {
-  if (rt.stats.paused || reviewing) return;
-  // No advisor model → no watching: never let the primary model review its own turns.
-  if (!rt.model) return;
+export async function reviewTurn(rt: WatcherRuntime, ctx: ExtensionContext, host: WatcherHost, isolated: IsolatedCall = runIsolatedChain): Promise<void> {
+  if (rt.stats.paused || rt.reviewing) return;
+  // No advisor models → no watching: never let the primary model review its own turns.
+  if (rt.models.length === 0) return;
   const config = rt.config.watch;
   const entries = ctx.sessionManager.getEntries() as any[];
 
@@ -146,13 +161,13 @@ export async function reviewTurn(rt: WatcherRuntime, ctx: ExtensionContext, host
   if (calls < config.minToolCalls) { rt.stats.skippedTrivial++; return; }
 
   rt.guard.reviewIndex++;
-  reviewing = true;
+  rt.reviewing = true;
   try {
     const transcript = buildSessionContext(entries, ctx.sessionManager.getLeafId());
-    const evidence = buildEvidence(ctx, rt.model, transcript.messages, SYSTEM);
+    const evidence = buildEvidence(ctx, rt.models, transcript.messages, SYSTEM);
     let raw: string;
     try {
-      raw = await isolated(ctx, rt.model, {
+      const result = await isolated(ctx, rt.models, {
         systemPrompt: `${SYSTEM}\n\nPRIMARY AGENT SYSTEM PROMPT:\n${ctx.getSystemPrompt()}`,
         messages: [{
           role: "user",
@@ -160,6 +175,8 @@ export async function reviewTurn(rt: WatcherRuntime, ctx: ExtensionContext, host
           timestamp: Date.now(),
         }],
       });
+      raw = result.text;
+      rt.stats.lastModel = result.model;
       rt.failures = 0;
     } catch (error) {
       // ponytail: reviewer failure must never break the primary loop; pause after 3 in a row
@@ -167,7 +184,7 @@ export async function reviewTurn(rt: WatcherRuntime, ctx: ExtensionContext, host
       rt.failures++;
       if (rt.failures >= MAX_CONSECUTIVE_FAILURES && !rt.stats.paused) {
         rt.stats.paused = true;
-        ctx.ui.notify(`Advisor watch paused after ${MAX_CONSECUTIVE_FAILURES} consecutive review failures (${String(error)}). Run /advisor on to retry.`, "error");
+        host.notify(`Advisor watch paused after ${MAX_CONSECUTIVE_FAILURES} consecutive review failures (${String(error)}). Run /advisor on to retry.`);
       }
       return;
     }
@@ -192,26 +209,36 @@ export async function reviewTurn(rt: WatcherRuntime, ctx: ExtensionContext, host
     else if (verdict.severity === "blocker") rt.stats.blockers++;
     else rt.stats.concerns++;
     const isBlocker = verdict.severity === "blocker";
-    // OMP-parity post-steer cooldown: after any note steers a turn, non-blocker
-    // notes within the next immuneTurns settled turns are deferred to next-turn
-    // asides rather than waking the agent again. Otherwise every new settled turn
-    // produces fresh transcript text, so the reviewer can emit a NEW note each
-    // cycle and the emission guard's identical-note dedupe never trips — an
-    // unbounded nit/concern ping-pong. Blockers always steer (OMP #5628: handing
-    // off broken work must be acknowledged), and each steer (any severity) re-arms
-    // the cooldown. Deferred asides are LLM-visible on the next user- or
-    // blocker-driven turn — never lost, only deferred.
-    if (!isBlocker && rt.steerCooldownTurns > 0) {
+    const isConcern = verdict.severity === "concern";
+    // Post-steer cooldown: only nits defer. Concerns carry a must-address contract
+    // ("address this or state why it does not apply") — deferring one while its own
+    // template claims authority contradicts the injected agent instructions, and
+    // waiting for the user's next prompt looks like the advisor was ignored.
+    // Blockers always steer (OMP #5628: handing off broken work must be
+    // acknowledged). Nits within the next immuneTurns settled turns after a steer
+    // are deferred to next-turn asides rather than waking the agent again;
+    // otherwise every settled turn's fresh transcript text lets the reviewer emit
+    // a NEW note each cycle and the identical-note dedupe never trips — an
+    // unbounded nit ping-pong. Each steer re-arms the cooldown. Deferred asides are
+    // LLM-visible on the next turn — never lost, only deferred.
+    if (!isBlocker && !isConcern && rt.steerCooldownTurns > 0) {
       // The cooldown ticks once per settled turn at the top of reviewTurn — no
       // extra decrement here (OMP's window is purely turn-count based).
       // nextTurn injects into the agent's context on the next turn without waking it now.
-      host.sendMessage({ customType: REVIEW_ENTRY, content: templates[verdict.severity], display: true, details: { severity: verdict.severity, note: verdict.note, timestamp: Date.now() } }, { deliverAs: "nextTurn" });
+      // display:false — the immediate card below is the visible surface; the flushed
+      // message stays LLM-only so the note doesn't render twice.
+      const at = Date.now();
+      host.sendMessage({ customType: REVIEW_ENTRY, content: templates[verdict.severity], display: false, details: { severity: verdict.severity, note: verdict.note, timestamp: at, deferred: true } }, { deliverAs: "nextTurn" });
+      // Immediate display-only card: without it the deferred note is invisible
+      // until the next user prompt flushes it, looking like the advisor stayed
+      // silent then blurted out a note after user input.
+      host.appendEntry(REVIEW_ENTRY, { severity: verdict.severity, note: verdict.note, timestamp: at, deferred: true });
       return;
     }
     // Steering delivery (blockers always steer; non-blockers steer when off-cooldown).
     host.sendUserMessage(templates[verdict.severity], { deliverAs: "followUp" });
     rt.steerCooldownTurns = config.immuneTurns;
   } finally {
-    reviewing = false;
+    rt.reviewing = false;
   }
 }

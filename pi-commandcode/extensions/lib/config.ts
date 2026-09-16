@@ -31,11 +31,11 @@ function agentDir(): string {
 
 function readJson(path: string): Record<string, unknown> | null {
   try {
-    if (!existsSync(path)) return null;
+    if (!existsSync(path)) return {};
     const j = JSON.parse(readFileSync(path, "utf8"));
     return typeof j === "object" && j !== null ? (j as Record<string, unknown>) : null;
   } catch {
-    return null;
+    return null; // exists but unparseable — signal "don't touch"
   }
 }
 
@@ -71,7 +71,12 @@ export function isCustomEndpoint(s: CommandCodeSettings): boolean {
  *  repo-controlled file. Returns the path written. */
 export function writeBaseUrl(baseUrl: string): string {
   const target = join(agentDir(), "settings.json");
-  const j = readJson(target) ?? {};
+  const j = readJson(target);
+  if (j === null) {
+    // Corrupt settings.json — bail instead of overwrite-wiping the user's
+    // other sections (pi-router migrate.ts pattern). Fix the file first.
+    throw new Error(`${target} is not valid JSON — fix or remove it before saving.`);
+  }
   const section = (typeof j.commandcode === "object" && j.commandcode !== null)
     ? (j.commandcode as Record<string, unknown>)
     : {};

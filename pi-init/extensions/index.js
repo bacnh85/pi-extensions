@@ -17,7 +17,7 @@
  */
 
 import { existsSync, readFileSync, statSync, readdirSync } from "node:fs";
-import { join, resolve, basename } from "node:path";
+import { join, basename } from "node:path";
 
 /**
  * Discover a project's key signals from the filesystem.
@@ -39,6 +39,7 @@ export function scanProject(cwd) {
     testCommand: null,
     lintCommand: null,
     buildCommand: null,
+    agentsFile: null,
   };
 
   // package.json — richest single signal for JS/TS projects
@@ -114,14 +115,26 @@ export function scanProject(cwd) {
     for (const entry of readdirSync(cwd)) {
       const full = join(cwd, entry);
       try {
-        if (statSync(full).isDirectory() && !noiseDirs.has(entry) && !entry.startsWith(".")) {
-          out.topDirs.push(entry);
+        const st = statSync(full);
+        if (st.isDirectory()) {
+          if (!noiseDirs.has(entry) && !entry.startsWith(".")) out.topDirs.push(entry);
+        } else if (st.isFile()) {
+          // JS/TS signal independent of package.json — keeps checkFindings'
+          // missing-package.json flag reachable for Node repos lacking one.
+          if (/\.(ts|tsx|mts|cts)$/i.test(entry)) out.languages.add("TypeScript");
+          else if (/\.(js|jsx|mjs|cjs)$/i.test(entry)) out.languages.add("JavaScript");
         }
       } catch { /* permission: skip */ }
     }
   } catch { /* unreadable: skip */ }
 
-  out.hasAgentsMd = existsSync(join(cwd, "AGENTS.md")) || existsSync(join(cwd, "CLAUDE.md"));
+  const agentsFile = existsSync(join(cwd, "AGENTS.md"))
+    ? "AGENTS.md"
+    : existsSync(join(cwd, "CLAUDE.md"))
+      ? "CLAUDE.md"
+      : null;
+  out.hasAgentsMd = agentsFile !== null;
+  out.agentsFile = agentsFile;
   return out;
 }
 
@@ -132,15 +145,17 @@ export function scanProject(cwd) {
 export function buildInitPrompt(scan, mode) {
   const lines = [];
   const force = mode === "force";
+  // Write target: the detected context file (AGENTS.md or CLAUDE.md), else AGENTS.md.
+  const target = scan.agentsFile || "AGENTS.md";
 
   lines.push(
     force
-      ? "Regenerate this project's AGENTS.md from scratch based on the repo scan below."
-      : "Create or update this project's AGENTS.md based on the repo scan below. " +
-        "If AGENTS.md already exists, improve it in place — do NOT blindly replace it.",
+      ? `Regenerate this project's ${target} from scratch based on the repo scan below.`
+      : `Create or update this project's ${target} based on the repo scan below. ` +
+        `If ${target} already exists, improve it in place — do NOT blindly replace it.`,
   );
   lines.push("");
-  lines.push("Write the file with the `write` tool to `AGENTS.md`. Be concise and factual.");
+  lines.push(`Write the file with the \`write\` tool to \`${target}\`. Be concise and factual.`);
   lines.push("Cover exactly these sections (omit a section only if the scan gives no signal):");
   lines.push("");
   lines.push("- **Project name + one-line purpose** (infer from package.json/dir name)");
@@ -165,13 +180,38 @@ export function buildInitPrompt(scan, mode) {
   lines.push(`Top-level dirs: ${scan.topDirs.length ? scan.topDirs.join(", ") : "(none)"}`);
   lines.push(`Key files: ${scan.keyFiles.length ? scan.keyFiles.join(", ") : "(none)"}`);
   lines.push(`CI: ${scan.ci.length ? scan.ci.join(", ") : "none detected"}`);
-  if (scan.testCommand) lines.push(`test script: \`npm run test\` → \`${scan.testCommand}\``);
-  if (scan.lintCommand) lines.push(`lint script: \`npm run lint\` → \`${scan.lintCommand}\``);
-  if (scan.buildCommand) lines.push(`build script: \`npm run build\` → \`${scan.buildCommand}\``);
+  if (scan.testCommand) lines.push(`test script: \`${scan.packageManager || "npm"} run test\` → \`${scan.testCommand}\``);
+  if (scan.lintCommand) lines.push(`lint script: \`${scan.packageManager || "npm"} run lint\` → \`${scan.lintCommand}\``);
+  if (scan.buildCommand) lines.push(`build script: \`${scan.packageManager || "npm"} run build\` → \`${scan.buildCommand}\``);
   if (scan.packageJson?.description) lines.push(`Description: ${scan.packageJson.description}`);
   if (scan.packageJson?.workspaces) lines.push(`Workspaces: ${JSON.stringify(scan.packageJson.workspaces)}`);
 
   return lines.join("\n");
+}
+
+/**
+ * check-mode findings: what's present vs missing.
+ * package.json is only flagged missing when the scan detected JS/TS —
+ * a non-Node repo (cargo, go, python, …) shouldn't be marked for it.
+ * Exported for unit testing.
+ */
+export function checkFindings(scan) {
+  const present = [];
+  const missing = [];
+  const nodeRepo = scan.languages.has("JavaScript") || scan.languages.has("TypeScript");
+  if (scan.packageManager) present.push(`pkg manager: ${scan.packageManager}`);
+  else if (nodeRepo) missing.push("package.json");
+  if (scan.testCommand) present.push(`test: ${scan.testCommand}`);
+  else missing.push("test command");
+  if (scan.lintCommand) present.push(`lint: ${scan.lintCommand}`);
+  else missing.push("lint command");
+  if (scan.buildCommand) present.push(`build: ${scan.buildCommand}`);
+  else missing.push("build command");
+  if (scan.hasAgentsMd) present.push(`${scan.agentsFile} exists`);
+  else missing.push("AGENTS.md");
+  if (scan.ci.length) present.push(`CI: ${scan.ci.join(", ")}`);
+  else missing.push("CI config");
+  return { present, missing };
 }
 
 export default function initExtension(pi) {
@@ -185,41 +225,28 @@ export default function initExtension(pi) {
     handler: async (args, ctx) => {
       const mode = String(args || "").trim();
       if (mode && mode !== "force" && mode !== "check") {
-        ctx.ui.notify("Usage: /init [force|check]", "warning");
+        ctx?.ui?.notify("Usage: /init [force|check]", "warning");
         return;
       }
 
-      const scan = scanProject(ctx.cwd);
+      const scan = scanProject(ctx?.cwd || process.cwd());
 
       // check mode: report without writing
       if (mode === "check") {
-        const present = [];
-        const missing = [];
-        if (scan.packageManager) present.push(`pkg manager: ${scan.packageManager}`);
-        else missing.push("package.json");
-        if (scan.testCommand) present.push(`test: ${scan.testCommand}`);
-        else missing.push("test command");
-        if (scan.lintCommand) present.push(`lint: ${scan.lintCommand}`);
-        else missing.push("lint command");
-        if (scan.buildCommand) present.push(`build: ${scan.buildCommand}`);
-        else missing.push("build command");
-        if (scan.hasAgentsMd) present.push("AGENTS.md exists");
-        else missing.push("AGENTS.md");
-        if (scan.ci.length) present.push(`CI: ${scan.ci.join(", ")}`);
-        else missing.push("CI config");
+        const { present, missing } = checkFindings(scan);
 
         const report = [
           `Project: ${scan.projectName} (${[...scan.languages].join(", ") || "unknown"})`,
           `Has: ${present.join(" | ") || "(little detected)"}`,
           `Missing: ${missing.join(" | ") || "nothing obvious"}`,
         ].join("\n");
-        ctx.ui.notify(report, scan.hasAgentsMd ? "info" : "warning");
+        ctx?.ui?.notify(report, scan.hasAgentsMd ? "info" : "warning");
         return;
       }
 
       // Only run when idle — sendUserMessage triggers a turn.
-      if (typeof ctx.isIdle === "function" && !ctx.isIdle()) {
-        ctx.ui.notify("Agent is busy; /init when idle.", "warning");
+      if (typeof ctx?.isIdle === "function" && !ctx.isIdle()) {
+        ctx?.ui?.notify("Agent is busy; /init when idle.", "warning");
         return;
       }
 

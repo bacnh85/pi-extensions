@@ -4,6 +4,22 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+/** Parse .env-style text into KEY→VALUE entries: `export ` prefix allowed,
+ *  single/double quotes stripped, comment/blank/non-assignment lines ignored.
+ *  No inline-comment stripping (a `#` in the value stays part of the value).
+ *  Exported for tests. */
+export function parseEnvText(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+    if (!m) continue;
+    let v = m[2].trim();
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+    out[m[1]] = v;
+  }
+  return out;
+}
+
 /** Pi config dirs + .env.local/.env discovery (pi-munin convention, stdlib parse). */
 function loadEnvFiles(): void {
   const dirs = process.env.PI_CODING_AGENT_DIR
@@ -14,12 +30,8 @@ function loadEnvFiles(): void {
   for (const file of candidates) {
     try {
       const text = fs.readFileSync(file, "utf8");
-      for (const line of text.split(/\r?\n/)) {
-        const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
-        if (!m) continue;
-        let v = m[2].trim();
-        if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
-        if (process.env[m[1]] === undefined) process.env[m[1]] = v;
+      for (const [key, value] of Object.entries(parseEnvText(text))) {
+        if (process.env[key] === undefined) process.env[key] = value;
       }
     } catch { /* optional file */ }
   }
@@ -29,15 +41,22 @@ loadEnvFiles();
 const STATUS_KEY = "pi-sub";
 const MESSAGE_TYPE = "pi-sub-status";
 const USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
-const REFRESH_INTERVAL_MS = 60_000;
+export const REFRESH_INTERVAL_MS = 60_000;
 const REFRESH_TTL_MS = 30_000;
-const REFRESH_DEBOUNCE_MS = 2_000;
+export const REFRESH_DEBOUNCE_MS = 2_000;
 const CODEX_PROVIDER = "openai-codex";
 const OPC_PROVIDER = "opencode-go";
 const ZAI_PROVIDER = "zai";
 const ZAI_USAGE_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
 const ZAI_CODING_CN_PROVIDER = "zai-coding-cn";
 const ZAI_CODING_CN_USAGE_URL = "https://open.bigmodel.cn/api/monitor/usage/quota/limit";
+// GLM via the Anthropic-compatible endpoint (pi-model-tools `zai-anthropic`
+// provider). Same api.z.ai host and quota monitor as the `zai` provider.
+// ponytail: usage URL is fixed to api.z.ai — if ZAI_ANTHROPIC_BASE_URL is
+// overridden to BigModel/zcode-plan, quota still reads from api.z.ai (correct
+// for the z.ai coding-plan key; BigModel-plan keys should use zai-coding-cn).
+const ZAI_ANTHROPIC_PROVIDER = "zai-anthropic";
+const ZAI_ANTHROPIC_USAGE_URL = ZAI_USAGE_URL;
 const ROUTER_PROVIDER = "router";
 const LEGACY_9ROUTER_PROVIDER = "9router";
 // pi-router (formerly pi-9router): URL lives in settings.json `router.baseUrl`
@@ -108,10 +127,11 @@ type SubscriptionProviderAdapter = {
   fetchUsage(signal?: AbortSignal): Promise<SubscriptionUsageSnapshot>;
 };
 
-interface State {
+export interface State {
   model?: ModelLike;
   adapter?: SubscriptionProviderAdapter;
   adapterId?: string;
+  ctx?: ExtensionContext;
   snapshot?: SubscriptionUsageSnapshot;
   lastRefreshAt: number;
   refreshGeneration: number;
@@ -120,6 +140,7 @@ interface State {
   debounceTimer?: NodeJS.Timeout;
   responseStartTime?: number;
   lastTokPerSec?: number;
+  lastTokPerSecLabel?: string;
   cumulativeOutput: number;
   cumulativeDurationMs: number;
   cumulativeCost: number;
@@ -140,6 +161,10 @@ function isZaiModel(model: ModelLike): boolean {
 
 function isZaiCodingCnModel(model: ModelLike): boolean {
   return (model?.provider?.toLowerCase() ?? "") === ZAI_CODING_CN_PROVIDER;
+}
+
+function isZaiAnthropicModel(model: ModelLike): boolean {
+  return (model?.provider?.toLowerCase() ?? "") === ZAI_ANTHROPIC_PROVIDER;
 }
 
 function isRouterModel(model: ModelLike, provider: string = ROUTER_PROVIDER): boolean {
@@ -424,7 +449,8 @@ export function parseOmniUsageText(text: string): {
   return out;
 }
 
-// ponytail: runnable self-check (pi-sub has no test runner — pack gate only)
+// ponytail: runnable self-check (pack gate; extensions/test covers the same
+// parser paths plus the adapters the self-check doesn't)
 if (process.env.PI_SUB_SELF_CHECK === "1") {
   const sample = [
     "Personal quota", "Daily", "80% left", "⏱ reset in 15h 0m", "",
@@ -451,6 +477,9 @@ if (process.env.PI_SUB_SELF_CHECK === "1") {
   assert(p.personalWeekly?.remaining === 90, "personal weekly 90");
   assert(p.session?.remaining === 47, "session 47");
   assert(p.providerWeekly?.remaining === 28, "provider weekly 28");
+  // tok/s split label: usage.reasoning ⊂ usage.output, never summed.
+  assert(tokPerSecLabel(3200, 2500, 70_000) === "46 tok/s (36 think + 10 answer)", "tok/s split label");
+  assert(tokPerSecLabel(200, 0, 10_000) === "20 tok/s", "tok/s plain label");
   assert(p.personalDaily?.resetLabel?.includes("15h") === true, "daily reset label");
   const disabled = parseOmniUsageText("Usage command is disabled for this API key.");
   assert(Object.keys(disabled).length === 0, "disabled text parses empty");
@@ -492,7 +521,11 @@ async function fetchUsageFromPiAuth(entry: PiAuthEntry, signal?: AbortSignal): P
   return parseUsageResponse(await response.json());
 }
 
-function redactedError(error: unknown, provider = "Codex"): string {
+// ponytail: shared redaction — show provider + failure class, never leak keys.
+// Structured API errors carry the server's own message (e.g. Z.ai's
+// "Internal service error" outage); auth-looking messages were already
+// redacted above, so surface the rest verbatim for diagnosability.
+export function redactedError(error: unknown, provider = "Codex"): string {
   const message = error instanceof Error ? error.message : String(error || "Unknown error");
   if (/ENOENT|no such file/i.test(message)) return "Pi auth not found";
   if (/missing openai-codex/i.test(message)) return "openai-codex auth not found";
@@ -501,7 +534,14 @@ function redactedError(error: unknown, provider = "Codex"): string {
   if (/missing commandcode/i.test(message)) return "commandcode auth not found";
   if (/timed out|timeout|aborted/i.test(message)) return `${provider} usage refresh timed out`;
   if (/401|403|auth|token|unauthorized|forbidden/i.test(message)) return `${provider} auth unavailable`;
-  return `${provider} usage unavailable`;
+  const apiMatch = / API error: (.+)$/.exec(message);
+  if (!apiMatch) return `${provider} usage unavailable`;
+  // Trust boundary: the msg is remote-controlled — scrub credential-shaped
+  // material and cap length before it reaches the status bar.
+  const scrubbed = apiMatch[1]
+    .replace(/sk-[A-Za-z0-9_-]+|Bearer\s+\S+|eyJ[A-Za-z0-9._-]+/g, "[REDACTED]")
+    .slice(0, 120);
+  return scrubbed ? `${provider} API error: ${scrubbed}` : `${provider} usage unavailable`;
 }
 
 async function fetchCodexUsage(signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> {
@@ -823,7 +863,7 @@ interface CommandCodeCreditsApiResponse {
 
 /** Map a Command Code USD window (used/cap in dollars, resetAt in ms) into
  *  the shared UsageWindow shape (remaining%, reset labels). */
-function commandCodeWindowToUsageWindow(window: CommandCodeWindowApi | undefined): UsageWindow | undefined {
+export function commandCodeWindowToUsageWindow(window: CommandCodeWindowApi | undefined): UsageWindow | undefined {
   if (!window || typeof window.used !== "number" || typeof window.cap !== "number" || window.cap <= 0) return undefined;
   const usedPct = Math.round((window.used / window.cap) * 100);
   const percent = Math.min(100, usedPct);
@@ -991,11 +1031,14 @@ function zaiUsageAdapter(providerId: string, usageUrl: string, displayName: stri
   return { fetchUsage };
 }
 
-function supportedAdapter(model: ModelLike): SubscriptionProviderAdapter | undefined {
+// Exported for the adapter-wiring regression test (provider-id string ↔
+// adapter id ↔ usage URL are exactly what a typo silently breaks).
+export function supportedAdapter(model: ModelLike): SubscriptionProviderAdapter | undefined {
   if (isCodexModel(model)) return { id: CODEX_PROVIDER, displayName: "Codex", fetchUsage: fetchCodexUsage };
   if (isOpenCodeGoModel(model)) return { id: OPC_PROVIDER, displayName: "OpenCode Go", fetchUsage: fetchOpenCodeGoUsage };
   if (isZaiModel(model)) return { id: ZAI_PROVIDER, displayName: "Z.ai", ...zaiUsageAdapter(ZAI_PROVIDER, ZAI_USAGE_URL, "Z.ai") };
   if (isZaiCodingCnModel(model)) return { id: ZAI_CODING_CN_PROVIDER, displayName: "Z.ai (CN)", ...zaiUsageAdapter(ZAI_CODING_CN_PROVIDER, ZAI_CODING_CN_USAGE_URL, "Z.ai (CN)") };
+  if (isZaiAnthropicModel(model)) return { id: ZAI_ANTHROPIC_PROVIDER, displayName: "Z.ai (Anthropic)", ...zaiUsageAdapter(ZAI_ANTHROPIC_PROVIDER, ZAI_ANTHROPIC_USAGE_URL, "Z.ai (Anthropic)") };
   if (isRouterModel(model)) {
     const prefix = routerUpstreamPrefix(model);
     return {
@@ -1067,8 +1110,15 @@ function windowSegments(account: SubscriptionAccountSnapshot | undefined): strin
   return segments;
 }
 
-function renderSubscriptionLine(ctx: ExtensionContext, state: State): void {
+export function renderSubscriptionLine(state: State): void {
+  // ponytail: resolve ctx at render time — any captured ctx goes stale on
+  // session replacement (new/fork/switch/reload) and ctx.ui then throws.
+  const ctx = state.ctx;
+  if (!ctx) return;
   const theme = ctx.ui.theme;
+  // pi-budget parity: the theme proxy may not be initialized yet — dereferencing
+  // theme.fg throws (unhandledRejection → pi exits). Best-effort footer: skip.
+  if (!theme?.fg) return;
   if (!state.adapter) {
     // Unsupported provider (e.g. Ollama): still show the last response speed.
     ctx.ui.setStatus(STATUS_KEY, state.lastTokPerSec !== undefined ? theme.fg("dim", `${state.lastTokPerSec} tok/s`) : undefined);
@@ -1106,10 +1156,38 @@ function renderSubscriptionLine(ctx: ExtensionContext, state: State): void {
   ctx.ui.setStatus(STATUS_KEY, theme.fg(color, line));
 }
 
-function startTimer(ctx: ExtensionContext, state: State): void {
+function isStaleCtxError(error: unknown): boolean {
+  // pi 0.85.1's wording is "This extension ctx is stale after session
+  // replacement or reload." (verified in the host bundle); "invalidated" is
+  // matched too so wording drift degrades to a harmless extra disarm instead
+  // of silently disabling recovery.
+  return error instanceof Error && /\bctx is stale\b|invalidated/i.test(error.message);
+}
+
+function selfDisarm(state: State): void {
+  stopTimer(state);
+  state.inFlight = undefined;
+  state.refreshGeneration++;
+  state.ctx = undefined;
+}
+
+/** pi can invalidate state.ctx without ever delivering a matching
+ *  session_shutdown (pi 0.85.1 orphaned-runtime teardown; instances are shared
+ *  across sessions), so a deferred refresh can hit a stale ctx. refreshUsage
+ *  is async — its throw becomes a rejected promise, and a void-discarded
+ *  rejection exits pi (unhandledRejection -> uncaughtException). Catch it and
+ *  self-disarm; session_start re-arms with the fresh ctx. Non-stale
+ *  rejections are swallowed: adapters already resolve error snapshots. */
+function deferRefresh(state: State, force: boolean): void {
+  refreshUsage(state, force).catch((error) => {
+    if (isStaleCtxError(error)) selfDisarm(state);
+  });
+}
+
+function startTimer(state: State): void {
   if (state.refreshTimer || !state.adapter) return;
   state.refreshTimer = setInterval(() => {
-    void refreshUsage(ctx, state, false);
+    deferRefresh(state, false);
   }, REFRESH_INTERVAL_MS);
 }
 
@@ -1120,7 +1198,7 @@ function stopTimer(state: State): void {
   state.debounceTimer = undefined;
 }
 
-function updateActiveAdapter(ctx: ExtensionContext, state: State, model: ModelLike): void {
+function updateActiveAdapter(state: State, model: ModelLike): void {
   const nextAdapter = supportedAdapter(model);
   const adapterChanged = state.adapterId !== nextAdapter?.id;
 
@@ -1138,25 +1216,28 @@ function updateActiveAdapter(ctx: ExtensionContext, state: State, model: ModelLi
   if (!state.adapter) {
     stopTimer(state);
   }
-  renderSubscriptionLine(ctx, state);
-  if (state.adapter) startTimer(ctx, state);
+  renderSubscriptionLine(state);
+  if (state.adapter) startTimer(state);
 }
 
-async function refreshUsage(ctx: ExtensionContext, state: State, force: boolean): Promise<SubscriptionUsageSnapshot | undefined> {
+async function refreshUsage(state: State, force: boolean): Promise<SubscriptionUsageSnapshot | undefined> {
   const adapter = state.adapter;
-  if (!adapter) {
-    renderSubscriptionLine(ctx, state);
+  // ponytail: resolve ctx at call time, never capture it across the fetch —
+  // the session can be replaced while the promise is in flight.
+  const ctx = state.ctx;
+  if (!adapter || !ctx) {
+    renderSubscriptionLine(state);
     return undefined;
   }
   if (!force && state.snapshot && Date.now() - state.lastRefreshAt < REFRESH_TTL_MS) return state.snapshot;
   if (state.inFlight) return state.inFlight;
   const generation = state.refreshGeneration;
-  renderSubscriptionLine(ctx, state);
+  renderSubscriptionLine(state);
   state.inFlight = adapter.fetchUsage(ctx.signal).then((snapshot) => {
     if (state.refreshGeneration !== generation) return snapshot;
     state.snapshot = snapshot;
     state.lastRefreshAt = Date.now();
-    renderSubscriptionLine(ctx, state);
+    renderSubscriptionLine(state);
     return snapshot;
   }).finally(() => {
     if (state.refreshGeneration === generation) {
@@ -1166,12 +1247,12 @@ async function refreshUsage(ctx: ExtensionContext, state: State, force: boolean)
   return state.inFlight;
 }
 
-function scheduleRefresh(ctx: ExtensionContext, state: State): void {
+export function scheduleRefresh(state: State): void {
   if (!state.adapter) return;
   if (state.debounceTimer) clearTimeout(state.debounceTimer);
   state.debounceTimer = setTimeout(() => {
     state.debounceTimer = undefined;
-    void refreshUsage(ctx, state, true);
+    deferRefresh(state, true);
   }, REFRESH_DEBOUNCE_MS);
 }
 
@@ -1179,11 +1260,21 @@ function pad(value: string, width: number): string {
   return value.length >= width ? value : value + " ".repeat(width - value.length);
 }
 
+/** "46 tok/s (36 think + 10 answer)" — split shown only when the model
+ *  reasoned. usage.reasoning is a subset of usage.output (Pi SDK contract),
+ *  so answer speed = (output − reasoning)/s, never output + reasoning. */
+function tokPerSecLabel(output: number, thinking: number, elapsedMs: number): string {
+  const total = Math.round(output / (elapsedMs / 1000));
+  if (thinking <= 0) return `${total} tok/s`;
+  const secs = elapsedMs / 1000;
+  return `${total} tok/s (${Math.round(thinking / secs)} think + ${Math.round((output - thinking) / secs)} answer)`;
+}
+
 function buildDetails(snapshot: SubscriptionUsageSnapshot | undefined, state: State): string {
   if (!state.adapter) {
     const header = `Provider: ${state.model?.provider ?? "unknown"}${state.model?.id ? ` · Model: ${state.model.id}` : ""}`;
     if (state.lastTokPerSec === undefined) return `${header}\nSubscription tracking inactive for this provider.`;
-    const tokPerSecLine = `Last response: ${state.lastTokPerSec} tok/s` +
+    const tokPerSecLine = `Last response: ${state.lastTokPerSecLabel}` +
       (state.cumulativeDurationMs > 0
         ? ` · Session avg: ${Math.round(state.cumulativeOutput / (state.cumulativeDurationMs / 1000))} tok/s`
         : "");
@@ -1226,7 +1317,7 @@ function buildDetails(snapshot: SubscriptionUsageSnapshot | undefined, state: St
 
   const costLine = state.cumulativeCost > 0 ? `\nSession cost: $${state.cumulativeCost.toFixed(2)}` : "";
   const tokPerSecLine = state.lastTokPerSec !== undefined
-    ? `\nLast response: ${state.lastTokPerSec} tok/s` +
+    ? `\nLast response: ${state.lastTokPerSecLabel}` +
       (state.cumulativeDurationMs > 0
         ? ` · Session avg: ${Math.round(state.cumulativeOutput / (state.cumulativeDurationMs / 1000))} tok/s`
         : "")
@@ -1246,44 +1337,62 @@ export default function (pi: ExtensionAPI) {
   const state: State = { lastRefreshAt: 0, refreshGeneration: 0, cumulativeOutput: 0, cumulativeDurationMs: 0, cumulativeCost: 0 };
 
   pi.on("session_start", async (_event, ctx) => {
-    updateActiveAdapter(ctx, state, ctx.model);
-    if (state.adapter) void refreshUsage(ctx, state, true);
+    // Only session_start installs state.ctx: it fires (startup/new/fork/switch/
+    // reload) before the session's other events, so mid-session handlers never
+    // need to — and a late old-session event must not reinstall a stale ctx.
+    state.ctx = ctx;
+    updateActiveAdapter(state, ctx.model);
+    if (state.adapter) deferRefresh(state, true);
   });
 
-  pi.on("model_select", async (event, ctx) => {
-    updateActiveAdapter(ctx, state, event.model);
-    if (state.adapter) void refreshUsage(ctx, state, true);
+  pi.on("model_select", async (event, _ctx) => {
+    updateActiveAdapter(state, event.model);
+    if (state.adapter) deferRefresh(state, true);
   });
 
   pi.on("before_provider_request", async (_event, _ctx) => {
     state.responseStartTime = Date.now();
   });
 
-  pi.on("message_end", async (event, ctx) => {
+  pi.on("message_end", async (event, _ctx) => {
     if (event.message.role === "assistant") {
-      state.cumulativeCost += (event.message.usage as any)?.cost?.total ?? 0;
+      // pi-budget parity: coerce + finite guard so a string/NaN cost.total can
+      // never poison the accumulator (string concat garbles every subsequent
+      // footer).
+      const cost = Number((event.message.usage as any)?.cost?.total);
+      if (Number.isFinite(cost) && cost > 0) state.cumulativeCost += cost;
       if (state.responseStartTime) {
+        // usage.output already includes reasoning tokens (Pi SDK contract) —
+        // this is total tok/s in both thinking and normal mode.
         const output = (event.message.usage as any)?.output ?? 0;
+        const reasoning = (event.message.usage as any)?.reasoning ?? 0;
         const elapsed = Date.now() - state.responseStartTime;
         state.responseStartTime = undefined;
         if (elapsed > 0 && output > 0) {
           state.lastTokPerSec = Math.round(output / (elapsed / 1000));
+          state.lastTokPerSecLabel = tokPerSecLabel(output, reasoning, elapsed);
           state.cumulativeOutput += output;
           state.cumulativeDurationMs += elapsed;
         }
       }
-      renderSubscriptionLine(ctx, state);
+      renderSubscriptionLine(state);
     }
   });
 
-  pi.on("after_provider_response", async (event, ctx) => {
+  pi.on("after_provider_response", async (event, _ctx) => {
     if (event.status >= 400) {
       state.responseStartTime = undefined;
     }
-    if (state.adapter) scheduleRefresh(ctx, state);
+    if (state.adapter) scheduleRefresh(state);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    // Only tear down if this shutdown belongs to the installed session: a late
+    // old-session shutdown (delivered after the next session_start) must not
+    // stop the live refresh timer, drop the live in-flight fetch, or touch a
+    // ctx that may already be invalidated. Normal flow: session_start installed
+    // this ctx, so the identity always matches for the session being torn down.
+    if (state.ctx !== ctx) return;
     stopTimer(state);
     // ponytail: session is being torn down (new/fork/switch/reload). Pi invalidates
     // this ctx next; no-op any in-flight fetch .then that captured it, and drop the
@@ -1291,18 +1400,38 @@ export default function (pi: ExtensionAPI) {
     state.inFlight = undefined;
     state.refreshGeneration++;
     ctx.ui.setStatus(STATUS_KEY, undefined);
+    state.ctx = undefined;
   });
 
   pi.registerCommand("sub", {
     description: "Show subscription usage for the current supported model provider (use /sub refresh to force refresh).",
+    getArgumentCompletions: (prefix) => {
+      const items = ["refresh"]
+        .filter((k) => k.startsWith(String(prefix || "").trim().toLowerCase()))
+        .map((k) => ({ value: k, label: k, description: "force refresh" }));
+      return items.length > 0 ? items : null;
+    },
     handler: async (args, ctx) => {
-      updateActiveAdapter(ctx, state, ctx.model);
-      const command = args.trim().toLowerCase();
-      const force = command === "refresh";
-      const snapshot = state.adapter ? await refreshUsage(ctx, state, force || !state.snapshot) : undefined;
-      const details = buildDetails(snapshot ?? state.snapshot, state);
-      pi.sendMessage({ customType: MESSAGE_TYPE, content: details, display: true });
-      if (force) ctx.ui.notify("Subscription usage refreshed", "info");
+      try {
+        updateActiveAdapter(state, ctx.model);
+        const command = args.trim().toLowerCase();
+        const force = command === "refresh";
+        const snapshot = state.adapter ? await refreshUsage(state, force || !state.snapshot) : undefined;
+        const details = buildDetails(snapshot ?? state.snapshot, state);
+        pi.sendMessage({ customType: MESSAGE_TYPE, content: details, display: true });
+        // state.ctx (not captured ctx): the session could be replaced during the
+        // await above; if it was, skip the notification instead of touching a
+        // stale ctx.
+        if (force) state.ctx?.ui.notify("Subscription usage refreshed", "info");
+      } catch (error) {
+        // Orphaned stale ctx (invalidated without shutdown): disarm like the
+        // deferred paths instead of throwing into pi's dispatcher.
+        if (!isStaleCtxError(error)) throw error;
+        selfDisarm(state);
+      }
     },
   });
+
+  // Returned for tests only — Pi ignores the extension setup return value.
+  return state;
 }

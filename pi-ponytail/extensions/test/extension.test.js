@@ -124,6 +124,134 @@ test("session_start restores latest persisted mode", async () => withTempConfig(
   assert.ok(result.systemPrompt.includes("lite"));
 }));
 
+test("tool_call prepends ponytail block to subagent instructions", async () => withTempConfig(async () => {
+  const { events } = createPiHarness();
+  const ctx = createCommandContext();
+  await events.get("session_start")({ reason: "startup" }, ctx);
+
+  const input = { agent: "worker", task: "Do it", instructions: "Repo context here." };
+  await events.get("tool_call")({ toolName: "subagent", input }, ctx);
+
+  assert.ok(input.instructions.startsWith("PONYTAIL MODE ACTIVE"));
+  assert.ok(input.instructions.includes("deliver in full"));
+  assert.ok(input.instructions.endsWith("Repo context here."));
+}));
+
+test("tool_call creates instructions when the caller sent none", async () => withTempConfig(async () => {
+  const { events } = createPiHarness();
+  const ctx = createCommandContext();
+  await events.get("session_start")({ reason: "startup" }, ctx);
+
+  const input = { agent: "scout", task: "Recon" };
+  await events.get("tool_call")({ toolName: "subagent", input }, ctx);
+
+  assert.ok(input.instructions.startsWith("PONYTAIL MODE ACTIVE"));
+}));
+
+test("tool_call injection is idempotent only when the marker leads", async () => withTempConfig(async () => {
+  const { events } = createPiHarness();
+  const ctx = createCommandContext();
+  await events.get("session_start")({ reason: "startup" }, ctx);
+
+  // Marker at offset 0 = prior injection: untouched.
+  const injected = { instructions: "PONYTAIL MODE ACTIVE — already set by caller." };
+  await events.get("tool_call")({ toolName: "subagent", input: injected }, ctx);
+  assert.equal(injected.instructions, "PONYTAIL MODE ACTIVE — already set by caller.");
+
+  // Incidental mid-text mention: injection still happens.
+  const mentioned = { instructions: "Check that PONYTAIL MODE ACTIVE appears in the status bar." };
+  await events.get("tool_call")({ toolName: "subagent", input: mentioned }, ctx);
+  assert.ok(mentioned.instructions.startsWith("PONYTAIL MODE ACTIVE"));
+  assert.ok(mentioned.instructions.endsWith("Check that PONYTAIL MODE ACTIVE appears in the status bar."));
+}));
+
+test("tool_call skips injection in review mode", async () => withTempConfig(async () => {
+  const { events } = createPiHarness();
+  const ctx = createCommandContext({
+    sessionManager: {
+      getEntries: () => [
+        { type: "custom", customType: "ponytail-mode", data: { mode: "review" } },
+      ],
+    },
+  });
+  await events.get("session_start")({ reason: "resume" }, ctx);
+
+  const input = { agent: "worker", task: "Implement x" };
+  await events.get("tool_call")({ toolName: "subagent", input }, ctx);
+
+  assert.equal(input.instructions, undefined, "review mode must not inject the build ladder");
+}));
+
+test("tool_call skips injection that would truncate the caller contract past 16KB", async () => withTempConfig(async () => {
+  const { events } = createPiHarness();
+  const ctx = createCommandContext();
+  await events.get("session_start")({ reason: "startup" }, ctx);
+
+  const huge = { instructions: "x".repeat(16300) };
+  await events.get("tool_call")({ toolName: "subagent", input: huge }, ctx);
+  assert.equal(huge.instructions, "x".repeat(16300), "near-cap contract must stay untouched");
+
+  const small = { instructions: "y".repeat(100) };
+  await events.get("tool_call")({ toolName: "subagent", input: small }, ctx);
+  assert.ok(small.instructions.startsWith("PONYTAIL MODE ACTIVE"));
+  assert.ok(small.instructions.endsWith("y".repeat(100)));
+}));
+
+test("before_agent_start skips when the marker is already present (extension-loaded child)", async () => withTempConfig(async () => {
+  const { events } = createPiHarness();
+  const ctx = createCommandContext();
+  await events.get("session_start")({ reason: "startup" }, ctx);
+
+  const result = await events.get("before_agent_start")({
+    systemPrompt: "agent prompt\n\n## Task Contract\nPONYTAIL MODE ACTIVE — level: full (inherited from parent).",
+  }, ctx);
+
+  assert.equal(result, undefined, "must not double-inject into children that already carry the block");
+}));
+
+test("bare /ponytail handler reports status with a re-activation hint", async () => withTempConfig(async () => {
+  const { commands } = createPiHarness();
+  const noted = [];
+  const ctx = createCommandContext({ ui: { notify: (msg) => noted.push(String(msg)) } });
+
+  await commands.get("ponytail").handler("", ctx);
+
+  const status = noted.at(-1);
+  assert.match(status, /current \w+/);
+  assert.match(status, /default \w+/);
+  assert.match(status, /\/ponytail <mode>/);
+}));
+
+test("tool_call skips other tools, off mode, and disabled scope", async () => withTempConfig(async () => {
+  const previousScope = process.env.PONYTAIL_SUBAGENT_SCOPE;
+  try {
+    const { events } = createPiHarness();
+    const ctx = createCommandContext();
+    await events.get("session_start")({ reason: "startup" }, ctx);
+
+    // Other tools untouched.
+    const bashInput = { command: "ls" };
+    await events.get("tool_call")({ toolName: "bash", input: bashInput }, ctx);
+    assert.equal(bashInput.instructions, undefined);
+
+    // Scope off.
+    process.env.PONYTAIL_SUBAGENT_SCOPE = "off";
+    const scopedInput = { task: "Do it" };
+    await events.get("tool_call")({ toolName: "subagent", input: scopedInput }, ctx);
+    assert.equal(scopedInput.instructions, undefined);
+    delete process.env.PONYTAIL_SUBAGENT_SCOPE;
+
+    // Mode off.
+    await events.get("input")({ text: "stop ponytail" }, ctx);
+    const offInput = { task: "Do it" };
+    await events.get("tool_call")({ toolName: "subagent", input: offInput }, ctx);
+    assert.equal(offInput.instructions, undefined);
+  } finally {
+    if (previousScope === undefined) delete process.env.PONYTAIL_SUBAGENT_SCOPE;
+    else process.env.PONYTAIL_SUBAGENT_SCOPE = previousScope;
+  }
+}));
+
 test("skill alias commands delegate to Pi skill commands", async () => {
   const { commands, sentUserMessages } = createPiHarness();
   const ctx = createCommandContext();

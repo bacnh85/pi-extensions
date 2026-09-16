@@ -51,7 +51,7 @@ All keys default to `true` (sound defaults on, volume `0.4`). Omit the object en
 |-------|------|
 | `onComplete` | Agent finishes a full turn (`agent_settled`) |
 | `onError` | A tool result is flagged as an error (deduped per turn) |
-| `onQuestion` | Reserved for future question-tool hook |
+| `onQuestion` | Pi blocks on a user-facing prompt (`ui_prompt_start`) — e.g. `ask_user_question` |
 
 ## Why
 

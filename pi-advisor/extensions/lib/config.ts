@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { CONFIG_DIR_NAME, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -10,7 +10,8 @@ export interface AdvisorWatchConfig {
 }
 
 export interface AdvisorConfig {
-  model?: string;
+  /** Ordered fallback chain; empty = advisor off. First entry is primary. */
+  models: string[];
   watch: AdvisorWatchConfig;
 }
 
@@ -50,24 +51,39 @@ function parseBlock(raw: Raw | undefined): Partial<AdvisorWatchConfig> {
   };
 }
 
-/** Effective config: project over global, defaults for missing keys. */
+/** Normalize a chain value (array or comma string) into trimmed non-empty entries. */
+function parseModels(raw: Raw): string[] {
+  const value = raw.models;
+  const entries = typeof value === "string" ? value.split(",") : Array.isArray(value) ? value : [];
+  const models = entries.map((entry) => String(entry).trim()).filter(Boolean);
+  return [...new Set(models)];
+}
+
+/** Effective config: project over global, defaults for missing keys.
+ *  Legacy `model` string wraps to `[model]` when `models` is absent/empty. */
 export async function loadConfig(ctx: ExtensionContext): Promise<AdvisorConfig> {
   const global = await readJson(agentSettingsPath());
   const project = ctx.isProjectTrusted() ? await readJson(path.join(ctx.cwd, CONFIG_DIR_NAME, "settings.json")) : {};
   const globalBlock = (global[KEY] ?? {}) as Raw;
   const merged = { ...globalBlock, ...((project[KEY] as Raw) ?? {}) };
-  const model = str(merged, "model");
+  const models = parseModels(merged);
+  const legacy = str(merged, "model");
+  const chain = models.length > 0 ? models : legacy ? [legacy] : [];
   const watch = { ...DEFAULTS, ...parseBlock(globalBlock.watch as Raw | undefined), ...parseBlock((merged as Raw).watch as Raw | undefined) };
-  return { model, watch };
+  return { models: chain, watch };
 }
 
-/** Read-modify-write `pi-advisor.model` into the global settings.json. */
-export async function saveModel(model: string | undefined): Promise<void> {
+/** Read-modify-write `pi-advisor.models` into the global settings.json.
+ *  An empty chain deletes the key (advisor off). The legacy `model` key is
+ *  always deleted so it can never shadow an explicitly-saved chain. */
+export async function saveModels(models: string[]): Promise<void> {
   const file = agentSettingsPath();
   const settings = await readJson(file);
   const block = { ...((settings[KEY] as Raw) ?? {}) };
-  if (model) block.model = model;
-  else delete block.model;
+  const chain = [...new Set(models.map((model) => model.trim()).filter(Boolean))];
+  delete (block as Raw).model;
+  if (chain.length > 0) block.models = chain;
+  else delete block.models;
   // Stamp the versioned tombstone on every explicit user write so a later
   // legacy pi-plan file cannot resurrect a disabled advisor (see
   // migrateLegacyAdvisorModel guard). Preserve a higher existing version.
@@ -78,13 +94,32 @@ export async function saveModel(model: string | undefined): Promise<void> {
   const tmp = `${file}.tmp-${process.pid}`;
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(tmp, JSON.stringify(settings, null, 2) + "\n", "utf8");
-  await rename(tmp, file);
+  try {
+    await rename(tmp, file);
+  } catch (e) {
+    try { await unlink(tmp); } catch { /* best-effort cleanup */ }
+    throw e;
+  }
 }
 
 export function parseModel(value: string): { provider: string; id: string } | undefined {
   const slash = value.indexOf("/");
   if (slash <= 0 || slash === value.length - 1) return undefined;
   return { provider: value.slice(0, slash), id: value.slice(slash + 1) };
+}
+
+/** Thinking levels accepted as a trailing `:level` on a chain entry.
+ *  `off` maps to "no explicit level" (SimpleStreamOptions.reasoning has no off). */
+export const THINKING_LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** Split a trailing `:thinking` suffix. Strict trailing match only — openrouter
+ *  ids like `model:free` stay intact. */
+export function splitThinkingSuffix(entry: string): { name: string; thinking?: string } {
+  const idx = entry.lastIndexOf(":");
+  if (idx <= 0 || idx >= entry.length - 1) return { name: entry };
+  const suffix = entry.slice(idx + 1);
+  if (!THINKING_LEVELS.includes(suffix)) return { name: entry };
+  return { name: entry.slice(0, idx), thinking: suffix };
 }
 
 /**
@@ -114,7 +149,12 @@ export async function migrateLegacyAdvisorModel(): Promise<string | undefined> {
     const tmp = `${settingsPath}.tmp-${process.pid}`;
     await mkdir(path.dirname(settingsPath), { recursive: true });
     await writeFile(tmp, JSON.stringify({ ...settings, [KEY]: { ...block, model: legacy, migrationVersion: MIGRATION_VERSION } }, null, 2) + "\n", "utf8");
-    await rename(tmp, settingsPath);
+    try {
+      await rename(tmp, settingsPath);
+    } catch (e) {
+      try { await unlink(tmp); } catch { /* best-effort cleanup */ }
+      throw e;
+    }
     return legacy;
   } catch { return undefined; }
 }

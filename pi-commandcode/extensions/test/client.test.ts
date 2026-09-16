@@ -103,6 +103,21 @@ describe("mapModel", () => {
     assert.deepEqual(mapModel({ id: "unknown/future-model" }).input, ["text"]);
   });
 
+  it("maps deepseek/deepseek-v4.1-flash as natively multimodal", () => {
+    // V4.1 Flash is natively multimodal (unlike V4 Flash's bolted-on vision-exp).
+    // Pins the whole CAPABILITIES row: a key typo would silently regress to the
+    // text-only default — the exact bug this row exists to prevent.
+    const m = mapModel({ id: "deepseek/deepseek-v4.1-flash" });
+    assert.deepEqual(m.input, ["text", "image"]);
+    assert.equal(m.reasoning, true);
+    // deepseek-v[34] context override → 1M.
+    assert.equal(m.contextWindow, 1_000_000);
+    // deepseek thinking family → high/max effort map.
+    assert.deepEqual(m.thinkingLevelMap, {
+      off: null, minimal: null, low: null, medium: null, high: "high", xhigh: null, max: "max",
+    });
+  });
+
   it("resolves reasoning per-model from the override table", () => {
     // GLM-5 has no extended thinking.
     assert.equal(mapModel({ id: "zai-org/GLM-5" }).reasoning, false);

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.3 (2026-09-12)
+
+### Fixed — backend/trust mismatch + plan-mode gate
+
+- **Trusted-flag threading (P1):** `writeLearning`, `readRecentLearnings`, and
+  `searchLearnings` decided the backend via `activeBackend()` WITHOUT the
+  `trusted` flag, then resolved Munin config WITH it — so a project whose
+  Munin credentials live only in `cwd/.env*` was reported as "munin" while
+  silently writing to the local JSONL (and reads/searches never touched
+  Munin). All three now pass `trusted` through, so the decision and the
+  actual backend always agree.
+- **Plan-mode gate (P1):** `evolve_save` now refuses to run when the `plan`
+  flag is set (same `pi.getFlag("plan")` convention as pi-plan), matching
+  what the README always claimed. `evolve_reflect` stays allowed.
+- README: stored-fix recall bound corrected from ~1s to 3s (`RECALL_TIMEOUT_MS`).
+- Removed the dead `SECRET_KEY_RE` + `void SECRET_KEY_RE;` in buffer.ts — the
+  inline regex in `digestInput` is the only live one.
+
 ## 0.3.2 (2026-08-19)
 
 ### Fixed — Munin credential exfiltration guards (issue #18)

@@ -94,6 +94,23 @@ export function cleanLeakedContentFromMessages(payload: unknown, activeTools: re
 }
 
 /**
+ * True when the payload's LAST message is the current turn's plain user prompt
+ * — no tool result or assistant output after or inside it. This holds only on
+ * the turn's first provider round (incl. retries); mid-turn rounds end with a
+ * tool result (role "tool", or an anthropic-style user message of tool_result
+ * blocks). First-tool guidance may only fire while it can still be obeyed.
+ */
+export function tailIsPlainUserPrompt(payload: unknown): boolean {
+  if (!isRecord(payload)) return false;
+  const messages = findMessagesArray(payload);
+  if (!messages || messages.length === 0) return false;
+  const last = messages[messages.length - 1] as { role?: unknown; content?: unknown };
+  if (last?.role !== "user") return false;
+  if (Array.isArray(last.content) && last.content.some((b) => (b as { type?: unknown })?.type === "tool_result")) return false;
+  return true;
+}
+
+/**
  * Append per-turn guidance text to the LAST user message (the current prompt).
  * Used instead of system-prompt injection: the system prompt is the
  * byte-stable head of the prefix cache (DeepSeek exact-prefix OR GLM Z.ai

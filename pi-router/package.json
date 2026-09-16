@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-router",
-  "version": "1.1.3",
+  "version": "1.1.7",
   "description": "Pi extension that connects to any OpenAI-compatible AI router (9router, omniroute, \u2026) via its /v1 API.",
   "type": "module",
   "license": "MIT",
@@ -36,6 +36,7 @@
     "extensions/index.ts",
     "extensions/lib/",
     "extensions/commands/",
+    "extensions/scripts/",
     "LICENSE"
   ],
   "pi": {
@@ -44,8 +45,7 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
+    "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

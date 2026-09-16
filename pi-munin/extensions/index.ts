@@ -15,19 +15,20 @@ import {
   getMuninConfig,
   extractRemediation,
   formatRemediation,
+  type Remediation,
 } from "./lib/helpers";
 import { withRetry } from "./lib/retry";
 
 // Shared schemas
 const projectParam = Type.Optional(
-  Type.String({ description: "Leave empty — defaults to $MUNIN_PROJECT. Do not set unless you need a different project.", default: "" }),
+  Type.String({ description: "Leave empty — defaults to $MUNIN_PROJECT.", default: "" }),
 );
 const apiKeyParam = Type.Optional(
   Type.String({ description: "API key. Default: $MUNIN_API_KEY.", default: "" }),
 );
 const baseUrlParam = Type.Optional(
   Type.String({
-    description: "Base URL. Default: $MUNIN_BASE_URL or https://munin.kalera.ai",
+    description: "Base URL. Default: $MUNIN_BASE_URL.",
     default: "",
   }),
 );
@@ -125,6 +126,16 @@ function withMuninClient<T extends Record<string, unknown>>(
   return callback(client, projectId);
 }
 
+/** Fresh Error carrying the sanitized `err.message + remediation` text, with
+ *  the original preserved as `cause` — never mutates the caught error (keeps
+ *  its identity/stack intact for upstream consumers). */
+function remediatedError(err: Error, remediation?: Remediation): Error {
+  return new Error(
+    sanitizeErrorMessage(new Error(err.message + formatRemediation(remediation))),
+    { cause: err },
+  );
+}
+
 /**
  * Core Munin invocation with retry and error sanitization.
  * Some actions like 'delete' are not advertised in server capabilities
@@ -166,13 +177,11 @@ export async function callMunin(
         const ackResult = await client.invoke(projectId, ackAction, { version }, { ensureCapability: false });
         if (ackResult && typeof ackResult === "object" &&
             ((ackResult as any).ok === false || (ackResult as any).success === false || (ackResult as any).acknowledged === false)) {
-          err.message = sanitizeErrorMessage(new Error(err.message + formatRemediation(remediation)));
-          throw err;
+          throw remediatedError(err, remediation);
         }
       } catch {
         // ack failed (thrown or resolved-failure) → surface remediation, do NOT retry (no infinite loop).
-        err.message = sanitizeErrorMessage(new Error(err.message + formatRemediation(remediation)));
-        throw err;
+        throw remediatedError(err, remediation);
       }
       // Retry the original action exactly once. Wrap in withRetry so a transient
       // network blip during the retry (after ack already succeeded) is tolerated —
@@ -185,14 +194,11 @@ export async function callMunin(
         // A non-stale retry failure (e.g. VALIDATION_ERROR) must surface its own cause, not a
         // handshake that already succeeded.
         const retryIsStale = classifyError(r).type === "stale_protocol";
-        r.message = sanitizeErrorMessage(new Error(r.message + formatRemediation(extractRemediation(r) ?? (retryIsStale ? remediation : undefined))));
-        throw r;
+        throw remediatedError(r, extractRemediation(r) ?? (retryIsStale ? remediation : undefined));
       }
     }
     // Layer 2: surface remediation in the error message even when auto-ack is skipped.
-    const err2 = error instanceof Error ? error : new Error(String(error));
-    err2.message = sanitizeErrorMessage(new Error(err2.message + formatRemediation(remediation)));
-    throw err2;
+    throw remediatedError(err, remediation);
   }
 }
 
@@ -287,8 +293,8 @@ export default function muninExtension(pi: ExtensionAPI) {
       key: Type.String({ description: "Key to retrieve." }),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
-      const { key } = params as any;
-      validateMemoryKey(key);
+      const { key: rawKey } = params as any;
+      const key = validateMemoryKey(rawKey);
       const result = await withMuninClient(params, async (client, projectId) => {
         return callMunin(client, projectId, "get", { key });
       }, ctx);
@@ -305,26 +311,18 @@ export default function muninExtension(pi: ExtensionAPI) {
     description:
       "AT SESSION END (or after fix): STORE verified durable knowledge.",
     promptSnippet: "Store durable knowledge in long-term memory",
-    promptGuidelines: [
-      "Use munin_store at the end of a session for future sessions.",
-      "Give munin_store one type:(decision|bug-fix|fact|dependency) tag and one domain:(auth|frontend|backend|infra|memory) tag.",
-      "Include a conclusion, why it matters, evidence, and anchors in munin_store content.",
-      "Never use munin_store for secrets, credentials, raw logs, or TODOs.",
-    ],
+    promptGuidelines: ["munin_store: follow the Munin Memory Protocol for tags, content shape, and exclusions (no secrets, logs, TODOs)."],
     parameters: Type.Object({
       ...controlSchema,
       key: Type.String({
-        description:
-          "Unique key. Use kebab-case: domain/subject (e.g., auth/refresh-token-fix).",
+        description: "Unique kebab-case key: domain/subject.",
       }),
       title: Type.String({ description: "Short title." }),
       content: Type.String({
-        description:
-          "Body with conclusion, why it matters, evidence, anchors.",
+        description: "Conclusion, why it matters, evidence, anchors.",
       }),
       tags: Type.String({
-        description:
-          "Tags, comma-separated. Requires one type: + one domain:.",
+        description: "Comma-separated; one type: + one domain:.",
       }),
       valid_from: Type.Optional(
         Type.String({ description: "Valid-from ISO date." }),
@@ -340,8 +338,8 @@ export default function muninExtension(pi: ExtensionAPI) {
       ),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
-      const { key, title, content, tags, valid_from, valid_to, pinned } = params as any;
-      validateMemoryKey(key);
+      const { key: rawKey, title, content, tags, valid_from, valid_to, pinned } = params as any;
+      const key = validateMemoryKey(rawKey);
       const tagValidation = validateMemoryTags(tags);
       if (!tagValidation.ok) throw new Error(tagValidation.message);
       const result = await withMuninClient(params, async (client, projectId) => {
@@ -433,8 +431,8 @@ export default function muninExtension(pi: ExtensionAPI) {
       key: Type.String({ description: "Key to delete." }),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
-      const { key } = params as any;
-      validateMemoryKey(key);
+      const { key: rawKey } = params as any;
+      const key = validateMemoryKey(rawKey);
       const confirmed = await ctx.ui.confirm(
         "Delete Munin memory?",
         `Delete memory \`${key}\` from long-term storage? This cannot be undone.`,

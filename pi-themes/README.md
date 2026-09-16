@@ -1,6 +1,6 @@
 # @bacnh85/pi-themes
 
-A collection of custom pi themes. Currently includes three Ayu-based color variants.
+A collection of custom pi themes. Currently includes three Ayu-based color variants and a Catppuccin Mocha variant.
 
 ## Install
 
@@ -23,6 +23,7 @@ Then select a theme via `/settings` in pi.
 | `pi-dark` | `#0D1017` | `#E6B450` | Ayu dark variant — deep blue-black |
 | `pi-mirage` | `#171B24` | `#FFCC66` | Ayu mirage variant — soft dark blue |
 | `pi-light` | `#FAFAFA` | `#FF9940` | Ayu light variant — warm white |
+| `pi-catppuccin-mocha` | `#1E1E2E` | `#CBA6F7` | Catppuccin Mocha — matches herdr's default `catppuccin` theme |
 
 ## Previews
 
@@ -45,6 +46,8 @@ This is a themes collection. Additional variants (e.g., solarized, nord, custom)
 ## Attribution
 
 Colors sourced from [ayu-colors](https://github.com/ayu-theme/ayu-colors). Initial pi theme port based on [iodic/pi-ayu-themes](https://github.com/iodic/pi-ayu-themes). Both projects are MIT-licensed.
+
+`pi-catppuccin-mocha` uses the official [Catppuccin Mocha](https://github.com/catppuccin/catppuccin) palette (MIT-licensed ports and palette).
 
 ## License
 

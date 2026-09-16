@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { CONFIG_DIR_NAME, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export interface UtilityConfig {
   btw: { model?: string };
@@ -29,7 +28,7 @@ function numberValue(raw: Raw, key: string): number | undefined {
 }
 
 export async function loadUtilityConfig(ctx: ExtensionContext): Promise<UtilityConfig> {
-  const global = await settings(path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "settings.json"));
+  const global = await settings(path.join(getAgentDir(), "settings.json"));
   const project = ctx.isProjectTrusted() ? await settings(path.join(ctx.cwd, CONFIG_DIR_NAME, "settings.json")) : {};
   const config = { ...(global["pi-plan"] as Raw), ...(project["pi-plan"] as Raw) };
   const btw = { ...((global["pi-plan"] as Raw)?.btw as Raw), ...(config.btw as Raw) };

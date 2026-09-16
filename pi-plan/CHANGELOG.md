@@ -1,5 +1,147 @@
 # Changelog
 
+## 0.14.0 (2026-09-14)
+
+### Removed
+
+- **Deprecated `ask_plan_question` tool alias.** Removed the alias, its
+  deprecation-warning path, and its plan-mode/spec-gate allow-list entries
+  (deprecated 0.9.0 with a "drop after one release" marker). Use
+  `ask_user_question` instead.
+
+## 0.13.1 (2026-09-12)
+
+### Fixed
+
+- Re-entering plan mode while a plan was approved/executing discarded the old
+  flow without aborting its in-flight abort-controller or clearing the pending
+  review timer — stale review timers could fire against the discarded flow.
+- `savePreferences` no longer leaves a `*.tmp` file behind when the final
+  rename throws (best-effort unlink, error re-thrown).
+
+### Removed
+
+- Dead export `modelAvailable` (zero callers).
+
+## 0.13.0 (2026-09-11)
+
+### Changed
+
+**Plan mode has its own model + thinking; normal mode is stock Pi.** pi-plan no
+longer manages normal-mode model/thinking at all:
+
+- Normal mode follows stock Pi: `/model` (or `Ctrl+P`) is a session pick,
+  `Ctrl+S` in the picker saves the startup default (`settings.json`),
+  `/thinking` (or `Shift+Tab`) adjusts the level. pi-plan never overrides the
+  normal-mode model or thinking — including `--model`, session resume, and
+  branch switches.
+- New `/plan-model [<provider/model>|clear]` (no `-g`): sets the **plan-mode
+  model**, persisted globally under the `pi-plan` key in `settings.json`.
+  Applied immediately while plan mode is active. Without a ref, opens a
+  `/model`-style picker in the TUI (Ctrl+S inert); refs complete inline with
+  fuzzy search, and a failed picker falls back to a visible warning with the
+  typed-ref usage. Fuzzy ref matching (exact `provider/id`, unique bare id,
+  unique substring; ambiguous → error listing candidates).
+- New `/plan-thinking [<level>|clear]` (no `-g`): sets the **plan-mode thinking
+  level**, persisted globally. Applied immediately while plan mode is active.
+- **Smooth toggling.** Entering plan mode remembers the model + thinking active
+  at that moment and applies the plan config; leaving plan mode restores them.
+  Model/thinking changes made *while planning* (stock `/model` or `/thinking`)
+  are session-temporary and reverted on leave — the plan config never leaks
+  into normal mode. The snapshot survives resume, so leaving plan mode after a
+  resume still restores correctly.
+- Thinking-level clamp/echo protection: a `thinking_level_select` fired by pi
+  core because the model clamped or re-set a level is never persisted as config
+  (previously a clamp could silently overwrite `/plan-thinking xhigh` with
+  `max`).
+- **Config moved to `settings.json`.** Non-secret pi-plan config now lives under the
+  `pi-plan` key in Pi's global `settings.json` (per the repo config-placement rule) instead
+  of `~/.pi/agent/pi-plan/preferences.json`. The legacy file is migrated automatically on
+  first load and renamed to `preferences.json.migrated`; a `pi-plan` block already present in
+  `settings.json` takes precedence and leaves the legacy file untouched. `goalModel` (the
+  `/goal` evaluator model) is now loaded back on start — previously it was written but never
+  restored.
+- Legacy `normalModel` / `defaults.normalThinking` / `perModel` entries are dropped —
+  normal mode follows stock Pi now (set your normal default with `Ctrl+S` in `/model`).
+  The plan-side values (`planModel`, `defaults.planThinking`) carry over.
+
+**Migration:** existing `~/.pi/agent/pi-plan/preferences.json` plan-side values are carried
+  into `settings.json` automatically — no manual edit needed. Your normal-mode model default
+  is now Pi's own startup default (`Ctrl+S` in `/model`), which stock Pi saves in
+  `settings.json`.
+
+## 0.12.0 (2026-09-09)
+
+### Changed
+
+Plan-mode Allow prompts cut by ~80% (analysis of 33 plan-mode sessions / 14 days:
+~370 confirms, ~135 hard-blocks):
+
+- Bash classifier additions (session-analysis-driven):
+  - Env-assignment prefixes (`D=/path; ls $D`, `FOO=a BAR=b cmd`) are stripped
+    before classification — each unique path no longer re-prompts (~68 confirms).
+  - `cd dir && <read cmd>` chains auto-run (`cd` is read-classified, ~103 confirms).
+  - Print-only `sed` auto-runs via a deny-probe gate: `-i`/`--in-place`/`w`/
+    `e`/`-f`/`--file` forms stay behind confirmation or hard-block — including
+    s-command flag tails (`s/x/y/ge` executes shell, `s/x/y/gw out` writes),
+    `e;p` command separators, and glued `1wout`-style writes (GNU sed needs no
+    space); word-interior w/e ("twelve") still read. Everything else is
+    stdout-only (~87 confirms).
+  - tar execute-class options always confirm: `--to-command=CMD` (runs CMD per
+    extracted member) and `-I`/`--use-compress-program=CMD` (runs CMD as the
+    compress/decompress program — `tar -tf a.tar -I sh` looks like a read).
+  - `jq`, `strings`, `stat`, `file`, `du`, `tree`, `lsof`, `basename`,
+    `dirname`, `realpath`, `read`, `diff`, `cmp` added to the read list.
+  - `xargs` classifies its payload command (`… | xargs grep` reads;
+    `… | xargs rm` still hard-blocks; `xargs sh -c` confirms).
+  - `tar -t`/`--list` and stdout-extract (`-x…O`, `--to-stdout`) read; other
+    tar forms confirm.
+  - Flow keywords `while`/`until`/`do`/`done` are transparent — body segments
+    still classify individually (`while read -r f; do rm -rf $f; done` blocks).
+- Raw line breaks are command separators, not writes: quoted multi-line jq/awk
+  programs no longer false-block; each line still classifies individually
+  (`echo hi⏎rm -rf x` stays hard-blocked; heredocs/redirects untouched).
+- `READ_ONLY_TOOLS` += `ux_audit`, `a2a_peers`, `a2a_list`, `a2a_discover`,
+  `a2a_status`, `a2a_history`, `unfold`, `recall`.
+- `BLOCKED_TOOLS` += `apply_patch` (diff-style file mutator — same treatment as
+  `edit`/`write`; a plan-mode model should never patch files).
+- Plan-mode guidance now names the auto-run shell forms and the prompt/block
+  forms so models stop emitting dead commands.
+
+## 0.11.4 (2026-09-05)
+
+- Widen Pi SDK peer range to `>=0.85.0 <0.86.0` and bump devDep to `^0.85.0` for Pi 0.85.0 compatibility (no breaking changes; peer cap widening only).
+
+## 0.11.3 (2026-08-30)
+
+### Fixes
+
+- Plan-mode bash gate no longer false-blocks read-only commands (analysis of
+  449 live hard-blocks across 222 plan-mode sessions):
+  - stderr discards (`2>/dev/null`, `2>>/dev/null`) and fd duplicates
+    (`2>&1`, `2>&-`, `1>&2`, `>&2`) are read-safe and auto-allowed; real
+    redirects (`> file`, `2> err.log`, `< in`, and lookalike targets like
+    `>/dev/null2`) stay hard-blocked.
+  - `git -C <path> <read-subcommand>` (quoted paths like `-C "my repo"`,
+    `-c k=v`, `--no-pager`) now classifies as read — `git -C repo status` was
+    blocked 35 times. Mutating subcommands after any prefix still block
+    (`git -C "my repo" push`).
+  - `command -v x` / `command -V x`, `type x`, `which x` are reads. Bare
+    `command` stays a writer wrapper — `command NAME` executes NAME
+    (`command rm x` hard-blocks; reviewer-found bypass, fixed before publish).
+- `write_plan`: `title` is now optional — derived from the first `# Heading`
+  in `content` (falls back to `"Plan"`). Fixes 3 live validation failures where
+  models sent only `content`.
+
+## 0.11.2 (2026-08-29)
+
+### Added
+
+- Slash-argument autocomplete: `/goal` offers `status|pause|resume|clear`,
+  `/plan-approve` offers `current|new|flow`, `/goal-model` offers `off` +
+  models, and `/plan-fallback` offers `set|clear` plus head-preserving model
+  refs after `set ` (`set m1 ` completes to `set m1 m2`).
+
 ## 0.11.1 (2026-08-26)
 
 ### Fixes

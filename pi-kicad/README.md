@@ -17,6 +17,7 @@ pi install npm:@bacnh85/pi-kicad
 | Tool | Purpose |
 |---|---|
 | `kicad_call` | Invoke any of Konnect's 185 tools by name (schematic capture, layout, routing, ERC/DRC, exports, design review, JLCPCB parts, Freerouting, reference circuits). |
+| `kicad_batch` | Run multiple Konnect tool calls **sequentially** in one shot (each op awaits the next, avoiding Konnect's same-file atomic-rename race). Returns a per-op summary; full parsed results in `details`. |
 | `kicad_status` | Resolve the Konnect binary, `kicad-cli`, and IPC socket; start/health-check the daemon; report version + active tool count. Use first when something isn't working. |
 
 Konnect loads only a small toolset starter kit for context economy. Call
@@ -44,6 +45,9 @@ All optional — auto-discovered. Override with environment variables:
 | `KICAD_API_SOCKET` | Konnect auto-detect | KiCad IPC socket, e.g. `ipc:///tmp/kicad/api.sock` |
 | `KICAD_HTTP_PORT` | `31337` | Preferred daemon port (falls back to a free one) |
 | `KICAD_LOG_LEVEL` | `info` | Konnect log level (error/warn/info/debug/trace) |
+| `KICAD10_SYMBOL_DIR` | `~/.pi/kicad-symbols` (managed dir) | Overrides the symbol dir Konnect resolves `lib_id`s from |
+| `KICAD_SHARED_SUPPORT` | auto (per-OS app paths) | Overrides the KiCad SharedSupport dir used for footprints/templates |
+| `KICAD_PROJECT_DIR` | none | KiCad project dir (written to the daemon TOML as `project_dir`) |
 
 ## How it works
 
@@ -60,9 +64,12 @@ Pi agent ── kicad_call ──► POST http://127.0.0.1:<port>/mcp   ──�
                                          (ERC, DRC, Gerber, PDF, BOM, 3D…)
 ```
 
-The daemon is reused if a healthy one is already running on the port; otherwise
-`pi-kicad` spawns `konnect --config <tmp-toml>` (transport=`http`), polls
-`GET /health`, and kills it on Pi exit.
+A fresh daemon is always spawned for this session: `pi-kicad` picks a free port
+(preferring `KICAD_HTTP_PORT`), writes a private temp TOML, spawns
+`konnect --config <tmp-toml>` (transport=`http`), polls `GET /health`, and kills
+it on Pi exit. An already-running daemon found on the port (e.g. left over from
+an earlier session) is **never** reused — it may carry a stale environment — so
+the spawn skips occupied ports instead.
 
 ## Changelog
 

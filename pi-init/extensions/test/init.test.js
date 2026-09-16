@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { scanProject, buildInitPrompt } from "../index.js";
+import { scanProject, buildInitPrompt, checkFindings } from "../index.js";
 
 function fixture(setup) {
   const dir = mkdtempSync(join(tmpdir(), "pi-init-"));
@@ -92,7 +92,22 @@ test("scanProject detects existing AGENTS.md / CLAUDE.md", () => {
     writeFileSync(join(d, "AGENTS.md"), "# existing");
   });
   try {
-    assert.equal(scanProject(dir).hasAgentsMd, true);
+    const s = scanProject(dir);
+    assert.equal(s.hasAgentsMd, true);
+    assert.equal(s.agentsFile, "AGENTS.md", "reports WHICH file was found");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("scanProject reports CLAUDE.md when only that exists", () => {
+  const dir = fixture((d) => {
+    writeFileSync(join(d, "CLAUDE.md"), "# existing");
+  });
+  try {
+    const s = scanProject(dir);
+    assert.equal(s.hasAgentsMd, true);
+    assert.equal(s.agentsFile, "CLAUDE.md");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -156,6 +171,47 @@ test("buildInitPrompt force mode says regenerate from scratch", () => {
   assert.match(buildInitPrompt(s, "force"), /from scratch/);
 });
 
+test("buildInitPrompt targets the detected context file (CLAUDE.md), not always AGENTS.md", () => {
+  const s = {
+    projectName: "x",
+    languages: new Set(),
+    topDirs: [],
+    keyFiles: [],
+    ci: [],
+    hasAgentsMd: true,
+    agentsFile: "CLAUDE.md",
+  };
+  const prompt = buildInitPrompt(s, "");
+  assert.match(prompt, /write` tool to `CLAUDE\.md`/);
+  assert.match(prompt, /If CLAUDE\.md already exists, improve it in place/);
+  assert.equal(prompt.includes("to `AGENTS.md`"), false, "write target is the detected file");
+  // Force branch must also honor the detected file.
+  const forcePrompt = buildInitPrompt(s, "force");
+  assert.match(forcePrompt, /Regenerate this project's CLAUDE\.md from scratch/);
+  assert.equal(forcePrompt.includes("to `AGENTS.md`"), false);
+});
+
+test("buildInitPrompt emits the detected package manager's run form", () => {
+  const s = {
+    projectName: "pnpm-app",
+    languages: new Set(),
+    packageManager: "pnpm",
+    buildSystem: null,
+    topDirs: [],
+    keyFiles: ["package.json"],
+    ci: [],
+    testCommand: "vitest",
+    lintCommand: null,
+    buildCommand: "vite build",
+    packageJson: null,
+    hasAgentsMd: false,
+  };
+  const prompt = buildInitPrompt(s, "");
+  assert.match(prompt, /`pnpm run test` → `vitest`/);
+  assert.match(prompt, /`pnpm run build` → `vite build`/);
+  assert.equal(prompt.includes("`npm run"), false, "never emits npm for a pnpm project");
+});
+
 test("buildInitPrompt handles missing commands gracefully", () => {
   const s = {
     projectName: "bare",
@@ -177,4 +233,30 @@ test("buildInitPrompt handles missing commands gracefully", () => {
   assert.doesNotThrow(() => prompt.split("\n"));
   // No false commands injected when scripts absent
   assert.equal(prompt.includes("npm run test"), false);
+});
+
+test("check findings: non-Node repo not flagged for missing package.json", () => {
+  const dir = fixture((d) => {
+    writeFileSync(join(d, "go.mod"), "module example.com/x\n\ngo 1.22\n");
+  });
+  try {
+    const { missing } = checkFindings(scanProject(dir));
+    assert.ok(!missing.includes("package.json"), `should not flag package.json, got: ${missing.join(", ")}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("check findings: JS repo without package.json still flagged as missing", () => {
+  const dir = fixture((d) => {
+    writeFileSync(join(d, "main.js"), "console.log('hi');\n");
+  });
+  try {
+    const scan = scanProject(dir);
+    assert.ok(scan.languages.has("JavaScript"), "scan detects JS from source files");
+    const { missing } = checkFindings(scan);
+    assert.ok(missing.includes("package.json"), `should flag package.json, got: ${missing.join(", ")}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

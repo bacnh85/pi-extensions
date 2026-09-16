@@ -5,15 +5,13 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { createRequire } from "node:module";
 import {
-  CONFIG_DIR_NAME,
   CustomEditor,
   getAgentDir,
   isToolCallEventType,
   withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { access, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
 import { isOverloadError } from "./lib/fallback";
@@ -21,6 +19,8 @@ import { captureRewindCheckpoint, restoreRewindCheckpoint, rewindToFlowBaseline,
 import { BLOCKED_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 import { loadUtilityConfig, parseModel } from "./lib/utility-config";
 import { advanceGoal, DEFAULT_GOAL_MAX_TURNS, registerGoal, type GoalAccessors, type GoalState } from "./commands/goal";
+import { chooseModel, exactModel, modelRef, modelSearchText, type Model } from "./lib/model-picker";
+import { fuzzyFilter } from "@earendil-works/pi-tui";
 import { registerBtw } from "./commands/btw";
 import { registerDoctor } from "./commands/doctor";
 import { registerHandoff } from "./commands/handoff";
@@ -30,8 +30,6 @@ const STATUS_KEY = "pi-plan";
 const DEFAULT_PLAN_DIR = ".agents/plans";
 const PLAN_TOOL = "write_plan";
 const ASK_USER_QUESTION_TOOL = "ask_user_question";
-// ponytail: deprecated alias — drop after one release
-const PLAN_QUESTION_TOOL = "ask_plan_question";
 const PLAN_EXECUTE_COMMAND = "plan-execute";
 // ponytail: keep in sync with pi-review/extensions/index.ts REVIEW_EVENT
 const REVIEW_EVENT = "pi-review:run";
@@ -40,8 +38,15 @@ const REVIEW_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
 const REVIEW_HARD_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_DIRTY_PATCH_BYTES = 50 * 1024;
 const MAX_UNTRACKED_REVIEW_BYTES = 12 * 1024;
-function preferencesFile(): string {
-  return path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "pi-plan", "preferences.json");
+/** Canonical config location: the `pi-plan` key in Pi's global settings.json
+ *  (getAgentDir()). Non-secret extension config belongs there — not in a
+ *  private file — per the repo config-placement rule. */
+function settingsFile(): string {
+  return path.join(getAgentDir(), "settings.json");
+}
+/** Legacy pre-0.13.0 preferences file — migrated into settings.json on load. */
+function legacyPreferencesFile(): string {
+  return path.join(getAgentDir(), "pi-plan", "preferences.json");
 }
 const REWIND_CHECKPOINT_TYPE = "pi-plan-rewind";
 const MAX_REWIND_CHECKPOINTS = 100;
@@ -89,8 +94,6 @@ interface FlowState {
 
 interface PlanState {
   enabled: boolean;
-  planThinking: ThinkingLevel;
-  normalThinking: ThinkingLevel;
   toolsBeforePlan?: string[];
   lastPlanPath?: string;
   lastPlanTitle?: string;
@@ -101,24 +104,24 @@ interface PlanState {
   specPath?: string;
   flow?: FlowState;
   goal?: GoalState;
+  /** Model + thinking active before entering plan mode — restored on leave. */
+  prePlanModel?: string;
+  prePlanThinking?: ThinkingLevel;
 }
 
 interface PlanPreferences {
-  version: 2;
-  defaults: { planThinking: ThinkingLevel; normalThinking: ThinkingLevel };
-  perModel: Record<
-    string,
-    { planThinking: ThinkingLevel; normalThinking: ThinkingLevel }
-  >;
-  goalModel?: string;
+  version: 3;
+  /** Model used only while plan mode is active (unset = leave Pi's model alone). */
   planModel?: string;
-  normalModel?: string;
+  /** Thinking level applied on entering plan mode (unset = leave it alone). */
+  planThinking?: ThinkingLevel;
+  goalModel?: string;
   /** Ordered fallback model refs (provider/id) tried on overload/rate-limit. */
   fallbackModels?: string[];
 }
 
 interface WritePlanParams {
-  title: string;
+  title?: string;
   content: string;
   status?: PlanStatus;
 }
@@ -153,10 +156,15 @@ function slugify(value: string): string {
 }
 
 function normalizePlanContent(params: WritePlanParams): string {
-  const title = params.title.trim() || "Plan";
+  const title = params.title?.trim() || "Plan";
   const body = params.content.trim();
   if (/^#\s+/m.test(body)) return `${body}\n`;
   return `# ${title}\n\n${body}\n`;
+}
+
+/** First '# Heading' in the content — lets write_plan tolerate a missing title arg. */
+function deriveTitle(content: string): string | undefined {
+  return content.match(/^#\s+(.+)$/m)?.[1]?.trim() || undefined;
 }
 
 function planPath(cwd: string, title: string, dir: string = DEFAULT_PLAN_DIR): string {
@@ -242,15 +250,10 @@ function hasOpenQuestionWarning(content: string): boolean {
   return false;
 }
 
-function modelKey(model: { provider?: string; id?: string } | undefined): string | undefined {
-  if (!model?.provider || !model?.id) return undefined;
-  return `${model.provider}/${model.id}`;
-}
-
 type CommandDisposition = "read" | "write" | "confirm";
 
 /** Classify one shell command for plan mode without attempting to interpret arbitrary executables. */
-/** Split a shell command on separators (; & |) that are OUTSIDE quotes. */
+/** Split a shell command on separators (; & | and raw line breaks) that are OUTSIDE quotes. */
 function splitShellSegments(cmd: string): string[] {
   const segments: string[] = [];
   let cur = "";
@@ -263,7 +266,7 @@ function splitShellSegments(cmd: string): string[] {
     } else if (ch === "'" || ch === '"') {
       quote = ch;
       cur += ch;
-    } else if (/[;&|]/.test(ch)) {
+    } else if (/[;&|\r\n]/.test(ch)) {
       if (cur.trim()) segments.push(cur.trim());
       cur = "";
     } else {
@@ -277,13 +280,18 @@ function splitShellSegments(cmd: string): string[] {
 // Read-only git subcommands auto-allowed in plan mode. Anything not matched here
 // falls through to "write" (hard-blocked) in classifySegment — the conservative
 // default. Ambiguous forms (e.g. `git config` without --get/--list) are NOT here.
+// All forms tolerate global opts: -C with quoted paths (`-C "my repo"`), -c k=v
+// (quoted values), and --no-pager — from session analysis: `git -C repo status`
+// was hard-blocked (35 sessions). The quoting alternatives only match quoted
+// tokens, so they cannot swallow a mutating subcommand.
 // ponytail: one allowlist, conservative fallthrough; when unsure, omit → block.
-const GIT_READ_ONLY = /^git\s+(?:status|rev-parse|diff|show|log|ls-files|ls-tree|ls-remote|cat-file|rev-list|shortlog|describe|for-each-ref|show-ref|symbolic-ref|name-rev|blame|annotate)\b/i;
-const GIT_BRANCH_READ_ONLY = /^git\s+branch\s+(?:-[va]+|--(?:list|all|remote|merged|no-merged|contains|show-current))\b/i;
-const GIT_TAG_READ_ONLY = /^git\s+tag\s+(?:--list\b|-\w*l\b)/i;
-const GIT_REMOTE_READ_ONLY = /^git\s+remote(?:\s+(?:-[va]+|show\b|get-url\b)[^\n]*)?$/i;
-const GIT_CONFIG_READ_ONLY = /^git\s+config\s+(?:--(?:get|get-regexp|get-all|list)|-l)\b/i;
-const GIT_REFLOG_READ_ONLY = /^git\s+reflog(?:\s+show\b.*)?$/i;
+const GIT_PREFIX = "^git\\s+(?:-C\\s+(?:\"[^\"]*\"|'[^']*'|\\S+)\\s+|-c\\s+\\S+=(?:\"[^\"]*\"|\\S+)\\s+|--no-pager\\s+)*";
+const GIT_READ_ONLY = new RegExp(`${GIT_PREFIX}(?:status|rev-parse|diff|show|log|ls-files|ls-tree|ls-remote|cat-file|rev-list|shortlog|describe|for-each-ref|show-ref|symbolic-ref|name-rev|blame|annotate)\\b`, "i");
+const GIT_BRANCH_READ_ONLY = new RegExp(`${GIT_PREFIX}branch\\s+(?:-[va]+|--(?:list|all|remote|merged|no-merged|contains|show-current))\\b`, "i");
+const GIT_TAG_READ_ONLY = new RegExp(`${GIT_PREFIX}tag\\s+(?:--list\\b|-\\w*l\\b)`, "i");
+const GIT_REMOTE_READ_ONLY = new RegExp(`${GIT_PREFIX}remote(?:\\s+(?:-[va]+|show\\b|get-url\\b)[^\\n]*)?$`, "i");
+const GIT_CONFIG_READ_ONLY = new RegExp(`${GIT_PREFIX}config\\s+(?:--(?:get|get-regexp|get-all|list)|-l)\\b`, "i");
+const GIT_REFLOG_READ_ONLY = new RegExp(`${GIT_PREFIX}reflog(?:\\s+show\\b.*)?$`, "i");
 
 function isGitReadOnly(inspection: string): boolean {
   return GIT_READ_ONLY.test(inspection)
@@ -349,16 +357,24 @@ function extractSubagentNames(input: unknown): string[] {
 function classifyCommand(cmd: string): CommandDisposition {
   const c = cmd.trim();
   if (!c) return "confirm";
-  // Redirects, command substitution, and heredocs can create/modify files or run
-  // arbitrary code regardless of the surrounding command — always a write.
-  // Note: the < > check is intentionally conservative — it also catches "a < b"
-  // inside quotes. Acceptable: rare in read-only greps, and safety wins.
-  if (/[\r\n<>]/.test(c) || /\$\(|`/.test(c) || /--output(?:=|\s)/i.test(c)) return "write";
+  // Redirections (stdout/stderr to files, here-docs) can create/modify files.
+  // Discarding forms are read-safe: n>/dev/null and append n>>/dev/null (exact
+  // null-device target, anchored so >/dev/null2 keeps its `>` → stays write)
+  // and fd dups/close (2>&1, 2>&-). Top false-block from session analysis:
+  // `find … 2>/dev/null | head`. Command substitution and heredocs are always
+  // writes; bare `<`/`>` still block (heredoc `<<`, redirects). A raw line break
+  // is only a command separator — segment splitting below classifies each line,
+  // so quoted multi-line jq/awk programs no longer false-block (session analysis:
+  // multi-line commands were the top remaining false "write").
+  // ponytail: < input redirect stays conservative (blocked) — rare in practice.
+  const cNoDiscard = c.replace(/\d*>+\s*\/dev\/null(?![\w.\/-])|\d*>&[\d-]/g, "");
+  if (/[<>]/.test(cNoDiscard) || /\$\(|`/.test(c) || /--output(?:=|\s)/i.test(c)) return "write";
   // Split on command separators OUTSIDE quotes so read-only pipelines (grep ... | head)
   // and chains (ls -la; echo done) classify per segment, while quoted alternation
   // patterns like "sqi_manager_task\|SYS_Tasks" stay one segment. The whole command
   // is read only if EVERY segment is read only; any known writer wins; else confirm.
-  const segments = splitShellSegments(c);
+  // Split the stripped string so `2>&1` isn't cut at its bare `&`.
+  const segments = splitShellSegments(cNoDiscard);
   if (segments.length > 1) {
     if (segments.some((seg) => classifySegment(seg) === "write")) return "write";
     if (segments.every((seg) => classifySegment(seg) === "read")) return "read";
@@ -367,66 +383,190 @@ function classifyCommand(cmd: string): CommandDisposition {
   return classifySegment(c);
 }
 
-function classifySegment(seg: string): CommandDisposition {
-  const inspection = seg.replace(/^\S*\/(?=[^/\s]+(?:\s|$))/, "");
-  if (/^git\s+/i.test(inspection)) {
-    return isGitReadOnly(inspection) ? (inspection === seg ? "read" : "confirm") : "write";
+// Env-assignment prefixes (`S=<file>; jq …`, `FOO=a BAR=b cmd`) set shell/env
+// variables and write nothing — strip them and classify the real command.
+// Session analysis: ~68 confirms/14d, each unique path re-prompting even with
+// "Allow for this session". Values with spaces must be quoted; a bare
+// assignment with no command classifies as read.
+// ponytail: segments never contain `;|&` (split upstream), so value chars may exclude them.
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s;&|])*(?:\s+|$)/;
+
+// Pure flow-control keywords carry no side effects; loop/body segments still
+// classify individually, so skipping them (like env assignments) keeps
+// `while IFS= read -r f; do jq …` session-analysis loops readable. A writer
+// inside the body (`do rm -rf x`) still hits the writer tier after the skip.
+const FLOW_KEYWORD = /^(?:while|until|do|done)(?:\s+|$)/;
+
+// sed read-only gate. sed writes to stdout unless: -i/--in-place (in-place
+// edit, caught earlier as write), the `w` command/flag (writes a file), the
+// `e` command or s-flag (EXECUTES the pattern space as a shell command), or
+// -f/--file (script from a file the classifier cannot inspect — a
+// repo-controlled script can carry `w`). Everything else is stdout-only.
+// The `e` probe skips `-e` (script flag) by requiring a non-letter, non-dash
+// char before `e`; patterns like `/end/`, `s/a/e/` (replacement `e` between
+// slashes) and words containing `e` don't match.
+// s-command flag tails: s<delim>…<delim>…<delim><flags>. The `e` flag EXECUTES
+// the pattern space as a shell command and `w` writes to a file — both dangerous
+// even when adjacent to other flags (`ge`, `gw`), which the letter-anchored
+// e/w probes miss. Same-delimiter backreference keeps unrelated `s` words
+// ("else", "set") out; `\\.` skips escaped delimiters.
+const S_COMMAND_FLAGS = /s([^\w\s])(?:\\.|(?!\1)[\s\S])*?\1(?:\\.|(?!\1)[\s\S])*?\1([a-z0-9]*)/gi;
+
+function isSedReadOnly(inspection: string): boolean {
+  if (/(?:^|\s)-[a-zA-Z]*[if][a-zA-Z]*\b|--in-place\b|--file\b/i.test(inspection)) return false;
+  // w at ANY letter boundary: `w file`, glued `1wout` (GNU sed needs no space),
+  // flag-cluster `gw`/`ew`, patterns like `/web/` — all confirm; only
+  // word-interior w ("twelve") is provably not the w command/flag.
+  if (/(?<![A-Za-z])w|w(?![A-Za-z])/i.test(inspection)) return false;
+  // e probe: command separators `;` and `}` are valid followers (`e;p` executes).
+  if (/(?:^|[^A-Za-z-])e(?:[\s;}]|$|['"])/i.test(inspection)) return false;
+  for (const m of inspection.matchAll(S_COMMAND_FLAGS)) {
+    if (/[ew]/i.test(m[2])) return false;
   }
-  if (/^(?:(?:rm|rmdir|mv|cp|mkdir|touch|chmod|chown|ln|install|truncate|dd|mktemp)|sudo|env|command|time|nohup)\b/i.test(inspection)) return "write";
-  if (/^sed\b/i.test(inspection) && (/\s(?:-i\S*|--in-place(?:=\S*)?)(?:\s|$)/i.test(inspection) || /\b(?:\d+)?w\s+/i.test(inspection) || /\/w\s/i.test(inspection))) return "write";
+  return true;
+}
+
+// Strip xargs's own flags so the payload command can be classified:
+// separate-value shorts (-I {}, -n 2, -a f, -L k, -P p, -s c, -E e), long opts
+// with separate values (--arg-file in), attached clusters (-0 -r -n2 -I{}),
+// and long opts attached or with =value (--null, --arg-file=in). A valueless
+// long opt followed by the payload (--null grep) may eat one payload token →
+// falls to confirm. Conservative either way.
+function xargsPayload(inspection: string): string {
+  let rest = inspection.replace(/^xargs\b/i, "").trim();
+  for (;;) {
+    const next = rest
+      .replace(/^-[ILnPsaE]\s+(?:"[^"]*"|'[^']*'|\S+)\s*/i, "")
+      .replace(/^--[a-z-]+\s+(?:"[^"]*"|'[^']*'|\S+)\s*/i, "")
+      .replace(/^--?[0-9A-Za-z?{}=]+\s*/, "")
+      .replace(/^--[a-z-]+(?:=\S*)?\s*/i, "");
+    if (next === rest) break;
+    rest = next;
+  }
+  return rest.trim();
+}
+
+function classifySegment(seg: string): CommandDisposition {
+  let inspection = seg;
+  for (;;) {
+    const stripped = inspection.replace(ENV_ASSIGNMENT, "").replace(FLOW_KEYWORD, "");
+    if (stripped === inspection) break;
+    inspection = stripped;
+  }
+  inspection = inspection.replace(/^\S*\/(?=[^/\s]+(?:\s|$))/, "").trim();
+  if (!inspection) return "read"; // bare env assignment — sets a variable, writes nothing
+  if (/^git\s+/i.test(inspection)) {
+    return isGitReadOnly(inspection) ? "read" : "write";
+  }
+  // xargs executes a payload command — classify the payload, not xargs itself:
+  // `grep -l x | xargs grep y` reads, `| xargs rm` still hits the writer tier,
+  // `xargs sh -c …` confirms.
+  if (/^xargs\b/i.test(inspection)) {
+    const payload = xargsPayload(inspection);
+    if (!payload) return "read";
+    return classifySegment(payload);
+  }
+  // command/type/which: only pure executable lookups are reads. POSIX `command NAME`
+  // EXECUTES NAME, so bare `command` stays a writer wrapper (`command rm x` must block);
+  // only `command -v/-V` is a lookup (reviewer critical finding, 0.11.3).
+  if (/^(?:type|which)\b/i.test(inspection) || /^command\s+-[vV]\b/i.test(inspection)) return "read";
+  if (/^(?:(?:rm|rmdir|mv|cp|mkdir|touch|chmod|chown|ln|install|truncate|dd|mktemp|command)|sudo|env|nohup|time)\b/i.test(inspection)) return "write";
+  if (/^sed\b/i.test(inspection)) {
+    if (/\s(?:-i\S*|--in-place(?:=\S*)?)(?:\s|$)/i.test(inspection) || /\b(?:\d+)?w\s+/i.test(inspection) || /\/w\s/i.test(inspection) || /(?:^|[^A-Za-z-])\d+w[a-zA-Z0-9.]/i.test(inspection)) return "write";
+    return isSedReadOnly(inspection) ? "read" : "confirm";
+  }
   if (/^tee\b/i.test(inspection)) return "write";
+  // tar: list (-t, --list) and stdout-extract (-x…O, -O, --to-stdout) only read.
+  // Bare -x extracts to the filesystem → confirm; writers (-c) → confirm.
+  if (/^tar\b/i.test(inspection)) {
+    // Execute-class options — never auto-run: --to-command=CMD runs CMD per
+    // extracted member; -I/--use-compress-program=CMD runs CMD as the
+    // compress/decompress program (`tar -tf a.tar -I sh` looks like a read).
+    if (/--to-command\b/i.test(inspection) || /--use-compress-program\b/i.test(inspection) || /(?:^|\s)-\S*I/i.test(inspection)) return "confirm";
+    const letters = inspection.match(/^tar\s+(?:--\S+\s+)*-?([a-zA-Z]+)/i)?.[1]?.toLowerCase() ?? "";
+    const toStdout = /(?:^|\s)-(?:o\b|--to-stdout\b)/i.test(inspection);
+    if (letters.includes("t") || /--list\b/i.test(inspection) || (letters.includes("x") && (letters.includes("o") || toStdout))) return "read";
+    return "confirm";
+  }
   if (/^find\b/i.test(inspection) && /-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)\b/i.test(inspection)) return "write";
   // Catch sort -o in any short-option form: standalone -o, combined -no/-on, and --output=.
   if (/^sort\b/i.test(inspection) && (/(?:^|\s)-[a-zA-Z]*o[a-zA-Z]*(?:\s|=|$)/i.test(inspection) || /--output(?:=|\s)/i.test(inspection))) return "write";
   // awk is a Turing-complete interpreter (system(), | getline, print>redirect) — never auto-allow.
-  return /^(?:rg|grep|find|fd|ls|pwd|cat|head|tail|wc|sort|uniq|cut|echo|printf)\b/i.test(inspection) ? "read" : "confirm";
+  return /^(?:rg|grep|find|fd|ls|pwd|cat|head|tail|wc|sort|uniq|cut|echo|printf|jq|strings|stat|file|du|tree|lsof|basename|dirname|realpath|cd|read|diff|cmp)\b/i.test(inspection) ? "read" : "confirm";
 }
 
-function getEffectiveThinking(prefs: PlanPreferences, model: { provider?: string; id?: string } | undefined): { plan: ThinkingLevel; normal: ThinkingLevel } {
-  const key = modelKey(model);
-  const stored = key ? prefs.perModel[key] : undefined;
-  return {
-    plan: stored?.planThinking ?? prefs.defaults.planThinking,
-    normal: stored?.normalThinking ?? prefs.defaults.normalThinking,
+function preferenceString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/** Validate a raw object as PlanPreferences (shared by the settings.json and
+ *  legacy-file load paths). Accepts v3 and migrates the v2 shape. */
+function parsePreferences(parsed: Record<string, any> | undefined): PlanPreferences | undefined {
+  if (!parsed || typeof parsed !== "object") return undefined;
+  const base = {
+    version: 3 as const,
+    planModel: preferenceString(parsed.planModel),
+    goalModel: preferenceString(parsed.goalModel),
+    fallbackModels: Array.isArray(parsed.fallbackModels)
+      ? parsed.fallbackModels.filter((m: unknown): m is string => typeof m === "string" && m.trim().length > 0)
+      : undefined,
   };
+  if (parsed.version === 3) {
+    return { ...base, planThinking: isThinkingLevel(parsed.planThinking) ? parsed.planThinking : undefined };
+  }
+  // v2: per-mode defaults + per-model map. Keep the plan thinking level; drop
+  // normal-mode model/thinking (normal mode now follows stock Pi).
+  if (parsed.version === 2 && isThinkingLevel(parsed.defaults?.planThinking)) {
+    return { ...base, planThinking: parsed.defaults.planThinking };
+  }
+  return undefined;
 }
 
 async function loadPreferences(): Promise<PlanPreferences | undefined> {
+  // Canonical: the "pi-plan" key in Pi's global settings.json.
   try {
-    const raw = await readFile(preferencesFile(), "utf8");
-    const parsed = JSON.parse(raw) as Record<string, any>;
-    if (parsed.version !== 2 || !isThinkingLevel(parsed.defaults?.planThinking) || !isThinkingLevel(parsed.defaults?.normalThinking) || typeof parsed.perModel !== "object" || parsed.perModel === null) {
-      return undefined;
-    }
-    // ponytail: validate each persisted per-model entry
-    const perModel: Record<string, { planThinking: ThinkingLevel; normalThinking: ThinkingLevel }> = {};
-    for (const [key, val] of Object.entries(parsed.perModel)) {
-      const m = val as Record<string, string>;
-      if (isThinkingLevel(m.planThinking) && isThinkingLevel(m.normalThinking)) {
-        perModel[key] = { planThinking: m.planThinking, normalThinking: m.normalThinking };
-      }
-    }
-    return {
-      version: 2,
-      defaults: parsed.defaults,
-      perModel,
-      planModel: typeof parsed.planModel === "string" && parsed.planModel.trim() ? parsed.planModel.trim() : undefined,
-      normalModel: typeof parsed.normalModel === "string" && parsed.normalModel.trim() ? parsed.normalModel.trim() : undefined,
-      fallbackModels: Array.isArray(parsed.fallbackModels)
-        ? parsed.fallbackModels.filter((m: unknown): m is string => typeof m === "string" && m.trim().length > 0)
-        : undefined,
-    };
+    const settings = JSON.parse(await readFile(settingsFile(), "utf8")) as Record<string, any>;
+    const parsed = parsePreferences(settings?.["pi-plan"]);
+    if (parsed) return parsed;
+  } catch { /* absent or corrupt — fall through */ }
+  // One-time migration from the legacy preferences.json.
+  try {
+    const legacy = parsePreferences(JSON.parse(await readFile(legacyPreferencesFile(), "utf8")));
+    if (!legacy) return undefined;
+    await savePreferences(legacy);
+    try { await rename(legacyPreferencesFile(), `${legacyPreferencesFile()}.migrated`); } catch { /* backup kept; retried next start */ }
+    return legacy;
   } catch {
     return undefined;
   }
 }
 
 async function savePreferences(preferences: PlanPreferences): Promise<void> {
-  const file = preferencesFile();
+  const file = settingsFile();
   await mkdir(path.dirname(file), { recursive: true });
+  // Read-modify-write: preserve every other key in settings.json. A corrupt
+  // file is never silently discarded — back it up before overwriting.
+  let settings: Record<string, unknown> = {};
+  let corrupt = false;
+  try {
+    settings = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+    if (!settings || typeof settings !== "object" || Array.isArray(settings)) { settings = {}; corrupt = true; }
+  } catch {
+    settings = {};
+    await access(file).then(() => { corrupt = true; }, () => {}); // absent ≠ corrupt
+  }
+  if (corrupt) {
+    try { await rename(file, `${file}.corrupt`); } catch { /* unrenamable — last resort overwrites */ }
+  }
+  settings["pi-plan"] = preferences;
   const tmp = `${file}.${process.pid}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(preferences, null, 2)}\n`, "utf8");
-  await rename(tmp, file);
+  await writeFile(tmp, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+  try {
+    await rename(tmp, file);
+  } catch (e) {
+    try { await unlink(tmp); } catch { /* best-effort cleanup */ }
+    throw e;
+  }
 }
 
 function isReviewFinding(value: unknown): value is ReviewFinding {
@@ -473,8 +613,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   const rememberPlanAllow = (key: string) => planSessionAllows.add(key);
   const clearPlanSessionAllows = () => planSessionAllows.clear();
   let toolsBeforePlan: string[] | undefined;
-  let planThinking: ThinkingLevel = "high";
-  let normalThinking: ThinkingLevel = "medium";
+  /** Model + thinking active before entering plan mode — restored on leave, so
+   *  toggling plan mode never loses the user's normal-mode (stock Pi) choice. */
+  let prePlanModel: string | undefined;
+  let prePlanThinking: ThinkingLevel | undefined;
   let lastPlanPath: string | undefined;
   let lastPlanTitle: string | undefined;
   let lastPlanStatus: PlanStatus | undefined;
@@ -485,6 +627,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
    *  Cleared by the 9router:models-loaded event or the timeout firing. */
   let pendingModelApply = false;
   let modelRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Failed plan-model registry lookups in a row — bounded so a typo'd model in
+   *  settings can't toast every 1.5s forever. Reset when providers reload or
+   *  a new plan model is set. */
+  let planModelRetries = 0;
   /** Most-recent ExtensionContext, used by the models-loaded event callback. */
   let lastCtx: ExtensionContext | undefined;
   /** One-shot retry for a per-mode model skipped at startup because auth wasn't
@@ -538,8 +684,6 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   function persistState(): void {
     pi.appendEntry("pi-plan", {
       enabled: planModeEnabled,
-      planThinking,
-      normalThinking,
       toolsBeforePlan,
       lastPlanPath,
       lastPlanTitle,
@@ -550,6 +694,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       specPath,
       flow,
       goal,
+      prePlanModel,
+      prePlanThinking,
     } satisfies PlanState);
   }
 
@@ -579,13 +725,13 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       specGatePlanMode = false;
       specPath = undefined;
       goal = undefined;
+      prePlanModel = undefined;
+      prePlanThinking = undefined;
       return;
     }
     // ponytail: treat saved state as authoritative — no ?? fallback to
     // previous module state, which leaks state across unrelated branches.
     planModeEnabled = saved.data.enabled ?? false;
-    if (isThinkingLevel(saved.data.planThinking)) planThinking = saved.data.planThinking;
-    if (isThinkingLevel(saved.data.normalThinking)) normalThinking = saved.data.normalThinking;
     toolsBeforePlan = saved.data.toolsBeforePlan;
     lastPlanPath = saved.data.lastPlanPath;
     lastPlanTitle = saved.data.lastPlanTitle;
@@ -596,6 +742,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     specPath = typeof saved.data.specPath === "string" ? saved.data.specPath : undefined;
     flow = saved.data.flow ?? undefined;
     goal = saved.data.goal ?? undefined;
+    prePlanModel = typeof saved.data.prePlanModel === "string" ? saved.data.prePlanModel : undefined;
+    prePlanThinking = typeof saved.data.prePlanThinking === "string" && isThinkingLevel(saved.data.prePlanThinking) ? saved.data.prePlanThinking : undefined;
   }
 
   function enablePlanTools(): void {
@@ -621,42 +769,11 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     }
   }
 
-  function recordActiveThinkingLevel(
-    level: ThinkingLevel,
-    ctx: ExtensionContext,
-  ): void {
-    if (planModeEnabled) {
-      if (planThinking === level) return;
-      planThinking = level;
-    } else {
-      if (normalThinking === level) return;
-      normalThinking = level;
-    }
-    const key = modelKey(ctx.model);
-    if (key && preferences) {
-      preferences.perModel[key] = {
-        planThinking,
-        normalThinking,
-      };
-    }
-    updateFooter(ctx);
-    persistState();
-    persistPreferences();
+  function currentModelRef(ctx: ExtensionContext): string | undefined {
+    return ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
   }
 
-  /** Resolve the configured per-mode model object from the registry, or
-   *  undefined if none configured / not yet loaded. */
-  function resolveModeModel(ctx: ExtensionContext):
-    { model: NonNullable<ExtensionContext["model"]>; target: string } | undefined {
-    const target = planModeEnabled ? preferences?.planModel : preferences?.normalModel;
-    if (!target) return undefined;
-    const parsed = parseModel(target);
-    if (!parsed) return undefined;
-    const model = ctx.modelRegistry.find(parsed.provider, parsed.id);
-    return model ? { model, target } : undefined;
-  }
-
-  /** Schedule a single deferred retry of applyModeModel (clears any prior). */
+  /** Schedule a single deferred retry of applyPlanModeConfig (clears any prior). */
   function scheduleModelRetry(ctx: ExtensionContext): void {
     if (modelRetryTimer) clearTimeout(modelRetryTimer);
     pendingModelApply = true;
@@ -664,78 +781,106 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     modelRetryTimer = setTimeout(() => {
       modelRetryTimer = undefined;
       pendingModelApply = false;
-      void applyModeModel(ctx);
+      void applyPlanModeConfig(ctx);
     }, 1500);
     modelRetryTimer.unref?.();
   }
 
-  async function applyModeModel(ctx: ExtensionContext): Promise<void> {
-    const resolved = resolveModeModel(ctx);
-    if (!resolved) {
-      const target = planModeEnabled ? preferences?.planModel : preferences?.normalModel;
-      if (target) {
-        // Model configured but not in the registry yet (late-loading provider).
-        // Don't give up — retry once when providers finish loading.
-        ctx.ui.notify(
-          `Configured ${planModeEnabled ? "plan" : "code"} model not loaded yet: ${target}. Will retry when providers are ready.`,
-          "info",
-        );
-        scheduleModelRetry(ctx);
+  /** Apply the global plan model + thinking. Only ever called while plan mode is
+   *  active — normal mode stays stock Pi (session /model, Ctrl+S default).
+   *  Records the pre-plan model/thinking once so leaving plan mode restores it. */
+  async function applyPlanModeConfig(ctx: ExtensionContext): Promise<void> {
+    if (!planModeEnabled) return;
+    if (prePlanModel === undefined) prePlanModel = currentModelRef(ctx);
+    if (prePlanThinking === undefined) prePlanThinking = pi.getThinkingLevel();
+
+    const target = preferences?.planModel;
+    if (target) {
+      const parsed = parseModel(target);
+      const model = parsed ? ctx.modelRegistry.find(parsed.provider, parsed.id) : undefined;
+      if (!model) {
+        // Warn once; keep retrying quietly a few times, then give up until a
+        // provider reload or a new /plan-model restarts the attempts.
+        if (planModelRetries === 0) {
+          ctx.ui.notify(`Configured plan model not loaded yet: ${target}. Will retry when providers are ready.`, "info");
+        }
+        if (planModelRetries < 3) {
+          planModelRetries++;
+          scheduleModelRetry(ctx);
+        }
+      } else if (target !== currentModelRef(ctx)) {
+        planModelRetries = 0;
+        applyingStoredModel = true;
+        try {
+          const ok = await pi.setModel(model); // returns false (not throw) when no API key
+          if (!ok) {
+            ctx.ui.notify(`No API key for ${target}; plan model switch skipped — will retry after /login.`, "warning");
+            // One-shot retry so /login can activate it on the next prompt.
+            if (!authApplyDone) pendingAuthApply = true;
+          } else {
+            ctx.ui.notify(`Plan model: ${target}`, "info");
+          }
+        } catch (error) {
+          ctx.ui.notify(`Plan model switch failed: ${String(error)}`, "warning");
+        } finally {
+          applyingStoredModel = false;
+        }
       }
-      return;
     }
-    const { model, target } = resolved;
-    const current = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-    if (target === current) return; // ponytail: avoid settings.json churn; core no-ops on equal anyway
+    const thinking = preferences?.planThinking;
+    if (thinking) applyThinking(thinking);
+  }
+
+  /** Switch back to the model active before plan mode. Plan-model config is
+   *  unchanged by in-plan picks, so the snapshot is always the restore target. */
+  async function restorePrePlanModel(ctx: ExtensionContext): Promise<void> {
+    if (!prePlanModel || prePlanModel === currentModelRef(ctx)) return;
+    const parsed = parseModel(prePlanModel);
+    const model = parsed ? ctx.modelRegistry.find(parsed.provider, parsed.id) : undefined;
+    if (!model) return;
     applyingStoredModel = true;
-    try {
-      const ok = await pi.setModel(model); // returns false (not throw) when no API key
-      if (!ok) {
-        ctx.ui.notify(`No API key for ${target}; ${planModeEnabled ? "plan" : "code"} model switch skipped — will retry after /login.`, "warning");
-        // Arm a ONE-SHOT retry (only the first time) so /login can activate the
-        // model on the next prompt without looping or overriding a manual pick.
-        if (!authApplyDone) pendingAuthApply = true;
-        return;
-      }
-      // recompute per-model thinking for the newly-selected model
-      if (preferences) {
-        const effective = getEffectiveThinking(preferences, model);
-        planThinking = effective.plan;
-        normalThinking = effective.normal;
-      }
-      ctx.ui.notify(`Switched to ${planModeEnabled ? "plan" : "code"} model: ${target}`, "info");
-    } catch (error) {
-      ctx.ui.notify(`${planModeEnabled ? "Plan" : "Code"} model switch failed: ${String(error)}`, "warning");
-    } finally {
-      applyingStoredModel = false;
+    try { await pi.setModel(model); } catch { /* keep current model */ }
+    finally { applyingStoredModel = false; }
+  }
+
+  function restorePrePlanThinking(): void {
+    // Anything the thinking level became during plan mode (our apply, a model
+    // clamp, or a temporary /thinking pick) is reverted to the pre-plan level.
+    if (prePlanThinking && pi.getThinkingLevel() !== prePlanThinking) {
+      applyThinking(prePlanThinking);
     }
   }
 
-  function recordActiveModel(ref: string): void {
-    if (!preferences) return;
-    if (planModeEnabled) {
-      if (preferences.planModel === ref) return;
-      preferences.planModel = ref;
-    } else {
-      if (preferences.normalModel === ref) return;
-      preferences.normalModel = ref;
+  /** Leave plan mode: restore the model/thinking that were active before it. */
+  async function restorePrePlan(ctx: ExtensionContext, consume = true): Promise<void> {
+    await restorePrePlanModel(ctx);
+    restorePrePlanThinking();
+    if (consume) {
+      prePlanModel = undefined;
+      prePlanThinking = undefined;
     }
-    persistPreferences();
   }
 
   async function enterPlanMode(ctx: ExtensionContext): Promise<void> {
     planModeEnabled = true;
+    planModelRetries = 0;
     clearPlanSessionAllows();
     // ponytail: after approval, start fresh plan path
     if (lastPlanStatus === "approved" || lastPlanStatus === "executing") {
+      // ponytail: re-entry discards the old flow — abort its in-flight
+      // controller and clear the pending review timer so stale timers don't
+      // fire against the discarded flow.
       flow = undefined;
+      flowController?.abort();
+      flowController = undefined;
+      if (reviewTimer) clearTimeout(reviewTimer);
+      reviewTimer = undefined;
       lastPlanPath = undefined;
       lastPlanTitle = undefined;
       lastPlanStatus = undefined;
     }
     enablePlanTools();
-    await applyModeModel(ctx);
-    applyThinking(planThinking);
+    await applyPlanModeConfig(ctx);
     updateFooter(ctx);
     clearPlanWidget(ctx);
     persistState();
@@ -747,14 +892,13 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
   async function leavePlanMode(
     ctx: ExtensionContext,
-    restoreThinking = true,
+    restore = true,
   ): Promise<void> {
     planModeEnabled = false;
     clearPlanSessionAllows();
     planReadyForReview = false;
     restoreTools();
-    await applyModeModel(ctx);
-    if (restoreThinking) applyThinking(normalThinking);
+    if (restore) await restorePrePlan(ctx);
     updateFooter(ctx);
     clearPlanWidget(ctx);
     persistState();
@@ -885,8 +1029,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     planReadyForReview = false;
     lastPlanStatus = "approved";
     restoreTools();
-    await applyModeModel(ctx);
-    applyThinking(normalThinking);
+    await restorePrePlan(ctx);
     updateFooter(ctx);
     clearPlanWidget(ctx);
     persistState();
@@ -959,8 +1102,6 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     }
     const state: PlanState = {
       enabled: false,
-      planThinking,
-      normalThinking,
       lastPlanPath: planPathToExecute,
       lastPlanTitle: planTitleToExecute,
       lastPlanStatus: "approved",
@@ -1243,9 +1384,11 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       `Don't call ${PLAN_TOOL} while blocking questions remain; use ${ASK_USER_QUESTION_TOOL} first.`,
     ],
     parameters: Type.Object({
-      title: Type.String({
-        description: "Short plan title",
-      }),
+      title: Type.Optional(
+        Type.String({
+          description: "Short plan title. Optional: derived from the first '# Heading' in content when omitted.",
+        }),
+      ),
       content: Type.String({
         description: "Markdown plan content",
       }),
@@ -1262,13 +1405,15 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       try {
       // ponytail: write_plan is available in normal mode too — agent updates plans during execution
       const typedParams = params as WritePlanParams;
+      // Title is optional: fall back to the first '# Heading' in content, then "Plan".
+      const title = typedParams.title?.trim() || deriveTitle(typedParams.content) || "Plan";
 
       // ponytail: reuse draft path for refinements, new path for new plans
       let destination: string;
       if (
         lastPlanPath &&
         lastPlanStatus === "draft" &&
-        typedParams.title.trim() === lastPlanTitle
+        title === lastPlanTitle
       ) {
         // ponytail: compare relative to resolved plan dir (portable, rejects siblings)
         const resolved = path.resolve(ctx.cwd, lastPlanPath);
@@ -1279,7 +1424,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       } else {
         destination = planPath(
           ctx.cwd,
-          typedParams.title,
+          title,
           plansDir,
         );
       }
@@ -1299,8 +1444,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
         },
       );
       lastPlanPath = destination;
-      lastPlanTitle =
-        typedParams.title.trim() || "Plan";
+      lastPlanTitle = title;
       lastPlanStatus = isPlanStatus(typedParams.status)
         ? typedParams.status
         : "draft";
@@ -1414,9 +1558,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   }
 
   /**
-   * Shared execute for ask_user_question and the deprecated ask_plan_question alias.
-   * Uses the built-in ctx.ui.select list dialog (same UX as the original ask_plan_question),
-   * with the recommended option marked ★. "Other / type my answer" opens a simple editor.
+   * Shared execute for ask_user_question. Uses the built-in ctx.ui.select list
+   * dialog with the recommended option marked ★. "Other / type my answer"
+   * opens a simple editor.
    */
   // ponytail: typed helper avoids `as const` on every content block
   const textBlock = (text: string) => ({ type: "text" as const, text });
@@ -1427,23 +1571,13 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     _signal: unknown,
     _onUpdate: unknown,
     ctx: ExtensionContext,
-    isAlias: boolean,
   ) {
     const typedParams = params as PlanQuestionParams;
     const { options, recommendedIndex } = validateQuestionParams(typedParams);
 
-    // ponytail: surface deprecation in every mode — notify (UI) + prefix result text (all modes)
-    const deprecateNote = isAlias ? "[Deprecated: use ask_user_question instead] " : "";
-    if (isAlias && ctx.hasUI) {
-      ctx.ui.notify(
-        "ask_plan_question is deprecated; use ask_user_question",
-        "warning",
-      );
-    }
-
     if (!ctx.hasUI) {
       return {
-        content: [textBlock(deprecateNote + "UI is not available. Ask this question directly in chat and wait for the user's answer.")],
+        content: [textBlock("UI is not available. Ask this question directly in chat and wait for the user's answer.")],
         details: {
           question: typedParams.question,
           options,
@@ -1467,7 +1601,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     );
     if (!choice) {
       return {
-        content: [textBlock(deprecateNote + "User cancelled the question.")],
+        content: [textBlock("User cancelled the question.")],
         details: {
           question: typedParams.question,
           options,
@@ -1482,7 +1616,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       const answer = (await ctx.ui.editor("Your answer", ""))?.trim();
       if (!answer) {
         return {
-          content: [textBlock(deprecateNote + "User cancelled the question.")],
+          content: [textBlock("User cancelled the question.")],
           details: {
             question: typedParams.question,
             options,
@@ -1493,7 +1627,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
         };
       }
       return {
-        content: [textBlock(deprecateNote + `User wrote: ${answer}`)],
+        content: [textBlock(`User wrote: ${answer}`)],
         details: {
           question: typedParams.question,
           options,
@@ -1508,7 +1642,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     const selected = options[selectedIndex];
     const answer = selected?.label ?? choice;
     return {
-      content: [textBlock(deprecateNote + `User selected: ${answer}`)],
+      content: [textBlock(`User selected: ${answer}`)],
       details: {
         question: typedParams.question,
         options,
@@ -1538,22 +1672,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     promptGuidelines: askQuestionGuidelines,
     parameters: buildAskQuestionSchema(),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      return executeAskQuestion(toolCallId, params, signal, onUpdate, ctx, false);
-    },
-  });
-
-  // ponytail: deprecated alias — delegates to the same handler, warns on use. Drop after one release.
-  pi.registerTool({
-    name: PLAN_QUESTION_TOOL,
-    label: "Ask Plan Question (deprecated)",
-    description:
-      "Deprecated alias for ask_user_question. Use ask_user_question instead.",
-    promptSnippet:
-      "Deprecated: use ask_user_question instead",
-    promptGuidelines: askQuestionGuidelines,
-    parameters: buildAskQuestionSchema(),
-    async execute(toolCallId, params, signal, onUpdate, ctx) {
-      return executeAskQuestion(toolCallId, params, signal, onUpdate, ctx, true);
+      return executeAskQuestion(toolCallId, params, signal, onUpdate, ctx);
     },
   });
 
@@ -1565,6 +1684,12 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
   pi.registerCommand("plan-approve", {
     description: "Approve the current plan for current, fresh, or reviewed execution",
+    getArgumentCompletions: (prefix) => {
+      const items = ["current", "new", "flow"]
+        .filter((k) => k.startsWith(prefix.trim().toLowerCase()))
+        .map((k) => ({ value: k, label: k }));
+      return items.length > 0 ? items : null;
+    },
     handler: async (args, ctx) => handlePlanApproval(args, ctx),
   });
 
@@ -1595,9 +1720,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   registerGoal(pi, goalAccessors);
   registerBtw(pi);
   registerSpecs(pi, activateSpecGate, approveSpecGate);
-  registerDoctor(pi, () => preferences
-    ? `plan=${preferences.planModel ?? "-"} · normal=${preferences.normalModel ?? "-"} · fallback=${preferences.fallbackModels?.length ? preferences.fallbackModels.join("→") : "-"}`
-    : "unset");
+  registerDoctor(pi, () => {
+    if (!preferences) return "unset";
+    return `plan=${preferences.planModel ?? "-"} · thinking=${preferences.planThinking ?? "-"} · fallback=${preferences.fallbackModels?.length ? preferences.fallbackModels.join("→") : "-"}`;
+  });
 
   registerHandoff(pi, {
     getPlanContext: (cwd) => {
@@ -1646,6 +1772,29 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
   pi.registerCommand("plan-fallback", {
     description: "View, set, or clear the fallback model chain (tried on overload/rate-limit)",
+    getArgumentCompletions: (prefix) => {
+      // No trim before the set-head check — "set " (typing the separator) must
+      // enter model mode, not fall back to keyword matching.
+      const setHead = /^set\s+(.*)$/i.exec(prefix);
+      if (setHead) {
+        // Head = "set " + every complete token; only the last (incomplete)
+        // token is replaced by the completion, so already-picked chain refs
+        // survive ("set m1 " → "set m1 m2").
+        const tokens = (setHead[1] ?? "").split(/\s+/);
+        const typed = (tokens.pop() ?? "").toLowerCase();
+        const head = `set ${tokens.length > 0 ? tokens.join(" ") + " " : ""}`;
+        const refs = (lastCtx?.modelRegistry.getAvailable().map((m) => `${m.provider}/${m.id}`) ?? []);
+        const items = refs
+          .filter((ref) => ref.toLowerCase().includes(typed))
+          .map((ref) => ({ value: `${head}${ref}`, label: ref, description: "fallback model" }));
+        return items.length > 0 ? items : null;
+      }
+      const q = prefix.trim().toLowerCase();
+      const items = ["set", "clear"]
+        .filter((k) => k.startsWith(q))
+        .map((k) => ({ value: k, label: k }));
+      return items.length > 0 ? items : null;
+    },
     handler: async (args, ctx) => {
       if (!preferences) return;
       const trimmed = args.trim();
@@ -1689,6 +1838,133 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     },
   });
 
+  // ── Plan model / thinking (global, plan mode only) ──
+
+  /** Resolve a user-typed model input against available models: exact
+   *  `provider/id` or unique bare id first, then a substring match — unique
+   *  hit wins, ambiguity is an error listing candidates. */
+  function resolveModelInput(ctx: ExtensionContext, input: string): { ref: string; model: Model } | { error: string } {
+    const available = ctx.modelRegistry.getAvailable();
+    const exact = exactModel(available, input);
+    if (exact) return { ref: modelRef(exact), model: exact };
+    const needle = input.trim().toLowerCase();
+    const matches = available.filter((m) => modelRef(m).toLowerCase().includes(needle) || m.id.toLowerCase().includes(needle));
+    if (matches.length === 1) return { ref: modelRef(matches[0]), model: matches[0] };
+    if (matches.length === 0) return { error: `No model matching "${input}".` };
+    const shown = matches.slice(0, 5).map(modelRef).join(", ");
+    return { error: `Ambiguous "${input}": ${shown}${matches.length > 5 ? `, +${matches.length - 5} more` : ""}` };
+  }
+
+  /** Set the global plan-mode model. Applies immediately while plan mode is
+   *  active; normal mode is never touched (it follows stock Pi). */
+  async function setPlanModel(ref: string, ctx: ExtensionContext): Promise<void> {
+    if (!preferences) return;
+    const resolved = resolveModelInput(ctx, ref);
+    if ("error" in resolved) return ctx.ui.notify(resolved.error, "warning");
+    preferences.planModel = resolved.ref;
+    planModelRetries = 0;
+    await persistPreferences();
+    if (!planModeEnabled) {
+      ctx.ui.notify(`Plan model set: ${resolved.ref} (applies in plan mode)`, "info");
+      persistState();
+      return;
+    }
+    await applyPlanModeConfig(ctx);
+    if (preferences.planThinking && pi.getThinkingLevel() !== preferences.planThinking) {
+      ctx.ui.notify(`Plan thinking: ${preferences.planThinking}`, "info");
+    }
+    updateFooter(ctx);
+    persistState();
+  }
+
+  pi.registerCommand("plan-model", {
+    description: "Set the plan-mode model (global); normal mode follows Pi's own /model",
+    getArgumentCompletions: (prefix) => {
+      const q = prefix.trim().toLowerCase();
+      const kwItems = ["clear"]
+        .filter((k) => k.startsWith(q))
+        .map((k) => ({ value: k, label: k }));
+      const models = lastCtx?.modelRegistry.getAvailable() ?? [];
+      const matches = q ? fuzzyFilter(models, q, modelSearchText) : models;
+      const modelItems = matches.map((m) => ({ value: modelRef(m), label: m.id, description: m.provider }));
+      const items = [...kwItems, ...modelItems];
+      return items.length > 0 ? items : null;
+    },
+    handler: async (args, ctx) => {
+      if (!preferences) return;
+      const trimmed = args.trim();
+      if (trimmed.toLowerCase() === "clear") {
+        if (preferences.planModel) {
+          // Restore the pre-plan model while the old plan model is still known
+          // (restore compares against it) — but keep the pre-plan snapshot for
+          // the eventual mode leave, since plan thinking may still be set.
+          if (planModeEnabled) await restorePrePlan(ctx, false);
+          preferences.planModel = undefined;
+          await persistPreferences();
+          updateFooter(ctx);
+          persistState();
+          ctx.ui.notify("Plan model cleared — plan mode follows your active model.", "info");
+        } else {
+          ctx.ui.notify("No plan model configured.", "info");
+        }
+        return;
+      }
+      if (!trimmed) {
+        if (ctx.mode !== "tui") {
+          ctx.ui.notify(`plan=${preferences.planModel ?? "-"} · thinking=${preferences.planThinking ?? "-"} (active: ${currentModelRef(ctx) ?? "-"})`, "info");
+          return;
+        }
+        try {
+          const picked = await chooseModel(ctx, preferences.planModel);
+          if (picked) await setPlanModel(picked, ctx);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          ctx.ui.notify(`Model picker failed: ${message} — use /plan-model <provider/model>.`, "warning");
+        }
+        return;
+      }
+      // Late-loading providers (e.g. 9router) may not have announced models yet.
+      try { await ctx.modelRegistry.refresh(); } catch { /* use cached models */ }
+      await setPlanModel(trimmed, ctx);
+    },
+  });
+
+  pi.registerCommand("plan-thinking", {
+    description: "Set the plan-mode thinking level (global); normal mode follows Pi's own /thinking",
+    getArgumentCompletions: (prefix) => {
+      const items = [...THINKING_LEVELS, "clear"].filter((k) => k.startsWith(prefix.trim().toLowerCase())).map((k) => ({ value: k, label: k }));
+      return items.length > 0 ? items : null;
+    },
+    handler: async (args, ctx) => {
+      if (!preferences) return;
+      const trimmed = args.trim();
+      if (trimmed.toLowerCase() === "clear") {
+        if (preferences.planThinking) {
+          preferences.planThinking = undefined;
+          await persistPreferences();
+          ctx.ui.notify("Plan thinking level cleared — plan mode keeps the active level.", "info");
+        } else {
+          ctx.ui.notify("No plan thinking level configured.", "info");
+        }
+        return;
+      }
+      if (!trimmed) {
+        ctx.ui.notify(`plan model=${preferences.planModel ?? "-"} · plan thinking=${preferences.planThinking ?? "-"} · active=${pi.getThinkingLevel()}`, "info");
+        return;
+      }
+      if (!isThinkingLevel(trimmed)) {
+        ctx.ui.notify(`Invalid thinking level: ${trimmed}. Levels: ${THINKING_LEVELS.join(", ")}.`, "warning");
+        return;
+      }
+      preferences.planThinking = trimmed;
+      await persistPreferences();
+      if (planModeEnabled) applyThinking(trimmed);
+      updateFooter(ctx);
+      persistState();
+      ctx.ui.notify(`Plan thinking level set: ${trimmed}${planModeEnabled ? "" : " (applies in plan mode)"}`, "info");
+    },
+  });
+
   pi.registerShortcut("ctrl+alt+p", {
     description: "Toggle pi-plan mode",
     handler: async (ctx) => {
@@ -1709,19 +1985,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     preferences = await loadPreferences();
     const cfg = await loadUtilityConfig(ctx);
     plansDir = cfg.plansDir ?? DEFAULT_PLAN_DIR;
-    if (!preferences) {
-      preferences = {
-        version: 2,
-        defaults: { planThinking, normalThinking },
-        perModel: {},
-      };
-    }
-    const effective = getEffectiveThinking(
-      preferences,
-      ctx.model,
-    );
-    planThinking = effective.plan;
-    normalThinking = effective.normal;
+    if (!preferences) preferences = { version: 3 };
 
     // ponytail: restore state from current branch (shared with session_tree)
     restoreStateFromBranch(ctx);
@@ -1742,12 +2006,13 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     ) {
       planModeEnabled = true;
     }
-    await applyModeModel(ctx);
+    // Entering plan mode at startup (--plan): snapshot the pre-plan model and
+    // apply the global plan config. A --model CLI flag also survives, because
+    // the snapshot happens before the plan model is applied. Normal-mode
+    // starts stay fully stock Pi (session /model, Ctrl+S default).
     if (planModeEnabled) {
       enablePlanTools();
-      applyThinking(planThinking);
-    } else {
-      applyThinking(normalThinking);
+      await applyPlanModeConfig(ctx);
     }
     updateFooter(ctx);
     clearPlanWidget(ctx);
@@ -1756,20 +2021,12 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
   pi.on("model_select", async (event, ctx) => {
     lastCtx = ctx;
-    if (!preferences) return;
     if (applyingStoredModel || event.source === "restore") return;
-    // ponytail: only genuine user-initiated selections (built-in /model or
-    // Ctrl+P cycling) should be recorded as the per-mode pick. Other sources
-    // (e.g. an extension re-selecting a model) are ignored to avoid corruption.
+    // Only genuine user-initiated selections matter (built-in /model, Ctrl+P).
     if (event.source !== "set" && event.source !== "cycle") return;
-    recordActiveModel(`${event.model.provider}/${event.model.id}`);
-    const effective = getEffectiveThinking(preferences, event.model);
-    // ponytail: always update both stored levels, then apply active one
-    planThinking = effective.plan;
-    normalThinking = effective.normal;
-    applyThinking(planModeEnabled ? planThinking : normalThinking);
+    // Plan model is config: only /plan-model changes it globally. A model picked
+    // while planning is session-temporary and restored when plan mode is left.
     updateFooter(ctx);
-    persistState();
   });
 
   /**
@@ -1855,27 +2112,37 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   });
 
   // Cross-extension signal: a late-loading provider (pi-router) has
-  // finished registering its models. If we deferred a per-mode model apply
+  // finished registering its models. If we deferred a plan-model apply
   // because the model wasn't in the registry yet, retry immediately.
   pi.events.on("router:models-loaded", () => {
     if (pendingModelApply && lastCtx) {
       pendingModelApply = false;
       if (modelRetryTimer) { clearTimeout(modelRetryTimer); modelRetryTimer = undefined; }
-      void applyModeModel(lastCtx);
+      planModelRetries = 0; // providers reloaded — give the lookup fresh chances
+      void applyPlanModeConfig(lastCtx);
     }
   });
 
   pi.on("session_tree", async (_event, ctx) => {
     const previousToolsBeforePlan = toolsBeforePlan;
+    const wasPlan = planModeEnabled;
+    // Captured before the branch restore resets them: switching away from a
+    // plan-mode branch must still restore the pre-plan model/thinking.
+    const preModel = prePlanModel;
+    const preThinking = prePlanThinking;
     restoreStateFromBranch(ctx);
     if (planModeEnabled) {
       toolsBeforePlan ??= previousToolsBeforePlan ?? pi.getActiveTools();
       enablePlanTools();
-      applyThinking(planThinking);
+      await applyPlanModeConfig(ctx);
     } else {
       if (previousToolsBeforePlan) pi.setActiveTools(previousToolsBeforePlan);
       toolsBeforePlan = undefined;
-      applyThinking(normalThinking);
+      if (wasPlan) {
+        prePlanModel = preModel;
+        prePlanThinking = preThinking;
+        await restorePrePlan(ctx);
+      }
     }
     updateFooter(ctx);
     persistState();
@@ -1904,7 +2171,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   pi.on("thinking_level_select", async (event, ctx) => {
     if (applyingStoredThinking) return;
     if (!isThinkingLevel(event.level)) return;
-    recordActiveThinkingLevel(event.level, ctx);
+    // Plan thinking is config: only /plan-thinking changes it globally. A level
+    // change here (built-in /thinking, model-switch clamp) is session-temporary
+    // and restored when plan mode is left — never persisted over the config.
+    updateFooter(ctx);
   });
 
   /**
@@ -1919,7 +2189,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
    */
   pi.on("tool_call", async (event, ctx) => {
     if (!planModeEnabled) return;
-    if (specGateActive && !READ_ONLY_TOOLS.has(event.toolName) && event.toolName !== ASK_USER_QUESTION_TOOL && event.toolName !== PLAN_QUESTION_TOOL && event.toolName !== PLAN_TOOL) {
+    if (specGateActive && !READ_ONLY_TOOLS.has(event.toolName) && event.toolName !== ASK_USER_QUESTION_TOOL && event.toolName !== PLAN_TOOL) {
       return { block: true, reason: "pi-plan: /specs gate is active. Run /specs-approve before workspace writes." };
     }
 
@@ -1931,8 +2201,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       };
     }
 
-    // ask_user_question (and its deprecated alias) are always allowed — read-only, no mutate.
-    if (event.toolName === ASK_USER_QUESTION_TOOL || event.toolName === PLAN_QUESTION_TOOL) return;
+    // ask_user_question is always allowed — read-only, no mutate.
+    if (event.toolName === ASK_USER_QUESTION_TOOL) return;
 
     if (isToolCallEventType("bash", event)) {
       const disposition = classifyCommand(event.input.command || "");
@@ -2039,14 +2309,13 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     // Fresh turn: reset the fallback chain to the primary model.
     consecutiveOverloads = 0;
     fallbackIndex = 0;
-    // One-shot retry: re-apply a per-mode model that was skipped at startup
+    // One-shot retry: re-apply the plan model that was skipped at startup
     // because auth wasn't configured yet (e.g. before /login). Consumed once —
-    // authApplyDone prevents any re-arm, so this can't loop or override an
-    // in-session /model pick (applyModeModel targets the current normalModel).
+    // authApplyDone prevents any re-arm, so this can't loop.
     if (pendingAuthApply && !authApplyDone) {
       pendingAuthApply = false;
       authApplyDone = true;
-      await applyModeModel(ctx);
+      await applyPlanModeConfig(ctx);
     }
     if (planModeEnabled) {
       const relativePlan = lastPlanPath

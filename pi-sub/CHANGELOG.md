@@ -1,3 +1,125 @@
+# Changelog
+
+## 0.1.40 (2026-09-14)
+
+### Tests
+
+- Added unit test coverage for the three untested parsers: the OmniRoute
+  om-usage free-text report (`parseOmniUsageText` — four windows, section
+  switching, out-of-range percentages, disabled/no-cache text), the Command
+  Code `/alpha/billing/credits` window mapper (used/cap → remaining%, epoch-ms
+  resetAt, over-cap clamp, bad-window bail), and the `.env.local` parser
+  (extracted as exported `parseEnvText`; `export ` prefix, quoted values,
+  comments, CRLF, `#`-in-value). No behavior changes.
+  One edge case differs from the inline loop it replaces: duplicate keys in a
+  single .env file now resolve last-wins (dotenv convention) instead of
+  first-wins.
+
+## 0.1.39 (2026-09-12)
+
+### Fixed
+
+- **Guarded footer render against an uninitialized theme proxy** (pi-budget
+  parity): `renderSubscriptionLine` dereferenced `ctx.ui.theme.fg` unguarded —
+  if the theme isn't ready yet the throw escapes as a rejected promise and can
+  exit pi (the same unhandledRejection class 0.1.37/0.1.38 fixed elsewhere).
+  The footer is now best-effort: skipped when the theme isn't available.
+- **Finite-cost guard on `message_end` accumulation** (pi-budget parity): a
+  string or NaN `cost.total` previously hit `+=` directly — a string cost
+  concatenated onto the accumulator and garbled every subsequent footer.
+  Costs are now coerced with `Number()` and only finite positive values
+  accumulate.
+- README intro: Router (pi-router) listed among supported providers.
+
+## 0.1.38 (2026-09-07)
+
+### Fixed
+
+- **Crash (pi exits) — third arm of the stale-ctx class**: pi 0.85.1 can
+  invalidate the extension ctx without ever delivering a matching
+  `session_shutdown` (orphaned/replaced runtime teardown; extension instances
+  are shared across sessions), so the 60s usage-refresh interval can fire with
+  `state.ctx` still installed but stale — the 0.1.18/0.1.37 guards (fire-time
+  ctx resolution, identity-guarded shutdown) never see it. `refreshUsage` is
+  async, so its throw became a rejected promise discarded by `void` →
+  `unhandledRejection` → pi's `uncaughtException` handler → exit. All deferred
+  refresh call sites now go through `deferRefresh`, which catches the
+  rejection and self-disarms (stops timers, drops in-flight state and the
+  stale ctx); `session_start` re-arms with the fresh ctx. Same crash class as
+  pi-messenger#25. The `/sub` command path disarms the same way when run
+  against an orphaned stale ctx, and regression tests now cover the 60s
+  interval arm, the command arm, and matcher independence from pi's exact
+  error wording.
+
+## 0.1.37 (2026-09-07)
+
+### Fixed
+
+- **Legible provider API errors**: structured API failures (e.g. Z.ai's
+  `500 Internal service error` returned by `api.z.ai/api/monitor/usage/quota/limit`
+  during its 2026-09-07 outage) no longer masquerade as a generic
+  "usage unavailable" — the footer shows the server's own message
+  (`Sub Z.ai (Anthropic) API error: Internal service error`), with
+  credential-shaped material (`sk-…`, `Bearer …`, JWTs) scrubbed and length
+  capped; auth-looking messages stay redacted.
+- **Crash (pi exits) on session replacement (`/new`, fork, switch, `/reload`)**:
+  a usage-refresh debounce timer armed by a late `after_provider_response` event
+  — delivered after `session_shutdown` had already cleared the previous timers —
+  captured the old extension ctx; ~2s later the timer fired, touched the now
+  stale `ctx.ui`, and the uncaught error killed pi. Deferred helpers
+  (`renderSubscriptionLine`, `refreshUsage`, `startTimer`, `scheduleRefresh`,
+  `updateActiveAdapter`) no longer take a captured ctx: they resolve `state.ctx`
+  at execution time. `state.ctx` is installed only by `session_start` (fires
+  before a session's other events, always fresh) and cleared by
+  `session_shutdown`, so mid-session handlers can never reinstall a stale ctx
+  and timers firing in the teardown window safely no-op. `session_shutdown`
+  now no-ops entirely unless it belongs to the installed session
+  (`state.ctx === ctx`), so a late old-session shutdown delivered after the
+  next `session_start` can neither touch an invalidated ctx nor stop the live
+  session's refresh timer / drop its in-flight fetch. Regression tests in
+  `extensions/test/stale-ctx-regression.test.ts`.
+
+### Changed
+
+- **Tests are now gated**: `npm test` runs both test files via
+  `node --import tsx --test` (new `tsx` devDependency), and CI runs
+  `npm ci && npm test` for pi-sub instead of only `npm pack --dry-run` — the
+  stale-ctx regression tests can no longer be bypassed by a refactor.
+
+## 0.1.36 (2026-09-07)
+
+### Fixed
+
+- **Removed the incorrect dead `tok-per-sec` module** (added in 0.1.35, never
+  wired in): its `withThinking` formula summed `reasoning` on top of `output`,
+  but Pi's `usage.output` already includes reasoning tokens (`reasoning` is a
+  subset), which would have inflated thinking-mode tok/s up to ~2×. The live
+  footer/footer tok/s math (`output / elapsed`) was and remains correct in both
+  thinking and normal mode.
+
+### Added
+
+- **`/sub` thinking/answer split** — when the model reasoned, the details line
+  now reads e.g. `Last response: 46 tok/s (36 think + 10 answer)` instead of a
+  bare total, using the correct subset math (`answer = output − reasoning`).
+  Footer keeps the single total number.
+
+## 0.1.35 (2026-09-05)
+
+### Added
+
+- **`zai-anthropic` provider usage tracking** — GLM through the Anthropic-compatible endpoint (`api.z.ai/api/anthropic`, registered by pi-model-tools) now shows the same quota footer as `zai`/`zai-coding-cn`: 5-hour/weekly windows, MCP monthly allowance, and model/tool breakdowns, keyed by the auth.json `zai-anthropic` credential, labeled `Z.ai (Anthropic)`.
+
+## 0.1.34 (2026-09-05)
+
+- Widen Pi SDK peer range to `>=0.80.8 <0.86.0` for Pi 0.85.0 compatibility (no breaking changes; peer cap widening only).
+
+## 0.1.33 (2026-08-29)
+
+### Added
+
+- `/sub` argument completion offers `refresh`.
+
 ## 0.1.32 (2026-08-22)
 
 - **DeepSeek via OmniRoute now shows the real USD balance** (e.g. `M:$18.25`)
@@ -65,6 +187,12 @@
   provider models.
 
 # Changelog
+
+## 0.1.33 (2026-08-29)
+
+### Added
+
+- `/sub` argument completion offers `refresh`.
 
 ## 0.1.29 (2026-08-15)
 

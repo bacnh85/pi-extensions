@@ -12,7 +12,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import type { SubAgentResult, SubAgentProgress } from "./runner.ts";
-import { isFailedResult, getResultOutput, getFinalOutput } from "./runner.ts";
+import { isFailedResult, getResultOutput, getFinalOutput, formatPatchBlock } from "./runner.ts";
 import type { threadStore as ThreadStoreType } from "./threads.ts";
 import type { AgentScope } from "./agents.ts";
 import { parseStructuredResult } from "./result.ts";
@@ -59,6 +59,7 @@ export interface BackgroundDeps {
     onHeartbeatDetails: () => BackgroundDetails,
     onHeartbeat: () => void,
     isReadOnly?: boolean,
+    merge?: "3way",
   ) => Promise<SubAgentResult>;
   threadStore: typeof ThreadStoreType;
 }
@@ -97,7 +98,7 @@ export interface TaskSnapshot {
   completedAt?: number;
   elapsedMs: number;
   threadId: string;
-  result?: { output: string; model?: string; usage?: unknown };
+  result?: { output: string; model?: string; usage?: unknown; patchLines?: number };
 }
 
 export function snapshotTask(task: BackgroundTask, now = Date.now()): TaskSnapshot {
@@ -112,7 +113,7 @@ export function snapshotTask(task: BackgroundTask, now = Date.now()): TaskSnapsh
     elapsedMs: now - task.startedAt,
     threadId: task.threadId,
     result: result
-      ? { output: getResultOutput(result), model: result.model, usage: result.usage }
+      ? { output: getResultOutput(result), model: result.model, usage: result.usage, patchLines: result.patch && result.patch !== "(no changes)" ? result.patch.split("\n").length : undefined }
       : undefined,
   };
 }
@@ -126,6 +127,7 @@ export interface StartBackgroundInput {
   task: string;
   cwd?: string;
   timeout?: number;
+  merge?: "3way";
   agentColor?: string;
   toolCallId?: string;
   deps: BackgroundDeps;
@@ -136,12 +138,19 @@ export interface StartBackgroundResult {
   receipt: string;
 }
 
+/** Hint appended to background receipts inside herdr: background tasks skip
+ *  pane delegation by design, and the missing pane reads as a bug (it did). */
+export function backgroundHerdrHint(wouldDelegateForeground: boolean): string | null {
+  if (!wouldDelegateForeground) return null;
+  return "(herdr skipped: background tasks run in-process — omit background:true to dispatch to a visible herdr pane)";
+}
+
 /**
  * Start a detached background task. Returns immediately with a receipt.
  * On completion, delivers a follow-up turn to the parent session.
  */
 export function startBackgroundTask(input: StartBackgroundInput): StartBackgroundResult {
-  const { agent, task, cwd, timeout, agentColor, toolCallId, deps } = input;
+  const { agent, task, cwd, timeout, merge, agentColor, toolCallId, deps } = input;
   const taskId = `bg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
   const controller = new AbortController();
   const startedAt = Date.now();
@@ -191,6 +200,8 @@ export function startBackgroundTask(input: StartBackgroundInput): StartBackgroun
       (progress) => deps.threadStore.updateProgress(thread.id, progress),
       () => ({ mode: "single" as const, agentScope: "user" as const, projectAgentsDir: null, results: [] }),
       () => deps.threadStore.refreshHeartbeat(thread.id),
+      undefined,
+      merge,
     )
     .then((result) => {
       bgTask.result = result;
@@ -261,13 +272,16 @@ function deliverCompletion(task: BackgroundTask, result: SubAgentResult, deps: B
   const phase = task.status;
   const summary = output.split("\n").slice(0, 1)[0]!.slice(0, 200);
   const elapsedMs = (task.completedAt ?? Date.now()) - task.startedAt;
+  // Worktree patch must reach the parent model in the follow-up turn (P0).
+  const patchBlock = formatPatchBlock(result);
+  const body = failed
+    ? `Background task ${task.id} (${task.agent}) ${phase}.\n\n${getResultOutput(result)}`
+    : `Background task ${task.id} (${task.agent}) completed.\n\n${output}`;
 
   deps.pi.sendMessage(
     {
       customType: "pi-subagent-complete",
-      content: failed
-        ? `Background task ${task.id} (${task.agent}) ${phase}.\n\n${getResultOutput(result)}`
-        : `Background task ${task.id} (${task.agent}) completed.\n\n${output}`,
+      content: patchBlock ? `${body}\n\n${patchBlock}` : body,
       display: true,
       details: {
         task_id: task.id,

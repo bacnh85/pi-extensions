@@ -138,7 +138,7 @@ describe("prompt-aware hints apply to ALL families (not DeepSeek-only)", () => {
     );
     // Hints are per-turn dynamic → injected into the current user message by
     // before_provider_request, NOT the system prompt (cache-head stability).
-    assert.equal(beforeStart, undefined, "GLM has no static system-prompt content");
+    assert.equal(beforeStart, undefined, "no static system-prompt content for this tool set (no apply_patch → no patch hint)");
     const payload = { messages: [{ role: "user", content: "Analyze the codebase at https://github.com/octocat/Hello-World." }] };
     const result = handlers.before_provider_request[0]({ payload }, { model: { provider: "zai-coding-cn", id: "glm-5.2" } });
     assert.ok(result, "GLM should receive prompt-aware hints via the user message");
@@ -154,11 +154,25 @@ describe("prompt-aware hints apply to ALL families (not DeepSeek-only)", () => {
       { systemPrompt: "base", systemPromptOptions: { selectedTools: ["find", "read"] }, prompt: "Read the first 20 lines of guidance.ts under pi-model-tools." },
       { model: { provider: "zai-coding-cn", id: "glm-5.2" } },
     );
-    assert.equal(beforeStart, undefined, "no static content for GLM");
+    assert.equal(beforeStart, undefined, "no DeepSeek selection-guidance block for this tool set");
     const payload = { messages: [{ role: "user", content: "Read the first 20 lines of guidance.ts under pi-model-tools." }] };
     const result = handlers.before_provider_request[0]({ payload }, { model: { provider: "zai-coding-cn", id: "glm-5.2" } });
     assert.ok(result);
     assert.match(result.messages[0].content, /Call find FIRST/i);
+  });
+
+  it("GLM + apply_patch active → patch-hint guidance is appended to the system prompt", () => {
+    const { handlers } = createFakePi(["edit", "apply_patch", "read"]);
+    const beforeStart = handlers.before_agent_start[0](
+      { systemPrompt: "base", systemPromptOptions: { selectedTools: ["edit", "apply_patch", "read"] }, prompt: "Refactor the auth module." },
+      { model: { provider: "zai-coding-cn", id: "glm-5.2" } },
+    );
+    assert.ok(beforeStart, "GLM should receive the static patch-hint block (un-gated 2026-09)");
+    assert.match(beforeStart.systemPrompt, /apply_patch \(preferred for non-trivial edits\)/);
+    assert.match(beforeStart.systemPrompt, /Create a new file .* write .*never create files from bash/i);
+    // DeepSeek-only blocks stay absent for GLM.
+    assert.doesNotMatch(beforeStart.systemPrompt, /DeepSeek V4 — pick the right tool/);
+    assert.doesNotMatch(beforeStart.systemPrompt, /DEEPSEEK-V4-SUPERPOWER/);
   });
 });
 
@@ -269,6 +283,7 @@ describe("applyPatchPreferenceGuidance", () => {
     assert.match(out!, /apply_patch/);
     assert.match(out!, /UNIQUELY/i);
     assert.match(out!, /frontmatter/i, "should mention YAML frontmatter");
+    assert.match(out!, /Create a new file .* write .*never create files from bash/i, "should steer file creation away from bash writes");
     assert.match(out!, /one-strike/i, "should mention one-strike-switch rule");
     assert.match(out!, /\≤3 lines/, "should mention ~3-line threshold for edit");
   });
@@ -309,8 +324,8 @@ describe("cache-stable system prompt (deterministic active-tools source)", () =>
   });
 });
 
-describe("pendingGuidance lifecycle (guidance stable across all rounds of a turn)", () => {
-  it("applies guidance on EVERY provider round of the turn with byte-identical user messages", () => {
+describe("pendingGuidance lifecycle (first provider round of a turn only)", () => {
+  it("injects on round 1, never again once the model has produced output", () => {
     const { handlers } = createFakePi(["bash", "read", "find"]);
     const ctx = { model: { provider: "opencode-go", id: "deepseek-v4-flash" } };
     // before_agent_start with a run-task prompt → bash-first hint fires.
@@ -328,16 +343,40 @@ describe("pendingGuidance lifecycle (guidance stable across all rounds of a turn
     assert.ok(r1, "first provider round receives the guidance");
     assert.match(r1.messages[0].content, /FIRST tool call MUST be bash/i);
 
-    // Round 2 of the SAME turn (tool loop): the payload is rebuilt from canonical
-    // (guidance-free) context.messages, and the SAME guidance is re-appended so the
-    // user message is byte-identical to round 1. Clearing guidance after round 1
-    // would make the user message exist in two byte forms within one turn and
-    // break DeepSeek's prefix cache at that boundary.
-    const payload2 = { messages: [{ role: "user", content: "Run the unit tests." }] };
+    // Round 1 of a LATER turn in the same session: the payload carries prior
+    // assistant history, but the tail is the new plain user prompt → the hint
+    // MUST still fire (gate is tail-based, not any-assistant-message-based).
+    const payloadMulti = { messages: [
+      { role: "user", content: "Run the unit tests." },
+      { role: "assistant", content: "done" },
+      { role: "user", content: "Execute the build now." },
+    ] };
+    const rMulti = handlers.before_provider_request[0]({ payload: payloadMulti }, ctx);
+    assert.ok(rMulti, "later-turn round 1 with plain-prompt tail still gets guidance");
+    assert.match(rMulti.messages[2].content, /FIRST tool call MUST be bash/i);
+    assert.doesNotMatch(rMulti.messages[0].content, /FIRST tool call MUST be bash/i, "prior turns stay guidance-free");
+
+    // Round 2, OpenAI-style payload (tool results are role "tool"): the hint
+    // must NOT be re-appended — re-injecting after the model has complied reads
+    // as a repeated demand and loops strict models into re-running bash.
+    const payload2 = { messages: [
+      { role: "user", content: "Run the unit tests." },
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "bash", arguments: "{}" } }] },
+      { role: "tool", content: "ok", name: "bash" },
+    ] };
     const r2 = handlers.before_provider_request[0]({ payload: payload2 }, ctx);
-    assert.ok(r2, "second provider round also receives guidance");
-    assert.strictEqual(r2.messages[0].content, r1.messages[0].content,
-      "round 2 user message must be byte-identical to round 1 (cache stable)");
+    assert.equal(r2, undefined, "round 2 (OpenAI-style) gets no guidance re-injection");
+
+    // Round 2, anthropic-style payload (tool results live in a user message):
+    // the last user message is the tool-result container — the hint must still
+    // not be appended after it.
+    const payload2a = { messages: [
+      { role: "user", content: "Run the unit tests." },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "bash", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+    ] };
+    const r2a = handlers.before_provider_request[0]({ payload: payload2a }, ctx);
+    assert.equal(r2a, undefined, "round 2 (anthropic-style) gets no guidance re-injection");
 
     // A NEW turn (before_agent_start fires again with a non-matching prompt) must
     // clear pendingGuidance so it does not leak into the next turn.
@@ -348,5 +387,15 @@ describe("pendingGuidance lifecycle (guidance stable across all rounds of a turn
     const payload3 = { messages: [{ role: "user", content: "hello" }] };
     const r3 = handlers.before_provider_request[0]({ payload: payload3 }, ctx);
     assert.equal(r3, undefined, "new turn with no dynamic guidance leaves payload untouched");
+
+    // A new matching turn re-arms the hint for ITS round 1.
+    const beforeStart3 = handlers.before_agent_start[0](
+      { systemPrompt: "base", systemPromptOptions: { selectedTools: ["bash", "read", "find"] }, prompt: "Execute the lint step." },
+      ctx,
+    );
+    assert.ok(beforeStart3);
+    const payload4 = { messages: [{ role: "user", content: "Execute the lint step." }] };
+    const r4 = handlers.before_provider_request[0]({ payload: payload4 }, ctx);
+    assert.ok(r4, "a new matching turn gets guidance on its own round 1");
   });
 });

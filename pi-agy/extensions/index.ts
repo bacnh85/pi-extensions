@@ -52,17 +52,9 @@ export default function piAgyExtension(pi: ExtensionAPI) {
       "Run a task through the Antigravity CLI (agy) for bulk implementation, scaffolding, or test generation.",
     promptSnippet: "Run a task through the Antigravity CLI (agy)",
     promptGuidelines: [
-      "Plan or research with one family only when needed; implement with flash-medium or sonnet according to which quota group should carry the work.",
-      "Use flash-medium by default for bulk coding, exploration, tests, and repetitive work.",
-      "Use flash-low for trivial few-step or high-volume work, and flash-high for difficult agentic work.",
-      "Use pro-low or pro-high only when advanced reasoning needs escalation within the Gemini quota group.",
-      "Use sonnet for normal coding or review in the Claude quota group; reserve opus for the hardest architecture, root-cause, or adversarial review.",
-      "Use gpt-oss when an open-model alternative is specifically desired.",
-      "For consequential work, use one family to produce and the opposite family to cross-review in mode=plan; do not spend both quota groups on trivial tasks.",
-      "Batch related work, prefer digest output for non-write calls, and avoid parallel calls within one shared-quota group.",
-      "Always review the git diff and run verification after agy runs with mode=accept-edits.",
-      "Never use agy for irreversible production changes.",
-      "Set an appropriate timeout_ms for large tasks (default 5m).",
+      "Default flash-medium for bulk work (Gemini quota group); sonnet for normal coding (Claude quota group); gpt-oss for open-model alternative.",
+      "For consequential work, use one family to produce and the opposite to cross-review in mode=plan.",
+      "Review the git diff and run verification after mode=accept-edits; batch related work and prefer digest output.",
     ],
     parameters: Type.Object({
       prompt: Type.String({

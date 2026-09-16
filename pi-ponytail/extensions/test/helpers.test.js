@@ -13,18 +13,19 @@ import {
   writeDefaultMode,
 } from "../index.js";
 
-test("parsePonytailCommand falls back to full when invoked bare and default is off", () => {
-  assert.deepEqual(parsePonytailCommand("", "off"), { type: "set-mode", mode: "full" });
+test("parsePonytailCommand reports status when invoked bare (#99), instead of resetting to default", () => {
+  assert.deepEqual(parsePonytailCommand(""), { type: "status" });
+  assert.notDeepEqual(parsePonytailCommand(""), { type: "set-mode", mode: "full" });
 });
 
 test("parsePonytailCommand parses modes, status, and default subcommand", () => {
-  assert.deepEqual(parsePonytailCommand("ultra", "full"), { type: "set-mode", mode: "ultra" });
-  assert.deepEqual(parsePonytailCommand("status", "full"), { type: "status" });
-  assert.deepEqual(parsePonytailCommand("default lite", "full"), { type: "set-default", mode: "lite" });
+  assert.deepEqual(parsePonytailCommand("ultra"), { type: "set-mode", mode: "ultra" });
+  assert.deepEqual(parsePonytailCommand("status"), { type: "status" });
+  assert.deepEqual(parsePonytailCommand("default lite"), { type: "set-default", mode: "lite" });
 });
 
 test("parsePonytailCommand rejects review as a default (session-only mode, #377)", () => {
-  assert.deepEqual(parsePonytailCommand("default review", "full"), { type: "invalid", reason: "invalid-default-mode" });
+  assert.deepEqual(parsePonytailCommand("default review"), { type: "invalid", reason: "invalid-default-mode" });
 });
 
 test("resolveSessionMode still honors review as a session mode (not a default)", () => {

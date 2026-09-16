@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.5 (2026-09-14)
+
+### Maintenance
+
+- Dead-code removal: the `reused` flag/branch in `KonnectDaemon` could never be
+  true (stranger daemons are never reused), so `DaemonStatus.reused`, the
+  `running: child || reused` disjunct, and the status tool's "reused (external)"
+  label are gone. Header comment in `daemon.ts` now describes current behavior
+  (reuse only our own healthy daemon; strangers are never reused).
+
+## 0.1.4 (2026-09-12)
+
+### Fixed
+
+- **README daemon claim was false.** It said a healthy daemon already on the
+  port is reused; in fact `daemon.ts` never reuses a stranger daemon (it may
+  carry a stale environment). README now states the truth: a fresh daemon is
+  always spawned on a free port and killed on Pi exit.
+- **APPDATA leaked across platforms.** `kiCadUserDirCandidates` checked
+  `env.APPDATA` before the platform, so a non-Windows host that happened to
+  export APPDATA resolved the KiCad user dir from it. The candidate is now
+  gated on `win32` (with the default `AppData/Roaming` fallback).
+- README tools table now lists `kicad_batch` (registered since the batch tool
+  was added but missing from the docs).
+- Dropped the dead `binary` parameter from `buildSpawnArgs` (always ignored).
+
 ## 0.1.3 (2026-08-05)
 
 ### Improvements

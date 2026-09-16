@@ -178,10 +178,17 @@ describe("validateMemoryKey", () => {
     expect(() => validateMemoryKey("   ")).to.throw("whitespace");
   });
 
-  it("rejects keys with invalid characters", () => {
-    expect(() => validateMemoryKey("key with spaces")).to.throw("alphanumeric");
-    expect(() => validateMemoryKey("key@special")).to.throw("alphanumeric");
-    expect(() => validateMemoryKey("key.dots")).to.throw("alphanumeric");
+  it("normalizes invalid characters instead of throwing", () => {
+    // Version stamps in keys were the top store-failure family (session mining)
+    expect(validateMemoryKey("pi-a2a/gateway-token-hardening-0.6.2")).to.equal("pi-a2a/gateway-token-hardening-0-6-2");
+    expect(validateMemoryKey("pi/0.84.2-compat-and-glm-5.3")).to.equal("pi/0-84-2-compat-and-glm-5-3"); // / preserved
+    expect(validateMemoryKey("deepseek-tools/readme-env-cleanup-0.9.2")).to.equal("deepseek-tools/readme-env-cleanup-0-9-2");
+    // Legacy-legal keys (incl. consecutive hyphens) pass through unchanged
+    expect(validateMemoryKey("auth--refresh--token")).to.equal("auth--refresh--token");
+    // Degenerate results (no alphanumerics) are rejected, not collapsed to "-"
+    expect(() => validateMemoryKey("...")).to.throw("alphanumeric");
+    // Store and lookup must derive the same normalized key (round-trip)
+    expect(validateMemoryKey(validateMemoryKey("pi-plan/v0.4.3-lifecycle-rewrite"))).to.equal(validateMemoryKey("pi-plan/v0.4.3-lifecycle-rewrite"));
   });
 
   it("rejects keys over 200 chars", () => {

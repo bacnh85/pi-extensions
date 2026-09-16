@@ -1,5 +1,382 @@
 # Changelog
 
+## 0.22.1 (2026-09-13)
+
+### Fixed
+
+- **herdr children honor `thinking: off` explicitly.** `buildPiArgs` omitted
+  the `--thinking` flag for "off", so the child pi fell back to its own
+  default (e.g. a user-level `defaultThinkingLevel`), silently overriding
+  the agent's frontmatter or `:off` pin — an SDK child ran off while a
+  herdr child of the same agent ran at the child default. The flag is now
+  always passed when a level is known (`pi --thinking off` is valid). Found
+  by the live-fallback smoke: scout (@fast, dead model id → parent fallback)
+  ran at `max` instead of its frontmatter `off`.
+
+## 0.22.0 (2026-09-13)
+
+### Added
+
+- **`subagent.agentThinking`** — per-agent thinking override in
+  `~/.pi/agent/settings.json` (repo overlay honored). Precedence: a matched
+  candidate's `:level` suffix wins, then `agentThinking`, then the agent
+  file's frontmatter `thinking`. Applies to SDK, service, and herdr dispatch
+  paths.
+- **`/subagent` panel thinking rows** — one thinking row per agent (blank =
+  file default) with level completions; invalid values are dropped with a
+  save notification. `/subagent <name>` details show the effective thinking
+  (with an override marker), and chains render per-candidate `:level` pins.
+
+### Fixed
+
+- herdr dispatch now honors a matched candidate's `:level` pin — the pane
+  task previously always used the agent's default thinking because
+  `resolveModel` receives pre-stripped candidates (so its `matchedThinking`
+  was never set); the pin is now read from the chain's `thinkingByCandidate`
+  map, matching the SDK and service paths (auto-review caught this gap
+  against the Added bullet above).
+
+## 0.21.4 (2026-09-13)
+
+### Fixed
+
+- **Read-only herdr children no longer get a report-file delivery
+  instruction they cannot follow.** The delivery wrapper asked every child
+  to write its report to `.pi/herdr/<name>-<stamp>.md`, but read-only
+  sandboxes (scout: read/grep/find/ls) have no write tool — children burned
+  3–5 turns discovering this before falling back to an inline reply (rescued
+  only by the pane-read fallback). The sandbox flag now flows into the
+  handle and `wrapTaskPrompt`, which tells read-only children to deliver
+  inline and never write files. Applies to initial dispatch and
+  control-tool follow-up prompts alike. The herdr `read` fallback hint now
+  also branches on the sandbox (suggests an inline-reply prompt instead of
+  the impossible file write). The full chain is pinned by three tests that
+  fail if `readOnly` is dropped anywhere: the wrapper itself, the handle,
+  the follow-up wrapper, or the `sandbox: read-only` frontmatter → dispatch
+  mapping (mutation-verified).
+- **Background receipts inside herdr now say herdr was skipped.**
+  `background:true` always runs in-process (sdk) — inside a herdr session
+  the resulting missing pane read as a bug. The receipt now explains it and
+  points at the pane-dispatching alternative — but only when a foreground
+  rerun would actually delegate (a pinned `runner:"sdk"`, disabled
+  delegation, or a failed herdr-binary probe all suppress the advice).
+- **Status of an evicted background task no longer reads as "never
+  existed".** Finished tasks leave the in-memory map after 60s retention;
+  `operation:"status"` now falls back to the durable
+  `.pi/subagent-history.json` (background entries only — foreground `fg-*`
+  ids are excluded) and reports the terminal state + summary ("no longer
+  retained in memory"); non-terminal entries read as "history shows
+  running — not live in this session".
+- **Project-local agents (`.pi/agents/`) verified live**: invisible at the
+  default `agentScope:"user"` (clear "Unknown agent" error), confirmation
+  gate on first project-agent dispatch, then single/chain/background all
+  work with `agentScope:"project"` on both sdk and herdr runners.
+
+## 0.21.3 (2026-09-12)
+
+### Fixed
+
+- Changelog attribution correction for 0.21.2 (the cancelAgent escalation
+  belongs to 0.21.2, not 0.21.1; malformed H1 ordering fixed). No code
+  changes.
+
+## 0.21.2 (2026-09-12)
+
+### Fixed
+
+- **cancelAgent escalates to ctrl+c whenever the post-esc state is not
+  verifiably settled (idle/done)** — previously only the "working" state
+  escalated, and herdr 0.9.0 misreports ask_user_question dialogs as
+  "unknown", which left children stranded on the dialog after a timeout
+  cancel. Best-effort: the dialog's own key handling is outside this
+  extension's control.
+- Doc corrections: the timeout path's esc behavior is unit-tested (live
+  dialog dismissal unobserved); `/reload-runtime` control-action refusals
+  now include the manual `herdr tab close <tabId>` fallback.
+
+### Documented
+
+- herdr 0.9.0 limitation: pi's `ask_user_question` dialogs are NOT
+  classified as `blocked` by herdr's detection — a herdr child that asks a
+  mid-task question makes the parent wait until the hard timeout. Answer in
+  the pane (the child completes and the parent returns), or avoid mid-task
+  questions in herdr children. Upstream: herdr needs question-widget
+  detection for pi.
+- After `/reload-runtime`, mutating control actions (`cancel`/`close-tab`/
+  `forget`) refuse for pre-reload panes; refusal messages now include the
+  manual `herdr tab close <tabId>` fallback.
+
+## 0.21.1 (2026-09-12)
+
+### Fixed
+
+- **Packaging: `extensions/herdr.ts` was missing from `files[]`** — the
+  published 0.21.0 tarball could not resolve `./herdr.ts` and crashed on
+  load. 0.21.0 also shipped without the test files (intentional).
+
+### Added
+
+- **`herdr` control tool `forget` action** — drops a stale registry entry
+  (e.g. after its tab was closed outside this session) without touching
+  herdr state.
+- **Keep-alive parity for herdr delegations** — single/chain/parallel herdr
+  runs now emit the same onUpdate heartbeat traffic as SDK runs, so long
+  pane runs are not idle-aborted by the host.
+- **Chain `{previous}` truncation** — a large step report no longer pushes
+  the next chain task past the 64KB herdr argv ceiling; substituted text is
+  byte-safe truncated (multibyte-aware) with a visible marker. SDK chains
+  are unaffected.
+- Blocked herdr panes surfaced honestly in every mode: single mode returns
+  a "blocked awaiting input" message instead of an empty success, and
+  parallel headers count them separately (`N blocked awaiting input`) with
+  per-task `blocked — awaiting input in its pane` labels.
+- Task-size validation now reserves headroom for the delivery wrapper
+  (HERDR_TASK_BUDGET = 64KB − 1KB) — a ceiling-sized task plus the
+  report-file contract no longer exceeds the argv ceiling; the control
+  tool's prompt check uses the same budget.
+- The `herdr --version` probe is cached only on success — a transient CLI
+  hang no longer permanently disables herdr delegation for the session.
+- Parallel herdr integration tests: same-type prepare-before-prompt
+  ordering, per-task prepare-failure mapping, mid-prompt abort (esc to every
+  pane, no listener leaks), heartbeat traffic, oversized-report chain.
+
+### Changed
+
+- Task-control calls (`operation:"status"`/`"cancel"`) and `background:true`
+  dispatches skip the `herdr --version` probe entirely; the probe is
+  memoized per process for real dispatches.
+- Abort listeners on the parent signal are now removed once a herdr task
+  settles — a later abort no longer keystrokes completed step panes in
+  chains.
+
+
+## 0.21.0 (2026-09-12)
+
+### Added
+
+- **Herdr pane delegation** — when pi runs inside [herdr](https://herdr.dev)
+  (`HERDR_ENV=1` + `herdr` binary), the `subagent` tool delegates to visible
+  interactive pi sessions in herdr panes instead of in-process SDK sessions.
+  Topology: one tab per agent type (tab label = agent name), one pane per
+  agent instance. Children are full `pi` sessions with the agent persona
+  applied via a file + `--append-system-prompt` (herdr's `agent start --`
+  arg encoder rejects multi-line strings), plus `--model`, `--thinking`,
+  `--tools`); read-only sandboxes map to the read-only allowlist. Results are
+  delivered via a report-file contract (children write their final report as
+  Markdown to a known path — pane scrollback is a best-effort fallback, since
+  TUI agents render on the alternate screen). New `runner: "sdk" | "herdr"`
+  tool parameter overrides the auto-detection per call; settings
+  `subagent.herdr: "off"` disables it. Delegated children run with
+  `PI_SUBAGENT_HERDR=off` so they never recurse into herdr dispatch.
+  Same-type prepares are serialized (tab/pane/name allocation is
+  race-prone); prompt submission and runs stay parallel.
+- **`herdr` control tool** — main-session oversight of delegated pane agents:
+  `list` (delegated agents + live states), `status`, `read` (best-effort pane
+  output), `prompt` (follow-up that continues the child's session, with
+  optional `wait`), `cancel` (esc, then ctrl+c if still working), `focus`
+  (raise the agent's tab), and `close-tab` (restricted to tabs this session
+  created). Always registered; outside herdr it returns a clear error.
+- Fifth auto-review round hardening: a herdr child that settles but whose
+  state cannot be verified with no collected report is an error, not an
+  empty success; a pre-aborted dispatch no longer submits the task to the
+  live child at all; a read-only agent whose tools never intersect the
+  read-only allowlist is rejected (previously `--tools` was silently
+  omitted, granting the child pi's full default toolset); arg building now
+  happens before topology creation so validation failures leave no orphan
+  tab/pane.
+- Fresh session per herdr dispatch: child session ids are now unique per task
+  (`herdr-<name>-<stamp>`), so a recycled agent name never silently resumes a
+  stale (potentially huge) session after a tab close or parent restart.
+  Control-tool follow-ups keep context in the live pane's memory — the
+  session id was never what carried that.
+- Pane-capture fallback (read-only agents without the report-file contract)
+  is now tail-capped to the last 8KB with a truncation marker — herdr
+  scrollback includes pre-prompt noise (resumed sessions, earlier turns), and
+  that stale content previously flowed verbatim into results and chain
+  `{previous}` substitution.
+- Fourth review round hardening: agent-level `sandbox: "worktree"` is no
+  longer silently dropped on the herdr runner — dispatch is rejected with an
+  explicit error (herdr children share the working tree), mirroring the
+  merge guard; control-tool follow-up prompts no longer return a stale
+  report file (unchanged file is reported as such); the `herdr read`
+  action clamps `lines` to 1-1000 and caps output bytes; four new
+  dispatch-reaching integration tests cover single success (details.runner),
+  chain blocked-pause, parent-abort cancellation with pane esc, and the
+  worktree guard.
+- Third review round hardening: herdr agents interrupted via parent abort or
+  `abortOnFailure` now report `status: "aborted"` (previously a cancelled
+  child settling to idle could read as success); the parallel abort listener
+  also fires without a parent tool signal; `merge: "3way"` combined with the
+  herdr runner is rejected with an explicit error instead of silently
+  dropping the merge; the control tool's `prompt wait` is tool-abort
+  interruptible; new index-level integration tests drive the registered
+  tools through a fake pi host.
+- Second review round hardening: `herdr` control tool `prompt`/`cancel` are
+  scoped to agents this session delegated (status/read/focus remain
+  workspace-wide, guidelines updated); dispatch into an adopted
+  (label-matched) tab always splits a fresh pane with the validated cwd
+  instead of reusing a free pane of unknown provenance; close-tab fails
+  closed on unrecognized agent states; the cross-session name-collision
+  retry re-reads live herdr names; report-file reads are capped at 256KB
+  with a truncation marker; best-effort pane captures are labeled in
+  results; `background: true` no longer stamps `runner: "herdr"`; oversized
+  control-tool prompts fail fast.
+- Blocked panes (child waiting on a permission/question dialog) surface as
+  `partial` with `stopReason: "blocked"` instead of failing; a blocked chain
+  step pauses the chain with instructions instead of feeding degraded output
+  to the next step.
+- `close-tab` only closes tabs this session actually created: a tab that
+  pre-existed with a matching label is adopted for dispatch but refused on
+  close, and it refuses while the named agent or sibling agents in the same
+  tab are still working/blocked (same-type agents share one tab; closing it
+  kills all their panes; an unverifiable sibling state counts as busy, while
+  a missing state for the named agent's own pane is treated as already
+  closed). The `herdr` control tool is disabled in delegated child sessions
+  (`PI_SUBAGENT_HERDR=off`), not just dispatch.
+
+## 0.20.1 (2026-09-12)
+
+### Fixed
+
+- **Service path honors agent frontmatter `timeout:` and raises the hard cap**:
+  `runNamedAgent` (pi-review / auto-review path) applied only the caller's
+  per-call timeout against the 20-min default cap and ignored the agent's
+  `timeout:` frontmatter. Timeout resolution is now extracted into the shared
+  `resolveChildTimeouts` helper (security.ts) used by the tool path, so the
+  precedence is identical everywhere (per-call timeout > agent frontmatter
+  default > global default) and the hard lifetime cap is raised to match the
+  idle window — an agent with `timeout: 45` is no longer hard-killed mid-stream
+  at the default cap.
+- README: Compatibility peer ranges corrected from `<0.85.0` to `<0.86.0`
+  (package.json peers already said `<0.86.0`), and the read-only restriction
+  now describes the actual allowlist (built-in reads plus the read-only
+  extension allowlist — FFF, Windows, web, Serena, Munin), not just the four
+  built-in reads.
+
+## 0.20.0 (2026-09-07)
+
+### Added
+
+- **Auto-review** (`subagent.autoReview: true` in settings.json, default off) —
+  after a user-initiated turn that made ≥3 file-mutation tool calls
+  (`edit`/`write`/`apply_patch`/`str_replace_editor`) in an interactive (TUI)
+  session, the read-only `reviewer` agent is dispatched automatically as a
+  background task reviewing the current uncommitted diff of the files the turn
+  touched (new/untracked files are read directly); its findings wake the parent
+  via the normal background follow-up turn, so an independent review happens
+  after every real coding turn without asking. Precedence: global
+  settings.json → trusted repo `.pi/settings.json` overlay. Guards keep it
+  bounded: turns woken by auto-injected messages are
+  skipped (custom wake-ups by role, and pi-advisor blocker/concern steers by
+  their fixed `Advisor review (` content prefixes since those are plain user
+  messages), max 3 dispatches per session, never while another background task
+  runs, cursor tracked while the setting is off so enabling mid-session never
+  replays history, `session_start` (startup and reload) reseeds it, and a
+  fresh session's first coding turn is reviewed from entry zero. Subagent
+  catalog prompt now also states when NOT to delegate (single-file small
+  edits, quick greps → inline).
+
+## 0.19.3 (2026-09-05)
+
+- Widen Pi SDK peer range to `>=0.80.0 <0.86.0` and bump devDep to `^0.85.0` for Pi 0.85.0 compatibility (no breaking changes; peer cap widening only).
+
+## 0.19.2 (2026-09-02)
+
+### Fixed
+
+- **Stalled streams now fall back to the next model** — when a provider
+  accepts a request but the stream emits zero events for the entire idle
+  window (known router/provider failure mode, e.g. slow-TTFT models behind
+  omniroute), the run previously died on model #1 with "Idle timeout" and
+  never tried the fallback chain. An IDLE timeout is now treated as a
+  capacity signal (`isRetryableModelResult`): the task retries on the next
+  candidate (each candidate is tried at most once, so worst case is N idle
+  windows). The HARD lifetime cap stays terminal — a task that ran 20 min is
+  genuinely huge, not a stall. Found by live background-task test: trivial
+  20+22 task timed out on glm-5-turbo with zero stream events.
+
+## 0.19.1 (2026-09-02)
+
+### Fixed
+
+- **Model fallback now engages on credential cooldown** — router providers
+  report "All credentials for model X are cooling down" when every key for a
+  model is in its rate-limit window. That message didn't match
+  `RATE_LIMIT_PATTERNS`, so `runWithModelFallback` treated it as a fatal error
+  instead of advancing to the next candidate (e.g. `@fast`
+  glm-5-turbo → gpt-oss-20b → deepseek-v4-flash), aborting subagent and chain
+  runs with "All credentials … are cooling down". Added the cooldown pattern
+  (credential cooldown / cooldown window / cooling down) so capacity signals
+  from the credential layer trigger the same fallback as 429s.
+
+## 0.19.0 (2026-09-02)
+
+### Fixed
+
+- **Reviewer/planner agents no longer abort at the 3-min idle timeout while
+  thinking** — root cause: a `thinking: high` child on a slow model can spend
+  many minutes in one reasoning stretch, and the default 3-min inactivity
+  window kills the run even though it is healthy. Fix: new agent frontmatter
+  field **`timeout: <minutes>`** (1–60) bakes a per-agent idle window; the
+  hard lifetime cap is raised to match so long windows are actually
+  enforceable. Bundled `reviewer` and `planner` agents ship with
+  `timeout: 10`. Per-call `timeout` still overrides. (The idle timer already
+  treats every SDK event — including streaming deltas — as activity; a run
+  that emits no events at all for the window is genuinely hung.)
+  Reported by peer mbp-sao-9915 (review rounds hitting the 180s default).
+
+## 0.18.0 (2026-09-02)
+
+### Fixed
+
+- **Worktree patches now reach the parent model** — `sandbox: worktree` results
+  previously exposed the diff only in TUI details; the tool-result text the
+  parent model reads contained just the child's final message, so the
+  documented "parent merges via apply_patch" flow was impossible in practice.
+  The diff is now appended as a `🌿 worktree patch` block (capped at the
+  per-task output limit) in single, parallel, chain, and background-completion
+  results, and `operation: "status"` reports `Patch: N diff lines`.
+
+### Added
+
+- **`merge: "3way"` per call/item** — with a worktree-sandboxed agent, the
+  captured diff is applied to the parent checkout via `git apply --3way`
+  (temp-file at repo root, applied before worktree removal so the staged blobs
+  are available for 3-way reconstruction). Results carry
+  `mergeStatus: "applied" | "conflict"`; conflicts keep git's markers, report
+  the apply error, and still deliver the patch for manual merging — never
+  silently resolved. Concurrent applies are serialized (OMP `withRepoLock`
+  equivalent) so parallel siblings cannot race the checkout.
+- Applies are mutex-serialized across parallel/background tasks.
+
+## 0.17.0 (2026-08-31)
+
+### Added
+
+- **Add/remove model roles from the `/subagent` panel** — new `+ Add role` /
+  `− Remove role` action rows (two-prompt flow: name → chain). Custom roles are
+  deletable; built-in roles (`fast`/`coder`/`smart`) reset to their bundled
+  default. New names validate against `[A-Za-z0-9._-]{1,64}` with
+  case-insensitive collision checks.
+- **Per-agent default display** — each override row now shows the agent's
+  default (no-override) chain, e.g. `scout  (default: @fast → zai-coding-cn/
+  glm-5-turbo, …)`, so blank = inherit is meaningful. Labels track live role
+  edits and freshly added roles appear in `@role` completions immediately.
+- Panel save is now guarded by a working-copy content diff (action-only
+  sessions — add/remove without row edits — previously left `editedKeys` empty
+  and silently skipped persistence).
+
+## 0.16.1 (2026-08-29)
+
+### Added
+
+- `/subagent` argument completion: keywords (`list|all|agents|roles|reload|
+  refresh|history`), discovered agent names, and `@role` refs.
+- Roles editor rows now offer inline model suggestions (Tab to pick, Enter
+  keeps typed text) when run against @bacnh85/pi-config-panel >= 0.1.1; the
+  package stays compilable and fully functional on 0.1.0 (suggestions simply
+  absent), so no dependency floor bump is required.
+
 ## 0.16.0 (2026-08-23)
 
 ### Features

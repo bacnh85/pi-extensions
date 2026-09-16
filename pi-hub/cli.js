@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,6 +23,14 @@ const noColor = !process.stdout.isTTY;
 const paint = Object.fromEntries(Object.entries(C).map(([k, fn]) => [k, noColor ? (s) => s : fn]));
 
 // ---------- helpers ----------
+
+// ponytail: Windows npm shims are pi.cmd — spawnSync can't PATHEXT-resolve them without a
+// shell, and an args array + shell triggers DEP0190, so win32 passes one joined command
+// string instead (install/remove/update args are ours: npm:/git: refs, -l — no spaces).
+const spawnPi = (args, opts) =>
+  process.platform === "win32"
+    ? spawnSync(["pi", ...args].join(" "), { shell: true, ...opts })
+    : spawnSync("pi", args, opts);
 
 export function resolveSource(ref) {
   if (ref.startsWith("npm:") || ref.startsWith("git:") || /^[a-z]+:\/\//.test(ref)) return ref;
@@ -63,17 +72,17 @@ export async function searchNpm(query, limit = 15) {
 }
 
 export function piInstalled() {
-  return spawnSync("pi", ["--version"], { encoding: "utf8", timeout: 10_000 }).status === 0;
+  return spawnPi(["--version"], { encoding: "utf8", timeout: 10_000 }).status === 0;
 }
 
 function pi(args) {
-  const r = spawnSync("pi", args, { stdio: "inherit" });
+  const r = spawnPi(args, { stdio: "inherit" });
   if (r.error) throw new Error(`failed to run pi: ${r.error.message}`);
   return r.status ?? 0;
 }
 
-function readSettingsPackages() {
-  const settingsPath = path.join(process.env.HOME ?? "", ".pi", "agent", "settings.json");
+export function readSettingsPackages(env = process.env) {
+  const settingsPath = path.join(env.HOME ?? env.USERPROFILE ?? os.homedir(), ".pi", "agent", "settings.json");
   try {
     const s = JSON.parse(readFileSync(settingsPath, "utf8"));
     return (s.packages ?? [])
@@ -234,7 +243,7 @@ function cmdRemove(refs, flags) {
   if (!sources.length) {
     const installed = readSettingsPackages().filter((p) => p.startsWith("npm:"));
     if (!installed.length) return console.log(paint.dim("no npm pi packages to remove"));
-    sources = installed; // interactive pick happens below via picker
+    sources = installed;
   }
   for (const source of sources) {
     console.log(paint.yellow(`pi remove ${source}`));
@@ -255,10 +264,10 @@ Usage:
 
 Flags:
   -l, --local    project-local install (.pi/settings.json) instead of user scope
-  -y, --yes      skip confirmation
+  -y, --yes      quiet (interactive mode: suppress the "Will install" list; installs never prompt)
   --json         machine-readable output (find)
   -h, --help     this help`);
-  if (code !== undefined) process.exitCode = code;
+  process.exitCode = code;
 }
 
 // ---------- entry ----------

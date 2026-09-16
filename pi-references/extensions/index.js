@@ -12,15 +12,14 @@
  *     "sdk":  { "repository": "owner/repo", "branch": "main", "description": "JS SDK impl" }
  *   }
  *
- * The model can then read files under the resolved root (which is also added to
- * the permission allowlist for path tools). `@alias` autocomplete is a future
- * TUI enhancement; today references are surfaced via system-prompt injection +
- * the /refs command.
+ * The model can then read files under the resolved root. `@alias` autocomplete
+ * is a future TUI enhancement; today references are surfaced via system-prompt
+ * injection + the /refs command.
  *
  * Zero deps, plain JS (pi-budget pattern).
  */
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve, isAbsolute } from "node:path";
 import os from "node:os";
 
@@ -63,8 +62,10 @@ const CACHE_DIR_SUFFIX = "refs";
  */
 export function normalizeReference(alias, def, cwd, cacheRoot) {
   if (!alias || typeof alias !== "string") return null;
-  // alias must not contain slash/whitespace/backtick/comma (OpenCode rule)
-  if (/[/\s,`]/.test(alias)) return null;
+  // alias must not contain slash/whitespace/backtick/comma (OpenCode rule),
+  // and must not be a dot segment: join(cacheRoot, "..") would resolve the
+  // ref outside the cache root entirely.
+  if (/[/\s,`]/.test(alias) || alias === "." || alias === "..") return null;
 
   const obj = typeof def === "string" ? parseShorthand(def) : { ...def };
   if (!obj || typeof obj !== "object") return null;
@@ -79,10 +80,13 @@ export function normalizeReference(alias, def, cwd, cacheRoot) {
   };
 
   if (obj.path) {
-    const resolved = isAbsolute(obj.path) || obj.path.startsWith("~")
-      ? obj.path
-      : resolve(cwd || ".", obj.path);
-    out.path = resolved;
+    // Expand a leading ~ ("~/x", "~") to the real home dir — the agent's path
+    // tools won't expand it themselves, so an unexpanded ref never resolves.
+    const expanded =
+      obj.path === "~" || obj.path.startsWith("~/")
+        ? join(os.homedir(), obj.path.slice(1))
+        : obj.path;
+    out.path = isAbsolute(expanded) ? expanded : resolve(cwd || ".", expanded);
     return out;
   }
 
@@ -121,6 +125,7 @@ function parseShorthand(s) {
 export async function ensureCloned(ref, execFn) {
   if (!ref?.repository || !ref?.path) return true; // local ref, nothing to clone
   if (existsSync(join(ref.path, ".git"))) return true; // already cloned
+  const existed = existsSync(ref.path);
   try {
     mkdirSync(ref.path, { recursive: true });
   } catch { /* best-effort */ }
@@ -134,12 +139,24 @@ export async function ensureCloned(ref, execFn) {
   if (ref.branch && !String(ref.branch).startsWith("-")) {
     args.splice(1, 0, "--branch", ref.branch);
   }
+  let ok = false;
   try {
-    const res = await execFn("git", args);
-    return !res?.failed;
-  } catch {
-    return false;
+    ok = !(await execFn("git", args))?.failed;
+  } catch { /* clone failed */ }
+  if (!ok) {
+    // Clean up so a retry can re-clone. If WE created the dir this call, a
+    // failed clone may leave a partial .git inside — remove it outright,
+    // or the .git early-return above would report the broken cache as
+    // "already cloned". A pre-existing dir is only removed when empty:
+    // never recursive-delete content we didn't create (a bad alias/config
+    // can point ref.path anywhere). Best-effort.
+    try {
+      if (!existed || readdirSync(ref.path).length === 0) {
+        rmSync(ref.path, { recursive: true, force: true });
+      }
+    } catch { /* dir missing/unreadable — nothing to clean */ }
   }
+  return ok;
 }
 
 /**
@@ -216,6 +233,7 @@ export default function referencesExtension(pi) {
   pi.registerCommand("refs", {
     description: "List configured project references (@alias → path)",
     handler: async (_args, ctx) => {
+      if (!ctx?.ui?.notify) return; // no UI in this context — nowhere to print
       if (refs.length === 0) {
         ctx.ui.notify("No references configured (set `references` in settings.json).", "info");
         return;

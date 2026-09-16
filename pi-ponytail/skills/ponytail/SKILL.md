@@ -79,7 +79,7 @@ Pattern: `[code] → skipped: [X], add when [Y].`
 
 ## Intensity
 
-| Level | What change |
+| Level | What changes |
 |-------|------------|
 | **lite** | Build what's asked, but name the lazier alternative in one line. User picks. |
 | **full** | The ladder enforced. Stdlib and native first. Shortest diff, shortest explanation. Default. |
@@ -102,10 +102,6 @@ solution, never the reading. Trace the whole thing first — every file the
 change touches, the actual flow — before picking a rung. Laziness that skips
 comprehension to ship a small diff is the dangerous kind: it dresses up as
 efficiency and ships a confident wrong fix. Read fully, then be lazy.
-
-Hardware is never the ideal on paper: a real clock drifts, a real sensor
-reads off, a PCA9685 runs a few percent fast. Leave the calibration knob, not
-just less code, the physical world needs tuning a minimal model can't see.
 
 Lazy code without its check is unfinished. Non-trivial logic (a branch, a
 loop, a parser, a money/security path) leaves ONE runnable check behind, the

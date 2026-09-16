@@ -3,7 +3,7 @@
 Pi extension that adds a lightweight plan mode inspired by Codex and Claude Code:
 
 - Toggle plan mode with `/plan` or `Ctrl+Alt+P`.
-- Remembers separate thinking/reasoning levels for planning and normal execution across sessions.
+- Remembers the plan-mode model and thinking level globally across sessions; normal mode follows stock Pi (`/model`, `/thinking`).
 - Keeps planning safe: known read/research tools and strict read-only shell commands auto-run, unknown executables and custom tools require confirmation, direct source mutators are blocked.
 - Provides a `write_plan` tool so the agent writes reviewable Markdown plans into `.agents/plans/`.
 - Provides an `ask_user_question` tool for selection-style clarifying questions with an optional recommended default (★-marked) and a free-form "Other" path; works in any mode (not just plan mode).
@@ -27,6 +27,7 @@ pi --plan
 | --- | --- |
 | `/plan` | Toggle plan mode. |
 | `/plan-approve [current|new|flow]` | Open approval choices or execute a specific handoff through Pi's command router. |
+| `/plan-execute new|flow` | Backward-compatible alias: jump straight to fresh-session execution (`new`) or the implement→verify→review workflow (`flow`) for the last approved plan. |
 | `/flow status` | Show the active workflow phase and review pass. |
 | `/flow stop` | Abort review and stop the active workflow. |
 | `/handoff <goal>` | Summarize the session into a reviewable prompt and start a focused new Pi session linked to the parent. |
@@ -38,6 +39,8 @@ pi --plan
 | `/goal [objective\|status\|pause\|resume\|clear]` | Keep the agent working toward a verifiable condition across turns until a small-fast-model evaluator confirms it is met. |
 | `/goal-model [model hint\|off]` | Configure the `/goal` evaluator model with `/model`-style search. |
 | `/plan-fallback [set <provider/model> ...\|clear]` | View, set, or clear the fallback model chain tried on provider overload/rate-limit. |
+| `/plan-model [<provider/model>\|clear]` | Set the plan-mode model (global); normal mode follows Pi's own `/model`. Without a ref, opens the `/model`-style picker (TUI); refs complete inline. |
+| `/plan-thinking [<level>\|clear]` | Set the plan-mode thinking level (global); normal mode follows Pi's own `/thinking`. |
 | `Esc Esc` | With an empty idle editor, prefill `/rewind` in the TUI. |
 | `Ctrl+Alt+P` | Toggle plan mode. |
 
@@ -64,14 +67,14 @@ Fresh-session replacement is intentionally initiated by `/plan-approve`: extensi
 
 | Tool category | Behavior |
 |---|---|
-| Known read/research tools (built-in `read`/`ls`/`grep`/`find`, Serena, FFF, web, Munin) | Auto-allowed without prompt |
+| Known read/research tools (built-in `read`/`ls`/`grep`/`find`, Serena, FFF, web, Munin, ux_audit, A2A discovery/polling, `unfold`/`recall`) | Auto-allowed without prompt |
 | `write_plan`, `ask_user_question` | Always available |
-| `bash` (write commands: redirects, heredocs, `sed -i`, `tee`, `cp`/`mv`/`rm`, `touch`, `mkdir`) | Hard-blocked — no filesystem mutations via bash in plan mode |
-| `bash` (strict single read commands: `ls`, `grep`, `find`, `git status`, `cat`) | Auto-allowed without prompt |
+| `bash` (write commands: redirects, heredocs, `sed -i`/`w`/`e`/`-f`, `tee`, `cp`/`mv`/`rm`, `touch`, `mkdir`) | Hard-blocked — no filesystem mutations via bash in plan mode |
+| `bash` (read commands incl. pipelines/chains: `ls`, `grep`, `find`, `git status`, `cat`, `jq`, print-only `sed`, `xargs` over read tools, `tar -t`/`-xO`, `cd &&`, `VAR=` prefixes, multi-line) | Auto-allowed without prompt |
 | `bash` (unknown executables, including test/build/package scripts) | Requires approval (**Allow once / Allow for this session / Deny**) warning about possible side effects; denied without UI. "Allow for this session" remembers the executable (first token) until plan mode toggles |
 | Baseline custom tools not on the known-read list | Requires approval (same options; "Allow for this session" remembers the tool) |
 | Unknown tools (not in original baseline) | Requires approval (same options) |
-| Direct source mutators (`edit`, `write`, Serena/Munin mutations) | Hard-blocked with error message |
+| Direct source mutators (`edit`, `write`, `apply_patch`, Serena/Munin mutations) | Hard-blocked with error message |
 | `multi_tool_use.parallel` | Each nested call independently gated |
 
 ## Utility command configuration
@@ -127,35 +130,38 @@ A goal is an execution-time feature, so it cannot be set while plan mode or an i
 }
 ```
 
-## Reasoning levels and per-mode model
+## Plan model and thinking (global, plan mode only)
 
-pi-plan remembers two configurations — one for **plan mode** and one for **normal/execution** —
-and restores the right one when you toggle modes or restart the session:
+pi-plan only configures **plan mode**; normal mode follows stock Pi:
 
-- **Reasoning level.** Change Pi's active reasoning level while plan mode is active to update
-  the planning level; change it in normal mode to update the execution level.
-- **Model.** Change Pi's active model with `/model` (or `Ctrl+P`) while plan mode is active to
-  set the planning model; change it in normal mode to set the execution model.
-
-Both are observed automatically and persisted per model ID across sessions under your user Pi
-agent directory. This makes it natural to plan with a strong model and implement with a fast
-one — e.g. plan with `zai-coding-cn/glm-5.2`, then implement with `opencode-go/deepseek-v4-flash`:
-the model switches automatically when you enter/leave plan mode.
+- **Normal mode.** The model and thinking level are exactly Pi's own: `/model`
+  (or `Ctrl+P`) is a session pick, `Ctrl+S` in the picker saves the startup
+  default, `/thinking` (or `Shift+Tab`) adjusts the level. pi-plan never
+  overrides the normal-mode model or thinking — including `--model` and session
+  resume.
+- **Plan mode.** `/plan-model [<provider/model>|clear]` sets the plan-mode
+  model, saved globally (no `-g` needed). `/plan-thinking [<level>|clear]`
+  sets the plan-mode thinking level, saved globally. Both apply immediately
+  when invoked inside plan mode.
+- **Smooth toggling.** Entering plan mode remembers the model and thinking you
+  had, then applies the plan config; leaving plan mode restores them. If you
+  change the model or thinking while planning (via stock `/model` or
+  `/thinking`), that change is session-temporary and reverted on leave — the
+  global plan config never leaks into normal mode.
 
 Notes:
-- A per-mode model is only applied when you have set one for that mode. By default (nothing
-  configured), Pi's current model is left untouched when toggling modes.
-- Use `/model` (or `Ctrl+P`) while in each mode — pi-plan observes and records whichever model
-  you pick as that mode's preference automatically.
-- Switching models persists the model as Pi's global default in `settings.json` on each change
-  (Pi's own `/model` does the same). pi-plan always re-applies the correct per-mode model on
-  the next mode toggle or session start.
-- To clear a per-mode model, switch to your desired default while in that mode, or edit the
-  `planModel`/`normalModel` fields out of `~/.pi/agent/pi-plan/preferences.json`.
-- If the configured model isn't loaded yet (e.g. a provider like 9router that registers models
-  asynchronously), the switch is deferred and retried the moment the provider announces its models.
-  If the model is genuinely unavailable (no API key or not found), the switch is skipped with a
-  warning and the current model is kept.
+- Config lives under the `pi-plan` key in Pi's global `settings.json` (non-secret extension
+  config belongs there, per the repo config-placement rule). A pre-0.13.0
+  `~/.pi/agent/pi-plan/preferences.json` is migrated automatically on first load and renamed
+  to `preferences.json.migrated`; a `pi-plan` block already in `settings.json` wins over it.
+  Legacy `normalModel`/`normalThinking`/`perModel` values are dropped — normal mode follows
+  stock Pi now (set your normal default with `Ctrl+S` in `/model`).
+- If a configured plan model isn't loaded yet (e.g. a provider like 9router that registers models
+  asynchronously), the switch is deferred and retried the moment the provider announces its
+  models. If the model is genuinely unavailable (no API key or not found), the switch is
+  skipped with a warning and the current model is kept.
+- Pi's own Ctrl+S in `/model`/`/thinking` saves a startup default in `settings.json` — that
+  is exactly how the normal-mode default works now.
 
 ## Changelog
 

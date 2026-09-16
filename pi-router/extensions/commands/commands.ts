@@ -3,10 +3,13 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { openConfigPanel, row } from "@bacnh85/pi-config-panel";
-import type { RouterSettings } from "../lib/config.js";
 import { configSummary, getSettings, readStoredApiKey, maskApiKey, normalizeUrl } from "../lib/config.js";
 import { registerProvider, PROVIDER_ID } from "../lib/provider.js";
 import { refreshActiveModel } from "../index.js";
+
+/** Router model ids from the last /router-model invocation — the completion
+ *  hook has no ctx, so it replays this cache (empty until first use). */
+let lastRouterModelIds: string[] | undefined;
 
 function settingsPath(): string {
   const agentDir = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
@@ -23,18 +26,10 @@ function readSettingsJson(): Record<string, unknown> {
   }
 }
 
-/** Persist `router.enableReasoning` to settings.json (merge, never clobber). */
-function writeReasoningFlag(value: boolean): void {
-  const settings = readSettingsJson();
-  const router = (settings.router ?? {}) as Record<string, unknown>;
-  router.enableReasoning = value;
-  settings.router = router;
-  writeFileSync(settingsPath(), JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
-}
-
 /** Read-modify-write non-secret `router` fields into the GLOBAL settings.json
- *  (merge, never clobber). `baseUrl` is normalized (trailing slashes stripped). */
-function writeRouterSection(patch: { baseUrl?: string; enableReasoning?: boolean }): void {
+ *  (merge, never clobber). `baseUrl` is normalized (trailing slashes stripped).
+ *  Atomicity (tmp+rename) is part of the contract — exported for tests. */
+export function writeRouterSection(patch: { baseUrl?: string; enableReasoning?: boolean }): void {
   const settings = readSettingsJson();
   const router = (settings.router ?? {}) as Record<string, unknown>;
   if (patch.baseUrl !== undefined) router.baseUrl = normalizeUrl(patch.baseUrl);
@@ -46,7 +41,7 @@ function writeRouterSection(patch: { baseUrl?: string; enableReasoning?: boolean
   renameSync(tmp, settingsPath());
 }
 
-export function registerCommands(pi: ExtensionAPI, _getSettings: () => RouterSettings): void {
+export function registerCommands(pi: ExtensionAPI): void {
   pi.registerCommand("router-reasoning", {
     description: "Enable/disable Pi thinking levels for router models.",
     handler: async (_args, ctx) => {
@@ -56,7 +51,7 @@ export function registerCommands(pi: ExtensionAPI, _getSettings: () => RouterSet
         return;
       }
       const next = !current.enableReasoning;
-      writeReasoningFlag(next);
+      writeRouterSection({ enableReasoning: next });
       // Re-register so refreshModels closure picks up the new flag, then force
       // a provider refresh; the offline phase re-maps persisted models and the
       // network phase re-fetches with the new reasoning flag.
@@ -80,6 +75,16 @@ export function registerCommands(pi: ExtensionAPI, _getSettings: () => RouterSet
 
   pi.registerCommand("router-model", {
     description: "Search and select a router model by name.",
+    getArgumentCompletions: (prefix) => {
+      // Model list is cached by the last invocation (registry is not reachable
+      // synchronously from the completion hook on first use).
+      const ids = lastRouterModelIds ?? [];
+      const q = (prefix || "").trim().toLowerCase();
+      const items = ids
+        .filter((id) => id.toLowerCase().includes(q))
+        .map((id) => ({ value: id, label: id }));
+      return items.length > 0 ? items : null;
+    },
     handler: async (args, ctx) => {
       if (ctx.mode !== "tui") {
         ctx.ui.notify("/router-model requires interactive (TUI) mode.", "error");
@@ -89,6 +94,7 @@ export function registerCommands(pi: ExtensionAPI, _getSettings: () => RouterSet
         .getAll()
         .filter((m) => m.provider === PROVIDER_ID)
         .map((m) => m.id);
+      lastRouterModelIds = ids;
       if (ids.length === 0) {
         ctx.ui.notify("No router models available yet — open /models or /login router to trigger discovery.", "error");
         return;

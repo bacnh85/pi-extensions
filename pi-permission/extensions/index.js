@@ -77,8 +77,12 @@ export function resolveRule(rules, subject, home) {
 
 /**
  * Expand leading ~ or $HOME in a path pattern.
+ * An empty home (ctx.home undefined + HOME unset) returns the pattern
+ * unchanged — expanding would turn `~/x` into `/x` via join.
+ * Exported for unit testing.
  */
-function expandHome(pattern, home) {
+export function expandHome(pattern, home) {
+  if (!home) return pattern;
   if (pattern === "~") return home;
   if (pattern.startsWith("~/")) return join(home, pattern.slice(2));
   if (pattern.startsWith("$HOME/")) return join(home, pattern.slice(6));
@@ -148,11 +152,14 @@ function resolve(p, cwd) {
 
 /**
  * Check whether `path` falls outside `cwd` (the external-directory boundary).
+ * A path exactly equal to cwd (e.g. reading the project root itself) is NOT
+ * external — only strictly-outside paths are.
  */
 function isExternal(path, cwd) {
   if (!path || !cwd) return false;
   const abs = resolve(path, cwd);
-  return !abs.startsWith(resolve(cwd, "") + "/");
+  const root = resolve(cwd, "");
+  return abs !== root && !abs.startsWith(root + "/");
 }
 
 // Tools that take a path and can trigger the external_directory boundary.

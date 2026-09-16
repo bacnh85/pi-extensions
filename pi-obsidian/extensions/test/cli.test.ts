@@ -9,6 +9,7 @@ import {
   buildPrependChunkScript,
   buildFirstScript,
   djb2Utf8,
+  filesMissingProperty,
   readQuotedContent,
   parseCliString,
   parseFlags,
@@ -488,6 +489,11 @@ it("issue #21: write/create/overwrite without content= or content_from= errors i
       expect(vaultNameForCwd(vault, { name: "vault-a", path: vault })).to.equal("vault-a");
       expect(vaultNameForCwd(vault, { name: "vault-b", path: outside })).to.equal(undefined);
       expect(guard({ toolName: "read", input: { path: "Note.md" } }, { cwd: vault })?.block).to.equal(true);
+      // Pin the block-reason text: the run= example must render with visible
+      // escapes (regression guard for the template-literal quoting bug).
+      const cwdBlockReason = guard({ toolName: "read", input: { path: "Note.md" } }, { cwd: vault })?.reason ?? "";
+      expect(cwdBlockReason).to.include('run="read file=\\"My Note\\""');
+      expect(cwdBlockReason).to.include('vault="<name>"');
       expect(guard({ toolName: "write", input: { path: "Note.md" } }, { cwd: vault })?.block).to.equal(true);
       expect(guard({ toolName: "edit", input: { path: "Note.md" } }, { cwd: vault })?.block).to.equal(true);
       expect(guard({ toolName: "ls", input: { path: "." } }, { cwd: vault })?.block).to.equal(true);
@@ -1029,5 +1035,56 @@ it("issue #21: write/create/overwrite without content= or content_from= errors i
     const { parseCliString } = await import("../index.js");
     expect(parseCliString("files folder=validate-tags-archive").includes("validate-tags")).to.equal(false);
     expect(parseCliString("files validate-tags").includes("validate-tags")).to.equal(true);
+  });
+
+  // -- filesMissingProperty dispatch (inject fake exec) --
+
+  it("filesMissingProperty returns missing-file report on success", () => {
+    const okFake = (_args: string[], _fmt?: boolean, _ms?: number) =>
+      ({ stdout: '=> 2 file(s) missing "created":\na.md\nb.md', stderr: "", parsed: "" });
+    const r = filesMissingProperty("created", undefined, 100, okFake);
+    expect(r).to.equal('2 file(s) missing "created":\na.md\nb.md');
+  });
+
+  it("filesMissingProperty returns all-clear message on success", () => {
+    const okFake = (_args: string[], _fmt?: boolean, _ms?: number) =>
+      ({ stdout: '=> All files have "created".', stderr: "", parsed: "" });
+    const r = filesMissingProperty("created", undefined, 100, okFake);
+    expect(r).to.equal('All files have "created".');
+  });
+
+  it("filesMissingProperty throws on rejected eval (Error: echo) instead of returning Done", () => {
+    const errorFake = (_args: string[], _fmt?: boolean, _ms?: number) =>
+      ({ stdout: "Error: vault is locked", stderr: "", parsed: "" });
+    try {
+      filesMissingProperty("created", undefined, 100, errorFake);
+      expect.fail("Should have thrown");
+    } catch (e: any) {
+      expect(e.message).to.include("filesMissingProperty failed");
+      expect(e.message).to.include("Error: vault is locked");
+    }
+  });
+
+  it("filesMissingProperty throws on empty stdout instead of returning Done", () => {
+    const emptyFake = (_args: string[], _fmt?: boolean, _ms?: number) =>
+      ({ stdout: "", stderr: "", parsed: "" });
+    try {
+      filesMissingProperty("created", undefined, 100, emptyFake);
+      expect.fail("Should have thrown");
+    } catch (e: any) {
+      expect(e.message).to.include("filesMissingProperty failed");
+      expect(e.message).to.include("(no output)");
+    }
+  });
+
+  it("filesMissingProperty wraps the eval body via wrapEval (try/catch present in code= arg)", () => {
+    let codeArg = "";
+    const captureFake = (args: string[], _fmt?: boolean, _ms?: number) => {
+      codeArg = (args.find(a => a.startsWith("code=")) || "").slice(5);
+      return { stdout: "=> All files have \"created\".", stderr: "", parsed: "" };
+    };
+    filesMissingProperty("created", undefined, 100, captureFake);
+    expect(codeArg).to.include("catch(e)");
+    expect(codeArg).to.include("Error: ");
   });
 });

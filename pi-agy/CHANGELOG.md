@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.4 (2026-09-12)
+
+### Fixed
+
+- **The install hint was curl/bash on every platform.** `INSTALL_HINT` is now
+  selected per platform (`installHint()`): Windows ENOENT errors point at the
+  `.ps1` one-liner (`irm …/install.ps1 | iex`); everything else keeps the
+  curl installer. All 3 ENOENT error paths use it.
+- `parseJsonResponse` now returns `.response` only when it is a string — a
+  non-string `.response` (schema drift) fell through `??` and silently
+  bypassed the raw-text fallback.
+
+## 0.3.3 (2026-08-30)
+
+### Changed
+
+- Trimmed `agy_execute` model-routing promptGuidelines from 11 lines to 3
+  (default model, cross-review rule, diff-review rule) — duplicated the
+  model-routing table already in the host context. Saves ~120 tokens/turn.
+
 ## 0.3.2 (2026-08-19)
 
 ### Changed

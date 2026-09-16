@@ -15,14 +15,14 @@
     "description": "Google Antigravity CLI (agy) bridge for Pi — delegate bulk scaffolding, refactors, and test generation to a leaner model."
   },
   {
+    "name": "@bacnh85/pi-attachments",
+    "dir": "pi-attachments",
+    "description": "Image and file attachments for Pi — converts pasted/dropped file paths into real image attachments, collapses large text pastes into readable file references, inlines text files, and pastes clipboard file references."
+  },
+  {
     "name": "@bacnh85/pi-budget",
     "dir": "pi-budget",
     "description": "Spend cap enforcement for Pi — halts the agent when session cost exceeds a --budget USD limit. Companion to pi-sub (which renders usage); this one enforces."
-  },
-  {
-    "name": "@bacnh85/pi-chatgpt-web",
-    "dir": "pi-chatgpt-web",
-    "description": "Pi extension that turns a self-hosted ChatGPT-web bridge (OpenAI-compatible, e.g. basketikun/chatgpt2api) into a Pi provider for free web-tier models."
   },
   {
     "name": "@bacnh85/pi-checkpoint",
@@ -35,9 +35,9 @@
     "description": "Pi extension that connects to Command Code's OpenAI-compatible Provider API."
   },
   {
-    "name": "@bacnh85/pi-config-panel",
-    "dir": "pi-config-panel",
-    "description": "Shared interactive config-panel kernel for Pi extensions — arrow-key toggle/edit overlay panels (PanelRow/PanelGroup/PanelAction row model + ConfigPanelModel TUI shell) rendered via ctx.ui.custom."
+    "name": "@bacnh85/pi-cron",
+    "dir": "pi-cron",
+    "description": "Scheduled jobs for Pi — cron-style jobs that fire a prompt into the live session while pi is running, with past-due catch-up and crontab export for 24/7 needs."
   },
   {
     "name": "@bacnh85/pi-evolve",
@@ -48,11 +48,6 @@
     "name": "@bacnh85/pi-fff",
     "dir": "pi-fff",
     "description": "Pi extension: FFF-powered fuzzy file and content search."
-  },
-  {
-    "name": "@bacnh85/pi-hub",
-    "dir": "pi-hub",
-    "description": "Interactive installer for Pi coding agent packages — browse, search, and install pi extensions via npx pi-hub"
   },
   {
     "name": "@bacnh85/pi-init",
@@ -125,6 +120,11 @@
     "description": "Pi extension that routes shell commands through RTK for token savings."
   },
   {
+    "name": "@bacnh85/pi-selfskills",
+    "dir": "pi-selfskills",
+    "description": "Pi extension for skill self-improvement — one skill_manage tool (list/read/patch/create/restore) to patch gaps in loaded skills and create new ones, with a writable-root allowlist, SDK validation, and content-addressed backups."
+  },
+  {
     "name": "@bacnh85/pi-serena",
     "dir": "pi-serena",
     "description": "Pi extension that provides Serena semantic code tools through a persistent worker."
@@ -142,7 +142,7 @@
   {
     "name": "@bacnh85/pi-themes",
     "dir": "pi-themes",
-    "description": "Custom pi themes collection — Ayu-based dark, mirage, and light variants"
+    "description": "Custom pi themes collection — Ayu variants (dark, mirage, light) + Catppuccin Mocha"
   },
   {
     "name": "@bacnh85/pi-ux",
@@ -152,7 +152,7 @@
   {
     "name": "@bacnh85/pi-web",
     "dir": "pi-web",
-    "description": "Pi extension for web search, page extraction, Firecrawl scraping/crawling, and Crawl4AI headless browser crawling."
+    "description": "Pi extension for web search, page extraction, Firecrawl scraping/crawling, Crawl4AI headless browser crawling, Gemini web-tier research, free upstream image generation, and one-off gateway chat."
   },
   {
     "name": "@bacnh85/pi-windows-tools",

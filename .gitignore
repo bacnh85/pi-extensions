@@ -7,3 +7,5 @@ node_modules/
 
 # Serena auto-generated config (local)
 .serena/project.yml
+# Local image-generation validation output (web_image testing)
+images/

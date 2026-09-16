@@ -24,7 +24,7 @@ pi install npm:@bacnh85/pi-ponytail
 
 | Command | What it does |
 |---------|--------------|
-| `/ponytail` | Enable the default mode (full unless changed) |
+| `/ponytail` | Show current and default mode (same as `status`) |
 | `/ponytail lite\|full\|ultra\|off` | Set session intensity |
 | `/ponytail status` | Show current and default mode |
 | `/ponytail default lite\|full\|ultra\|off` | Persist the default across sessions |
@@ -34,7 +34,7 @@ pi install npm:@bacnh85/pi-ponytail
 | `/skill:ponytail-gain` | Show measured-impact scoreboard (benchmark medians) |
 | `/skill:ponytail-help` | Quick reference |
 
-Deactivate: `stop ponytail` or `normal mode`. Resume with `/ponytail`.
+Deactivate: `stop ponytail` or `normal mode`. Resume with `/ponytail <mode>` (e.g. `/ponytail full`).
 
 ---
 
@@ -59,6 +59,14 @@ Resolution order (first wins):
    { "defaultMode": "full" }
    ```
 3. **Built-in** — `full`
+
+---
+
+## Subagents
+
+Subagents spawned through the `subagent` tool (pi-subagent) don't load extensions, so the ruleset wouldn't reach them. When ponytail is active, a `tool_call` hook prepends a compact ponytail block to the tool call's `instructions`, which pi-subagent applies to every child (single, parallel, chain, background). All roles get it — scout, worker, planner, reviewer — but plans, reviews, and reports explicitly requested by the task are delivered in full; the block governs what the subagent builds, not requested output.
+
+Set `PONYTAIL_SUBAGENT_SCOPE=off` to disable subagent injection. Children that load extensions (tool-inheriting agents) self-inject via `before_agent_start`; the marker prevents a second copy.
 
 ---
 

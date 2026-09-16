@@ -8,10 +8,11 @@ import { ModelRuntime, type ModelRegistry } from "@earendil-works/pi-coding-agen
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { discoverAgents, getModelCandidates, invalidateAgentCache } from "../agents.ts";
 import { resolveModel, runWithModelFallback } from "../model.ts";
-import { mapWithConcurrencyLimit, isFailedResult, getResultOutput, getFinalOutput, runSubAgent, startHeartbeat, createWorktree, captureWorktreeDiff, removeWorktree } from "../runner.ts";
+import { mapWithConcurrencyLimit, isFailedResult, getResultOutput, getFinalOutput, runSubAgent, startHeartbeat, createWorktree, captureWorktreeDiff, removeWorktree, applyWorktreePatch3way, formatPatchBlock, defaultExec, type SubAgentResult } from "../runner.ts";
 import { ThreadStore } from "../threads.ts";
 import {
   isRateLimitError,
+  isRetryableModelResult,
   resolveSafeCwd,
   validateAgentTools,
   needsExtensions,
@@ -280,10 +281,49 @@ describe("agent discovery", () => {
     assert.deepEqual(getModelCandidates(planner), ["@smart"]);
     assert.equal(planner.thinking, "high");
     assert.equal(planner.sandbox, "read-only");
+    assert.equal(planner.timeout, 10, "thinking:high agents carry a raised default idle timeout");
     assert.deepEqual(planner.tools, ["read", "grep", "find", "ls"]);
     assert.deepEqual(getModelCandidates(tester), ["@fast"]);
     assert.equal(tester.thinking, "off");
-    assert.deepEqual(tester.tools, ["read", "bash", "grep", "find", "ls"]);
+    assert.equal(tester.timeout, undefined, "agents without a timeout field stay undefined");
+    assert.deepEqual(tester.tools, ["read", "write", "bash", "grep", "find", "ls"]);
+  });
+
+  it("parses the timeout frontmatter field with bounds + diagnostics", () => {
+    const mk = (frontmatter: string) => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "pi-subagent-timeout-"));
+      try {
+        // discoverAgents(scope:"project") reads <root>/.pi/agents — write there.
+        mkdirSync(path.join(root, ".pi", "agents"), { recursive: true });
+        writeFileSync(path.join(root, ".pi", "agents", "t.md"), `---\nname: t\ndescription: d\n${frontmatter}\n---\nbody`);
+        invalidateAgentCache();
+        const discovery = discoverAgents(root, "project", path.resolve(import.meta.dirname, "../../agents"));
+        return { agent: discovery.agents.find((a) => a.name === "t"), diagnostics: discovery.diagnostics };
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+    const valid = mk("timeout: 15");
+    assert.equal(valid.agent?.timeout, 15);
+    const lo = mk("timeout: 0");
+    assert.equal(lo.agent?.timeout, undefined);
+    assert.ok(lo.diagnostics.some((d) => d.issue.includes("timeout")));
+    const hi = mk("timeout: 61");
+    assert.equal(hi.agent?.timeout, undefined);
+    assert.ok(hi.diagnostics.some((d) => d.issue.includes("timeout")));
+    const frac = mk("timeout: 2.5");
+    assert.equal(frac.agent?.timeout, undefined);
+    assert.ok(frac.diagnostics.some((d) => d.issue.includes("timeout")));
+    // Truthy non-numeric scalars must not coerce into a valid timeout.
+    const bool = mk("timeout: true");
+    assert.equal(bool.agent?.timeout, undefined);
+    assert.ok(bool.diagnostics.some((d) => d.issue.includes("timeout")));
+    const arr = mk("timeout:\\n  - 10");
+    assert.equal(arr.agent?.timeout, undefined);
+    assert.ok(arr.diagnostics.some((d) => d.issue.includes("timeout")));
+    // Numeric string is accepted (YAML unquoted numbers may arrive as strings).
+    const str = mk("timeout: \"15\"");
+    assert.equal(str.agent?.timeout, 15);
   });
 });
 
@@ -489,6 +529,228 @@ describe("git worktree isolation", () => {
       assert.equal(diff.ok, false);
       assert.match(diff.error!, /mock git failure/);
       await removeWorktree(repo, wtPath);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("worktree merge 3way + patch delivery (OMP-informed, 0.18.0)", () => {
+  function makeGitRepo(prefix: string): string {
+    const repo = mkdtempSync(path.join(os.tmpdir(), prefix));
+    writeFileSync(path.join(repo, "a.txt"), "line1\n");
+    execFileSync("git", ["init", "--quiet"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "test@test"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: repo });
+    execFileSync("git", ["add", "a.txt"], { cwd: repo });
+    execFileSync("git", ["commit", "--quiet", "-m", "init"], { cwd: repo });
+    return repo;
+  }
+
+  const baseResult = (patch?: string, extra: Partial<SubAgentResult> = {}): SubAgentResult => ({
+    agent: "worker",
+    task: "t",
+    exitCode: 0,
+    status: "success",
+    messages: [],
+    stderr: "",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+    ...(patch !== undefined ? { patch } : {}),
+    ...extra,
+  });
+
+  it("formatPatchBlock delivers the patch to model-facing content (P0)", () => {
+    // No patch -> no block.
+    assert.equal(formatPatchBlock(baseResult()), "");
+    assert.equal(formatPatchBlock(baseResult("(no changes)")), "");
+    // Normal patch: contains the diff text and merge guidance.
+    const block = formatPatchBlock(baseResult("diff --git a/a.txt b/a.txt\n+line2\n"));
+    assert.match(block, /worktree patch \(3 diff lines\)/);
+    assert.match(block, /merge explicitly/);
+    assert.match(block, /\+line2/);
+    // Applied merge: no duplicate diff text, applied note present.
+    const applied = formatPatchBlock(baseResult("diff\n", { mergeStatus: "applied" }));
+    assert.match(applied, /already applied/);
+    assert.doesNotMatch(applied, /diff\n/);
+    // Conflict: keeps the diff + the git apply error.
+    const conflict = formatPatchBlock(baseResult("diff\n", { mergeStatus: "conflict", mergeError: "patch does not apply" }));
+    assert.match(conflict, /CONFLICTED/);
+    assert.match(conflict, /patch does not apply/);
+    assert.match(conflict, /diff/);
+  });
+
+  it("applies the diff via git apply --3way at the repo root before worktree removal", async function () {
+    this.timeout(30_000);
+    const repo = makeGitRepo("pi-subagent-mrg1-");
+    try {
+      const wt = await createWorktree(repo);
+      const wtPath = wt.path!;
+      writeFileSync(path.join(wtPath, "a.txt"), "line1\nline2\n");
+      const diff = await captureWorktreeDiff(repo, wtPath);
+      assert.ok(diff.ok && diff.diff);
+
+      // Wrap the REAL spawn exec so we can assert the apply call while still
+      // actually mutating the parent checkout.
+      const calls: Array<{ cmd: string; args: string[]; cwd: string }> = [];
+      const realExec = (cmd: string, args: string[], opts?: { cwd?: string }) => {
+        calls.push({ cmd, args: [...args], cwd: opts?.cwd ?? "" });
+        return defaultExec(cmd, args, opts);
+      };
+      const applied = await applyWorktreePatch3way(repo, diff.diff, realExec as any);
+      assert.equal(applied.ok, true, applied.stderr);
+      // Applied at the repo root, with a .patch file argument.
+      const apply = calls.find((c) => c.args[0] === "apply");
+      assert.ok(apply, "git apply was invoked");
+      assert.equal(apply.cwd, repo, "apply runs at the repo root");
+      assert.match(apply.args[2], /\.patch$/, "diff passed via temp file");
+      assert.ok(apply.args.includes("--3way"));
+      // Parent checkout actually has the change.
+      assert.equal(readFileSync(path.join(repo, "a.txt"), "utf8"), "line1\nline2\n");
+      await removeWorktree(repo, wtPath);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a conflict instead of failing when the patch cannot apply cleanly", async function () {
+    this.timeout(30_000);
+    const repo = makeGitRepo("pi-subagent-mrg2-");
+    try {
+      // Parent diverges from the patch's base: apply --3way must fail.
+      writeFileSync(path.join(repo, "a.txt"), "changed in parent\n");
+      const bogus = "diff --git a/a.txt b/a.txt\nindex 1111111..2222222 100644\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-line1\n+line1\nline2\n";
+      const applied = await applyWorktreePatch3way(repo, bogus);
+      assert.equal(applied.ok, false, "expected apply failure against diverged parent");
+      assert.ok(applied.stderr.length > 0, "stderr carries the git error");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("restores a CRLF line ending when the diff lacks a trailing newline", async function () {
+    this.timeout(30_000);
+    const repo = makeGitRepo("pi-subagent-mrg5-");
+    try {
+      const wt = await createWorktree(repo);
+      const wtPath = wt.path!;
+      writeFileSync(path.join(wtPath, "a.txt"), "line1\r\nline2\r\n");
+      const diff = await captureWorktreeDiff(repo, wtPath);
+      assert.ok(diff.ok && diff.diff);
+      // captureWorktreeDiff trims the trailing \r\n; the apply helper must
+      // restore CRLF, not downgrade to LF (git treats \r as line content).
+      const applied = await applyWorktreePatch3way(repo, diff.diff!);
+      assert.equal(applied.ok, true, applied.stderr);
+      assert.equal(readFileSync(path.join(repo, "a.txt"), "utf8"), "line1\r\nline2\r\n");
+      await removeWorktree(repo, wtPath);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("serializes concurrent applies through the mutex", async function () {
+    this.timeout(30_000);
+    // Two applies issued together; with the serialized chain the second
+    // cannot start before the first resolves.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const slowExec = async (_cmd: string, args: string[], opts?: { cwd?: string }) => {
+      assert.equal(args[0] === "apply" ? inFlight : 0, args[0] === "apply" ? 0 : 0, "sanity");
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 20));
+      inFlight--;
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    await Promise.all([
+      applyWorktreePatch3way(os.tmpdir(), "dummy-a", slowExec as any),
+      applyWorktreePatch3way(os.tmpdir(), "dummy-b", slowExec as any),
+    ]);
+    assert.equal(maxInFlight, 1, "applies never overlap");
+  });
+
+  it("merge threads through runSubAgent: capture, apply, mergeStatus", async function () {
+    this.timeout(30_000);
+    const repo = makeGitRepo("pi-subagent-mrg3-");
+    try {
+      const wt = await createWorktree(repo);
+      const wtPath = wt.path!;
+      writeFileSync(path.join(wtPath, "a.txt"), "line1\nline2\n");
+      const diff = await captureWorktreeDiff(repo, wtPath);
+      assert.ok(diff.ok && diff.diff);
+      // The post-run sequence runSubAgent performs (the full session loop is
+      // covered by the retry-lifecycle suite).
+      const applied = await applyWorktreePatch3way(repo, diff.diff!);
+      assert.ok(applied.ok, applied.stderr);
+      const result = baseResult(diff.diff, { mergeStatus: "applied" });
+      assert.equal(result.mergeStatus, "applied");
+      assert.match(formatPatchBlock(result), /already applied/);
+      assert.equal(readFileSync(path.join(repo, "a.txt"), "utf8"), "line1\nline2\n");
+      await removeWorktree(repo, wtPath);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("message_update streaming keeps a sub-idle-window run alive (trickle regression)", async function () {
+    this.timeout(30_000);
+    // Trickled stream: ~35 deltas spaced ~25ms apart spanning ~900ms total
+    // with timeoutMs=300 — the run survives only if message_update deltas
+    // reset the idle timer (per-gap idle 25ms << 300ms, but total span
+    // 900ms >> 300ms). Fails if armIdle() is removed from the subscriber.
+    const { fauxProvider, fauxAssistantMessage } = await import("../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/faux.js");
+    const faux = fauxProvider({ api: "pi-subagent-keepalive-test", provider: "pi-subagent-keepalive-test", tokensPerSecond: 60, tokenSize: { min: 1, max: 2 } });
+    const model = faux.getModel();
+    const modelRuntime = await ModelRuntime.create({ modelsPath: null, credentials: new InMemoryCredentialStore() });
+    modelRuntime.registerNativeProvider(faux.provider);
+    faux.setResponses([
+      fauxAssistantMessage("word ".repeat(50).trim(), { stopReason: "stop" }),
+    ]);
+    const result = await runSubAgent({
+      cwd: process.cwd(),
+      systemPrompt: "Test assistant",
+      task: "Respond",
+      tools: [],
+      model,
+      modelRuntime,
+      agentName: "keepalive",
+      timeoutMs: 300,
+    });
+    assert.equal(result.status, "success", `status=${result.status} err=${result.errorMessage ?? "none"}`);
+  });
+
+  it("auto-merge is skipped when a real runSubAgent child ends non-success (regression)", async function () {
+    this.timeout(30_000);
+    const repo = makeGitRepo("pi-subagent-mrg4-");
+    try {
+      // Real faux-model child: a genuine write tool call edits a.txt in the
+      // worktree, then the run ends abnormally (stopReason toolUse with no
+      // follow-up call -> classified "error"). The gate must NOT auto-apply
+      // that child's changes; the patch is still delivered for review.
+      const { fauxProvider, fauxToolCall, fauxAssistantMessage } = await import("../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/faux.js");
+      const faux = fauxProvider({ api: "pi-subagent-merge-abort-test", provider: "pi-subagent-merge-abort-test" });
+      const model = faux.getModel();
+      const modelRuntime = await ModelRuntime.create({ modelsPath: null, credentials: new InMemoryCredentialStore() });
+      modelRuntime.registerNativeProvider(faux.provider);
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("write", { path: "a.txt", content: "line1\nline2\n" })], { stopReason: "toolUse" }),
+        fauxAssistantMessage("partially done", { stopReason: "toolUse" }),
+      ]);
+      const result = await runSubAgent({
+        cwd: repo,
+        sandbox: "worktree",
+        merge: "3way",
+        systemPrompt: "Test assistant",
+        task: "edit a.txt",
+        tools: ["write"],
+        model,
+        modelRuntime,
+        agentName: "wt-abort",
+      });
+      assert.equal(result.status, "error");
+      assert.ok(result.patch && result.patch.includes("+line2"), `child's partial edit captured as patch (status=${result.status}, err=${result.errorMessage ?? "none"}, patch=${result.patch?.slice(0, 60) ?? "none"})`);
+      assert.equal(result.mergeStatus, undefined, "auto-merge skipped for non-success child");
+      assert.equal(readFileSync(path.join(repo, "a.txt"), "utf8"), "line1\n", "parent checkout untouched");
+      assert.match(formatPatchBlock(result), /merge explicitly/);
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
@@ -1243,6 +1505,58 @@ describe("runWithModelFallback", () => {
     assert.deepEqual(seen, ["p/x", "p/y"]);
   });
 
+  it("advances to the next candidate on an IDLE timeout (stalled stream)", async () => {
+    // Stalled provider = zero stream events for the whole idle window. The
+    // runOne isRateLimited predicate treats an idle (non-hard) timeout as a
+    // capacity signal so candidate #2 gets the task. Mirror that predicate
+    // here the way the wiring does (result.stopReason==="timeout" &&
+    // status==="timeout" && no "Hard timeout" in the error).
+    const registry = makeRegistry(["p/x", "p/y"]);
+    const seen: string[] = [];
+    await runWithModelFallback({
+      candidates: ["p/x", "p/y"],
+      parentModel: undefined,
+      modelRegistry: registry,
+      thinkingByCandidate: new Map(),
+      defaultThinking: undefined,
+      runAttempt: async (model) => {
+        seen.push(`${model.provider}/${model.id}`);
+        if (model.id === "x") {
+          return { ok: false, status: "timeout", stopReason: "timeout", errorMessage: "Idle timeout after 180000ms" } as any;
+        }
+        return { ok: true } as any;
+      },
+      isRateLimited: (r: any) => isRetryableModelResult(r),
+      onExhausted: () => { throw new Error("not exhausted"); },
+    });
+    assert.deepEqual(seen, ["p/x", "p/y"]);
+  });
+
+  it("does NOT advance on a HARD timeout (task is genuinely huge)", async () => {
+    const registry = makeRegistry(["p/x", "p/y"]);
+    const seen: string[] = [];
+    const result = await runWithModelFallback({
+      candidates: ["p/x", "p/y"],
+      parentModel: undefined,
+      modelRegistry: registry,
+      thinkingByCandidate: new Map(),
+      defaultThinking: undefined,
+      runAttempt: async (model) => {
+        seen.push(`${model.provider}/${model.id}`);
+        if (model.id === "x") {
+          return { ok: false, status: "timeout", stopReason: "timeout", errorMessage: "Hard timeout after 1200000ms" } as any;
+        }
+        return { ok: true } as any;
+      },
+      isRateLimited: (r: any) => isRetryableModelResult(r),
+      onExhausted: () => { throw new Error("not exhausted"); },
+    });
+    // Non-retryable failure returns as-is after one attempt — no fallback.
+    assert.deepEqual(seen, ["p/x"]);
+    assert.equal((result as any).ok, false);
+    assert.equal((result as any).stopReason, "timeout");
+  });
+
   it("calls onExhausted when no candidate resolves", async () => {
     const registry = makeRegistry(["other/only"]);
     let exhausted = false;
@@ -1417,6 +1731,8 @@ describe("isRateLimitError", () => {
   it("matches capacity exceeded", () => assert.ok(isRateLimitError("capacity exceeded")));
   it("matches usage limit", () => assert.ok(isRateLimitError("usage limit reached")));
   it("matches overloaded", () => assert.ok(isRateLimitError("model is overloaded")));
+  it("matches credential cooldown (router error triggers fallback)", () => assert.ok(isRateLimitError("All credentials for model glm-5-turbo are cooling down")));
+  it("matches credential cooldown variant", () => assert.ok(isRateLimitError("credential cooldown window active")));
   it("rejects generic errors", () => assert.ok(!isRateLimitError("Internal server error")));
   it("rejects empty", () => assert.ok(!isRateLimitError("")));
   it("rejects 503 alone", () => assert.ok(!isRateLimitError("503 Service Unavailable")));

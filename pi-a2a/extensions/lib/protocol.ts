@@ -282,11 +282,31 @@ export function unwrapSendMessageResponse(result: any): any {
   return result;
 }
 
+/** Wrap a Task as the v1.0 SendMessageResponse oneof {"task": …}. */
+export const sendTaskResponse = (task: any): any => ({ task });
+
 // StreamResponse builders (v1.0).
-export const streamTask = (task: any): any => ({ task });
 export const streamMessage = (message: any): any => ({ message });
-export const streamStatusUpdate = (task: any): any => ({ statusUpdate: task });
-export const streamArtifactUpdate = (artifact: any): any => ({ artifactUpdate: artifact });
+
+/** v1.0 TaskStatusUpdateEvent — {taskId, contextId, status, final}. */
+export const statusUpdateEvent = (task: any, final: boolean): any => ({
+  statusUpdate: {
+    taskId: task?.id,
+    contextId: task?.contextId,
+    status: task?.status,
+    final,
+  },
+});
+
+/** v1.0 TaskArtifactUpdateEvent — {taskId, contextId, artifact, lastChunk}. */
+export const artifactUpdateEvent = (task: any, artifact: any, lastChunk = true): any => ({
+  artifactUpdate: {
+    taskId: task?.id,
+    contextId: task?.contextId,
+    artifact,
+    lastChunk,
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Parts (v1.0 member-presence discriminated; v0.3 `kind` tolerant)

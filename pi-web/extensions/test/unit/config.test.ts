@@ -3,6 +3,7 @@
  */
 
 import { expect } from "chai";
+import { createRequire } from "node:module";
 import {
   stripInlineComment,
   parseDotenvValue,
@@ -275,9 +276,27 @@ describe("normalizeCrawl4aiApiUrl", () => {
 
 describe("loadCrawl4aiConfig", () => {
   it("returns default config from defaults", () => {
-    const config = loadCrawl4aiConfig({}, "/tmp", false);
-    expect(config.baseUrl).to.equal(DEFAULT_CRAWL4AI_API_URL);
-    expect(config.timeoutMs).to.equal(60000);
+    // Hermetic: findEnvValue reads process.env AND piConfigDirs() (~/.pi/agent/.env)
+    // even with includeCwd=false, so point PI_CODING_AGENT_DIR at an empty dir
+    // and clear the ambient var — the default-assertion must not inherit either.
+    const _require = createRequire(import.meta.url);
+    const { mkdtempSync } = _require("node:fs");
+    const { tmpdir } = _require("node:os");
+    const { join } = _require("node:path");
+    const emptyDir = mkdtempSync(join(tmpdir(), "pi-web-cfg-"));
+    const savedDir = process.env.PI_CODING_AGENT_DIR;
+    const savedUrl = process.env.CRAWL4AI_API_URL;
+    delete process.env.CRAWL4AI_API_URL;
+    process.env.PI_CODING_AGENT_DIR = emptyDir;
+    try {
+      const config = loadCrawl4aiConfig({}, "/tmp", false);
+      expect(config.baseUrl).to.equal(DEFAULT_CRAWL4AI_API_URL);
+      expect(config.timeoutMs).to.equal(60000);
+    } finally {
+      if (savedDir !== undefined) process.env.PI_CODING_AGENT_DIR = savedDir;
+      else delete process.env.PI_CODING_AGENT_DIR;
+      if (savedUrl !== undefined) process.env.CRAWL4AI_API_URL = savedUrl;
+    }
   });
 
   it("accepts explicit API URL from params", () => {

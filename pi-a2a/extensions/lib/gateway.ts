@@ -55,6 +55,34 @@ export interface GatewayConfig {
 
 const DEREG_TIMEOUT_MS = 1500; // best-effort DELETE; stale entries decay via gateway health probing
 
+const MAX_BACKOFF_MS = 300_000; // heartbeat backoff cap: a healed gateway is re-registered within ≤5 min
+
+/** Numeric `Retry-After` seconds from a response header (null when absent/non-numeric). */
+function retryAfterSeconds(v: string | null): number | null {
+  if (!v) return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Heartbeat backoff for failed registers: baseMs · 2^(fails−1), capped at
+ *  5 min, ±20% jitter; a numeric Retry-After header wins when larger but is
+ *  capped at MAX_BACKOFF_MS too — a buggy or hostile gateway value must not
+ *  suppress re-registration indefinitely. The gateway rate-limits /register
+ *  per client IP with a fixed window that counts rejected requests, so
+ *  fixed-cadence retries keep that budget saturated (livelock) — backing off
+ *  lets it drain. Pure; exported for tests. */
+export function backoffDelayMs(
+  fails: number,
+  baseMs: number,
+  retryAfterSec?: number | null,
+): number {
+  const exp = Math.max(0, fails - 1);
+  let delay = Math.min(MAX_BACKOFF_MS, baseMs * 2 ** exp) * (0.8 + Math.random() * 0.4);
+  const retryMs = Math.min(MAX_BACKOFF_MS, (retryAfterSec ?? 0) * 1000);
+  if (retryMs > delay) delay = retryMs;
+  return Math.round(delay);
+}
+
 // ---------------------------------------------------------------------------
 // Peer directory merge (pure — no I/O, no global state)
 // ---------------------------------------------------------------------------
@@ -238,6 +266,9 @@ export class GatewayUpstream {
 
   /** Admission state of the last registration ("pending" | "accepted" | …). */
   lastState = "";
+  /** True once a register() has succeeded this upstream instance — gates the
+   *  onRegistered transition callback. */
+  private wasRegistered = false;
 
   /** Per-peer caller token issued by the gateway at registration. Used as the
    *  caller identity for outbound `/peer/*` calls so the gateway's dashboard
@@ -266,6 +297,10 @@ export class GatewayUpstream {
     /** Host-TUI status line (transcript) for lifecycle events like the
      *  reverse channel opening — surfaced like the registration message. */
     private readonly onStatus: ((msg: string) => void) | undefined = undefined,
+    /** Fires on the transition to registered (name + admission state), so
+     *  the host can publish the gateway-issued identity even when the first
+     *  register failed at session start and a later beat self-healed. */
+    private readonly onRegistered?: (name: string, state: string) => void,
   ) {
     this.legacyStateFile = cfg.piDir
       ? join(cfg.piDir, "a2a_gateways", `${this.key.replace(/[^A-Za-z0-9._-]/g, "_")}.json`)
@@ -322,9 +357,9 @@ export class GatewayUpstream {
     path: string,
     token: string,
     body: unknown,
-  ): Promise<Response | null> {
+  ): Promise<{ res: Response | null; err: string | null }> {
     try {
-      return await fetch(this.url(path), {
+      const res = await fetch(this.url(path), {
         method,
         headers: {
           authorization: `Bearer ${token}`,
@@ -333,27 +368,85 @@ export class GatewayUpstream {
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(10_000),
       });
-    } catch {
-      return null; // gateway down / network error — heartbeat will retry
+      return { res, err: null };
+    } catch (e) {
+      const cause = (e as { cause?: { code?: string } }).cause;
+      // Errno code when present (EHOSTUNREACH, ECONNREFUSED, …), else the
+      // cause message ('bad port') or the abort name (TimeoutError).
+      const err =
+        cause?.code ?? ((cause instanceof Error && cause.message) || (e as Error).name);
+      return { res: null, err }; // gateway down / network error — heartbeat will retry
     }
+  }
+
+  /** Register-failure label: HTTP status, or network error with its cause.
+   *  Per-call (not instance state) so overlapping beats can't mislabel. */
+  private failLabel(res: Response | null, err: string | null): string {
+    return res ? String(res.status) : `network error${err ? ` (${err})` : ""}`;
+  }
+
+  /** Failure-log dedup (mirrors refreshPeers' lastDirStatus): with the
+   *  heartbeat now armed from start, a permanent failure (revoked token,
+   *  bad URL) would repeat every beat — log on change only; reset on
+   *  success so a recovered-then-broken gateway re-logs immediately. */
+  private lastFailLabel: string | null = null;
+  /** Consecutive failed registers + the wall-clock instant the next beat is
+   *  allowed at (0 = now). The heartbeat timer skips while backed off. */
+  private beatFails = 0;
+  private backoffUntil = 0;
+
+  /** Failure handling shared by every register() exit: schedule exponential
+   *  backoff for the heartbeat, then log (deduped on the failure label, so
+   *  the growing delay doesn't defeat the dedup — it's shown on first emit). */
+  private noteFailure(label: string, res: Response | null): void {
+    const baseMs = Math.max(15, this.cfg.heartbeatSec ?? 60) * 1000;
+    const delay = backoffDelayMs(
+      this.beatFails + 1,
+      baseMs,
+      retryAfterSeconds(res?.headers.get("retry-after") ?? null),
+    );
+    this.beatFails += 1;
+    this.backoffUntil = Date.now() + delay;
+    this.logFailure(label, ` — backing off ${Math.round(delay / 1000)}s`);
+  }
+
+  private logFailure(label: string, suffix = ""): void {
+    if (label === this.lastFailLabel) return;
+    this.lastFailLabel = label;
+    // darwin only: on Linux EHOSTUNREACH is genuine routing, but on macOS it
+    // usually means Local Network privacy is blocking this binary (Apple-signed
+    // curl works, masking the cause). The dedup above makes the hint appear
+    // once per cause-change, not per heartbeat beat.
+    const hint =
+      process.platform === "darwin" && label.includes("EHOSTUNREACH")
+        ? " — likely macOS Local Network privacy blocking this binary. Fix: System Settings → Privacy & Security → Local Network → allow the hosting app (Terminal/herdr). Apple-signed curl works, masking the cause"
+        : "";
+    this.log(`[a2a-gateway:${this.label}] register failed: ${label}${suffix}${hint}`);
   }
 
   /** POST /register with our current card. Idempotent: gateway updates in place.
    *  After each (re-)registration, refresh the peer-directory overlay. */
   async register(url: string): Promise<boolean> {
     const at = this.epoch;
-    const body: Record<string, unknown> = { name: this.name, url, card: this.buildCard() };
+    // The card must carry the name ACTUALLY registered: after a 409 self-heal
+    // rename, this.name differs from the card factory's own sessionName()
+    // (which still computes the pre-rename name) — directory entry and card
+    // identity would disagree.
+    const card = this.buildCard();
+    if (card && typeof card === "object") (card as Record<string, unknown>).name = this.name;
+    const body: Record<string, unknown> = { name: this.name, url, card };
     if (this.cfg.upstreamToken) body.upstream_token = this.cfg.upstreamToken;
     // Steady-state heartbeats PATCH with the per-peer caller_token (full card
     // refresh; url re-send covers IP changes). POST is the mint path and the
     // fallback when PATCH can't work (405 old gateway, 401 stale token,
     // 404 deleted entry).
     let res: Response | null = null;
+    let err: string | null = null;
     if (this.callerToken && this.patchSupported) {
-      res = await this.send("PATCH", "/register", this.callerToken, body);
+      ({ res, err } = await this.send("PATCH", "/register", this.callerToken, body));
       if (at !== this.epoch) return false; // stop() raced us — registration is dead
       if (!res) {
-        this.log(`[a2a-gateway:${this.label}] register failed: network error`);
+        this.noteFailure(this.failLabel(res, err), res);
         return false;
       }
       if (res.status === 405) {
@@ -369,12 +462,12 @@ export class GatewayUpstream {
         } else {
           // 403 (revoked peer) / 409 etc.: a shared-token POST is not a valid
           // rescue for this admission state — fail the beat.
-          this.log(`[a2a-gateway:${this.label}] register failed: ${res.status}`);
+          this.noteFailure(String(res.status), res);
           return false;
         }
       }
     }
-    if (!res) res = await this.send("POST", "/register", this.cfg.token, body);
+    if (!res) ({ res, err } = await this.send("POST", "/register", this.cfg.token, body));
     if (at !== this.epoch) return false; // stop() raced us — registration is dead
     if (!res?.ok) {
       // Initial mint POST hit a 409: the port-derived name is already held by a
@@ -396,9 +489,12 @@ export class GatewayUpstream {
         }
         return this.register(url);
       }
-      this.log(`[a2a-gateway:${this.label}] register failed: ${res ? res.status : "network error"}`);
+      this.noteFailure(this.failLabel(res, err), res);
       return false;
     }
+    this.lastFailLabel = null; // recovered — a later failure re-logs immediately
+    this.beatFails = 0;
+    this.backoffUntil = 0;
     try {
       const j = (await res.clone?.().json?.().catch?.(() => null)) ?? (await res.json().catch(() => null));
       this.lastState = String(j?.state ?? "");
@@ -414,6 +510,13 @@ export class GatewayUpstream {
     if (at !== this.epoch || this.stopped) return false;
     this.lastUrl = url;
     this.stopped = false;
+    // Transition to registered — fires on the first success, including a
+    // late beat after start() returned false (gateway was down at session
+    // start). The host uses it to publish the registered name + status.
+    if (!this.wasRegistered) {
+      this.wasRegistered = true;
+      this.onRegistered?.(this.name, this.lastState);
+    }
     await this.refreshPeers(at);
     return true;
   }
@@ -460,33 +563,62 @@ export class GatewayUpstream {
 
   /** Register + start the heartbeat loop. Each beat re-registers and
    *  refreshes the peer overlay. A failed fresh start clears any stale
-   *  overlay from a previous upstream instance. */
+   *  overlay from a previous upstream instance — and the heartbeat keeps
+   *  running, so the gateway self-heals (e.g. the macOS Local Network
+   *  permission granted mid-session) without a restart. */
   async start(url: string): Promise<boolean> {
     this.onPeers({});
+    this.wasRegistered = false;
+    this.beatFails = 0;
+    this.backoffUntil = 0;
     const ok = await this.register(url);
-    if (!ok) return false;
-    // Reverse channel (default on): firewalled peers still receive proxied
-    // requests — everything rides connections WE initiated.
-    if (this.cfg.channel !== false) {
-      this.channel = new ChannelClient(
-        // Channel open is a management action (switchboard issue #3): once a
-        // per-peer caller_token exists it is the ONLY accepted credential —
-        // the shared token 403s. register() above has already minted/loaded it.
-        { ...this.cfg, token: this.callerToken ?? this.cfg.token, localToken: this.cfg.localToken ?? this.cfg.upstreamToken },
-        this.cfg.localBase ?? url,
-        this.log,
-        this.epochRef,
-        this.onStatus,
-      );
-      void this.channel.start();
+    if (ok) this.openChannel(url);
+    if (!this.timer) {
+      const intervalMs = Math.max(15, this.cfg.heartbeatSec ?? 60) * 1000;
+      this.timer = setInterval(() => {
+        void this.maybeBeat(url);
+      }, intervalMs);
+      this.timer.unref?.();
     }
-    const intervalMs = Math.max(15, this.cfg.heartbeatSec ?? 60) * 1000;
-    this.timer = setInterval(() => {
-      if (this.stopped) return;
-      void this.register(url);
-    }, intervalMs);
-    this.timer.unref?.();
-    return true;
+    return ok;
+  }
+
+  /** One heartbeat beat — the timer's unit of work. Never throws (a beat
+   *  error must not surface as an unhandled rejection); opens the reverse
+   *  channel on the first successful register after a failed start. Skipped
+   *  entirely while stopped or backed off. */
+  private async maybeBeat(url: string): Promise<void> {
+    if (this.stopped || Date.now() < this.backoffUntil) return;
+    await this.beat(url);
+  }
+
+  private async beat(url: string): Promise<void> {
+    let ok = false;
+    try {
+      ok = await this.register(url);
+    } catch (e) {
+      this.log(`[a2a-gateway:${this.label}] heartbeat error: ${e instanceof Error ? e.message : e}`);
+      return;
+    }
+    if (ok) this.openChannel(url);
+  }
+
+  /** Reverse channel (default on): firewalled peers still receive proxied
+   *  requests — everything rides connections WE initiated. Idempotent —
+   *  beats re-call it after a failed start. */
+  private openChannel(url: string): void {
+    if (this.cfg.channel === false || this.channel) return;
+    this.channel = new ChannelClient(
+      // Channel open is a management action (switchboard issue #3): once a
+      // per-peer caller_token exists it is the ONLY accepted credential —
+      // the shared token 403s. register() above has already minted/loaded it.
+      { ...this.cfg, token: this.callerToken ?? this.cfg.token, localToken: this.cfg.localToken ?? this.cfg.upstreamToken },
+      this.cfg.localBase ?? url,
+      this.log,
+      this.epochRef,
+      this.onStatus,
+    );
+    void this.channel.start();
   }
 
   /** DELETE /register?name=... Best-effort; no throw. Clears the overlay. */

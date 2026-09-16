@@ -7,6 +7,7 @@ import {
   suggestBestSerenaCommand,
   extractSymbolFromGrep,
   categorizeToolError,
+  closestToolHint,
   detectReasoningRejection,
   checkDangerousCommand,
 } from "../../lib/shell-helpers.ts";
@@ -86,6 +87,14 @@ describe("semantic miss detection", () => {
 describe("dedicated tool miss detection", () => {
   const active = ["bash", "ls", "find", "grep", "read", "write"];
 
+  it("prefers fff search tools when they are active", () => {
+    const fffActive = [...active, "ffgrep", "fffind"];
+    assert.equal(dedicatedToolForShellCommand("find src -name '*.ts'", fffActive), "fffind");
+    assert.equal(dedicatedToolForShellCommand("grep -R PI_MODEL_TOOLS README.md", fffActive), "ffgrep");
+    // plain builtins still chosen when fff tools are absent
+    assert.equal(dedicatedToolForShellCommand("find src -name '*.ts'", active), "find");
+    assert.equal(dedicatedToolForShellCommand("grep -R PI_MODEL_TOOLS README.md", active), "grep");
+  });
   it("maps simple shell substitutions to dedicated Pi tools", () => {
     assert.equal(dedicatedToolForShellCommand("ls extensions", active), "ls");
     assert.equal(dedicatedToolForShellCommand("find src -name '*.ts'", active), "find");
@@ -217,6 +226,45 @@ describe("categorizeToolError", () => {
   it("classifies unknown errors", () => {
     const info = categorizeToolError("read", "something weird happened");
     assert.equal(info.category, "unknown");
+  });
+
+  it("suggests closest active tool on tool_not_found", () => {
+    const info = categorizeToolError("ffind", { content: [{ type: "text", text: "Tool ffind not found" }] }, ["read", "grep", "ffgrep", "find", "edit"]);
+    assert.equal(info.category, "tool_not_found");
+    assert.match(info.hint, /not active/);
+    assert.match(info.hint, /find|ffgrep/);
+  });
+
+  it("falls back to generic hint when no active tool is close", () => {
+    const info = categorizeToolError("ffind", { content: [{ type: "text", text: "Tool ffind not found" }] }, ["web_search", "munin_store"]);
+    assert.equal(info.category, "tool_not_found");
+    assert.doesNotMatch(info.hint, /not active/);
+  });
+
+  it("extracts missing tool from 'No such tool: X' error format", () => {
+    const info = categorizeToolError("bash", { content: [{ type: "text", text: "No such tool: edit_file" }] }, ["edit", "read", "write"]);
+    assert.equal(info.category, "tool_not_found");
+    assert.match(info.hint, /edit/);
+  });
+
+  it("classifies 'Tool read_file not found' as tool_not_found, not path_not_found", () => {
+    // Branch-order regression: 'file not found' inside the tool name must not
+    // shadow the tool_not_found gate (most common hallucinated names).
+    const info = categorizeToolError("read_file", { content: [{ type: "text", text: "Tool read_file not found" }] }, ["read", "edit", "bash"]);
+    assert.equal(info.category, "tool_not_found");
+    assert.match(info.hint, /Closest available: read/);
+  });
+
+  it("handles single-quoted tool names", () => {
+    const info = categorizeToolError("bash", { content: [{ type: "text", text: "Tool 'ffind' not found" }] }, ["read", "grep", "find"]);
+    assert.equal(info.category, "tool_not_found");
+    assert.match(info.hint, /not active/);
+  });
+
+  it("closestToolHint ignores trivially short names", () => {
+    assert.equal(closestToolHint("e", ["edit", "read", "bash"]), undefined);
+    assert.equal(closestToolHint("ed", ["edit", "read", "bash"]), undefined);
+    assert.match(closestToolHint("read_file", ["read", "edit"]) ?? "", /read/);
   });
 });
 

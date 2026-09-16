@@ -190,18 +190,35 @@ function assembleHunks(raw: Hunk[]): AssembledHunk[] {
   const out: AssembledHunk[] = [];
   let cur: AssembledHunk = { context: [], removed: [], added: [] };
   let started = false;
+  // Once any payload hunk has been committed in this section, unstarted
+  // accumulated context is the previous hunk's TRAILING context; before that,
+  // it is leading context that no payload has claimed yet.
+  let sawPayload = false;
   const flush = () => {
     if (started) out.push(cur);
     cur = { context: [], removed: [], added: [] };
     started = false;
   };
   for (const h of raw) {
+    // A bare `@@` (empty raw hunk) starts a new hunk. Without this, consecutive
+    // context-free hunks (`@@ / -A +A' / @@ / -B +B'`) fuse into one hunk whose
+    // match block spans non-adjacent file lines → "Hunk context not found".
+    // Commit a pending payload hunk; drop the previous hunk's trailing context
+    // so it cannot glue onto the next hunk's — but keep leading context that no
+    // payload has claimed yet (e.g. `@@ anchor` / `@@` / payload), which was
+    // matchable before 0.8.1 and stays matchable.
+    if (!h.context.length && !h.removed.length && !h.added.length) {
+      if (started) flush();
+      else if (sawPayload) cur = { context: [], removed: [], added: [] };
+      continue;
+    }
     if (h.context.length) {
       if (started && (cur.removed.length || cur.added.length)) flush();
       cur.context.push(...h.context);
     }
     if (h.removed.length || h.added.length) {
       started = true;
+      sawPayload = true;
       cur.removed.push(...h.removed);
       cur.added.push(...h.added);
     }
@@ -376,8 +393,23 @@ export async function applyPatchToFiles(parsed: ParsedPatch, cwd: string): Promi
             // insert before it so we don't add a spurious blank line.
             firstIndex = work.length > 0 && work[work.length - 1] === "" ? work.length - 1 : work.length;
           } else {
-            const sought = seekSequence(work, matchBlock);
-            hExact = sought.exact;
+            let sought = seekSequence(work, matchBlock);
+            if (sought.count === 0 && h.context.length > 0 && h.removed.length > 0) {
+              // Models trained on git diffs use `@@ text` as a section LABEL —
+              // often a paraphrase, not a verbatim file line — so the block
+              // fails on the anchor even when the removed payload matches
+              // uniquely. Demote the anchor to a hint: drop context and trust
+              // the removed lines alone, but only when they match exactly once
+              // (keeps the unique-match safety guarantee).
+              const payloadOnly = seekSequence(work, h.removed);
+              if (payloadOnly.count === 1) {
+                sought = payloadOnly;
+                matchBlock = h.removed;
+                hExact = false;
+                exact = false;
+              }
+            }
+            hExact = hExact && sought.exact;
             if (!hExact) exact = false;
             const anchor = matchBlock.join("\n");
             if (sought.count === 0) {
@@ -393,7 +425,19 @@ export async function applyPatchToFiles(parsed: ParsedPatch, cwd: string): Promi
           newHunks.push({ start: removedStart, removedLen: h.removed.length, added: h.added });
         }
 
-        for (const h of [...newHunks].sort((a, b) => b.start - a.start)) {
+        // Guard against overlapping hunks (e.g. two hunks whose labels both
+        // failed and whose payloads demoted to the same span): reverse-order
+        // application would silently discard one hunk's added lines. Sorted
+        // desc, so an overlap means the earlier hunk's span reaches into the
+        // later one's start. Pure insertions (removedLen 0) at the same point
+        // are fine — both land, order among them is deterministic enough.
+        const ordered = [...newHunks].sort((a, b) => b.start - a.start);
+        for (let k = 1; k < ordered.length; k++) {
+          if (ordered[k].start + ordered[k].removedLen > ordered[k - 1].start) {
+            throw new Error(`Hunks overlap in ${op.path} (two hunks matched the same lines). Use distinct context per hunk, or split into separate apply_patch calls.`);
+          }
+        }
+        for (const h of ordered) {
           work = [...work.slice(0, h.start), ...h.added, ...work.slice(h.start + h.removedLen)];
         }
 

@@ -2,6 +2,8 @@
 
 A maintained Pi package based on upstream [`@ff-labs/pi-fff`](https://github.com/dmtrKovalenko/fff/tree/main/packages/pi-fff). It adds FFF-powered search tools by default and can optionally replace Pi's built-in `find` and `grep` tools with [FFF](https://github.com/dmtrKovalenko/fff.nvim), a Rust-native SIMD-accelerated file finder.
 
+Requires Node.js ≥ 22 (uses `path.matchesGlob`).
+
 ## What it does
 
 | Built-in tool | pi-fff replacement | Improvement |
@@ -77,6 +79,7 @@ Parameters:
 - `context` — context lines around matches
 - `limit` — global max matches per page (default: 20)
 - `outputMode` — `"content"`, `"files_with_matches"`, or `"count"` (default: `"content"`)
+- `caseSensitive` — `true` for exact case (smart-case by default)
 - `cursor` — pagination cursor from previous result
 
 ### `related_files`

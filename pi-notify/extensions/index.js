@@ -18,8 +18,8 @@
  */
 
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { accessSync, constants, readFileSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import os from "node:os";
 
 const DEFAULTS = {
@@ -62,10 +62,38 @@ export function resolveConfig(user) {
   return { ...DEFAULTS, ...(user && typeof user === "object" ? user : {}) };
 }
 
-function detectBackend() {
-  if (process.platform === "darwin") return "darwin";
-  if (process.platform === "win32" || process.env.WT_SESSION) return "windows";
-  return "linux";
+// Does an executable `name` exist on PATH? Zero-dep best-effort probe.
+function hasBinary(name) {
+  for (const dir of (process.env.PATH || "").split(delimiter)) {
+    if (!dir) continue;
+    try {
+      accessSync(join(dir, name), constants.X_OK);
+      return true;
+    } catch { /* keep scanning */ }
+  }
+  return false;
+}
+
+// Memoized: PATH probing on every notification would be wasteful.
+let backendCache;
+
+/** Pick the backend: platform desktop path when its binary exists, else the
+ *  terminal/OSC path. Exported (with cache reset) for testing. */
+export function detectBackend() {
+  if (backendCache) return backendCache;
+  if (process.platform === "darwin") {
+    backendCache = hasBinary("osascript") ? "darwin" : "terminal";
+  } else if (process.platform === "win32" || process.env.WT_SESSION) {
+    backendCache = hasBinary("powershell.exe") ? "windows" : "terminal";
+  } else {
+    backendCache = hasBinary("notify-send") ? "linux" : "terminal";
+  }
+  return backendCache;
+}
+
+/** Test seam: clear the memoized backend (PATH manipulation tests). */
+export function _resetBackendCacheForTest() {
+  backendCache = undefined;
 }
 
 /** Run a command, swallowing all errors (best-effort notification). */
@@ -106,7 +134,7 @@ export function notify(title, body, backend = detectBackend()) {
     case "linux":
       run("notify-send", [title, body]);
       return;
-    default:
+    case "terminal":
       if (process.env.KITTY_WINDOW_ID) notifyOSC99(title, body);
       else notifyOSC777(title, body);
   }
@@ -136,7 +164,7 @@ export function playSound(volume, backend = detectBackend()) {
     case "linux":
       run("paplay", ["--volume=" + Math.round(v * 65536), "/usr/share/sounds/freedesktop/stereo/complete.oga"].filter(Boolean));
       return;
-    default:
+    case "terminal":
       // bell
       try { process.stdout.write("\x07"); } catch { /* best-effort */ }
   }
@@ -210,9 +238,12 @@ export default function notifyExtension(pi, opts = {}) {
     }
   });
 
-  // Question: the agent asked the user something (custom ask_question tool or
-  // ctx.ui). We detect via a custom entry the ask tool may emit; otherwise the
-  // settle notification covers the waiting state. Hook session info changes as
-  // a proxy — kept minimal to avoid false positives.
-  pi.on("session_info_changed", () => { /* reserved for future question hook */ });
+  // Question: Pi is waiting on a blocking user-facing UI prompt (e.g.
+  // ask_user_question). The SDK fires ui_prompt_start for every kind
+  // (select/confirm/input/editor/custom) — that IS "the agent asked me
+  // something". Gated by cfg.onQuestion in fire().
+  pi.on("ui_prompt_start", (event) => {
+    const title = typeof event?.title === "string" && event.title ? event.title : "waiting for your input";
+    fire("Pi", `Question: ${title}`, { kind: "question" });
+  });
 }

@@ -64,27 +64,53 @@ export default function checkpointExtension(pi) {
     }
     const n = sessionCounter++;
     const ref = refName(sid, n);
+    // A new turn invalidates redo history (standard undo/redo semantics);
+    // otherwise /redo would re-apply stale states on top of the new checkpoint.
+    redoBuffer.length = 0;
 
     // `git stash create` returns a commit ref of the current working/index
     // state WITHOUT touching the stash list. Empty stdout = clean tree (nothing
     // to snapshot). We still record an empty checkpoint so /undo depth matches
     // turns, even when a turn made no changes.
     const created = await git(["stash", "create"], ctx);
+    if (created?.failed) {
+      // Git failure ≠ clean tree: skip this checkpoint instead of silently
+      // recording a bogus "clean" one.
+      notify(ctx, `pi-checkpoint: snapshot skipped — git stash create failed (${(created.stderr || "unknown error").trim()}).`, "warning");
+      return;
+    }
     if (!created?.stdout?.trim()) {
       stack.push({ ref: null, n });
       return;
     }
     const tree = created.stdout.trim();
-    await git(["update-ref", ref, tree], ctx);
+    const upd = await git(["update-ref", ref, tree], ctx);
+    if (upd?.failed) {
+      notify(ctx, `pi-checkpoint: snapshot skipped — git update-ref failed (${(upd.stderr || "unknown error").trim()}).`, "warning");
+      return;
+    }
     stack.push({ ref, n });
   }
 
   async function restoreRef(ref, ctx) {
-    if (!ref) return; // empty checkpoint — nothing to restore
-    // Restore tracked-file state from the snapshot's tree into worktree+index.
-    // `git checkout <tree> -- .` touches only tracked paths at that tree;
-    // untracked files remain.
-    await git(["checkout", ref, "--", "."], ctx);
+    if (ref === undefined) return true; // nothing recorded — nothing known to restore
+    let res;
+    if (ref === null) {
+      // Target checkpoint was "clean" (stash create empty → tracked state == HEAD).
+      // Restoring = discard tracked changes since then; untracked files are left
+      // alone (safer than git clean).
+      res = await git(["checkout", "HEAD", "--", "."], ctx);
+    } else {
+      // Restore tracked-file state from the snapshot's tree into worktree+index.
+      // `git checkout <tree> -- .` touches only tracked paths at that tree;
+      // untracked files remain.
+      res = await git(["checkout", ref, "--", "."], ctx);
+    }
+    if (res?.failed) {
+      notify(ctx, `pi-checkpoint: restore failed — git checkout ${ref ?? "HEAD"} failed (${(res.stderr || "unknown error").trim()}).`, "warning");
+      return false;
+    }
+    return true;
   }
 
   pi.on("turn_start", async (_event, ctx) => {
@@ -133,17 +159,36 @@ export default function checkpointExtension(pi) {
         if (!top) break;
         undone.push(top);
       }
-      redoBuffer.push(...undone.reverse());
+      // undone is newest-first ([C, B] for depth 2); push as-is so /redo pops
+      // B (older) first and replays forward in order.
+      redoBuffer.push(...undone);
 
       const target = stack[stack.length - 1];
-      await restoreRef(target?.ref, ctx);
-      const label = target?.ref ? target.n : "(clean)";
-      notify(ctx, `Undid ${undone.length} turn(s); file state restored to checkpoint ${label}.`, "info");
+      if (!target) {
+        notify(ctx, `Undid ${undone.length} turn(s); no earlier checkpoint to restore.`, "info");
+        return;
+      }
+      if (!(await restoreRef(target.ref, ctx))) {
+        // The turns were NOT undone — roll the popped checkpoints back so the
+        // stack matches reality and /undo stays retry-able once git is fixed.
+        for (let i = 0; i < undone.length; i++) redoBuffer.pop();
+        while (undone.length > 0) stack.push(undone.pop());
+        return; // restoreRef already warned
+      }
+      const label = target.ref
+        ? `checkpoint ${target.n}`
+        : "clean state (HEAD) — tracked changes discarded";
+      notify(ctx, `Undid ${undone.length} turn(s); file state restored to ${label}.`, "info");
     },
   });
 
   pi.registerCommand("redo", {
     description: "Redo file changes after /undo (git-backed)",
+    getArgumentCompletions: (prefix) => {
+      const depths = ["1", "2", "3"];
+      const filtered = depths.filter((d) => d.startsWith(prefix));
+      return filtered.length > 0 ? filtered.map((d) => ({ value: d, label: d })) : null;
+    },
     handler: async (args, ctx) => {
       if (!isGitRepo(ctx?.cwd)) {
         notify(ctx, "Not a git repo — /redo disabled.", "warning");
@@ -157,8 +202,11 @@ export default function checkpointExtension(pi) {
       let done = 0;
       for (let i = 0; i < depth && redoBuffer.length > 0; i++) {
         const top = redoBuffer.pop();
+        if (!(await restoreRef(top.ref, ctx))) {
+          redoBuffer.push(top); // stays redo-able — retry after fixing git
+          break; // restoreRef already warned
+        }
         stack.push(top);
-        await restoreRef(top.ref, ctx);
         done++;
       }
       notify(ctx, `Redid ${done} turn(s).`, "info");

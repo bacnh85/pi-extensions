@@ -1,5 +1,5 @@
 {
-  "require": ["tsx"],
+  "import": ["tsx"],
   "spec": ["test/**/*.test.ts"],
   "timeout": 10000
 }

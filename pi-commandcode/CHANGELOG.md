@@ -1,6 +1,53 @@
 # Changelog
 
-## 0.2.0 — 2026-08-22
+## 0.2.3 (2026-09-14)
+
+### Fixed
+
+- Capability table gained `deepseek/deepseek-v4.1-flash` with
+  `vision: true` — V4.1 Flash is natively multimodal, and the previous
+  fallback reported it vision-less, so Pi withheld image input on a
+  vision-capable model.
+
+## 0.2.2 (2026-09-14)
+
+### Changed
+
+- **`COMMAND_CODE_API_KEY` is now read at call time** instead of snapshotted
+  once at module load. Env changes after import (test harnesses, CI exports,
+  shell reloads) are observed by `refreshModels`, background discovery, and
+  the `/commandcode-config` summary; a resolved `/login` credential still
+  takes precedence.
+
+### Tests
+
+- Added regression coverage for both 0.2.1 fixes: offline `refreshModels`
+  returns `undefined` ("keep current") with a missing/corrupt disk cache and
+  restores cached models remapped through `mapModel`; `writeBaseUrl` bails on
+  a corrupt global `settings.json` without overwriting it (unit test plus a
+  fake-pi drive of the `/commandcode-config` panel save path asserting the
+  "Not saved" error, untouched file, and no provider re-registration).
+
+## 0.2.1 (2026-09-12)
+
+### Fixed
+
+- **`writeBaseUrl` no longer wipes a corrupt settings.json.** The read step
+  conflated "file missing" with "file unparseable" (`?? {}`), so saving a new
+  baseUrl over a corrupt global settings.json destroyed every unrelated
+  section (router, a2a, …). writeBaseUrl now bails with an error when the file
+  exists but fails to parse (pi-router migrate.ts pattern); the config panel
+  surfaces the message instead of saving.
+- **Offline `refreshModels` no longer wipes the catalog.** With
+  `allowNetwork: false` (or an aborted signal) and a missing/corrupt disk
+  cache it returned `[]` — a truthy "here are the models" answer — so Pi
+  replaced the catalog with nothing. It now returns `undefined`
+  ("keep current") when there is no cache.
+- CHANGELOG date inversion: 0.2.0 was mislabeled 2026-08-22 (git: 2026-08-23)
+  and 0.1.6 was mislabeled 2026-08-24 (git: 2026-08-22).
+- Removed unused `typebox` peer dependency.
+
+## 0.2.0 — 2026-08-23
 
 ### Added
 
@@ -19,7 +66,7 @@
   matching pi-router. API keys stay in `auth.json` via `/login commandcode`
   (never settings.json).
 
-## 0.1.6 (2026-08-24)
+## 0.1.6 (2026-08-22)
 
 ### Fixes
 

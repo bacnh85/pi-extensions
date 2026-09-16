@@ -46,13 +46,13 @@ a family is detected; everything degrades gracefully to a no-op otherwise.
 
 | Feature | What it does |
 |---------|-------------|
-| **Tool argument repair** | Fixes invalid JSON, trailing commas, unquoted keys, JSON-string→object, top-level string→object (GLM-4.7 bug), **truncated-JSON auto-close** (DeepSeek mid-generation truncation — unterminated strings and unclosed brackets are closed), optional-null deletion, markdown autolinks in path fields |
+| **Tool argument repair** | Fixes invalid JSON, trailing commas, unquoted keys, JSON-string→object, top-level string→object (GLM-4.7 bug), **truncated-JSON auto-close** (DeepSeek mid-generation truncation — unterminated strings and unclosed brackets are closed), optional-null deletion, markdown autolinks in path fields, **param-name aliases** (cross-harness schemas — e.g. Claude-Code-style `file_path`→`path`, `file_text`→`content` — repaired for the wrapped built-ins when the aliased target is required and missing) |
 | **Prompt cache stats** | Tracks per-turn `usage.cacheRead`/`cacheWrite`/`input` and reports the session cache hit rate in `/model-tools-status` (Pi core already computes these; this surfaces them) |
 | **Leaked-content cleaning** | Strips leaked thinking headers and `` `tool_name(args)` `` prose from assistant messages (always on for detected families) |
-| **Reasoning strip** | Removes accumulated `reasoning_content` from prior turns to prevent provider 400s on long sessions (opt-in) |
+| **Reasoning strip** | Removes accumulated `reasoning_content` from prior turns to prevent provider 400s on long sessions (on by default) |
 | **Dangerous command guard** | Blocks forced recursive delete of absolute paths (`rm -rf /`) and destructive `dd` writes |
 | **Read-on-guessed-path blocking** | Blocks `read` on a non-existent code-file path, suggests `find` first |
-| **Prompt-aware first-tool hints** | Forces the correct first tool: `bash`-first for RUN/BUILD/EXECUTE tasks, `bash` git-clone-first for analyze-a-repo-URL tasks, and `find`-first for bare-filename reads. Targeted (only fires on matching intent) and applied to all detected families. Injected into the current user message, not the system prompt, to keep the prefix-cache head byte-stable for both DeepSeek (exact-prefix cache) and GLM (Z.ai automatic content-similarity cache) (measured on DeepSeek: 99% hit retained vs 16% when hints lived in the system prompt). |
+| **Prompt-aware first-tool hints** | Forces the correct first tool: `bash`-first for RUN/BUILD/EXECUTE tasks, `bash` git-clone-first for analyze-a-repo-URL tasks, and `find`-first for bare-filename reads. Targeted (only fires on matching intent) and applied to all detected families. Injected into the current user message on the **first provider round of the turn only** — never re-appended mid-turn after tool results (a repeated "FIRST tool call MUST be bash" next to tool output loops strict models into re-running bash), and never into the system prompt, keeping the prefix-cache head byte-stable for both DeepSeek (exact-prefix cache) and GLM (Z.ai automatic content-similarity cache). |
 | **Error categorization** | Classifies tool errors and injects recovery hints on the next turn. Also detects provider 400s caused by accumulated `reasoning_content` (long-session reasoning-accumulation) and injects an actionable hint — `PI_MODEL_TOOLS_STRIP_REASONING=1` — so the rare trigger is self-documenting. |
 | **Edit mismatch repair** | Strips `read`-tool truncation notices (`[Showing lines … Use offset=N to continue.]`, etc.) that models copy into `edit` oldText — the documented root cause of "Could not find the exact text" failures. On a match failure, retries once with whitespace-tolerant matching (copying the file's real indentation); on unresolvable matches, enriches the error with the nearest numbered region. Always on. |
 | **`apply_patch` tool** | A Codex-style V4D diff/patch tool: emit only `@@` context + `-`/`+` change lines instead of large verbatim oldText blocks. Robust for multi-line/multi-file edits across all models. DeepSeek/GLM get steering to prefer it for non-trivial edits. |
@@ -87,6 +87,66 @@ warm for both families:
 `/model-tools-status` reports the session hit rate
 (`input`/`cached`/`written` tokens + `hitTurns`/`missTurns`) for whichever
 family is active.
+
+### GLM via the Anthropic endpoint (ZCode parity)
+
+ZCode (Z.ai's desktop agent) reaches GLM-5.x through the **Anthropic Messages
+API** (`https://api.z.ai/api/anthropic`), not the OpenAI-compatible
+`/api/coding/paas/v4` endpoint that Pi's built-in `zai`/`zai-coding-cn`
+providers use. The Anthropic surface has three levers the OpenAI surface lacks:
+explicit prompt caching (`cache_control` markers), a fast serving tier
+(`speed: "fast"`), and effort-based reasoning (`output_config.effort`). This
+extension registers a `zai-anthropic` provider using it — measured live:
+prompt re-reads drop from 675 → 35 input tokens (cache_read 640), and fast mode
+streamed 63.5 tok/s vs 38.6 standard.
+
+Setup:
+
+```bash
+export ZAI_ANTHROPIC_API_KEY=<your Z.ai coding-plan key>   # or /login zai-anthropic
+```
+
+Then pick `zai-anthropic/glm-5.3` (or `glm-5.3-flash` — vision-capable — or
+`glm-5-turbo`) in `/model`. The provider registers unconditionally — the key
+resolves from auth.json (`/login zai-anthropic`) or the env var at request
+time. Other plan endpoints: `ZAI_ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/anthropic`
+(BigModel plan), `https://zcode.z.ai/api/v1/ultra-zai/anthropic` (ZCode ultra
+route), or `https://zcode.z.ai/api/v1/zcode-plan/anthropic` (ZCode Start Plan JWT).
+
+#### ZCode parity mode (Client-Signing V4) — on by default
+
+Every `zai-anthropic` request carries ZCode desktop parity by default: ZCode
+identity headers (`User-Agent: ZCode/…`, `X-Device-Mid`, `X-Title`, …), a
+stable `X-Session-Id`, and per-request **Ed25519 signatures + proof-of-work**
+(`X-Client-*` headers) exactly as ZCode 3.9+ sends them. The signing key is
+provisioned by Z.ai's handshake to your own two-part coding-plan key — no
+separate login. Fail-open everywhere: gate off/unreachable, handshake
+failure, or a legacy single-part key simply sends unsigned. Set
+`ZAI_ANTHROPIC_SIGNING=0` to disable.
+
+For the full ZCode route also point the endpoint at the server-mapped ultra
+upstream (this is the URL the server's `agent/configs` mapping hands ZCode
+today):
+
+```bash
+export ZAI_ANTHROPIC_BASE_URL=https://zcode.z.ai/api/v1/ultra-zai/anthropic
+```
+
+Signing is harmless on the default `api.z.ai` route too (the server ignores
+`X-Client-*` there). Ported from TriDefender/zcode-api (MIT).
+
+| Variable | Default | Purpose |
+|----------|---------|----------|
+| `ZAI_ANTHROPIC_API_KEY` | unset | Z.ai coding-plan key; always visible, enter via `/login zai-anthropic` or env |
+| `ZAI_ANTHROPIC_BASE_URL` | `https://api.z.ai/api/anthropic` | Anthropic-compatible endpoint |
+| `ZAI_ANTHROPIC_SPEED` | `fast` | `standard` to disable the fast serving tier (on pay-per-token plans fast ≈ 6× input price) |
+| `ZAI_ANTHROPIC_SIGNING` | **on** | ZCode parity: identity headers + Client-Signing V4 (Ed25519+PoW) on every request. `0` to disable |
+| `ZAI_ANTHROPIC_MIN_INTERVAL_MS` | `1000` | Cross-process dispatch gate (Z.ai 429/1302 request-rate limit): minimum spacing between request starts across all Pi processes on this machine. `0` disables |
+
+Note: `reasoning strip`/`reasoning_content` handling applies only to the OpenAI
+path — on the Anthropic surface thinking arrives as native thinking blocks and
+Pi replays them correctly. No-code alternative on the existing OpenAI path:
+`zai-coding-cn/glm-5.3-highspeed` (plan-included speed variant).
 
 ### DeepSeek V4 only (verbose steering the Flash model needs)
 
@@ -153,7 +213,7 @@ All toggles live under the `PI_MODEL_TOOLS_*` namespace.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `PI_MODEL_TOOLS_REPAIR_ENABLED` | 1 | Tool argument repair (`0`/`off`/`false` to disable) |
-| `PI_MODEL_TOOLS_STRIP_REASONING` | 0 | Strip accumulated reasoning from prior turns |
+| `PI_MODEL_TOOLS_STRIP_REASONING` | 1 | Strip accumulated reasoning from prior turns (`0`/`off`/`false`/`no` to disable) |
 | `PI_MODEL_TOOLS_REASONING_MAX_CHARS` | unlimited | Truncate long reasoning fields to N characters |
 | `PI_MODEL_TOOLS_BLOCK_DANGEROUS_COMMANDS` | 1 | Safety guard (on by default) |
 | `PI_MODEL_TOOLS_AUTO_BLOCK_AFTER_REMINDERS` | 0 | Auto-block tool-selection misses after N reminders |
@@ -179,7 +239,7 @@ All toggles live under the `PI_MODEL_TOOLS_*` namespace.
 
 ## Super Power Mode
 
-Enabled by default for DeepSeek V4 sessions. It prepends an unrestricted
+Opt-in: set `PI_MODEL_TOOLS_SUPERPOWER_MODE=1` (for DeepSeek V4 sessions). It prepends an unrestricted
 capability prompt at the top of the system prompt (before the selection
 guidance and the base prompt), removes content filters, and engages maximum
 reasoning effort. A light reinforcement is appended every 10 turns.

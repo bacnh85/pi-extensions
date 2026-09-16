@@ -134,7 +134,7 @@ test("/undo on empty stack notifies and does nothing", async () => {
   assert.match(c.notifies[c.notifies.length - 1].m, /Nothing to undo/);
 });
 
-test("clean tree (stash empty) still records an empty checkpoint for depth", async () => {
+test("/undo to a clean checkpoint runs git checkout HEAD -- . (review P0: honest restore)", async () => {
   const calls = [];
   const realPi = {
     on(_evt, handler) {
@@ -157,15 +157,15 @@ test("clean tree (stash empty) still records an empty checkpoint for depth", asy
 
   await turnStart({}, c); // clean → empty checkpoint 0
   await turnStart({}, c); // clean → empty checkpoint 1
-  // Two empty checkpoints exist; /undo should succeed (depth tracked) but no
-  // checkout happens because the restore target is null.
+  // Restore target is a null (clean) checkpoint: the turn started from HEAD,
+  // so restoring means discarding tracked changes via `git checkout HEAD -- .`.
   await undoCmd.handler("1", c);
   assert.match(c.notifies[c.notifies.length - 1].m, /Undid 1 turn/);
-  assert.equal(
-    realPi.execCalls.filter((x) => x.args[0] === "checkout").length,
-    0,
-    "no checkout for empty (clean) checkpoints",
-  );
+  const checkouts = realPi.execCalls.filter((x) => x.args[0] === "checkout");
+  assert.equal(checkouts.length, 1, "checkout HEAD runs for a clean checkpoint");
+  assert.deepEqual(checkouts[0].args, ["checkout", "HEAD", "--", "."]);
+  assert.match(c.notifies[c.notifies.length - 1].m, /clean state \(HEAD\)/,
+    "report honestly that tracked changes were discarded");
 });
 
 test("/checkpoint lists the stack", async () => {

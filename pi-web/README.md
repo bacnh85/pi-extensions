@@ -1,8 +1,8 @@
 # @bacnh85/pi-web
 
-Pi extension for **unified web search, content extraction, site crawling, and page capture**.
+Pi extension for **unified web search, content extraction, site crawling, page capture, Gemini web-tier research, free upstream image generation, and one-off gateway chat**.
 
-Auto-selects the best backend from SearXNG (self-hosted), Brave Search, Firecrawl, Crawl4AI, and agy (Gemini/Claude, when installed) — so agents don't have to know which backend to use. Search selection is adaptive: broad discovery prefers self-hosted SearXNG, while precision-sensitive searches and inline content prefer Brave.
+Auto-selects the best backend from SearXNG (self-hosted), Brave Search, Firecrawl, Crawl4AI, and agy (Gemini/Claude, when installed) — so agents don't have to know which backend to use. Search selection is adaptive: broad discovery prefers self-hosted SearXNG, while precision-sensitive searches and inline content prefer Brave. `web_research` adds AI-synthesized research with citations via your gemini.google.com session.
 
 ## Install
 
@@ -25,15 +25,36 @@ Variables:
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `BRAVE_API_KEY` | No (1) | — | Brave Search API key |
-| `SEARXNG_BASE_URL` | No | `http://172.30.55.22:8888` | Self-hosted SearXNG |
+| `SEARXNG_BASE_URL` | No | `http://127.0.0.1:8888` | Self-hosted SearXNG |
 | `FIRECRAWL_API_URL` | No | `https://api.firecrawl.dev/v2` | Self-hosted or hosted |
 | `FIRECRAWL_API_KEY` | No (2) | — | Required for hosted Firecrawl |
-| `CRAWL4AI_API_URL` | No | `http://172.30.55.22:11235` | Self-hosted Crawl4AI |
+| `CRAWL4AI_API_URL` | No | `http://127.0.0.1:11235` | Self-hosted Crawl4AI |
 | `CRAWL4AI_API_TOKEN` | No (3) | — | Required if Crawl4AI auth enabled |
+| `GEMINI_WEB_SECURE_1PSID` | No (4) | — | `__Secure-1PSID` cookie from gemini.google.com — enables authed `web_research` (Deep Research) |
+| `GEMINI_WEB_PROXY` | No | — | Proxy URL for Gemini web calls (escape hatch if Google blocks the IP) |
+| `GEMINI_WEB_SECURE_1PSIDTS` | No (6) | — | Rotating `__Secure-1PSIDTS` cookie — bootstrap only; keep the source browser session closed so it isn't superseded (see "Keeping the session alive") |
+| `GEMINI_WEB_COOKIE_STORE` | No | `~/.pi/agent/gemini-web-cookies.json` | Where the pasted/rotated cookie state persists (0600) |
+| `GEMINI_WEB_KEEPALIVE` | No (7) | off | Set `1` to opt in to experimental background cookie rotation (see "Keeping the session alive") |
+| `GEMINI_WEB_ROTATE_INTERVAL_MS` | No | `600000` | Keepalive rotation cadence (min 60000) |
+| `ZAI_API_KEY` | No (5) | — | Z.ai API key — enables the `web_image` `zai` provider (GLM-Image via the official `api.z.ai`); `Z_AI_API_KEY` also accepted |
+| `WEB_IMAGE_API_BASE_URL` | No | — | `web_image` `custom` provider: any OpenAI-compatible images endpoint (e.g. `https://api.openai.com/v1`) |
+| `WEB_IMAGE_API_KEY` | No | — | Bearer key for the `custom` endpoint |
+| `WEB_IMAGE_API_LABEL` | No | — | Display label for the `custom` endpoint (default: host name) |
+| `WEB_IMAGE_MIN_INTERVAL_MS` | No | `5000` | Min interval between `web_image` calls per provider |
+| `WEB_IMAGE_DAILY_CAP` | No | `20` | Daily soft cap for the Gemini **web tier** and ChatGPT web `web_image` providers (keyed APIs stay uncapped) |
+| `CHATGPT_WEB_AUTH_KEY` | No | — | ChatGPT web tier: the OAuth tokens JSON from `codex login` (`~/.codex/auth.json`) or a bare access-token JWT. Unset → falls back to `~/.codex/auth.json`, then Pi auth.json `openai-codex` |
+| `CHATGPT_WEB_CODEX_AUTH` | No | `~/.codex/auth.json` | Alternative codex-login file path to read |
+| `CHATGPT_WEB_AUTH_STORE` | No | `~/.pi/agent/chatgpt-web-auth.json` | Where rotated refresh tokens persist when the source can't be rewritten (0600) |
+| `CHATGPT_WEB_MODEL` | No | `gpt-5.5` | Default `web_chat` model on the ChatGPT web surface |
+| `WEB_CHAT_API_BASE_URL` | No | — | `web_chat` gateway provider: any OpenAI-compatible `/chat/completions` gateway (`https://api.openai.com/v1`, …) |
+| `WEB_CHAT_API_KEY` | No | — | Bearer key for the `web_chat` gateway |
 
 > (1) At least one search backend (SearXNG, Brave, or Firecrawl) must be configured for `web_search`.
 > (2) Required for hosted Firecrawl; optional for self-hosted instances without auth.
 > (3) Required for Crawl4AI v0.9+ default config.
+> (4) Without it `web_research mode=ask` still works in guest mode (Flash-only); `mode=research` errors with setup steps.
+> (6) Copy the current value from DevTools (Application → Cookies) alongside `__Secure-1PSID`; it rotates, so refresh it when auth degrades.
+> (5) `web_image`'s Gemini provider is currently gated server-side (browser-grade TLS fingerprint required — generation refuses over plain Node even with a valid cookie); `zai` activates when `ZAI_API_KEY` is present and is the reliable path, `custom` when `WEB_IMAGE_API_BASE_URL` is set.
 
 Secrets are never printed; `web_status` reports only presence/source.
 
@@ -66,6 +87,7 @@ Parameters:
 | `engines` | string | — | SearXNG engine override, e.g. `google,github` |
 | `include_content` | boolean | false | Fetch page content alongside results |
 | `content_chars` | number | 5000 | Max content chars per result |
+| `timeout_ms` | number | per-backend | Request timeout in ms (SearXNG/static 15000, Firecrawl/Crawl4AI 60000) |
 
 **Auto-selection behavior:**
 
@@ -142,20 +164,38 @@ web_crawl url="https://example.com" mode=light poll=true    # Poll for completio
 
 ### `web_screenshot` — Page screenshot
 
-Captures a full-page PNG screenshot using Crawl4AI. Returns base64-encoded PNG.
+Captures a full-page PNG screenshot using the Crawl4AI daemon, or **local headless Chrome for localhost/LAN/file URLs** (auto-detected; see [Local capture](#local-capture)). Returns the PNG inline as an image block (multimodal models see it); text summary includes engine/MIME/size.
 
 ```
 web_screenshot url="https://example.com"
 web_screenshot url="https://example.com" wait_for=5 wait_for_images=true
+web_screenshot url="http://localhost:3000"           # local Chrome, auto-detected
+web_screenshot url="http://localhost:3000" full_page=true width=1280
+web_screenshot url="https://example.com" engine="daemon"  # force the daemon
 ```
+
+Local-engine params: `width` (default 1280), `height` (default 800), `full_page` (captures a tall 8000px window — the Chrome CLI has no true full-page flag).
 
 ### `web_pdf` — Page PDF
 
-Generates a PDF document using Crawl4AI. Returns base64-encoded PDF.
+Generates a PDF document using the Crawl4AI daemon, or **local headless Chrome** for localhost/LAN/file URLs (auto-detected). Returns base64-encoded PDF.
 
 ```
 web_pdf url="https://example.com/article"
+web_pdf url="http://localhost:3000"   # local Chrome, auto-detected
 ```
+
+### Local capture
+
+The Crawl4AI daemon's browser runs on the daemon host — it cannot reach (and SSRF-blocks) your `localhost`. pi-web therefore routes private URLs to a **locally installed Chrome/Chromium** in headless mode:
+
+| URL | Engine |
+|-----|--------|
+| `localhost`, `127.0.0.1`, LAN IPs (10/8, 172.16/12, 192.168/16, 169.254/16), `file://` | local Chrome |
+| public URLs | Crawl4AI daemon |
+| daemon SSRF-blocks a URL | automatic local-Chrome retry |
+
+Override with `engine="local"` / `engine="daemon"`. Binary discovery: `CHROME_PATH` env, then standard Chrome/Chromium paths per OS (Edge as a Windows fallback). Captures use an isolated temp profile, a 30s timeout, and `--virtual-time-budget` for `wait_for`.
 
 ### `web_status` — Provider status
 
@@ -170,16 +210,217 @@ Typical output:
 ```json
 {
   "brave": { "apiKeyFound": true, "apiKeySource": "process.env" },
-  "searxng": { "baseUrl": "http://172.30.55.22:8888", ... },
-  "firecrawl": { "baseUrl": "http://172.30.55.22:3002/v2", ... },
+  "searxng": { "baseUrl": "http://127.0.0.1:8888", ... },
+  "firecrawl": { "baseUrl": "http://127.0.0.1:3002/v2", ... },
   "crawl4ai": {
-    "baseUrl": "http://172.30.55.22:11235",
+    "baseUrl": "http://127.0.0.1:11235",
     ...
     "health": { "status": "healthy", "version": "0.5.0", ... }
   },
-  "agy": { "installed": true }
+  "agy": { "installed": true },
+  "geminiWeb": { "configured": true, "cookieSource": "process.env", "proxy": false },
+  "localChrome": { "path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" }
 }
 ```
+
+### `web_research` — Gemini web-tier research
+
+AI-synthesized research through your gemini.google.com session (powered by the
+[`gemini-reverse`](https://github.com/rynn-k/Gemini-Reverse) client, lazy-loaded).
+
+```
+web_research(query="compare the top 3 cloud providers' AI offerings", mode="research", timeout_ms=600000)
+```
+
+- **`mode: "ask"`** (default) — quick grounded answer (Gemini auto-grounds with
+  Google Search). Works **without any cookie** in guest mode (Flash-only).
+  Sent as a temporary chat so your Gemini history stays clean.
+- **`mode: "research"`** — full Gemini **Deep Research**: plan → autonomous web
+  browsing (minutes) → cited report. Requires the cookie and a **fresh session**.
+  Runs a plan turn, a "Start research" confirm turn, then polls conversation
+  turns until the report lands. Plan/confirm run even on degraded sessions,
+  but report polling needs the live-session XSRF token — on stale sessions
+  the tool returns an honest partial result (plan + transcript + note)
+  instead of failing.
+  Default timeout 600 s, cap 1 800 000.
+
+Both modes return the text plus **Sources** — URLs extracted from the
+answer/report markdown (the web protocol exposes no structured citations field).
+
+Setup (authed mode):
+
+1. Sign in at [gemini.google.com](https://gemini.google.com/).
+2. `F12` → **Application** → **Cookies** → `https://gemini.google.com`.
+3. Copy the `__Secure-1PSID` value into `~/.pi/agent/.env.local`:
+
+   ```bash
+   GEMINI_WEB_SECURE_1PSID=your-cookie-value
+   # optional, if Google blocks your IP:
+   # GEMINI_WEB_PROXY=http://host:port
+   ```
+4. Restart pi; `web_status` shows `geminiWeb.configured: true`.
+
+**Paste from a fresh incognito login** (sign in, copy both `__Secure-1PSID`
+and `__Secure-1PSIDTS`, close the window). Cookies copied from your daily
+browser are short-lived: Chrome's Device Bound Session Credentials caps them
+at a few hours, and an open Gemini tab keeps rotating the value under you.
+
+### Keeping the session alive
+
+Live testing (2026-09-14) produced a result that reverses the earlier
+auto-rotation design: a `__Secure-1PSIDTS` obtained from Google's own
+`RotateCookies` endpoint is **rejected by gemini.google.com's privileged
+surfaces** (Deep Research returns no plan, image generation 403s), while the
+**original pasted cookie keeps working indefinitely** — as long as the browser
+session it came from doesn't rotate it again.
+
+So the default recipe is:
+
+1. **Harvest from a fresh incognito login** (sign in, copy
+   `__Secure-1PSID` + `__Secure-1PSIDTS`, close the window).
+2. Paste into `~/.pi/agent/.env.local`, restart pi.
+3. **Never open gemini.google.com in that Google session's browser** — an
+   open Gemini tab supersedes the pasted cookie within minutes (verified).
+
+Under those conditions the pasted cookie stays valid for as long as the
+incognito session lives server-side (observed: 19+ hours of authed `ask`).
+`web_status` reports the cookie store under `geminiWeb.cookieStore`.
+
+**Auto-rotation is now opt-in** (`GEMINI_WEB_KEEPALIVE=1`): it rotates via
+`POST accounts.google.com/RotateCookies` every 10 minutes and persists the
+result, but the rotated value is rejected by gemini's privileged surfaces —
+use it only if you accept losing Deep Research / image generation on that
+session. Rotation failures never delete your stored paste cookie.
+
+Smoke the rotation directly (no prompt needed):
+
+```bash
+npx tsx extensions/scripts/gemini-smoke.ts x auth
+```
+
+Live verification script (also proves the header-cap patch end-to-end — an
+authed failure would surface `HPE_HEADER_OVERFLOW`):
+
+```bash
+npx tsx extensions/scripts/gemini-smoke.ts "test query"            # ask (authed or guest)
+npx tsx extensions/scripts/gemini-smoke.ts "topic" research        # Deep Research
+```
+
+⚠️ **Unofficial, at your own risk.** Cookie auth uses your real Google session
+against gemini.google.com's internal web API and may not comply with Google's
+ToS; the protocol can break when Google changes it. `ask` mode errors map to
+actionable steps (expired cookie → re-copy; IP block → set `GEMINI_WEB_PROXY`).
+
+Troubleshooting:
+
+- *"session expired"* — re-copy `__Secure-1PSID` + `__Secure-1PSIDTS` from a
+  fresh **incognito** login. If this returns often, your daily browser is
+  competing for the same session — keep using the incognito cookie and never
+  open gemini.google.com there.
+- *"unauthorized (400/401)" from rotation* — the pasted generation was
+  superseded (usually by the daily browser). Content calls may still work;
+  rotation retries later. Your stored paste cookie is never deleted by this.
+- *"temporarily blocked this IP"* — set `GEMINI_WEB_PROXY`.
+- *research mode returns a partial result ("report could not be retrieved")* —
+  the plan/confirm turns ran, but report polling needs a live-session token:
+  re-copy `__Secure-1PSID` + `__Secure-1PSIDTS` from a fresh **incognito**
+  login and retry. The report remains in your Gemini web history for the
+  returned chat id. `ask` mode is unaffected.
+
+### `web_image` — free upstream image generation
+
+Text → image with automatic provider fallback (all direct-to-upstream, no
+self-host services):
+
+```
+web_image(prompt="isometric cutaway of a container ship, technical illustration")
+web_image(prompt="...", provider="zai")                       # pin GLM-Image via api.z.ai
+web_image(prompt="...", model="glm-image", n=2, out_dir="/tmp/imgs")
+web_image(prompt="...", provider="zai", size="960x1728")       # portrait aspect
+```
+
+`size` (zai/custom only) is passed through as `WxH`. `glm-image` enums:
+`1280x1280` (default), `1568x1056`, `1056x1568`, `1472x1088`, `1088x1472`,
+`1728x960`, `960x1728` — portrait prompts should pick a portrait size, or the
+server default gives a square.
+
+**Provider chain** (`provider: "auto"` tries in order; pin one to skip):
+
+| Provider | Upstream | Auth | Notes |
+|---|---|---|---|
+| `gemini` (default) | gemini.google.com web tier | none (guest) or `GEMINI_WEB_SECURE_1PSID` | currently refused to non-browser clients (server-side TLS-fingerprint gate, verified 2026-09-14) — `zai` is the working path |
+| `chatgpt` | `chatgpt.com/backend-api/codex/responses` (Codex surface, ChatGPT subscription) | `CHATGPT_WEB_AUTH_KEY` / `codex login` / Pi auth.json | the `image_generation` Responses tool — same gpt-image family as chatgpt.com/images/; bills the metered Codex-usage bucket |
+| `zai` | `https://api.z.ai/api/paas/v4` (official API) | `ZAI_API_KEY` | GLM-Image (`model` default), fully ToS-compliant |
+| `custom` | any OpenAI-compatible `/images/generations` endpoint | `WEB_IMAGE_API_KEY` | e.g. official OpenAI `https://api.openai.com/v1` |
+
+Results are saved to `out_dir` (default: fresh temp dir) and returned as file
+paths **plus inline image blocks** (multimodal models see the render
+immediately). `details` reports the winning provider, model, and fallback
+attempts.
+
+`n` (1–4) applies to the API providers (`zai`/`custom`, and `chatgpt` — one
+image per call, sequentially); the Gemini web tier returns its own image
+count (surfaced as a provider note when fewer than `n`).
+
+**Guardrails** (soft, in-memory): per-provider `WEB_IMAGE_MIN_INTERVAL_MS`
+(default 5 s) and a `WEB_IMAGE_DAILY_CAP` (default 20/day, applied to the
+Gemini web tier **and** the ChatGPT web provider — the latter bills the
+subscription's metered Codex-usage bucket; keyed APIs are billed upstream
+and stay uncapped). Counters reset on restart;
+`web_status.imageProviders.rate` shows usage.
+
+⚠️ **ToS reality (read once)**: *every* AI chatbot's terms prohibit automated
+access to its web UI (Google, OpenAI, xAI "unauthorized automated or
+non-human means", Z.ai alike). This tool therefore follows a risk ladder:
+
+1. **Official APIs** (`zai`, `custom`) — fully compliant; prefer them when a key exists.
+2. **Guest mode** (Gemini without a cookie) — no account at stake, lowest risk, Flash-tier.
+3. **Personal cookie** (Gemini authed) — your own account, single session, low volume; same accepted-risk stance as the web bridges: use a burner/low-value account, never a valued one. No account pools, no commercial use, keep volume human-scale.
+
+Smoke test: `npx tsx extensions/scripts/gemini-smoke.ts "a red cube on white background" image`
+(or `… zai` for the Z.ai path, `… chatgpt-image` for the ChatGPT web path).
+
+### `web_chat` — ChatGPT web / one-off gateway chat
+
+Single non-streaming chat completion — via the **ChatGPT web tier** (your
+subscription, through the same `backend-api/codex/responses` surface the
+Codex CLI uses) or any OpenAI-compatible gateway. The in-session equivalent
+of "ask another model quickly" without switching your main provider:
+
+```
+web_chat(prompt="In one sentence: why is idempotency key needed here?")
+web_chat(prompt="Summarize", provider="chatgpt", model="gpt-5.5", system="Be terse")
+web_chat(prompt="Summarize", provider="gateway", model="gpt-5.3-mini")
+```
+
+**ChatGPT web provider** (`provider: "chatgpt"`, the default when a
+credential is found): credential resolution order is `CHATGPT_WEB_AUTH_KEY`
+(the tokens JSON from `codex login`'s `~/.codex/auth.json`, or a bare
+access-token JWT) → `CHATGPT_WEB_CODEX_AUTH`/`~/.codex/auth.json` → Pi
+auth.json `openai-codex`. Expired tokens auto-refresh via
+`auth.openai.com` (rotated tokens persist back to the codex file, or to
+`~/.pi/agent/chatgpt-web-auth.json` when the source is read-only). The
+literal chatgpt.com web UI is Cloudflare-Turnstile-gated and unreachable
+headless — this surface is the reachable headless path on the same
+subscription, and it bills the metered Codex-usage limits (the 5-hour/
+weekly windows pi-sub displays), not the general chat quota. Image requests
+on the free plan typically answer `429 The usage limit has been reached`.
+
+**Gateway provider** (`provider: "gateway"`) — configure once in
+`~/.pi/agent/.env.local`, then restart pi:
+
+```bash
+WEB_CHAT_API_BASE_URL=https://api.openai.com/v1   # or any OpenAI-compatible gateway
+WEB_CHAT_API_KEY=sk-...                           # if the gateway needs a key
+```
+
+`web_status.webChat` / `web_status.chatgptWeb` show configuration without
+printing secrets. Chat-only by design (no tool calling); for grounded
+research with sources use `web_research`, and `/model` switches your main
+model.
+
+Smoke test: `npx tsx extensions/scripts/gemini-smoke.ts x chatgpt-auth`,
+`… "reply pong" chatgpt`.
 
 ## Library structure
 
@@ -229,7 +470,4 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 ```bash
 # Run all tests
 npm test
-
-# Run only unit tests
-npm run test:unit
 ```

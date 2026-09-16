@@ -1,12 +1,12 @@
 import { assert } from "chai";
-import { buildA2ASettingsPatch, loadConfig, resolvePeer, authHeaders, normUrl, setConfigOverrides, writeSettingsA2A, gatewayEntries, gatewayKeyFromUrl } from "../lib/config";
+import { buildA2ASettingsPatch, loadConfig, resolvePeer, authHeaders, normUrl, setConfigOverrides, writeSettingsA2A, gatewayEntries, gatewayKeyFromUrl, cleanHostName, SECURITY_ENV_KEYS } from "../lib/config";
 import { DEFAULTS } from "./helpers";
+import { makeTempDir } from "./tmp";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import * as os from "node:os";
 
 function tmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-cfg-"));
+  return makeTempDir("pi-a2a-cfg-");
 }
 
 /** Isolate from the operator's real ~/.pi/agent/settings.json by pointing the
@@ -23,17 +23,64 @@ function withIsolatedPiDir<T>(fn: (dir: string) => T): T {
   }
 }
 
+/** Isolate from operator-exported A2A_* env vars. loadConfig() treats
+ * process.env as the trusted base, so on machines whose dev shell exports live
+ * A2A_* config (agent-harness .env files do), operator values leak past the
+ * PI_CODING_AGENT_DIR isolation and fail the file-backed injection-guard
+ * tests. Scrub every A2A_* var for the duration of `fn`, then restore. */
+function withoutA2AEnv<T>(fn: () => T): T {
+  const saved = Object.entries(process.env).filter(([k]) => k.startsWith("A2A_")) as [string, string][];
+  for (const [k] of saved) delete process.env[k];
+  try {
+    return fn();
+  } finally {
+    for (const [k, v] of saved) process.env[k] = v;
+  }
+}
+
+/** Can this environment read files named `.env.local`? The two file-backed
+ * injection-guard tests below write a fixture `.env.local` and assert what
+ * `loadConfig` parses from it — some restricted environments (sandboxed
+ * agents, DLP-style policies) deny reads of dot-env filenames outright, which
+ * used to fail those tests on an unrelated default port: a false defect
+ * signal. Probe once and skip with a reason instead; the guard itself is
+ * unchanged and still runs wherever dot-env reads are permitted. */
+let dotEnvReadable: boolean | undefined;
+function canReadDotEnvFixtures(): boolean {
+  if (dotEnvReadable === undefined) {
+    const dir = makeTempDir("pi-a2a-envprobe-");
+    const file = path.join(dir, ".env.local");
+    try {
+      fs.writeFileSync(file, "PROBE=1\n");
+      dotEnvReadable = fs.readFileSync(file, "utf-8") === "PROBE=1\n";
+    } catch {
+      dotEnvReadable = false;
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    if (!dotEnvReadable) {
+      console.warn(
+        "config.test: this environment cannot read .env.local files — skipping the two file-backed injection-guard tests " +
+          "(they still run wherever dot-env reads are permitted).",
+      );
+    }
+  }
+  return dotEnvReadable;
+}
+
 describe("config", () => {
   it("returns defaults when nothing is configured", () => {
     const cfg = withIsolatedPiDir((dir) => loadConfig({ cwd: dir }));
     assert.equal(cfg.server.port, 9910);
     assert.equal(cfg.server.host, "127.0.0.1");
     assert.isFalse(cfg.server.enabled);
-    assert.equal(cfg.timeouts.send, 120000);
+    assert.equal(cfg.timeouts.send, 360000);
   });
 
-  it("ignores security-relevant A2A_* keys from repo cwd .env.local (config injection guard)", () => {
-    withIsolatedPiDir((dir) => {
+  it("ignores security-relevant A2A_* keys from repo cwd .env.local (config injection guard)", function () {
+    if (!canReadDotEnvFixtures()) this.skip();
+    withoutA2AEnv(() =>
+      withIsolatedPiDir((dir) => {
       // cwd is a REPO the agent opened; the global Pi dir is `dir` (trusted).
       // Keep them separate so the global dir's .env.local (trusted, no file)
       // cannot mask the repo file we are testing.
@@ -57,8 +104,16 @@ describe("config", () => {
           "A2A_VERIFY_SSL=false",
           "A2A_RATE_LIMIT=1000000",
           "A2A_MAX_PINGPONG_TURNS=20",
+          "A2A_CHILD_TRANSCRIPTS=false",
+          "A2A_CHILD_TRANSCRIPT_RETENTION_DAYS=1",
           "A2A_DISCOVERY_MDNS=true",
           "A2A_ENRICH_CARD=true",
+          // Abuse-control parity with sanitizeRepoA2ASettings: the repo must
+          // not raise the concurrency ceiling or stretch either supervision
+          // window (asyncTimeoutSec 0 = unbounded).
+          "A2A_MAX_CONCURRENT=1000",
+          "A2A_REPLY_TIMEOUT=1000000",
+          "A2A_ASYNC_TIMEOUT=1000000",
           // Non-security key must still be honored from the cwd file.
           "A2A_PORT=7777",
         ].join("\n"),
@@ -75,18 +130,25 @@ describe("config", () => {
       assert.isTrue(cfg.verifySsl, "verifySsl must not be disabled by repo .env.local");
       assert.equal(cfg.server.rateLimitPerMin, DEFAULTS().server.rateLimitPerMin, "rate limit must not be neutered by repo .env.local");
       assert.equal(cfg.server.maxPingpongTurns, DEFAULTS().server.maxPingpongTurns, "anti-loop cap must not be raised by repo .env.local");
+      assert.isTrue(cfg.server.childTranscripts, "childTranscripts must not be disabled by repo .env.local");
+      assert.equal(cfg.server.childTranscriptRetentionDays, DEFAULTS().server.childTranscriptRetentionDays, "transcript retention window must not be shrunk by repo .env.local");
+      assert.equal(cfg.server.maxConcurrent, DEFAULTS().server.maxConcurrent, "concurrency cap must not be raised by repo .env.local");
+      assert.equal(cfg.server.replyTimeoutSec, DEFAULTS().server.replyTimeoutSec, "reply window must not be stretched by repo .env.local");
+      assert.equal(cfg.server.asyncTimeoutSec, DEFAULTS().server.asyncTimeoutSec, "detached supervision window must not be stretched by repo .env.local");
       assert.isFalse(cfg.discovery.mdns.enabled, "mDNS must not be force-enabled by repo .env.local");
       assert.equal(cfg.server.port, 7777, "non-security keys still honored from cwd .env.local");
-    });
+      }),
+    );
   });
 
-  it("ignores security keys from a PARENT-directory .env.local on the cwd→root walk", () => {
+  it("ignores security keys from a PARENT-directory .env.local on the cwd→root walk", function () {
+    if (!canReadDotEnvFixtures()) this.skip();
     withIsolatedPiDir((piDir) => {
       // Monorepo layout: repo nested one level under a workspace root that
       // ships its own .env.local. The parent must NOT be the PI dir itself
       // (the global file is trusted-unsanitized by design), so build it as a
-      // sibling tree under /tmp.
-      const parent = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-parent-"));
+      // sibling tree in the scratch area.
+      const parent = makeTempDir("pi-a2a-parent-");
       const repo = path.join(parent, "repo");
       fs.mkdirSync(repo, { recursive: true });
       fs.writeFileSync(path.join(parent, ".env.local"), "A2A_SERVER_ENABLED=true\nA2A_BEARER_TOKEN=parent-token\nA2A_PORT=7001");
@@ -122,8 +184,28 @@ describe("config", () => {
     });
   });
 
+  it("SECURITY_ENV_KEYS covers the abuse-control server keys (env/settings parity)", () => {
+    // The .env.local fixture tests above cover the walk end-to-end but need
+    // real .env.local READS — machines that sandbox those reads (some coding
+    // agents cannot open dot-env files) mask them. This pins the key-set
+    // directly: every abuse-control env key the maintainer review flagged
+    // (A2A_ASYNC_TIMEOUT, A2A_REPLY_TIMEOUT, A2A_MAX_CONCURRENT) must be
+    // stripped from repo-controlled .env.local files, matching what
+    // sanitizeRepoA2ASettings strips from repo-controlled settings.json.
+    for (const k of [
+      "A2A_MAX_PINGPONG_TURNS",
+      "A2A_RATE_LIMIT",
+      "A2A_MAX_CONCURRENT",
+      "A2A_REPLY_TIMEOUT",
+      "A2A_ASYNC_TIMEOUT",
+    ]) {
+      assert.isTrue(SECURITY_ENV_KEYS.has(k), `${k} must be stripped from repo .env.local files`);
+    }
+  });
+
   it("sanitizes security keys from a REPO-CONTROLLED .pi/settings.json (settings injection guard)", () => {
-    withIsolatedPiDir((dir) => {
+    withoutA2AEnv(() =>
+      withIsolatedPiDir((dir) => {
       const cwd = path.join(dir, "repo");
       fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
       // Malicious repo ships .pi/settings.json enabling the server, widening
@@ -145,6 +227,9 @@ describe("config", () => {
               maxConcurrent: 1000,
               maxPingpongTurns: 20,
               replyTimeoutSec: 1000000,
+childTranscripts: false,
+              childTranscriptRetentionDays: 1,
+              asyncTimeoutSec: 1000000,
               port: 6001, // non-security key — must survive
             },
             discovery: {
@@ -172,6 +257,10 @@ describe("config", () => {
       assert.equal(cfg.server.rateLimitPerMin, DEFAULTS().server.rateLimitPerMin, "rate limit must not be neutered by repo settings.json");
       assert.equal(cfg.server.maxConcurrent, DEFAULTS().server.maxConcurrent, "concurrency cap must not be raised by repo settings.json");
       assert.equal(cfg.server.maxPingpongTurns, DEFAULTS().server.maxPingpongTurns, "anti-loop cap must not be raised by repo settings.json");
+      assert.isTrue(cfg.server.childTranscripts, "childTranscripts must not be disabled by repo settings.json");
+      assert.equal(cfg.server.childTranscriptRetentionDays, DEFAULTS().server.childTranscriptRetentionDays, "transcript retention window must not be shrunk by repo settings.json");
+      assert.equal(cfg.server.replyTimeoutSec, DEFAULTS().server.replyTimeoutSec, "reply window must not be stretched by repo settings.json");
+      assert.equal(cfg.server.asyncTimeoutSec, DEFAULTS().server.asyncTimeoutSec, "detached supervision window must not be stretched by repo settings.json");
       assert.isFalse(cfg.discovery.mdns.enabled, "mDNS must not be force-enabled by repo settings.json");
       assert.equal(cfg.discovery.enrichCard, DEFAULTS().discovery.enrichCard, "enrichCard must not be forced on by repo settings.json");
       // Repo-sourced peer: callable, but NEVER auto-attached the shared token.
@@ -181,7 +270,8 @@ describe("config", () => {
       assert.equal(resolved?.auth.type, "none", "repo-sourced peer must NOT receive the shared token");
       assert.equal(cfg.server.port, 6001, "non-security keys still honored from repo settings.json");
       assert.isFalse(cfg.ui.transcript, "non-security ui settings still honored from repo settings.json");
-    });
+      }),
+    );
   });
 
   it("operator-configured peers STILL auto-attach the shared token on loopback (no over-block)", () => {
@@ -203,14 +293,19 @@ describe("config", () => {
 
   it("still honors security-relevant A2A_* from process env", () => {
     withIsolatedPiDir((dir) => {
-      const keys = ["A2A_SERVER_ENABLED", "A2A_BEARER_TOKEN"] as const;
+      const keys = ["A2A_SERVER_ENABLED", "A2A_BEARER_TOKEN", "A2A_ASYNC_TIMEOUT"] as const;
       const saved = keys.map((k) => [k, process.env[k]] as const);
       process.env.A2A_SERVER_ENABLED = "true";
       process.env.A2A_BEARER_TOKEN = "envtok";
+      process.env.A2A_ASYNC_TIMEOUT = "7200";
       try {
         const cfg = loadConfig({ cwd: dir });
         assert.isTrue(cfg.server.enabled);
         assert.equal(cfg.server.sharedToken, "envtok");
+        // The SECURITY_ENV_KEYS guard strips A2A_ASYNC_TIMEOUT only from
+        // repo-controlled .env.local FILES — the operator's own process env
+        // is the trusted path and must keep working.
+        assert.equal(cfg.server.asyncTimeoutSec, 7200);
       } finally {
         for (const [k, v] of saved) {
           if (v === undefined) delete process.env[k];
@@ -273,6 +368,48 @@ describe("config", () => {
           else process.env[k] = v;
         }
       }
+    });
+  });
+
+  describe("server.childTranscripts (#252)", () => {
+    it("defaults to on with a 30-day retention", () => {
+      const cfg = withIsolatedPiDir((dir) => loadConfig({ cwd: dir }));
+      assert.isTrue(cfg.server.childTranscripts);
+      assert.equal(cfg.server.childTranscriptRetentionDays, 30);
+    });
+    it("parses from the trusted operator settings.json (PI-dir path, not repo .pi/)", () => {
+      withIsolatedPiDir((dir) => {
+        // Operator-owned <pi-dir>/settings.json. The sibling repo-strip test
+        // above covers the repo-scope <cwd>/.pi/settings.json channel (these
+        // keys are stripped there), so this case pins the trusted source.
+        fs.writeFileSync(
+          path.join(dir, "settings.json"),
+          JSON.stringify({ a2a: { server: { childTranscripts: false, childTranscriptRetentionDays: 7 } } }),
+        );
+        const cfg = loadConfig({ cwd: dir });
+        assert.isFalse(cfg.server.childTranscripts);
+        assert.equal(cfg.server.childTranscriptRetentionDays, 7);
+      });
+    });
+    it("parses from env A2A_CHILD_TRANSCRIPTS / A2A_CHILD_TRANSCRIPT_RETENTION_DAYS", () => {
+      withIsolatedPiDir((dir) => {
+        const olds: [string, string | undefined][] = [
+          ["A2A_CHILD_TRANSCRIPTS", process.env.A2A_CHILD_TRANSCRIPTS],
+          ["A2A_CHILD_TRANSCRIPT_RETENTION_DAYS", process.env.A2A_CHILD_TRANSCRIPT_RETENTION_DAYS],
+        ];
+        process.env.A2A_CHILD_TRANSCRIPTS = "false";
+        process.env.A2A_CHILD_TRANSCRIPT_RETENTION_DAYS = "14";
+        try {
+          const cfg = loadConfig({ cwd: dir });
+          assert.isFalse(cfg.server.childTranscripts);
+          assert.equal(cfg.server.childTranscriptRetentionDays, 14);
+        } finally {
+          for (const [k, v] of olds) {
+            if (v === undefined) delete process.env[k];
+            else process.env[k] = v;
+          }
+        }
+      });
     });
   });
 
@@ -927,6 +1064,36 @@ describe("config", () => {
         assert.deepEqual(Object.keys(a2a.discovery.gateways), ["work"], "removed entry gone");
       });
     });
+
+    it("peer timeout round-trip is idempotent (settings seconds, no 1000× drift)", () => {
+      withIsolatedPiDir((dir) => {
+        const cfg = cfgWith(
+          { peers: { bob: { url: "http://b", auth: { type: "none" }, timeout: 120, capabilities: [] } } },
+          dir,
+        );
+        assert.equal(cfg.peers.bob?.timeout, 120000, "loader: seconds → ms");
+
+        // Panel edit (no timeout change) → patch → simulated save → reload.
+        const working = structuredClone(cfg);
+        const next = buildA2ASettingsPatch({ cfg, working, peerChanges: true, gatewayChanged: false })({ peers: {} });
+        assert.equal(next.peers.bob.timeout, 120, "persisted back as seconds");
+        fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ a2a: next }));
+        const cfg2 = loadConfig({ cwd: dir });
+        assert.equal(cfg2.peers.bob?.timeout, 120000);
+
+        // Second cycle must be byte-identical in the settings file.
+        const next2 = buildA2ASettingsPatch({ cfg: cfg2, working: structuredClone(cfg2), peerChanges: true, gatewayChanged: false })({
+          peers: {},
+        });
+        assert.deepEqual(next2.peers, next.peers, "no drift on second save");
+
+        // Panel-added peer (addPeer seeds runtime ms 120000) persists as 120 s.
+        const working3 = structuredClone(cfg2);
+        working3.peers.newp = { url: "http://n", auth: { type: "none" }, timeout: 120000, capabilities: [] };
+        const next3 = buildA2ASettingsPatch({ cfg: cfg2, working: working3, peerChanges: true, gatewayChanged: false })({ peers: {} });
+        assert.equal(next3.peers.newp.timeout, 120, "addPeer seed lands as seconds");
+      });
+    });
   });
 
   describe("writeSettingsA2A", () => {
@@ -1030,6 +1197,16 @@ describe("config", () => {
         if (oldPiDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
         else process.env.PI_CODING_AGENT_DIR = oldPiDir;
       }
+    });
+  });
+
+  describe("cleanHostName", () => {
+    it("strips mDNS suffixes and lowercases", () => {
+      assert.equal(cleanHostName("MBP-Sao.local"), "mbp-sao");
+      assert.equal(cleanHostName("hermes-lxc.LAN."), "hermes-lxc");
+      assert.equal(cleanHostName("Pi-Server"), "pi-server");
+      assert.equal(cleanHostName(""), "pi");
+      assert.equal(cleanHostName(undefined), "pi");
     });
   });
 

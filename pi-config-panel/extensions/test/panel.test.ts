@@ -471,5 +471,38 @@ describe("panel kernel", () => {
       const input = (model as unknown as { input: { getValue(): string } }).input;
       assert.equal(input.getValue(), "");
     });
+
+    it("cursor in the FIRST segment targets that segment (picker edits entry 1)", () => {
+      // filterSuggestions/joinCompletion with explicit cursor: the picker
+      // edits whichever entry the cursor sits in, not just the last one.
+      assert.deepEqual(filterSuggestions(models, "m1, fast", 2).map((o) => o.value), ["a/m1"], "cursor inside 'm1' → filters by 'm1'");
+      assert.equal(filterSuggestions(models, "m1, fast", 5)[0]!.value, "b/fast", "cursor inside 'fast' → filters by 'fast'");
+      // Tab with cursor in segment 1 replaces entry 1 and PRESERVES the tail.
+      assert.equal(joinCompletion("m1, fast", "m2", 1), "m2, fast");
+      assert.equal(joinCompletion("m1, fast", "m2", 4), "m1, m2");
+      // Cursor on the comma belongs to the earlier segment.
+      assert.equal(joinCompletion("m1, fast", "m2", 2), "m2, fast");
+    });
+
+    it("live retarget: cursor move re-filters suggestions (component flow)", () => {
+      const cfg: TestCfg = DEFAULTS();
+      cfg.url = "a/m1, b/fast";
+      const group: PanelGroup[] = [{
+        key: "g", label: "g", rows: [
+          row("model", "Model", "string", cfg.url, (v) => { cfg.url = String(v ?? ""); }, { completions: () => models }),
+        ],
+      }];
+      const model = new ConfigPanelModel(group, null, "t");
+      model.handleInput("\r"); // prefill "a/m1, b/fast", cursor at end
+      // Simulate arrows landing the cursor inside segment 1 ("a/m1", idx 0-3),
+      // then one real ← key routes through handleInput → refilter.
+      const m = model as unknown as { suggestions: { value: string }[]; input: { getValue(): string; cursor: number } };
+      m.input.cursor = 3;
+      model.handleInput("\x1b[D"); // ← → cursor 2, inside "a/m1"
+      assert.ok(m.suggestions.length >= 1, "suggestions live for segment 1");
+      model.handleInput("\x1b[B"); // ↓ highlight a/m2
+      model.handleInput("\t"); // Tab replaces segment 1 with a/m2, keeps segment 2
+      assert.equal(m.input.getValue(), "a/m2, b/fast", "first entry replaced, second preserved");
+    });
   });
 });

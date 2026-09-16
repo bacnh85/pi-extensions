@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.4 (2026-09-14)
+
+### Fixed
+
+- `callMunin` error handling no longer mutates the caught error's `.message`
+  before rethrowing. Remediation text is now appended into a fresh `Error`
+  (identical message text) with the original preserved as `cause`, keeping
+  the original error's identity and stack intact.
+
+## 0.5.3 (2026-08-30)
+
+### Changed
+
+- Trimmed `munin_store` promptGuidelines from 4 lines to 1 (points at the
+  always-on Munin Memory Protocol) and one-lined key/content/tags/base_url/
+  project param descriptions. Saves ~45 tokens/turn.
+
 ## 0.5.2 (2026-08-10)
 
 ### Fixes

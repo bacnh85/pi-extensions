@@ -29,11 +29,15 @@ import {
   buildAgentCard,
   buildTask,
   extractText,
+  artifactUpdateEvent,
   jsonrpcError,
   jsonrpcResult,
   newContextId,
   newTaskId,
   normalizeRole,
+  sendTaskResponse,
+  statusUpdateEvent,
+  TERMINAL_STATES,
   uuid,
   type AgentCard,
   type AgentSkill,
@@ -41,7 +45,7 @@ import {
   type Task,
 } from "./protocol";
 import type { A2AConfig } from "./config";
-import { setGatewayRegistrationName, updateGatewayPeers } from "./config";
+import { setGatewayRegistrationName, updateGatewayPeers, cleanHostName } from "./config";
 import {
   AntiLoop,
   audit,
@@ -55,6 +59,7 @@ import {
   wrapInbound,
 } from "./security";
 import { metrics } from "./client";
+import { childTranscriptDir, sweepChildTranscripts } from "./persistence";
 import { heartbeat, register, unregister, type SessionDescriptor } from "./registry";
 import { startBroadcast, startDiscovery, txtRecord, mdnsPeerKey, type MdnsHandle, type MdnsPeer } from "./mdns";
 import type { InboundActivity } from "./activity";
@@ -126,6 +131,19 @@ class TaskStore {
 }
 
 // ---------------------------------------------------------------------------
+// Non-blocking send detection (A2A v1.0 §3.2.2 SendMessageConfiguration)
+// ---------------------------------------------------------------------------
+
+/** True when the caller asked for an immediate in-progress Task ack instead
+ *  of waiting for the terminal state (submit-and-poll). Accepts the
+ *  snake_case spelling some early clients send. */
+function wantsImmediateReturn(params: any): boolean {
+  const cfg = params?.configuration;
+  if (!cfg || typeof cfg !== "object") return false;
+  return cfg.returnImmediately === true || cfg.return_immediately === true;
+}
+
+// ---------------------------------------------------------------------------
 // Rate limiter (sliding window per identity; prunes stale entries)
 // ---------------------------------------------------------------------------
 
@@ -167,12 +185,35 @@ class RateLimiter {
 // Session runner — the injectable boundary for testing
 // ---------------------------------------------------------------------------
 
+/**
+ * Contract: a normal return asserts the turn finished (or needs input) —
+ * in particular, that the final assistant message carried usable text. A
+ * turn that ends on a length stop with no assistant text produced no usable
+ * reply and MUST throw, so messageSend maps the task to FAILED instead of
+ * completing it with the previous turn's stale text. If the abort signal
+ * fired first, the runner MUST likewise throw — messageSend routes any
+ * normal return after an abort through the failure classification anyway,
+ * and an honest throw carries the real error (timeout vs cancel).
+ */
 export interface SessionRunner {
   (opts: {
     message: string;
+    /** A2A task id of this dispatch — the runner keys the persisted child
+     *  session transcript by it (fleet task #252). Absent in tests. */
+    taskId?: string;
     signal: AbortSignal;
     onProgress?: (assistantTextDelta: string) => void;
-  }): Promise<{ reply: string; inputRequired: boolean }>;
+  }): Promise<{
+    reply: string;
+    inputRequired: boolean;
+    /** Path of the persisted child transcript, when the runner wrote one
+     *  (fleet task #252). Audited at completion AND failure so a dead
+     *  worker's step history is discoverable from the audit log alone. */
+    transcriptPath?: string;
+    /** Assistant turns + tool executions the runner observed — with the
+     *  transcript, answers "how far did it get" in a post-mortem (#256). */
+    stepCount?: number;
+  }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +315,7 @@ export class A2AServer {
 
   private buildCard(stripEnrichedMetadata = false): AgentCard {
     const url = this.publicUrl();
-    const name = this.cfg.server.agentName || hostname() || "pi";
+    const name = this.sessionName();
     return buildAgentCard({
       name,
       url,
@@ -287,6 +328,19 @@ export class A2AServer {
         ? this.cardMetadata()
         : undefined,
     });
+  }
+
+  /** Display name: the pinned agentName wins; the unpinned default gets the
+   *  bound port suffixed (hostname-9912) so same-machine sessions don't all
+   *  collide on one registry/discovery name. Mirrors the gateway name
+   *  convention (`<base>-<port>`). `.local`/`.LAN` mDNS suffixes stripped for
+   *  cleaner names (MBP-Sao.local → mbp-sao). */
+  private baseName(): string {
+    return cleanHostName(hostname());
+  }
+
+  private sessionName(): string {
+    return this.cfg.server.agentName || `${this.baseName()}-${this.boundPort ?? this.cfg.server.port}`;
   }
 
   /** Build the A2A-Extensions metadata map from the live session descriptor. */
@@ -320,7 +374,7 @@ export class A2AServer {
       host: resolveBindHost(this.cfg),
       cwd: this.cwd,
       model,
-      agentName: this.cfg.server.agentName || hostname() || "pi",
+      agentName: this.sessionName(),
       sessionName: this.ctx ? (this.ctx as any).getSessionName?.() : undefined,
       selfIdentity: this.cfg.selfIdentity || undefined,
       tools: this.activeTools(),
@@ -438,8 +492,10 @@ export class A2AServer {
       // Unique name per session (name-port) unless explicitly pinned — sessions
       // on the same machine share config, and one gateway entry per live session
       // beats last-registration-wins.
-      const base = gw.name || this.cfg.server.agentName || hostname() || "pi";
-      const name = gw.name ? gw.name : `${base}-${this.boundPort}`;
+      // Same name derivation as the local session (sessionName) — gateway
+      // registration should not diverge (pinned wins, else host-port).
+      // A per-gateway pinned name (discovery.gateways.<key>.name) still wins.
+      const name = gw.name || this.sessionName();
       // Dedicated per-session inbound token: when the entry pins no
       // upstreamToken, mint one per server start and accept it inbound. The
       // switchboard presents it when proxying TO us — the static sharedToken
@@ -474,7 +530,7 @@ export class A2AServer {
           // Exact-match self-filter for the default auto-name — passed even
           // when the user pinned a name, so a stale auto-named entry from a
           // previous run is still filtered.
-          autoName: `${base}-${this.boundPort}`,
+          autoName: `${this.baseName()}-${this.boundPort}`,
         } as import("./gateway.js").GatewayConfig,
         () => this.buildCard() as unknown as Record<string, unknown>,
         this.onError,
@@ -493,36 +549,40 @@ export class A2AServer {
             console.error(msg);
           }
         },
+        // Fires on the transition to registered — including a late beat that
+        // self-heals after start() returned false (gateway down at session
+        // start). Same surface as a successful start(): publish the
+        // gateway-issued name (a 409 self-heal rename may have changed it —
+        // publishing the pre-rename name would advertise a caller identity
+        // the gateway never registered) and emit the registration line.
+        (registeredName, state) => {
+          setGatewayRegistrationName(registeredName, key);
+          const pending = state === "pending";
+          let host = gw.url;
+          try {
+            host = new URL(gw.url).host;
+          } catch {
+            /* keep raw url */
+          }
+          const msg =
+            `[a2a] registered to a2a-switchboard ${key}@${host} as ${registeredName}` +
+            (pending ? " (pending admin acceptance — not yet listed for peers)" : "");
+          if (this.onStatus) {
+            try {
+              this.onStatus(msg);
+              return;
+            } catch {
+              /* fall back to console */
+            }
+          }
+          console.log(msg);
+        },
       );
       this.gatewayUpstreams.set(key, upstream);
-      const ok = await upstream.start(this.publicUrl());
-      if (ok) {
-        // registeredName, not the local computation: a 409 self-heal may have
-        // renamed the peer — publishing the pre-rename name would advertise a
-        // caller identity the gateway never registered.
-        const registeredName = upstream.registeredName;
-        setGatewayRegistrationName(registeredName, key);
-        const state = upstream.lastState;
-        const pending = state === "pending";
-        let host = gw.url;
-        try {
-          host = new URL(gw.url).host;
-        } catch {
-          /* keep raw url */
-        }
-        const msg =
-          `[a2a] registered to a2a-switchboard ${key}@${host} as ${registeredName}` +
-          (pending ? " (pending admin acceptance — not yet listed for peers)" : "");
-        if (this.onStatus) {
-          try {
-            this.onStatus(msg);
-            continue;
-          } catch {
-            /* fall back to console */
-          }
-        }
-        console.log(msg);
-      }
+      // The onRegistered callback above announces success (immediately, or on
+      // a later self-healing beat if the first register failed) — nothing to
+      // do with start()'s return value.
+      await upstream.start(this.publicUrl());
     }
   }
 
@@ -559,6 +619,15 @@ export class A2AServer {
   async start(): Promise<{ host: string; port: number; url: string }> {
     if (this.http) {
       return { host: resolveBindHost(this.cfg), port: this.boundPort ?? this.cfg.server.port, url: this.publicUrl() };
+    }
+    // Retention sweep for child transcripts (fleet task #252): they carry
+    // everything a dispatched worker read, so bound their lifetime. Runs
+    // unconditionally (also cleans up after transcripts were later disabled)
+    // and is best-effort — housekeeping must never block the server.
+    try {
+      sweepChildTranscripts(childTranscriptDir(this.piDir), this.cfg.server.childTranscriptRetentionDays);
+    } catch {
+      /* best-effort */
     }
     const host = resolveBindHost(this.cfg);
     const configuredPort = this.cfg.server.port;
@@ -643,6 +712,11 @@ export class A2AServer {
    * fallback). null when not started. */
   get port(): number | null {
     return this.boundPort;
+  }
+
+  /** This session's callable name (pinned agentName or auto `<host>-<port>`). */
+  get name(): string {
+    return this.sessionName();
   }
 
   /** For tests: how many tasks are currently running. */
@@ -736,7 +810,7 @@ export class A2AServer {
       return this.send(res, 200, this.buildCard(identity === null));
     }
     if (url === "/health" || url === "/") {
-      return this.send(res, 200, { status: "ok", agent: this.cfg.server.agentName || hostname() });
+      return this.send(res, 200, { status: "ok", agent: this.sessionName() });
     }
     if (url === "/metrics") {
       if (this.getIdentity(req) === null) {
@@ -781,6 +855,10 @@ export class A2AServer {
 
     // Normalize method aliases (v1.0 PascalCase ↔ pre-1.0 path).
     const norm = method.toLowerCase().replace(/[/_.-]/g, "");
+    // v1.0 methods ("SendMessage", "ListTasks", …) speak the v1.0 wire shapes;
+    // the pre-1.0 aliases ("message/send", "tasks/list", …) keep the legacy
+    // shapes old peers were built against.
+    const isV1 = (v1Norm: string): boolean => norm === v1Norm;
 
     if (norm === "messagesend" || norm === "sendmessage") {
       // Concurrency cap: reject when too many tasks are already running.
@@ -792,10 +870,12 @@ export class A2AServer {
         );
       }
       const r = await this.messageSend(params, identity);
-      return this.send(res, 200, jsonrpcResult(id, r));
+      // A2A v1.0: the SendMessage result is the oneof {"task": …} | {"message": …},
+      // never a bare Task; the pre-1.0 alias keeps returning the bare Task.
+      return this.send(res, 200, jsonrpcResult(id, isV1("sendmessage") ? sendTaskResponse(r) : r));
     }
     if (norm === "messagestream" || norm === "sendstreamingmessage") {
-      return this.messageStream(params, identity, res, id);
+      return this.messageStream(params, identity, res, id, isV1("sendstreamingmessage"));
     }
     if (norm === "tasksget" || norm === "gettask") {
       const st = this.store.get(String(params.id ?? ""));
@@ -806,8 +886,11 @@ export class A2AServer {
     }
     if (norm === "taskslist" || norm === "listtasks") {
       // Per-identity ownership (#10): only the caller's own tasks are listed.
-      const all = this.store.list().filter((t) => this.store.get(t.id)?.identity === identity).map((t) => ({ id: t.id, state: t.status.state }));
-      return this.send(res, 200, jsonrpcResult(id, { tasks: all }));
+      const mine = this.store.list().filter((t) => this.store.get(t.id)?.identity === identity);
+      // A2A v1.0: ListTasksResponse carries full Task objects; the pre-1.0
+      // alias keeps the {id, state} stubs it always returned.
+      const tasks = isV1("listtasks") ? mine : mine.map((t) => ({ id: t.id, state: t.status.state }));
+      return this.send(res, 200, jsonrpcResult(id, { tasks }));
     }
     if (norm === "taskscancel" || norm === "canceltask") {
       const st = this.store.get(String(params.id ?? ""));
@@ -827,7 +910,7 @@ export class A2AServer {
     }
     if (norm === "taskssubscribe" || norm === "subscribetotask") {
       // Resubscribe via SSE — same shape as message/stream.
-      return this.taskSubscribe(params, identity, res, id);
+      return this.taskSubscribe(params, identity, res, id, isV1("subscribetotask"));
     }
     return this.send(res, 200, jsonrpcError(id, -32601, `method not found: ${method}`));
   }
@@ -841,6 +924,10 @@ export class A2AServer {
     const inboundText = extractText(params);
     const contextId = String(params.contextId || msg.contextId || newContextId());
     const taskId = newTaskId();
+    // A2A v1.0 §3.2.2 SendMessageConfiguration.returnImmediately — the caller
+    // asks for an immediate in-progress Task instead of waiting for the
+    // terminal state (submit-and-poll).
+    const returnImmediately = wantsImmediateReturn(params);
 
     // Anti-loop: cap per-context turns.
     if (!this.antiLoop.record(contextId)) {
@@ -868,19 +955,123 @@ export class A2AServer {
     }
 
     this.running += 1;
+
+    // Blocking (default): await the run and return the terminal Task.
+    // Non-blocking (returnImmediately): return the in-progress Task as an
+    // ACK right away and let the run continue detached from the HTTP request
+    // — the caller polls GetTask / subscribes / cancels by task id, and the
+    // session is no longer bounded by the caller's reply window (detached
+    // runs are supervised by server.asyncTimeoutSec instead).
+    const execution = this.executeTask(st, identity, inboundText, returnImmediately);
+    if (returnImmediately) {
+      // The detached run continues after this reply returns; nothing else
+      // will ever await `execution`. executeTask never rejects by contract
+      // (every failure is classified into the task state), but that is
+      // discipline, not a type guarantee — a throw on a path outside its
+      // try/catch (a store update, an activity callback, an OOM) would be an
+      // UNOBSERVED rejection that takes the process down (Node's default).
+      // Observe the promise and contain an unexpected throw: best-effort
+      // mark the task FAILED (redacted) so a poller sees the truth instead
+      // of WORKING forever, and never rethrow — this catch is the last
+      // observer of the promise.
+      execution.catch((e) => {
+        try {
+          if (!st.done) {
+            this.store.update(taskId, (t) => {
+              t.status.state = STATE_FAILED;
+              t.status.message = {
+                role: "ROLE_AGENT",
+                parts: [{ text: redactOutbound(`internal error: ${e?.message ?? String(e)}`), mediaType: "text/plain" }],
+                messageId: newContextId(),
+              };
+            });
+            st.done = true;
+          }
+        } catch {
+          /* containment is best-effort */
+        }
+      });
+      return st.task;
+    }
+    return execution;
+  }
+
+  /**
+   * Run one stored task to completion and update the store. Never rejects —
+   * failures are classified into the task state (FAILED/CANCELED) exactly as
+   * the blocking path has always done. `this.running` is held for the whole
+   * execution, so detached runs still count against server.maxConcurrent.
+   */
+  private async executeTask(
+    st: StoredTask,
+    identity: string,
+    inboundText: string,
+    detached: boolean,
+  ): Promise<any> {
+    const taskId = st.task.id;
+    const controller = st.controller!;
     const startedAt = Date.now();
+    // Supervision timer for this run: reply window (blocking) or async window
+    // (detached). Hoisted so the finally can clear it on EVERY settle path —
+    // a timer left armed after a failed run keeps the process alive long
+    // after the suite/server is done (the runner rejects, no abort fires,
+    // nothing clears it: with the 86400s async default that is a full day).
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Local ground truth for "this run was killed by OUR supervision timer",
+    // set in the timer callback BEFORE the abort so it can never disagree
+    // with the timer. The catch path keys the supervision classification on
+    // this flag, never on the abort reason's TEXT — prefix-matching
+    // "reply timeout" would let any future abort site (or runner error) with
+    // that wording masquerade as a supervision kill.
+    let timedOut = false;
     try {
-      const timeoutMs = this.cfg.server.replyTimeoutSec * 1000;
-      const timer = setTimeout(() => controller.abort(new Error("reply timeout")), timeoutMs);
-      controller.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
+      // Blocking runs are bounded by the reply window (the HTTP request is
+      // holding the caller hostage). Detached runs are bounded by the async
+      // window instead. 0 disables the timer for BOTH windows, documented as
+      // "unbounded / caller-supervised": for the async window that is the
+      // deliberate submit-and-poll contract, and for the reply window it
+      // replaces the pre-async-dispatch degenerate reading of
+      // setTimeout(…, 0) — "instant timeout on every task" — which no
+      // working configuration can have depended on.
+      const timeoutSec = detached ? this.cfg.server.asyncTimeoutSec : this.cfg.server.replyTimeoutSec;
+      if (timeoutSec > 0) {
+        timer = setTimeout(() => {
+          timedOut = true;
+          controller.abort(
+            new Error(
+              detached
+                ? `async timeout: exceeded the ${timeoutSec}s detached-task window — session aborted mid-run, result is truncated`
+                : "reply timeout",
+            ),
+          );
+        }, timeoutSec * 1000);
+        // Clear on abort too: a runner that ignores its signal and never
+        // settles must not hold the process alive until the timer fires.
+        controller.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
+      }
       const wrapped = wrapInbound(identity, inboundText);
       const runner = this.requireRunner();
       const out = await runner({
         message: wrapped,
+        taskId,
         signal: controller.signal,
         onProgress: (line) => this.onActivity?.({ type: "progress", taskId, line }),
       });
-      clearTimeout(timer);
+      if (controller.signal.aborted) {
+        // Defense in depth (#247): a runner may return normally even though
+        // its abort signal fired — the stock runner's prompt promise resolves
+        // on session.abort() rather than rejecting, so without this check a
+        // killed worker came back TASK_STATE_COMPLETED with a truncated reply
+        // artifact. COMPLETED must mean the turn actually finished: route any
+        // post-abort return through the failure classification below
+        // (CANCELED for user cancel, FAILED otherwise).
+        const err =
+          controller.signal.reason instanceof Error
+            ? controller.signal.reason
+            : new Error("task aborted before completion");
+        this.attachTranscript(err, out);
+        throw err;
+      }
       const finalState = out.inputRequired ? STATE_INPUT_REQUIRED : STATE_COMPLETED;
       // Outbound redaction: replies cross the trust boundary back to a peer,
       // so scrub credential-shaped substrings (sk-*, ghp_*, bearer …, emails,
@@ -898,6 +1089,7 @@ export class A2AServer {
       });
       st.done = true;
       metrics.tasksCompleted += 1;
+      this.auditTranscript(taskId, identity, out.transcriptPath, out.stepCount);
       this.onActivity?.({
         type: "completed",
         taskId,
@@ -910,6 +1102,17 @@ export class A2AServer {
       const aborted = controller.signal.aborted;
       // Distinguish user-initiated cancel (CANCELED) from system timeout/failure (FAILED).
       const state = aborted && st.userCanceled ? STATE_CANCELED : STATE_FAILED;
+      this.auditTranscript(taskId, identity, (e as any)?.transcriptPath, (e as any)?.stepCount);
+      // A supervision timeout's ground truth is the local `timedOut` flag
+      // (set by OUR timer callback), never the abort reason's TEXT — the
+      // reason carries the descriptive "reply/async timeout: … the Ns window"
+      // message we abort with, and a runner rejecting with its own error
+      // must not be able to spoof that wording into a supervision
+      // classification. Client-disconnect aborts carry a generic AbortError,
+      // and cancels are classified above (userCanceled). timedOut implies
+      // aborted — the flag is set only in the callback that aborts.
+      const reason = controller.signal.reason;
+      const reasonMsg = timedOut && !st.userCanceled && reason instanceof Error ? reason.message : undefined;
       this.store.update(taskId, (t) => {
         // Don't clobber a cancel-handler-set CANCELED state with an error message.
         t.status.state = state;
@@ -919,7 +1122,7 @@ export class A2AServer {
             // Redacted: error messages can embed reply text (parse failures,
             // tool errors quoting the payload) — same outbound trust boundary
             // as the reply artifact.
-            parts: [{ text: redactOutbound(e?.message || String(e)), mediaType: "text/plain" }],
+            parts: [{ text: redactOutbound(reasonMsg ?? e?.message ?? String(e)), mediaType: "text/plain" }],
             messageId: newContextId(),
           };
         }
@@ -946,10 +1149,15 @@ export class A2AServer {
       return st.task;
     } finally {
       this.running -= 1;
+      // The run settled (completed or classified) — the supervision timer's
+      // job is done. Without this, a FAILED run whose runner threw its own
+      // error (no abort → no listener fire) leaked an armed timer that kept
+      // the process alive after the suite finished.
+      clearTimeout(timer);
     }
   }
 
-  private messageStream(params: any, identity: string, res: ServerResponse, id: any): void {
+  private messageStream(params: any, identity: string, res: ServerResponse, id: any, v1 = false): void {
     // Concurrency cap: same gate as message/send. Streaming has already sent
     // 200 + headers, so we emit a JSON-RPC error frame and close the stream.
     if (this.running >= this.cfg.server.maxConcurrent) {
@@ -997,11 +1205,31 @@ export class A2AServer {
     const disconnect = new AbortController();
     res.on("close", () => disconnect.abort());
 
+    // return_immediately has no effect on streaming operations (A2A v1.0
+    // §3.2.2) — strip it so the stream path keeps its blocking semantics.
+    if (wantsImmediateReturn(params)) {
+      params = {
+        ...params,
+        configuration: { ...(params.configuration ?? {}), returnImmediately: false, return_immediately: false },
+      };
+    }
+
     this.messageSend(params, identity, disconnect.signal)
       .then((task) => {
-        writeSse({ statusUpdate: task });
-        if (task.artifacts) {
-          for (const a of task.artifacts) writeSse({ artifactUpdate: a });
+        if (v1) {
+          // A2A v1.0: TaskArtifactUpdateEvents deliver the content, then the
+          // terminal TaskStatusUpdateEvent closes the interaction — the last
+          // frame carries taskId/contextId/state, so a client reading only the
+          // final event still learns the identifiers.
+          for (const a of task.artifacts ?? []) writeSse(artifactUpdateEvent(task, a));
+          writeSse(statusUpdateEvent(task, true));
+        } else {
+          // Pre-1.0 alias keeps the legacy shapes (whole Task as statusUpdate,
+          // bare artifact as artifactUpdate).
+          writeSse({ statusUpdate: task });
+          if (task.artifacts) {
+            for (const a of task.artifacts) writeSse({ artifactUpdate: a });
+          }
         }
       })
       .catch((e: any) => writeErr(-32603, e?.message || String(e)))
@@ -1015,7 +1243,7 @@ export class A2AServer {
       });
   }
 
-  private taskSubscribe(params: any, identity: string, res: ServerResponse, id: any): void {
+  private taskSubscribe(params: any, identity: string, res: ServerResponse, id: any, v1 = false): void {
     const taskId = String(params.id ?? "");
     const st = this.store.get(taskId);
     // Ownership check (#10) BEFORE writing the SSE head, so a foreign peer gets
@@ -1052,12 +1280,16 @@ export class A2AServer {
       res.end();
       return;
     }
-    writeSse({ statusUpdate: st.task });
+    // v1.0: a TaskStatusUpdateEvent {taskId, contextId, status, final}; the
+    // pre-1.0 alias keeps the legacy whole-Task shape. A snapshot of an
+    // already-finished task is the final event of this stream.
+    writeSse(v1 ? statusUpdateEvent(st.task, st.done) : { statusUpdate: st.task });
     if (st.done) {
       res.end();
       return;
     }
-    const watcher = (t: Task): void => writeSse({ statusUpdate: t });
+    const watcher = (t: Task): void =>
+      writeSse(v1 ? statusUpdateEvent(t, TERMINAL_STATES.has(t.status.state)) : { statusUpdate: t });
     st.subscribeWatchers.push(watcher);
     const interval = setInterval(() => {
       if (st.done) {
@@ -1072,6 +1304,39 @@ export class A2AServer {
     res.on("close", () => {
       clearInterval(interval);
       st.subscribeWatchers = st.subscribeWatchers.filter((w) => w !== watcher);
+    });
+  }
+
+  /** Stamp transcript forensics (path + step count) onto an error so the
+   *  catch path can audit them — the runner attaches the same fields to the
+   *  errors it throws itself (fleet task #252). */
+  private attachTranscript(err: unknown, out: { transcriptPath?: string; stepCount?: number }): void {
+    if (!out.transcriptPath) return;
+    try {
+      (err as any).transcriptPath = out.transcriptPath;
+      if (out.stepCount !== undefined) (err as any).stepCount = out.stepCount;
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  /** Audit the child transcript's existence at completion/failure so a
+   *  post-mortem can go from audit log (or task id) straight to the step
+   *  history — no guessing where the transcript lives (fleet task #252). */
+  private auditTranscript(
+    taskId: string,
+    identity: string,
+    transcriptPath: string | undefined,
+    stepCount: number | undefined,
+  ): void {
+    if (!transcriptPath) return;
+    audit({
+      piDir: this.piDir,
+      direction: "inbound",
+      identity,
+      taskId,
+      text: `[transcript] ${transcriptPath}${stepCount !== undefined ? ` (${stepCount} steps)` : ""}`,
+      transcriptPath,
     });
   }
 

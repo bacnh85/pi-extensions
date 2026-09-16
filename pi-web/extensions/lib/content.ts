@@ -59,6 +59,16 @@ export async function fetchReadableContent(
     signal: signalWithTimeout(timeoutMs, signal),
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  // Raw text/JSON payloads (raw.githubusercontent.com, JSON APIs) — Readability
+  // shreds them to nothing. Pass through verbatim. text/html and text/xml keep
+  // the Readability path — they're ordinary web pages. Session mining: 9/40
+  // static extract failures were raw-text/JSON shapes.
+  const contentType = (response.headers.get("content-type") ?? "").split(";")[0].trim();
+  if ((contentType.startsWith("text/") && contentType !== "text/html" && contentType !== "text/xml") || contentType === "application/json") {
+    const body = await response.text();
+    const markdown = contentType === "application/json" ? "```json\n" + body + "\n```" : body;
+    return { title: "", markdown: markdown.slice(0, 20000) };
+  }
   const html = await response.text();
   const deps = loadReadableContentDependencies();
   const dom = new deps.JSDOM(html, { url });

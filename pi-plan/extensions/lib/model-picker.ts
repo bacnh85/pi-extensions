@@ -17,10 +17,6 @@ export function exactModel(models: Model[], reference: string): Model | undefine
   return ids.length === 1 ? ids[0] : undefined;
 }
 
-export function modelAvailable(ctx: ExtensionContext, modelId: string | undefined): boolean {
-  return !!modelId && !!exactModel(ctx.modelRegistry.getAvailable(), modelId);
-}
-
 export function modelSearchText(model: Model): string {
   const ref = modelRef(model);
   return `${model.id} ${model.provider} ${ref} ${model.provider} ${model.id}${model.name ? ` ${model.name}` : ""}`;

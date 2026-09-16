@@ -81,6 +81,15 @@ describe("config", () => {
     assert.equal(globalJ.commandcode.baseUrl, "http://global2/v1");
   });
 
+  it("writeBaseUrl bails on a corrupt global settings.json without overwriting it", async () => {
+    // 0.2.1 regression: "exists but unparseable" must throw, not conflate with
+    // "missing" and wipe every unrelated section (router, a2a, …).
+    writeFileSync(globalSettings(), "{ not json");
+    const { writeBaseUrl } = await loadConfig();
+    assert.throws(() => writeBaseUrl("http://x/v1"), /not valid JSON/);
+    assert.equal(readFileSync(globalSettings(), "utf8"), "{ not json", "corrupt file untouched");
+  });
+
   it("panel round-trip: row set updates baseUrl through the kernel row()", async () => {
     const { getSettings } = await loadConfig();
     const { row } = await import("@bacnh85/pi-config-panel");

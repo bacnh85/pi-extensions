@@ -1,6 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, unlinkSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, unlinkSync, existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -76,6 +76,30 @@ describe("config", () => {
     assert.equal(maskApiKey(key), key.slice(0, 4) + "●".repeat(key.length - 8) + key.slice(-4));
     assert.equal(maskApiKey(undefined), "(not set)");
     assert.equal(maskApiKey("short"), "short");
+  });
+});
+
+// ── commands (atomic settings write) ─────────────────────────────────────────
+
+describe("commands", () => {
+  it("writeRouterSection replaces settings.json via tmp+rename (not an in-place rewrite)", async () => {
+    const settingsPath = join(TMP_HOME, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ other: true, router: { baseUrl: "http://x" } }));
+    const inoBefore = statSync(settingsPath).ino;
+    const { writeRouterSection } = await import("../commands/commands.js");
+    writeRouterSection({ enableReasoning: true });
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      other: boolean;
+      router: Record<string, unknown>;
+    };
+    assert.equal(settings.other, true); // unrelated keys survive
+    assert.equal(settings.router.baseUrl, "http://x");
+    assert.equal(settings.router.enableReasoning, true);
+    // Rename swaps the directory entry → new inode; a direct writeFileSync
+    // rewrites in place and keeps the inode. Catches regression to the
+    // non-atomic write without fs interception.
+    assert.notEqual(inoBefore, statSync(settingsPath).ino);
+    assert.ok(!existsSync(settingsPath + ".tmp")); // no tmp residue
   });
 });
 
@@ -208,6 +232,25 @@ describe("client", () => {
     assert.equal(m.reasoning, false);
     assert.equal(m.thinkingLevelMap, undefined);
     assert.equal(m.compat?.supportsReasoningEffort, false);
+  });
+
+  it("mapModel vision: probe-verified routes gain image input, verified strips lose it", async () => {
+    const { mapModel } = await import("../lib/client.js");
+    // VISION_OVERRIDES: probe-verified PASS route, no router vision flag
+    const gemini = mapModel({ id: "cmd/google/gemini-3.7-flash" }, true);
+    assert.deepEqual(gemini.input, ["text", "image"]);
+    // effort-tier variants of a probed base are covered by the suffix group
+    const geminiHigh = mapModel({ id: "cmd/google/gemini-3.7-flash-high" }, true);
+    assert.deepEqual(geminiHigh.input, ["text", "image"]);
+    // unprobed sibling variants stay text-only (anchored patterns)
+    const geminiPreview = mapModel({ id: "cmd/google/gemini-3.7-flash-preview" }, true);
+    assert.deepEqual(geminiPreview.input, ["text"]);
+    // VISION_DOWNGRADES: router claims vision:true but probe verified STRIP
+    const or = mapModel({ id: "openrouter/z-ai/glm-5.3-flash", capabilities: { vision: true } }, true);
+    assert.deepEqual(or.input, ["text"]);
+    // unverified route without flag stays text-only (no blanket enable)
+    const glm = mapModel({ id: "glm-cn/glm-5.3-flash" }, true);
+    assert.deepEqual(glm.input, ["text"]);
   });
 
   it("applyReasoning toggles the flag on an already-mapped model", async () => {
@@ -541,6 +584,33 @@ describe("provider", () => {
     assert.equal(result.length, 1);
     assert.equal(result[0].id, "m1");
     assert.equal(result[0].reasoning, false); // remapped with settings flag
+  });
+
+  it("refreshModels offline restore re-resolves vision (stale flags self-heal)", async () => {
+    const { registerProvider } = await import("../lib/provider.js");
+    let refreshModels: (ctx: unknown) => Promise<unknown>;
+    registerProvider({
+      registerProvider: (_n: string, config: { refreshModels: (ctx: unknown) => Promise<unknown> }) => { refreshModels = config.refreshModels; },
+    } as never, { baseUrl: "http://x", enableReasoning: false });
+    const ctx = {
+      stored: {
+        models: [
+          { id: "cmd/google/gemini-3.7-flash", name: "g", reasoning: false, input: ["text"], cost: {}, contextWindow: 1, maxTokens: 1 },
+          { id: "openrouter/z-ai/glm-5.3-flash", name: "o", reasoning: false, input: ["text", "image"], cost: {}, contextWindow: 1, maxTokens: 1 },
+          // pattern-unmatched: persisted router metadata must survive the restore
+          { id: "other/vision-model", name: "v", reasoning: false, input: ["text", "image"], cost: {}, contextWindow: 1, maxTokens: 1 },
+          // legacy/malformed entry without input: must not throw, degrades to text-only
+          { id: "legacy/entry", name: "l", reasoning: false, cost: {}, contextWindow: 1, maxTokens: 1 },
+        ],
+      },
+      allowNetwork: false,
+      signal: new AbortController().signal,
+    };
+    const result = (await refreshModels!(ctx)) as { id: string; input: string[] }[];
+    assert.deepEqual(result[0].input, ["text", "image"]); // override upgrades stale entry
+    assert.deepEqual(result[1].input, ["text"]);          // downgrade strips lying flag
+    assert.deepEqual(result[2].input, ["text", "image"]); // unmatched: metadata preserved
+    assert.deepEqual(result[3].input, ["text"]);          // malformed: text-only, no crash
   });
 
   it("refreshModels network path fetches, persists, and returns models", async () => {

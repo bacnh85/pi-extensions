@@ -218,29 +218,56 @@ export function kindValue(kind: PanelRowKind, raw: string): unknown {
 // Inline completion helpers (pure — unit-tested without a TUI)
 // ---------------------------------------------------------------------------
 
-/** Split an edited value into the committed head (text before the last `,`)
- *  and the live suffix being completed. Empty suffix → full option list. */
-function splitSegments(raw: string): { head: string; suffix: string } {
-  const idx = raw.lastIndexOf(",");
-  if (idx === -1) return { head: "", suffix: raw };
-  return { head: raw.slice(0, idx).trim(), suffix: raw.slice(idx + 1).replace(/^ /, "") };
+/** Split the value at the cursor into the committed head (text before the
+ *  segment containing the cursor) and the live segment the cursor sits in.
+ *  Cursor-aware: the picker edits whichever entry the cursor is inside, not
+ *  just the last one. Without a cursor (undefined), falls back to the legacy
+ *  last-segment split. */
+function splitSegments(raw: string, cursor?: number): { head: string; suffix: string } {
+  if (cursor === undefined || cursor >= raw.length) {
+    const idx = raw.lastIndexOf(",");
+    if (idx === -1) return { head: "", suffix: raw };
+    return { head: raw.slice(0, idx).trim(), suffix: raw.slice(idx + 1).replace(/^ /, '') };
+  }
+  // Segment boundaries: commas before and after the cursor. A cursor sitting
+  // ON a comma belongs to the segment before it (editing that entry's tail).
+  const start = (raw.lastIndexOf(",", cursor - 1) + 1) || 0;
+  let end = raw.indexOf(",", cursor);
+  if (end === -1) end = raw.length;
+  const head = raw.slice(0, start).trim().replace(/,$/, "").trim();
+  const suffix = raw.slice(start, end).replace(/^ /, "");
+  return { head, suffix };
 }
 
-/** Filter completion options against the live suffix after the last comma.
- *  Empty suffix → every option (full list). Case-insensitive substring. */
-export function filterSuggestions(options: PanelCompletionItem[], raw: string): PanelCompletionItem[] {
-  const { suffix } = splitSegments(raw);
-  const q = suffix.trim().toLowerCase();
+/** Filter completion options against the segment the cursor sits in (or the
+ *  last segment when no cursor is given). Empty → every option (full list).
+ *  Case-insensitive substring. `emptyQuery` overrides the segment text with
+ *  an empty query (full list) — used after cursor navigation so entering an
+ *  existing entry offers all options, not just itself. */
+export function filterSuggestions(options: PanelCompletionItem[], raw: string, cursor?: number, emptyQuery = false): PanelCompletionItem[] {
+  const { suffix } = splitSegments(raw, cursor);
+  const q = emptyQuery ? "" : suffix.trim().toLowerCase();
   if (!q) return options;
   return options.filter((o) => o.value.toLowerCase().includes(q) || (o.label ?? o.value).toLowerCase().includes(q));
 }
 
-/** Value produced by accepting `item.value` while editing `raw`: replaces only
- *  the current segment — `head + ", " + value`, or `value` when no prior
- *  segment. No trailing comma; the next pick starts a fresh empty suffix. */
-export function joinCompletion(raw: string, itemValue: string): string {
-  const { head } = splitSegments(raw);
-  return head ? `${head}, ${itemValue}` : itemValue;
+/** Value produced by accepting `item.value` while editing `raw`: replaces the
+ *  segment at the cursor (last segment when no cursor given) — `head + ", " +
+ *  value` + untouched tail segments. No trailing comma is added after the
+ *  replaced segment; typing `,` after a pick starts the next segment. */
+export function joinCompletion(raw: string, itemValue: string, cursor?: number): string {
+  const { head } = splitSegments(raw, cursor);
+  // Preserve any segments after the cursor's segment (a first-segment pick
+  // has an empty head but still a tail — early-return would drop it).
+  const after = cursor === undefined || cursor >= raw.length
+    ? ""
+    : (() => {
+        let end = raw.indexOf(",", cursor);
+        if (end === -1) end = raw.length;
+        return raw.slice(end); // ", seg2, seg3" or ""
+      })();
+  if (!head) return `${itemValue}${after}`;
+  return `${head}, ${itemValue}${after}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +314,7 @@ export class ConfigPanelModel implements Component {
   private input: Input | null = null;
   /** Live suggestion list while editing a row that has completions. */
   private suggestions: PanelCompletionItem[] = [];
+  private lastFilteredValue: string | null = null;
   private suggestionIdx = 0;
   private pendingPrompt: { label: string; onDone: (value: string | undefined) => void } | null = null;
   private _focused = false;
@@ -468,18 +496,32 @@ export class ConfigPanelModel implements Component {
 
   handleInput(data: string): void {
     // While editing or prompting, route ALL keys to the inline input — except
-    // suggestion navigation (↑/↓) and pick (Tab) while a completion list is up.
-    // Enter always submits the typed text (escape hatch for custom refs); Tab
-    // fills the input with the highlighted option; Esc cancels via Input.
+    // suggestion navigation (↑/↓), pick (Tab or Enter), and list dismiss
+    // (Esc) while a completion list is up. Enter PICKS the highlighted item
+    // (picker-first UX, like every other pi selector); after a pick the list
+    // is off, so the NEXT Enter submits the typed text (custom refs still
+    // reachable: Esc first, then edit + Enter). Tab keeps its fill role.
     if ((this.editing || this.pendingPrompt) && this.input) {
       if (this.editing && this.suggestions.length > 0) {
         const kb = this.keybindings;
         if (kb) {
           if (kb.matches(data, "tui.select.up")) return this.moveSuggestion(-1);
           if (kb.matches(data, "tui.select.down")) return this.moveSuggestion(1);
-        } else if (data === "\u001b[A" || data === "\u001bOA") return this.moveSuggestion(-1);
-        else if (data === "\u001b[B" || data === "\u001bOB") return this.moveSuggestion(1);
+          if (kb.matches(data, "tui.select.confirm")) return this.acceptSuggestion();
+        } else {
+          if (data === "\u001b[A" || data === "\u001bOA") return this.moveSuggestion(-1);
+          if (data === "\u001b[B" || data === "\u001bOB") return this.moveSuggestion(1);
+          if (data === "\r" || data === "\n") return this.acceptSuggestion();
+        }
         if (data === "\t") return this.acceptSuggestion();
+        // Esc with the list OPEN dismisses the list only (typed text kept);
+        // with no list it falls through to Input → cancels the edit.
+        if (data === "\u001b" && this.suggestions.length > 0) {
+          this.suggestions = [];
+          this.lastFilteredValue = this.input.getValue();
+          this.requestRender();
+          return;
+        }
       }
       this.input.handleInput(data);
       if (this.editing) this.refilterSuggestions();
@@ -564,11 +606,9 @@ export class ConfigPanelModel implements Component {
       }
     }
     this.suggestionIdx = 0;
+    this.lastFilteredValue = null; // first refilter after start counts as value-change
     this.refilterSuggestions();
     this.input.onSubmit = (raw: string) => {
-      // Empty submit on a masked (secret) row = keep the existing value.
-      // The old secret is invisible (rendered as ••••), so a blank enter
-      // must never wipe it.
       if (row.mask && raw === "") {
         this.editing = null;
         this.input = null;
@@ -598,14 +638,33 @@ export class ConfigPanelModel implements Component {
   }
 
   /** Recompute the suggestion list from the input's current text (filtered by
-   *  the segment after the last `,`). */
+   *  the segment the cursor sits in — arrow left/right retargets the picker
+   *  to an earlier entry). Cursor moves WITHOUT value changes show the full
+   *  list for that segment (entering an existing entry shouldn't filter to
+   *  just itself); typing filters as usual. */
   private refilterSuggestions(): void {
     if (!this.editing?.completions || !this.input) {
       this.suggestions = [];
       return;
     }
-    this.suggestions = filterSuggestions(this.editing.completions(), this.input.getValue()).slice(0, MAX_SUGGESTIONS);
-    if (this.suggestionIdx >= this.suggestions.length) this.suggestionIdx = 0;
+    const valueChanged = this.input.getValue() !== this.lastFilteredValue;
+    this.suggestions = filterSuggestions(
+      this.editing.completions(),
+      this.input.getValue(),
+      (this.input as unknown as { cursor: number }).cursor,
+      !valueChanged, // cursor-only move → empty query → full list
+    ).slice(0, MAX_SUGGESTIONS);
+    this.lastFilteredValue = this.input.getValue();
+    if (valueChanged) {
+      this.suggestionIdx = 0;
+    } else {
+      // Cursor-only retarget: pre-highlight the entry's CURRENT value so the
+      // picker opens on what the segment already holds (↓ moves off it).
+      const { suffix } = splitSegments(this.input.getValue(), (this.input as unknown as { cursor: number }).cursor);
+      const cur = suffix.trim().toLowerCase();
+      const at = this.suggestions.findIndex((o) => o.value.toLowerCase() === cur);
+      this.suggestionIdx = at >= 0 ? at : 0;
+    }
   }
 
   private moveSuggestion(delta: number): void {
@@ -616,18 +675,27 @@ export class ConfigPanelModel implements Component {
     }
   }
 
-  /** Tab: fill the input with the highlighted option (segment replacement);
-   *  the user still commits with Enter (raw submit) or continues with `,`. */
+  /** Pick the highlighted option into the segment at the cursor (Tab or
+   *  Enter). Always closes the list — the next Enter submits the value;
+   *  typing (`,` or chars) reopens it via refilter. */
   private acceptSuggestion(): void {
     const item = this.suggestions[this.suggestionIdx];
     if (!item || !this.input) return;
-    const joined = joinCompletion(this.input.getValue(), item.value);
+    const cursor = (this.input as unknown as { cursor: number }).cursor;
+    const before = this.input.getValue();
+    const joined = joinCompletion(before, item.value, cursor);
+    const head = splitSegments(before, cursor).head;
     this.input.setValue(joined);
     // pi-tui Input.setValue clamps the cursor instead of moving it to the end
-    // (stays at 0 on a fresh input), so park it after the inserted value.
-    (this.input as unknown as { cursor: number }).cursor = joined.length;
+    // (stays at 0 on a fresh input). Park at the end of the REPLACED segment
+    // (head + ", " + value) — with tail segments after the cursor's segment,
+    // joined.length would overshoot into the next entry.
+    (this.input as unknown as { cursor: number }).cursor = head.length + 2 + item.value.length;
     this.suggestionIdx = 0;
-    this.refilterSuggestions();
+    // Close: sync lastFilteredValue so the next handleInput doesn't treat the
+    // pick as a cursor-only move and "retarget" the list back open.
+    this.suggestions = [];
+    this.lastFilteredValue = this.input.getValue();
     this.requestRender();
   }
 

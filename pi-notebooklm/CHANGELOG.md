@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.9 (2026-09-12)
+
+### Fixed
+
+- `truncateOutput` temp dirs under `os.tmpdir()` were never cleaned. The
+  previous truncation directory is now removed (best-effort, `rmSync`
+  recursive+force in try/catch) when the next truncation happens — the newest
+  one stays alive for the model to read.
+- Reworded the `--yes` guidance for destructive commands: the old example
+  showed the command path, not applicable args. Now actionable — "Append
+  `--yes` as the last element of the args array to skip confirmation for
+  destructive paths like delete/remove."
+
 ## 0.1.8 (2026-08-05)
 
 ### Improvements

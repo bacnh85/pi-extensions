@@ -19,6 +19,11 @@
 
 const STATUS_KEY = "pi-budget";
 
+/** ponytail: dedupe-set cap, keep-last-1000 (clear on reach) — sessions past
+ *  1000 assistant messages lose replay-dedupe for old ids, an acceptable
+ *  ceiling vs. unbounded growth; raise if replay windows ever grow. */
+const MAX_COUNTED_MESSAGE_IDS = 1000;
+
 /**
  * Parse a `--budget` value into a positive number, or undefined when unset/invalid.
  * Accepts only plain decimals ("0.50", "5"); rejects currency suffixes, European
@@ -80,7 +85,10 @@ export default function budgetExtension(pi) {
         const id = event.message.id;
         if (!id || !state.countedMessageIds.has(id)) {
           state.cumulativeCost += cost;
-          if (id) state.countedMessageIds.add(id);
+          if (id) {
+            if (state.countedMessageIds.size >= MAX_COUNTED_MESSAGE_IDS) state.countedMessageIds.clear();
+            state.countedMessageIds.add(id);
+          }
         }
       }
       // NaN/Infinity/string costs are skipped (Number.isFinite guard) so a bad
@@ -104,20 +112,21 @@ export default function budgetExtension(pi) {
           pi.appendEntry("budget-exceeded", { cap: state.budgetCap, spent: state.cumulativeCost });
         } catch { /* best-effort */ }
       }
-    }
 
-    // Footer: best-effort, must never throw out of the handler (theme proxy may
-    // not be initialized yet — pi-ponytail guards the same pattern).
-    try {
-      if (state.budgetCap === undefined) {
-        ctx.ui.setStatus(STATUS_KEY, undefined);
-        return;
-      }
-      const remaining = Math.max(0, state.budgetCap - state.cumulativeCost);
-      const line = `Budget $${state.cumulativeCost.toFixed(2)} / $${state.budgetCap.toFixed(2)}`;
-      const color = state.exceeded ? "error" : remaining <= state.budgetCap * 0.2 ? "warning" : "dim";
-      if (!ctx.ui.theme?.fg) return;
-      ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(color, line));
-    } catch { /* best-effort footer */ }
+      // Footer: best-effort, must never throw out of the handler (theme proxy may
+      // not be initialized yet — pi-ponytail guards the same pattern). Gated on
+      // assistant messages for parity with the accumulation above.
+      try {
+        if (state.budgetCap === undefined) {
+          ctx.ui.setStatus(STATUS_KEY, undefined);
+          return;
+        }
+        const remaining = Math.max(0, state.budgetCap - state.cumulativeCost);
+        const line = `Budget $${state.cumulativeCost.toFixed(2)} / $${state.budgetCap.toFixed(2)}`;
+        const color = state.exceeded ? "error" : remaining <= state.budgetCap * 0.2 ? "warning" : "dim";
+        if (!ctx.ui.theme?.fg) return;
+        ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(color, line));
+      } catch { /* best-effort footer */ }
+    }
   });
 }

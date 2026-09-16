@@ -6,7 +6,7 @@
  * Pattern: append-only JSONL, one record per message. No schema migrations.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 interface PersistedMessage {
@@ -82,4 +82,42 @@ export function listConversations(piDir: string): string[] {
   } catch {
     return [];
   }
+}
+
+// ---------------------------------------------------------------------------
+// Child-session transcripts (fleet task #252)
+// ---------------------------------------------------------------------------
+
+/** Directory holding dispatched child-session transcripts, one JSONL pi
+ *  session per inbound task, named <timestamp>_<taskId>.jsonl. */
+export function childTranscriptDir(piDir: string): string {
+  return join(piDir, "a2a_sessions");
+}
+
+/** Delete child transcripts older than `retentionDays` (by mtime). 0 or
+ *  negative = keep forever. Returns the number of files removed. Never
+ *  throws — retention is housekeeping, not a dependency. */
+export function sweepChildTranscripts(dir: string, retentionDays: number): number {
+  if (!(retentionDays > 0)) return 0;
+  let removed = 0;
+  let files: string[];
+  try {
+    files = readdirSync(dir);
+  } catch {
+    return 0; // no dir yet (or unreadable) — nothing to sweep
+  }
+  const cutoff = Date.now() - retentionDays * 86_400_000;
+  for (const f of files) {
+    if (!f.endsWith(".jsonl")) continue;
+    const p = join(dir, f);
+    try {
+      if (statSync(p).mtimeMs < cutoff) {
+        rmSync(p);
+        removed += 1;
+      }
+    } catch {
+      /* racing deletion or unreadable file — skip */
+    }
+  }
+  return removed;
 }

@@ -55,6 +55,9 @@ export function buildRows(
     row("server.replyTimeoutSec", "Reply timeout (s)", "number", cfg.server.replyTimeoutSec, (v) => {
       cfg.server.replyTimeoutSec = toInt(v, cfg.server.replyTimeoutSec);
     }),
+    row("server.asyncTimeoutSec", "Async timeout (s)", "number", cfg.server.asyncTimeoutSec, (v) => {
+      cfg.server.asyncTimeoutSec = toInt(v, cfg.server.asyncTimeoutSec);
+    }),
     row("server.maxConcurrent", "Max concurrent", "number", cfg.server.maxConcurrent, (v) => {
       cfg.server.maxConcurrent = toInt(v, cfg.server.maxConcurrent);
     }),
@@ -90,13 +93,24 @@ export function buildRows(
     }),
   ];
 
-  // Gateway group — reads use a non-mutating default view; setters materialize
-  // `discovery.gateway` on first edit so toggling enabled (or entering a URL)
-  // creates the block in the working config without clobbering an env-sourced
-  // gateway on unrelated panel edits.
+  // Gateway group — legacy `discovery.gateway` block (pre-0.6.0 path, still
+  // used by env-sourced config). Reads use a non-mutating default view; setters
+  // materialize the block on first edit so toggling enabled (or entering a URL)
+  // creates it in the working config without clobbering an env-sourced gateway
+  // on unrelated panel edits. An INERT block (all-empty + disabled, the
+  // loadConfig-materialized placeholder) renders nothing — the live map is in
+  // the Gateways group below.
   const gwView = cfg.discovery.gateway ?? { enabled: false, url: "", token: "" };
   const gw = () => (cfg.discovery.gateway ??= { enabled: false, url: "", token: "" });
-  const gateway: PanelRow[] = [
+  // Live = any field differs from the inert placeholder loadConfig materializes
+  // (enabled/url/token — but also name/upstreamToken/heartbeatSec/channel: a
+  // block like {enabled:false, channel:false} carries real config and must
+  // stay editable).
+  const gatewayLive = cfg.discovery.gateway != null &&
+    (Boolean(gwView.enabled) || Boolean(gwView.url) || Boolean(gwView.token) ||
+      gwView.name != null || gwView.upstreamToken != null ||
+      (gwView.heartbeatSec ?? 60) !== 60 || (gwView.channel ?? true) !== true);
+  const gateway: PanelRow[] = gatewayLive ? [
     row("gateway.enabled", "Gateway registration", "toggle", gwView.enabled, (v) => {
       gw().enabled = Boolean(v);
     }),
@@ -118,7 +132,7 @@ export function buildRows(
     row("gateway.channel", "Reverse channel", "toggle", gwView.channel ?? true, (v) => {
       gw().channel = Boolean(v);
     }),
-  ];
+  ] : [];
 
   const identity: PanelRow[] = [
     row("selfIdentity", "Caller identity", "string", cfg.selfIdentity, (v) => {
@@ -187,8 +201,8 @@ export function buildRows(
   return [
     { key: "server", label: "Server", rows: server },
     { key: "discovery", label: "Discovery", rows: discovery },
-    { key: "gateway", label: "Gateway", rows: gateway },
-    { key: "gateways", label: "Gateways", rows: gateways },
+    ...(gatewayLive ? [{ key: "gateway", label: "Gateway (discovery.gateway)", rows: gateway }] : []),
+    { key: "gateways", label: "Gateways (discovery.gateways)", rows: gateways },
     { key: "identity", label: "Identity", rows: identity },
     { key: "peers", label: "Peers", rows: peers },
     { key: "ui", label: "UI", rows: ui },

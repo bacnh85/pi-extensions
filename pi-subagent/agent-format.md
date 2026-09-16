@@ -26,6 +26,7 @@ models:                   # Optional ordered fallbacks; comma form also accepted
 thinking: low             # Optional: off|minimal|low|medium|high|xhigh|max.
 sandbox: read-only        # Optional: read-only | workspace-write | worktree. Auto-derives tool restrictions.
 color: cyan               # Optional: red|blue|green|yellow|purple|orange|pink|cyan.
+timeout: 10               # Optional: per-agent inactivity timeout in minutes (1–60). Default 3. For slow-thinking (thinking: high) agents.
 ---
 ```
 
@@ -42,7 +43,7 @@ agent's `thinking` for that match. See README → *Role-based model routing*.
 
 - `read-only`: Restricts tools to the read-only allowlist (`read`, `grep`, `find`, `ls` plus read-only extension tools when inherited — `web_*`, `serena_*`, `munin_*`, `fff*`, …). Overrides any `tools` field.
 - `workspace-write` (default): Uses the agent's `tools` list or defaults to all tools.
-- `worktree`: Runs the agent in an isolated git worktree (`.pi-worktrees/<id>` under the repo root). All file mutations land in the worktree; the main checkout is untouched. On completion, a unified diff of the changes is returned in the result (visible in the thread viewer as a `🌿 worktree` badge) — the parent merges explicitly via `apply_patch`/cherry-pick; nothing is applied automatically. Falls back to in-process execution when the cwd is not a git repo (with a warning). Requires git.
+- `worktree`: Runs the agent in an isolated git worktree (`.pi-worktrees/<id>` under the repo root). All file mutations land in the worktree; the main checkout is untouched. On completion, the unified diff is delivered in the tool result as a `🌿 worktree patch` block; pass `merge: "3way"` to apply it to the parent checkout automatically (`git apply --3way`, conflicts reported as `mergeStatus: "conflict"` with markers left in place). Falls back to in-process execution when the cwd is not a git repo (with a warning). Requires git.
 
 ### `color`
 

@@ -15,14 +15,14 @@ function toolCalls(n: number): any[] {
 
 describe("advisor compliance", () => {
   let reply = "";
-  const fake = async () => reply;
-  const cfg = { model: "prov/reviewer", watch: { enabled: true, minToolCalls: 3, immuneTurns: 3 } } as any;
+  const fake = async (_ctx: any, models: readonly string[]) => ({ text: reply, model: models[0] ?? "" });
+  const cfg = { models: ["prov/reviewer"], watch: { enabled: true, minToolCalls: 3, immuneTurns: 3 } } as any;
 
   function ctxFor(entries: any[]): any {
     return {
       sessionManager: { getEntries: () => entries, getLeafId: () => entries[entries.length - 1]?.id },
       getSystemPrompt: () => "Primary system prompt",
-      modelRegistry: { find: () => ({ contextWindow: 32_768 }) },
+      modelRegistry: { getAvailable: () => [], find: () => ({ contextWindow: 32_768 }) },
       ui: { notify: () => {} },
     };
   }
@@ -54,7 +54,7 @@ describe("advisor compliance", () => {
 
   it("nit is in LLM context on the next turn (via sendUserMessage, not display-only card)", async () => {
     reply = '{"severity":"nit","note":"unused import in foo.ts"}';
-    const rt = (await import("../lib/watcher")).createRuntime(cfg, cfg.model);
+    const rt = (await import("../lib/watcher")).createRuntime(cfg, cfg.models);
     const base = toolCalls(4);
     const capture: any[] = [];
     await reviewTurn(rt, ctxFor(base), hostFor(capture), fake as any);
@@ -68,7 +68,7 @@ describe("advisor compliance", () => {
 
   it("concern outside cooldown steers (user message, triggers turn)", async () => {
     reply = '{"severity":"concern","note":"edit went to the wrong file"}';
-    const rt = (await import("../lib/watcher")).createRuntime(cfg, cfg.model);
+    const rt = (await import("../lib/watcher")).createRuntime(cfg, cfg.models);
     const base = toolCalls(4);
     const capture: any[] = [];
     await reviewTurn(rt, ctxFor(base), hostFor(capture), fake as any);
@@ -76,8 +76,8 @@ describe("advisor compliance", () => {
     assert.ok(contextHasNote(capture, "edit went to the wrong file", base));
   });
 
-  it("second distinct concern inside cooldown is deferred to a next-turn aside", async () => {
-    const rt = (await import("../lib/watcher")).createRuntime(cfg, cfg.model);
+  it("second distinct concern inside cooldown still steers (concerns never defer)", async () => {
+    const rt = (await import("../lib/watcher")).createRuntime(cfg, cfg.models);
     let base = toolCalls(4);
     reply = '{"severity":"concern","note":"first concern"}';
     await reviewTurn(rt, ctxFor(base), hostFor([]), fake as any);
@@ -86,17 +86,32 @@ describe("advisor compliance", () => {
     reply = '{"severity":"concern","note":"second concern"}';
     const capture: any[] = [];
     await reviewTurn(rt, ctxFor(base2), hostFor(capture), fake as any);
-    // Still inside the immuneTurns cooldown (immuneTurns=3) → deferred aside,
-    // LLM-visible next turn, not a wake. Mirrors OMP's post-interrupt cooldown.
-    assert.ok(!capture.some((c: any) => c.kind === "user"), "second concern deferred while on cooldown");
+    // Concerns carry a must-address contract — they steer even inside the
+    // immuneTurns cooldown. Only nits defer (nit ping-pong guard).
+    assert.ok(capture.some((c: any) => c.kind === "user"), "second concern steers despite cooldown");
+    assert.ok(contextHasNote(capture, "second concern", base2), "concern visible to LLM via the steer");
+  });
+
+  it("second distinct nit inside cooldown is deferred to a next-turn aside", async () => {
+    const rt = (await import("../lib/watcher")).createRuntime(cfg, cfg.models);
+    let base = toolCalls(4);
+    reply = '{"severity":"nit","note":"first nit"}';
+    await reviewTurn(rt, ctxFor(base), hostFor([]), fake as any);
+    const extra = toolCalls(4).slice(1).map((e, i) => ({ ...e, id: `e2-${e.id}`, parentId: i === 0 ? base[base.length - 1].id : `e2-${toolCalls(4).slice(1)[i - 1].id}` })) as any[];
+    const base2 = [...base, ...extra];
+    reply = '{"severity":"nit","note":"second nit"}';
+    const capture: any[] = [];
+    await reviewTurn(rt, ctxFor(base2), hostFor(capture), fake as any);
+    // Nits inside the immuneTurns cooldown → deferred aside, LLM-visible next
+    // turn, not a wake. Guards the nit ping-pong without delaying concerns.
+    assert.ok(!capture.some((c: any) => c.kind === "user"), "second nit deferred while on cooldown");
     assert.ok(capture.some((c: any) => c.kind === "custom_message"), "deferred as LLM-visible next-turn aside");
-    assert.ok(contextHasNote(capture, "second concern", base2), "deferred note visible to LLM on next turn");
-    assert.ok(contextHasNote(capture, "second concern", base2));
+    assert.ok(contextHasNote(capture, "second nit", base2), "deferred note visible to LLM on next turn");
   });
 
   it("steer content has severity-specific authority and no control/bidi chars", async () => {
     reply = '{"severity":"blocker","note":"hal\\u200Blo\\u202E"}';
-    const rt = (await import("../lib/watcher")).createRuntime(cfg, cfg.model);
+    const rt = (await import("../lib/watcher")).createRuntime(cfg, cfg.models);
     const capture: any[] = [];
     await reviewTurn(rt, ctxFor(toolCalls(4)), hostFor(capture), fake as any);
     const text = capture[0]?.message?.content ?? capture[0]?.content ?? "";

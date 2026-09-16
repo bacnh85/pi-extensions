@@ -1,5 +1,194 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Failed gateway registers now back off exponentially instead of retrying at
+  a fixed cadence.** The a2a-switchboard rate-limits `/register` per client IP
+  (20 req/60s fixed window counting rejected requests), so N sessions blindly
+  PATCHing every 60s keep that budget saturated forever — livelock — and every
+  new session's first register fails with `register failed: 429`. Consecutive
+  failures now back off (base heartbeat · 2^(fails−1), ±20% jitter, capped at
+  5 min; a numeric `Retry-After` header wins when larger, capped at the same
+  5-min ceiling so a buggy/hostile value can't suppress registration), the
+  heartbeat timer skips while backed off, and success resets the chain. The
+  backoff delay is shown once per failure label
+  (`register failed: 429 — backing off 240s`).
+- **Gateway registration self-heals after a failed first register.**
+  `GatewayUpstream.start()` armed the heartbeat timer only when the initial
+  registration succeeded, so a transient failure at session start (gateway
+  briefly down, VPN not up yet, macOS Local Network permission not granted)
+  disabled gateway discovery for the whole session. The timer is now armed
+  unconditionally; each beat retries, and the reverse channel opens on the
+  first successful beat.
+- **`register failed: network error` now carries the OS cause** —
+  `network error (EHOSTUNREACH)`, `(ECONNREFUSED)`, `(TimeoutError)`, etc.
+  `send()` swallowed the fetch rejection cause, making a systemic block
+  (e.g. macOS Local Network privacy denying the node binary LAN access —
+  which surfaces as EHOSTUNREACH while `curl` works) indistinguishable from
+  the gateway being down. The cause travels with each response (per-call,
+  not shared state), and repeated identical failures log once per cause —
+  a permanent failure no longer repeats a line every beat (mirrors the
+  peer-directory refresh policy).
+- **A late self-healing beat announces the registration.** When the first
+  register failed at session start and a later heartbeat succeeded, the
+  registration was silent: no status line and no `setGatewayRegistrationName`
+  publication (X-Gateway-Caller attribution stayed unset/stale). A new
+  `onRegistered` transition callback on `GatewayUpstream` (fires once, on
+  first success) routes through the same announce path as a successful
+  `start()`.
+
+## 0.7.8 (2026-09-12)
+
+### Fixed
+
+- **Peer `timeout` no longer inflates 1000× on every `/a2a-config` save.**
+  Settings store peer timeouts in SECONDS (the loader multiplies by 1000
+  on read), but the panel persisted the runtime millisecond value
+  verbatim, so each panel save turned 120 → 120000 (~33 h).
+  `buildA2ASettingsPatch` now converts peers back to settings units on
+  write — the single writer-side conversion, covering panel edits and the
+  panel-add default (120 s) alike. A panel-added peer lands as
+  `timeout: 120` in settings.json and load → save → load round-trips are
+  idempotent (regression-tested).
+- **`/a2a-help` now lists the `a2a_peers` tool** (was 6 of 7).
+- README environment table: added the missing `A2A_CHILD_TRANSCRIPTS` and
+  `A2A_CHILD_TRANSCRIPT_RETENTION_DAYS` rows.
+
+## 0.7.7 (2026-09-11)
+
+### Added
+
+- **Dispatched child sessions now persist their transcripts.** Stock
+  pi-a2a ran inbound-task children on `SessionManager.inMemory`, so a
+  dispatched worker that stalled or was killed mid-run left no step history
+  at all — its final A2A reply was the only evidence. The session runner now
+  creates a real `SessionManager` per dispatch, keyed by the A2A task id,
+  writing a full pi session file to `<agentDir>/a2a_sessions/<timestamp>_<taskId>.jsonl`
+  synchronously as the child runs (openable with pi's own session tooling,
+  complete up to the moment of death even on a reply-window kill). The file
+  materializes on the child's first assistant output; a child that dies
+  before any model output leaves no transcript (covered instead by the
+  FAILED task + audit line). The completion/failure audit lines now record
+  the transcript path plus an observed step count (assistant turns + tool
+  executions), so post-mortems can go from audit log or task id straight to
+  the step history. Privacy: transcripts carry everything the worker read —
+  files are `chmod 600` at turn end and bounded by retention; set
+  `a2a.server.childTranscripts: false` for stock in-memory behavior. The
+  host session lineage is preserved via the session header's `parentSession`
+  and an `a2a/dispatch` attribution entry in the file.
+
+### Fixed
+
+- **A reply-window timeout is no longer reported as SUCCESS.** When the
+  inbound reply window expired, the session runner aborted the child session
+  but still resolved normally, so `message/send` took the success path and
+  returned `TASK_STATE_COMPLETED` with a truncated reply artifact — a killed
+  worker and a finished one were indistinguishable at the protocol level. The
+  runner now throws when the abort fired before the turn completed (captured
+  at race settlement, so an abort landing during cleanup does not fail a
+  completed turn), and `messageSend` independently routes any post-abort
+  normal return through the failure classification: `TASK_STATE_FAILED` for a
+  reply-window timeout (with a descriptive status message), `TASK_STATE_CANCELED`
+  for user cancellation. `TASK_STATE_COMPLETED` is reserved for turns that
+  actually finished, and a canceled task's state is no longer clobbered back
+  to COMPLETED by a runner that returns normally on abort.
+- **Child-transcript env keys are now security-guarded.** `A2A_CHILD_TRANSCRIPTS`
+  and `A2A_CHILD_TRANSCRIPT_RETENTION_DAYS` were missing from
+  `SECURITY_ENV_KEYS`, so a repo-controlled `.env.local` on the cwd→root walk
+  could disable transcript persistence or shrink the retention window to
+  destroy dispatch evidence. Both keys are now stripped like the other
+  security-relevant keys — honored only from the process env and the
+  operator's global Pi dir — and the repo-`.env.local` injection-guard test
+  covers them (PR #36 review).
+- `a2a_call` now reports reply timeouts separately from connection failures and
+  warns that delivery status is unknown, preventing blind duplicate sends
+  (fix by @dario-github in #34).
+- The default outbound timeout is now 360s, safely above the server's default
+  300s reply deadline instead of racing it at the same instant.
+
+## 0.7.6 (2026-09-01)
+
+### Fixed
+
+- Gateway registration: after a 409 collision self-heal rename, the Agent Card
+  sent on subsequent heartbeats now carries the renamed registration name
+  (previously the card kept the pre-rename name, so the directory entry and
+  its card disagreed).
+- `a2a_list`: a discovered peer whose URL matches a gateway proxy entry is no
+  longer double-listed (gateway section takes precedence, mirroring the
+  configured-peer dedupe).
+- `/a2a-config`: the legacy `discovery.gateway` group no longer renders when
+  the block is inert (disabled with all fields at defaults — the placeholder
+  `loadConfig` materializes). A block with non-default fields (name,
+  upstreamToken, heartbeatSec, channel) still renders even when disabled. The panel previously showed a screen of empty "Gateway" rows
+  that pushed the live "Gateways" map a full screen down. Group labels now
+  carry their settings keys — `Gateway (discovery.gateway)` /
+  `Gateways (discovery.gateways)` — and the legacy group only appears when it
+  is live (enabled, or has url/token, e.g. env-sourced). Render-only: save
+  semantics and the keep-inert-block invariant are unchanged.
+
+## 0.7.5 (2026-09-01)
+
+### Changed
+
+- Unpinned session names strip mDNS suffixes and lowercase the hostname
+  (`MBP-Sao.local` + port 9912 → `mbp-sao-9912`) for cleaner, uniform names
+  across machines.
+
+### Note
+
+- A pinned `server.agentName` in settings.json overrides unique naming —
+  every session sharing that config collapses to one name. Leave it empty to
+  get `<hostname>-<port>` per session.
+
+## 0.7.4 (2026-09-01)
+
+### Changed
+
+- Local session name defaults to `hostname-<port>` (e.g. `pi-s2-9912`) instead
+  of bare hostname, so multiple Pi sessions on one machine get unique,
+  directly-callable names in the registry / `a2a_peers` / `a2a_call` instead of
+  colliding on one ambiguous name. An explicitly pinned
+  `server.agentName` is kept verbatim. Gateway registration already suffixed
+  the port — now the local name matches.
+
+## 0.7.3 (2026-09-01)
+
+### Fixed
+
+- `a2a_call` can now call discovered peers (local registry / mDNS) by name, not
+  only by URL — matching what `a2a_peers` advertises. Ambiguous names (two
+  live sessions with the same `agentName`) error with the candidate URLs
+  instead of guessing a target. Discovered-name routing reuses the existing
+  loopback-known-URL token policy verbatim (unknown/mDNS/network URLs never
+  receive a credential).
+- `a2a_orchestrate` now fans out to gateway peers advertising the capability
+  (previously configured peers only — the tool was a no-op with zero
+  configured peers). A configured peer wins over its gateway alias by URL or
+  underlying name, same precedence as `resolvePeer`.
+- `a2a_list` discovered-peer tool list: shows 20 tools with a `(+N more)`
+  suffix instead of silently truncating at 8.
+
+## 0.7.2 (2026-08-30)
+
+### Changed
+
+- `timeouts.send` default raised 120000 → 300000 ms: a 2-minute client ceiling
+  aborted `a2a_call` against peers whose LLM tasks legitimately run 3-5 minutes
+  (the server's own `replyTimeoutSec` default is 500s). Verified live: a
+  diagnostic peer task aborted at 120s via `a2a_call` but completed over raw
+  HTTP with a longer client timeout.
+
+## 0.7.1 (2026-08-29)
+
+### Added
+
+- Slash-argument autocomplete: `/a2a-send` offers configured/discovered peer
+  names (first token only), `/a2a-broadcast` offers `--agents`, and
+  `/a2a-server` offers `start|stop|status`.
+
 ## 0.7.0 — 2026-08-22
 
 ### Changed

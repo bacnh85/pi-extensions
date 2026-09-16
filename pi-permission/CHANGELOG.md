@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.2.2 (2026-09-14)
+
+### Fixed
+
+- **expandHome with an empty home mangled `~` patterns.** When `ctx.home` is
+  undefined and `HOME` is unset (Windows, scrubbed env), expanding turned
+  `~/x` into a relative `x` via path join — a silently wrong pattern match.
+  When the home directory is empty, the pattern is now returned unchanged.
+
+### Changed
+
+- README documents `~/.pi/agents/settings.json` as the third settings search
+  location (checked by the code but previously undocumented).
+
+## 0.2.1 (2026-09-12)
+
+### Fixed
+
+- **A path exactly equal to the workspace root was classified external.**
+  `isExternal` used a prefix check, so `path === cwd` (e.g. reading the project
+  root itself) failed the `root + "/"` prefix test and was treated as outside —
+  `external_directory {"*":"deny"}` blocked reads of the workspace root. The
+  equality case is now explicitly internal. Regression-tested.
+- README rule-keys table: `grep`/`find`/`ls` match `input.path` only —
+  pattern-only searches have no subject (the table previously said
+  "path/glob/pattern", implying patterns were matched).
+
 ## 0.2.0 - 2026-08-17
 
 Ask-prompt redesign + session-allow bug fix.

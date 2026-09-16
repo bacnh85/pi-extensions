@@ -168,7 +168,7 @@ export async function writeLearning(
   const muninTags = tags.split(",");
   const storedAt = new Date().toISOString();
 
-  const backend = activeBackend(params, cfg, cwd);
+  const backend = activeBackend(params, cfg, cwd, trusted);
   if (backend === "munin") {
     const munin = tryResolveMunin(params, cwd, trusted === true)!;
     const client = new MuninClient({ apiKey: munin.apiKey, baseUrl: munin.baseUrl });
@@ -201,7 +201,7 @@ export async function readRecentLearnings(
   cwd: string,
   trusted?: boolean,
 ): Promise<StoredLearning[]> {
-  const backend = activeBackend(params, cfg, cwd);
+  const backend = activeBackend(params, cfg, cwd, trusted);
   if (backend === "munin") {
     const munin = tryResolveMunin(params, cwd, trusted === true)!;
     const client = new MuninClient({ apiKey: munin.apiKey, baseUrl: munin.baseUrl });
@@ -236,7 +236,7 @@ export async function searchLearnings(
   cwd: string,
   trusted?: boolean,
 ): Promise<StoredLearning[]> {
-  const backend = activeBackend(params, cfg, cwd);
+  const backend = activeBackend(params, cfg, cwd, trusted);
   if (backend === "munin") {
     const munin = tryResolveMunin(params, cwd, trusted === true)!;
     const client = new MuninClient({ apiKey: munin.apiKey, baseUrl: munin.baseUrl });

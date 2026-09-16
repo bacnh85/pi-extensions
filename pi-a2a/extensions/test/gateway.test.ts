@@ -7,11 +7,11 @@
 
 import { assert } from "chai";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 import { DEFAULTS } from "./helpers";
-import { GatewayUpstream, isSelfEntry, mergeGatewayPeers } from "../lib/gateway";
+import { makeTempDir } from "./tmp";
+import { GatewayUpstream, backoffDelayMs, isSelfEntry, mergeGatewayPeers } from "../lib/gateway";
 import { resolvePeer, setGatewayPeers, getGatewayPeers, updateGatewayPeers, type Peer } from "../lib/config";
 import { a2aCall, metrics } from "../lib/client";
 
@@ -35,10 +35,11 @@ function merge(
   });
 }
 
-function makeResp(body: any, status: number): any {
+function makeResp(body: any, status: number, headers?: Headers): any {
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: headers ?? new Headers(),
     json: async () => body,
     text: async () => JSON.stringify(body),
   };
@@ -163,6 +164,99 @@ describe("gateway peer discovery", () => {
     it("drops malformed entries and tolerates a non-array peers field", () => {
       assert.deepEqual(merge([{ url: "/peer/x/" }, { name: "a/b", url: "/x" }, { name: "no-url" }, null]), {});
       assert.deepEqual(merge("not-an-array" as any), {});
+    });
+  });
+
+  describe("register backoff (429 / rate-limit)", () => {
+    const savedFetch = globalThis.fetch;
+    afterEach(() => {
+      globalThis.fetch = savedFetch as any;
+    });
+
+    it("backoffDelayMs: exponential growth, 5-min cap, jitter bounds, Retry-After wins when larger", () => {
+      for (let fails = 1; fails <= 4; fails++) {
+        const base = Math.min(300_000, 60_000 * 2 ** (fails - 1));
+        const d = backoffDelayMs(fails, 60_000, null);
+        assert.isAtLeast(d, Math.floor(base * 0.8));
+        assert.isAtMost(d, Math.ceil(base * 1.2));
+      }
+      // Deep failure chain clamps at the 5-min cap (±jitter).
+      assert.isAtMost(backoffDelayMs(50, 60_000, null), Math.ceil(300_000 * 1.2));
+      assert.isAtLeast(backoffDelayMs(50, 60_000, null), Math.floor(300_000 * 0.8));
+      // Retry-After only wins when larger than the jittered exponential (48–72s here).
+      assert.equal(backoffDelayMs(1, 60_000, 90), 90_000);
+      const ignored = backoffDelayMs(1, 60_000, -5); // non-positive Retry-After ignored
+      assert.isAtLeast(ignored, 48_000);
+      assert.isAtMost(ignored, 72_000);
+      // A buggy/hostile Retry-After (10 days) is capped — it must not suppress
+      // re-registration indefinitely.
+      assert.equal(backoffDelayMs(1, 60_000, 86_400), 300_000);
+    });
+
+    it("a failed register schedules a backoff; a later success resets it", async () => {
+      let status = 429;
+      globalThis.fetch = (async (url: any) => {
+        const u = String(url);
+        if (u.endsWith("/register")) return makeResp({}, status);
+        return makeResp({ peers: [] }, 200);
+      }) as any;
+      const gw = new GatewayUpstream(
+        { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60, key: "k1", channel: false },
+        () => ({}),
+        () => {},
+        () => {},
+      );
+      assert.isFalse(await gw.register("http://127.0.0.1:9911"));
+      assert.equal(gw["beatFails"], 1);
+      assert.isTrue(gw["backoffUntil"] > Date.now());
+      assert.isFalse(await gw.register("http://127.0.0.1:9911"));
+      assert.equal(gw["beatFails"], 2);
+      status = 200;
+      assert.isTrue(await gw.register("http://127.0.0.1:9911"));
+      assert.equal(gw["beatFails"], 0);
+      assert.equal(gw["backoffUntil"], 0);
+    });
+
+    it("Retry-After header (seconds) extends the backoff", async () => {
+      globalThis.fetch = (async (url: any) => {
+        const u = String(url);
+        if (u.endsWith("/register")) return makeResp({}, 429, new Headers({ "retry-after": "90" }));
+        return makeResp({ peers: [] }, 200);
+      }) as any;
+      const gw = new GatewayUpstream(
+        { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60, key: "k1", channel: false },
+        () => ({}),
+        () => {},
+        () => {},
+      );
+      assert.isFalse(await gw.register("http://127.0.0.1:9911"));
+      // jittered exponential is 48–72s; the header must push it to ~90s
+      assert.isAtLeast(gw["backoffUntil"], Date.now() + 89_000);
+    });
+
+    it("heartbeat (maybeBeat) skips while backed off, retries exactly once after it lapses", async () => {
+      const status = 429;
+      let registerCalls = 0;
+      globalThis.fetch = (async (url: any) => {
+        const u = String(url);
+        if (u.endsWith("/register")) {
+          registerCalls += 1;
+          return makeResp({}, status);
+        }
+        return makeResp({ peers: [] }, 200);
+      }) as any;
+      const gw = new GatewayUpstream(
+        { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60, key: "k1", channel: false },
+        () => ({}),
+        () => {},
+        () => {},
+      );
+      assert.isFalse(await gw.register("http://127.0.0.1:9911")); // registerCalls: 1, backoff armed
+      await gw["maybeBeat"]("http://127.0.0.1:9911"); // inside the backoff window → skipped
+      assert.equal(registerCalls, 1, "beat must not hit /register while backed off");
+      gw["backoffUntil"] = Date.now() - 1; // lapse
+      await gw["maybeBeat"]("http://127.0.0.1:9911");
+      assert.equal(registerCalls, 2, "exactly one retry after the backoff lapses");
     });
   });
 
@@ -293,7 +387,7 @@ describe("gateway peer discovery", () => {
     });
 
     it("PATCH 403 (revoked peer) does NOT fall back to POST", async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-state-"));
+      const dir = makeTempDir("pi-a2a-state-");
       fs.mkdirSync(path.join(dir, "a2a_gateways"), { recursive: true });
       fs.writeFileSync(path.join(dir, "a2a_gateways", "k1.json"), JSON.stringify({ name: "self-1", callerToken: "revoked-ct" }));
       const original = globalThis.fetch;
@@ -326,7 +420,7 @@ describe("gateway peer discovery", () => {
     });
 
     it("PATCH 409 (takeover mid-heartbeat) fails the beat — no rename, no POST", async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-state-"));
+      const dir = makeTempDir("pi-a2a-state-");
       fs.mkdirSync(path.join(dir, "a2a_gateways"), { recursive: true });
       fs.mkdirSync(path.join(dir, "a2a_gateways", "k1"), { recursive: true });
       fs.writeFileSync(path.join(dir, "a2a_gateways", "k1", "self-1.json"), JSON.stringify({ name: "self-1", callerToken: "live-ct" }));
@@ -404,15 +498,15 @@ describe("gateway peer discovery", () => {
     });
 
     it("409 self-heal renames → token persists under the RENAMED path, next session PATCHes with it", async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-state-"));
+      const dir = makeTempDir("pi-a2a-state-");
       const original = globalThis.fetch;
-      const seen: Array<{ method: string; auth?: string; name: string }> = [];
+      const seen: Array<{ method: string; auth?: string; name: string; cardName?: string }> = [];
       globalThis.fetch = (async (url: any, init?: any) => {
         const u = String(url);
         if (u.endsWith("/register")) {
-          const name = JSON.parse(init?.body).name;
-          seen.push({ method: init?.method || "POST", auth: init?.headers?.authorization, name });
-          if (name === "self-1" && (init?.method || "POST") === "POST" && !seen.some((s) => s.auth === "Bearer ct-new")) return makeResp({ error: "peer registered by another identity" }, 409);
+          const body = JSON.parse(init?.body);
+          seen.push({ method: init?.method || "POST", auth: init?.headers?.authorization, name: body.name, cardName: body.card?.name });
+          if (body.name === "self-1" && (init?.method || "POST") === "POST" && !seen.some((s) => s.auth === "Bearer ct-new")) return makeResp({ error: "peer registered by another identity" }, 409);
           if ((init?.method || "POST") === "POST") return makeResp({ status: "registered", caller_token: "ct-new" }, 200);
           return makeResp({ status: "updated", state: "accepted" }, 200);
         }
@@ -422,7 +516,7 @@ describe("gateway peer discovery", () => {
       try {
         const gw = new GatewayUpstream(
           { url: GW, token: TOKEN, name: "self-1", heartbeatSec: 60, key: "k1", channel: false, piDir: dir },
-          () => ({}), () => {}, () => {},
+          () => ({ name: "self-1" }), () => {}, () => {},
         );
         assert.isTrue(await gw.register("http://127.0.0.1:9911")); // 409 → renamed POST mints
         const renamed = gw.registeredName;
@@ -443,6 +537,10 @@ describe("gateway peer discovery", () => {
         );
         assert.equal(gw3["callerToken"], "ct-new"); // loaded from the renamed file
         assert.equal(seen[0]!.name, "self-1");
+        // Card name follows the RENAMED registration (409 rename consistency).
+        const renamedPost = seen.find((s) => s.method === "POST" && s.name === renamed)!;
+        assert.isOk(renamedPost, "renamed POST present");
+        assert.equal(renamedPost.cardName, renamed, "card.name must equal the registered name post-rename");
       } finally {
         globalThis.fetch = original as any;
         fs.rmSync(dir, { recursive: true, force: true });
@@ -510,7 +608,7 @@ describe("gateway peer discovery", () => {
     });
 
     it("persisted caller_token → fresh GatewayUpstream heartbeats with PATCH immediately", async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-state-"));
+      const dir = makeTempDir("pi-a2a-state-");
       fs.mkdirSync(path.join(dir, "a2a_gateways"), { recursive: true });
       fs.writeFileSync(
         path.join(dir, "a2a_gateways", "k1.json"),
@@ -549,7 +647,7 @@ describe("gateway peer discovery", () => {
     });
 
     it("PATCH 401 (stale token) → fallback POST re-mints and re-persists", async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-state-"));
+      const dir = makeTempDir("pi-a2a-state-");
       fs.mkdirSync(path.join(dir, "a2a_gateways"), { recursive: true });
       const legacyStateFile = path.join(dir, "a2a_gateways", "k1.json");
       const stateFile = path.join(dir, "a2a_gateways", "k1", "self-1.json");
@@ -596,7 +694,7 @@ describe("gateway peer discovery", () => {
     });
 
     it("rejected caller_token (401, no re-mint) is cleared — overlay falls back to shared token", async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-state-"));
+      const dir = makeTempDir("pi-a2a-state-");
       fs.mkdirSync(path.join(dir, "a2a_gateways"), { recursive: true });
       fs.writeFileSync(
         path.join(dir, "a2a_gateways", "k1.json"),
@@ -643,7 +741,7 @@ describe("gateway peer discovery", () => {
     });
 
     it("PATCH 404 (entry deleted) → POST fallback re-registers in the same beat", async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-state-"));
+      const dir = makeTempDir("pi-a2a-state-");
       fs.mkdirSync(path.join(dir, "a2a_gateways"), { recursive: true });
       fs.writeFileSync(
         path.join(dir, "a2a_gateways", "k1.json"),
@@ -684,7 +782,7 @@ describe("gateway peer discovery", () => {
 
     it("corrupt or foreign-name state file is ignored — POST mints from scratch", async () => {
       for (const content of ["not-json{", JSON.stringify({ name: "other", callerToken: "x" })]) {
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-state-"));
+        const dir = makeTempDir("pi-a2a-state-");
         fs.mkdirSync(path.join(dir, "a2a_gateways"), { recursive: true });
         fs.writeFileSync(path.join(dir, "a2a_gateways", "k1.json"), content);
         const original = globalThis.fetch;
@@ -717,7 +815,7 @@ describe("gateway peer discovery", () => {
     });
 
     it("keeps caller tokens for concurrent peer names separate", async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-state-"));
+      const dir = makeTempDir("pi-a2a-state-");
       const original = globalThis.fetch;
       const seen: string[] = [];
       globalThis.fetch = (async (url: any, init?: any) => {
@@ -747,7 +845,7 @@ describe("gateway peer discovery", () => {
     });
 
     it("deregisters with its caller token", async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-state-"));
+      const dir = makeTempDir("pi-a2a-state-");
       fs.mkdirSync(path.join(dir, "a2a_gateways"), { recursive: true });
       fs.writeFileSync(path.join(dir, "a2a_gateways", "k1.json"), JSON.stringify({ name: "self-1", callerToken: "ct-self-1" }));
       const original = globalThis.fetch;
@@ -772,7 +870,7 @@ describe("gateway peer discovery", () => {
     });
 
     it("initial POST 409 (stale name) self-heals with a unique name", async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-state-"));
+      const dir = makeTempDir("pi-a2a-state-");
       const original = globalThis.fetch;
       const posts: string[] = [];
       globalThis.fetch = (async (url: any, init?: any) => {
@@ -860,7 +958,7 @@ describe("gateway peer discovery", () => {
           200,
         );
       }) as any;
-      const piDir2 = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-lan-"));
+      const piDir2 = makeTempDir("pi-a2a-lan-");
       const out = await a2aCall({ cfg: { ...DEFAULTS(), discovery: { ...(DEFAULTS() as any).discovery, gateway: { url: "http://192.168.1.50:9920", token: TOKEN } } } as any, piDir: piDir2, agent: "gw/k1/p", message: "hi" });
       globalThis.fetch = of as any;
       assert.include(out, "lan ok");
@@ -872,7 +970,7 @@ describe("gateway peer discovery", () => {
 
     beforeEach(() => {
       originalFetch = globalThis.fetch;
-      piDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-gateway-"));
+      piDir = makeTempDir("pi-a2a-gateway-");
       metrics.reset();
     });
     afterEach(() => {
@@ -1193,7 +1291,7 @@ describe("gateway diagnostics routing", () => {
     const statuses: string[] = [];
     const errors: string[] = [];
     const gw = new GatewayUpstream(
-      { url: "http://127.0.0.1:1", token: TOKEN, name: "self-1" }, // port 1: connection refused
+      { url: "http://127.0.0.1:1", token: TOKEN, name: "self-1" }, // port 1: fetch rejects synchronously (bad-port blocklist)
       () => ({}),
       (m) => errors.push(String(m)),
       () => {},
@@ -1203,5 +1301,148 @@ describe("gateway diagnostics routing", () => {
     assert.ok(errors.some((e) => e.includes("register failed")), "failure surfaced as error");
     assert.equal(statuses.length, 0, "no status line for a failed registration");
     await gw.stop();
+  });
+
+  it("failed start still arms the retry heartbeat (self-heal without restart)", async () => {
+    const gw = new GatewayUpstream(
+      { url: "http://127.0.0.1:1", token: TOKEN, name: "self-1", channel: false }, // fetch rejects (bad-port blocklist — no connect attempted)
+      () => ({}),
+      () => {},
+      () => {},
+    );
+    try {
+      assert.isFalse(await gw.start("http://127.0.0.1:9911"));
+      assert.ok((gw as unknown as { timer: unknown }).timer, "heartbeat armed despite failed start");
+    } finally {
+      await gw.stop();
+    }
+    assert.equal((gw as unknown as { timer: unknown }).timer, null, "stop() clears the retry heartbeat");
+  });
+
+  it("network-error register logs carry the errno cause", async () => {
+    const errors: string[] = [];
+    const gw = new GatewayUpstream(
+      { url: "http://127.0.0.1:1", token: TOKEN, name: "self-1", channel: false },
+      () => ({}),
+      (m) => errors.push(String(m)),
+      () => {},
+    );
+    assert.isFalse(await gw.start("http://127.0.0.1:9911"));
+    assert.ok(
+      errors.some((e) => /register failed: network error \((.+?)\)/.test(e)),
+      `cause appended to network error: ${errors.join(" | ")}`,
+    );
+    await gw.stop();
+  });
+
+  it("identical register failures log once (change-dedup), like directory refresh", async () => {
+    const errors: string[] = [];
+    const gw = new GatewayUpstream(
+      { url: "http://127.0.0.1:1", token: TOKEN, name: "self-1", channel: false },
+      () => ({}),
+      (m) => errors.push(String(m)),
+      () => {},
+    );
+    await gw.register("http://127.0.0.1:9911");
+    await gw.register("http://127.0.0.1:9911");
+    assert.lengthOf(
+      errors.filter((e) => e.includes("register failed")),
+      1,
+      "repeated identical failure must not repeat per beat",
+    );
+    await gw.stop();
+  });
+
+  it("late self-heal beat registers, notifies onRegistered once, logs no failures", async () => {
+    const errors: string[] = [];
+    const registered: Array<{ name: string; state: string }> = [];
+    const srv = http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ state: "accepted" }));
+      });
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    const port = (srv.address() as { port: number }).port;
+    await new Promise<void>((r) => srv.close(() => r())); // gateway down at session start
+    const gw = new GatewayUpstream(
+      { url: `http://127.0.0.1:${port}`, token: TOKEN, name: "late-1", channel: false },
+      () => ({ name: "late-1" }),
+      (m) => errors.push(String(m)),
+      () => {},
+      undefined,
+      (name, state) => registered.push({ name, state }),
+    );
+    const beat = (gw as unknown as { beat: (u: string) => Promise<void> }).beat;
+    try {
+      assert.isFalse(await gw.start(`http://127.0.0.1:${port}`));
+      await new Promise<void>((r) => srv.listen(port, "127.0.0.1", r)); // gateway up BEFORE the beat (no connect/bind race)
+      await beat.call(gw, `http://127.0.0.1:${port}`);
+      assert.deepEqual(registered, [{ name: "late-1", state: "accepted" }],
+        "first successful beat announces the registration");
+      await beat.call(gw, `http://127.0.0.1:${port}`);
+      assert.lengthOf(registered, 1, "onRegistered fires once (transition only)");
+      assert.lengthOf(
+        errors.filter((e) => e.includes("register failed")),
+        1,
+        "failed start logged once; recovered beats log nothing",
+      );
+    } finally {
+      await gw.stop();
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  });
+
+  it("EHOSTUNREACH on darwin hints Local Network privacy, once per cause", async () => {
+    const realPlatform = process.platform;
+    const originalFetch = globalThis.fetch;
+    const errors: string[] = [];
+    let gw1: GatewayUpstream | null = null;
+    let gw2: GatewayUpstream | null = null;
+    try {
+      globalThis.fetch = (async () => {
+        throw Object.assign(new TypeError("fetch failed"), { cause: { code: "EHOSTUNREACH" } });
+      }) as any;
+      Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+
+      // Phase 1 — darwin: hint appended, dedup keeps it to one line.
+      gw1 = new GatewayUpstream(
+        { url: "http://192.168.1.50:9920", token: TOKEN, name: "self-1", channel: false },
+        () => ({}),
+        (m) => errors.push(String(m)),
+        () => {},
+      );
+      assert.isFalse(await gw1.register("http://127.0.0.1:9911"));
+      assert.isFalse(await gw1.register("http://127.0.0.1:9911"));
+      const failed = errors.filter((e) => e.includes("register failed"));
+      assert.lengthOf(failed, 1, "repeated identical failure must not repeat per beat");
+      assert.include(failed[0]!, "network error (EHOSTUNREACH)");
+      assert.include(failed[0]!, "Local Network");
+      assert.include(failed[0]!, "Privacy & Security");
+      assert.notInclude(failed[0]!, "\n", "hint stays on a single line");
+      assert.isBelow(failed[0]!.length, 320, "line stays length-capped");
+
+      // Phase 2 — non-darwin: EHOSTUNREACH is genuine routing, no hint.
+      errors.length = 0;
+      Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+      gw2 = new GatewayUpstream(
+        { url: "http://192.168.1.50:9920", token: TOKEN, name: "self-2", channel: false },
+        () => ({}),
+        (m) => errors.push(String(m)),
+        () => {},
+      );
+      await gw2.register("http://127.0.0.1:9911");
+      assert.ok(
+        errors.some((e) => e.includes("EHOSTUNREACH") && !e.includes("Local Network")),
+        `no darwin hint on linux: ${errors.join(" | ")}`,
+      );
+    } finally {
+      if (gw1) await gw1.stop();
+      if (gw2) await gw2.stop();
+      Object.defineProperty(process, "platform", { value: realPlatform, configurable: true });
+      globalThis.fetch = originalFetch as any;
+    }
   });
 });

@@ -2,8 +2,10 @@
  * guidance.ts — DeepSeek V4 selection guidance, prompt-aware first-tool hints,
  * and Super Power Mode.
  *
- * DeepSeek-only: gated on family === "deepseek-v4" in index.ts. GLM does not
- * need steering (eval: 12/12 tool-selection accuracy without guidance).
+ * Gating lives in index.ts: the apply_patch preference hint (edit +
+ * create-file steering) covers DeepSeek V4 + GLM; the verbose selection
+ * guidance and Super Power Mode stay DeepSeek-only (eval: GLM reaches full
+ * tool-selection accuracy without them).
  */
 
 declare const process: { env: Record<string, string | undefined> };
@@ -77,6 +79,7 @@ export function applyPatchPreferenceGuidance(activeTools: readonly string[]): st
   if (!activeTools.includes("apply_patch")) return undefined;
   return [
     "apply_patch (preferred for non-trivial edits):",
+    "  • Create a new file → write (path + full content) or apply_patch *** Add File — never create files from bash (cat/echo/printf >, heredocs, python/node fs.write).",
     "  • For multi-line (>3 lines), multi-hunk, or multi-file edits, emit a small V4D diff (context + -/+ lines) via apply_patch instead of reproducing large verbatim oldText blocks — far fewer match failures.",
     "  • Each Update hunk must anchor on enough unchanged context that the context+removed block matches UNIQUELY in the file.",
     "  • Keep using edit for a single tiny one-line exact replacement (≤3 lines).",

@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import type { RouterSettings } from "./config.js";
-import { fetchModels, mapModel, applyReasoning, type PiModel } from "./client.js";
+import { fetchModels, mapModel, applyReasoning, resolveVision, type PiModel } from "./client.js";
 
 export const PROVIDER_ID = "router";
 
@@ -37,9 +37,15 @@ export function registerProvider(pi: ExtensionAPI, settings: RouterSettings): vo
       const stored = context.stored?.models as PiModel[] | undefined;
 
       if (!context.allowNetwork || context.signal.aborted) {
-        // Offline: restore persisted catalog, re-mapped with current reasoning flag.
+        // Offline: restore persisted catalog, re-mapped with current reasoning
+        // flag. Vision is re-resolved so stale persisted flags self-heal —
+        // /v1/models vision metadata lies in both directions (see client.ts
+        // VISION_OVERRIDES/VISION_DOWNGRADES) and old caches froze it verbatim.
         return stored?.length
-          ? (stored.map((m) => applyReasoning(m, settings.enableReasoning)) as unknown as ProviderModelConfig[])
+          ? (stored
+              // Array.isArray guards legacy/malformed store entries (treated as text-only).
+              .map((m) => ({ ...m, input: resolveVision(m.id, Array.isArray(m.input) && m.input.includes("image")) ? ["text", "image"] : ["text"] }) as PiModel)
+              .map((m) => applyReasoning(m, settings.enableReasoning)) as unknown as ProviderModelConfig[])
           : undefined;
       }
 

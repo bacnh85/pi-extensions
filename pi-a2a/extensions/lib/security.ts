@@ -280,6 +280,10 @@ export function audit(opts: {
   identity: string;
   taskId: string;
   text: string;
+  /** Persisted child-transcript path (inbound, fleet task #252) — recorded
+   *  as its own field so post-mortems can find the step history from the
+   *  audit log without parsing the preview text. */
+  transcriptPath?: string;
 }): void {
   try {
     const line = JSON.stringify({
@@ -289,6 +293,7 @@ export function audit(opts: {
       taskId: opts.taskId,
       // ponytail: bound preview, never the whole body — audit is for forensics
       preview: opts.text.slice(0, 300),
+      ...(opts.transcriptPath ? { transcript: opts.transcriptPath } : {}),
     }) + "\n";
     const p = auditPath(opts.piDir);
     mkdirSync(dirname(p), { recursive: true });

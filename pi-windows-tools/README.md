@@ -17,6 +17,22 @@ PI_GIT_BASH_PATH=C:\Program Files\Git\bin\bash.exe
 PI_WSL_DISTRO=Ubuntu-24.04
 ```
 
+## Tools
+
+| Tool | Description |
+|---|---|
+| `windows_shell_detect` | Detect available Windows shells (ignores `timeout_ms` — detection is synchronous). |
+| `windows_shell_exec` | Execute a command through a Windows shell. |
+| `windows_audit_log` | Show command history and exit codes (`clear: true` empties the log). |
+| `windows_path_to_windows` | Convert POSIX/WSL path to `C:\...`. |
+| `windows_path_to_wsl` | Convert Windows path to `/mnt/c/...`. |
+| `windows_path_to_gitbash` | Convert Windows path to `/c/...`. |
+| `windows_path_quote` | Quote a path for the target shell's quoting rules. |
+| `windows_safety_classify` | Check whether a command is dangerous (`safe` / `confirm`). |
+| `windows_doctor` | Detect installed developer tools (PATH, WSL, long paths, dev mode). |
+| `windows_tool_discover` | Check if a tool is in PATH. |
+| `windows_wsl_list_distros` | List installed WSL distros. |
+
 ## Commands
 
 - `/windows-doctor` — detect installed developer tools and system state.

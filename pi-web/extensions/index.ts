@@ -1,5 +1,9 @@
 /// <reference path="./types.d.ts" />
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -21,6 +25,31 @@ import {
   formatUnifiedSearchResults,
 } from "./lib/format";
 import { searchWithDiagnostics } from "./lib/search";
+import {
+  loadGeminiWebConfig,
+  geminiAsk,
+  geminiResearch,
+  describeGeminiError,
+} from "./lib/gemini";
+import { cookieStoreSnapshot } from "./lib/gemini-auth";
+import {
+  generateImageWithFallback,
+  loadImageApiConfig,
+  loadImageRateConfig,
+  imageRateSnapshot,
+  type ImageProvider,
+} from "./lib/imageapi";
+import {
+  chatgptChat,
+  describeChatApiError,
+  loadChatConfig,
+} from "./lib/chatapi";
+import {
+  chatgptAuthSnapshot,
+  chatgptWebChat,
+  describeChatGptError,
+  loadChatGptAuth,
+} from "./lib/chatgpt";
 import { extractWithDiagnostics, type ExtractMode } from "./lib/extract";
 import { firecrawlRequest, type FirecrawlResult } from "./lib/firecrawl";
 import {
@@ -29,6 +58,13 @@ import {
   fetchCrawl4aiPdf,
   fetchCrawl4aiHealth,
 } from "./lib/crawl4ai";
+import {
+  capturePdf as captureLocalPdf,
+  captureScreenshot as captureLocalScreenshot,
+  findChromeBinary,
+  isSsrfBlocked,
+  resolveEngine,
+} from "./lib/chrome";
 
 // ---------------------------------------------------------------------------
 // Shared schema fragment
@@ -48,6 +84,29 @@ const crawl4aiControlSchema = {
   crawl4ai_api_token: Type.Optional(Type.String({ description: "Override $CRAWL4AI_API_TOKEN." })),
 };
 
+const engineSchema = {
+  engine: Type.Optional(Type.Union([
+    Type.Literal("auto"),
+    Type.Literal("local"),
+    Type.Literal("daemon"),
+  ], { default: "auto", description: "auto routes localhost/private/file URLs to local Chrome, the rest to the Crawl4AI daemon; local/daemon force one." })),
+};
+
+// Saved image file → inline image block (the 0.6.2 vision-loop lesson: the
+// generating model should see its own output).
+export async function toImageBlock(file: string): Promise<{ type: "image"; data: string; mimeType: string }> {
+  const data = (await fs.promises.readFile(file)).toString("base64");
+  const lower = file.toLowerCase();
+  const mimeType = lower.endsWith(".jpg") || lower.endsWith(".jpeg")
+    ? "image/jpeg"
+    : lower.endsWith(".webp")
+      ? "image/webp"
+      : lower.endsWith(".gif")
+        ? "image/gif"
+      : "image/png";
+  return { type: "image" as const, data, mimeType };
+}
+
 // ---------------------------------------------------------------------------
 // Always-on routing guidance (injected only when a web_* tool is active)
 // ---------------------------------------------------------------------------
@@ -57,32 +116,30 @@ const crawl4aiControlSchema = {
 // the guidance travels with the package and disappears when pi-web is absent.
 const WEB_ROUTING_GUIDANCE = `## Web Tool Routing (pi-web)
 
-The pi-web extension provides 7 unified tools that auto-select the best backend:
+- **web_search** — web search (auto: SearXNG → Brave → Firecrawl; force via \`backend\`, tune via \`engines\`).
+- **web_extract** — URL → markdown (auto: static JSDOM → dynamic Firecrawl → full Crawl4AI → agy; force via \`mode\`; prompt+schema for JSON extraction).
+- **web_map** — discover site URLs (Firecrawl Map).
+- **web_crawl** — multi-page crawl: \`mode: "light"\` (Firecrawl, url) or \`mode: "full"\` (Crawl4AI, urls[]).
+- **web_screenshot** / **web_pdf** — page capture (Crawl4AI).
+- **web_research** — AI-synthesized research via Gemini web (mode "ask" = grounded answer, guest OK; mode "research" = Deep Research report — plan, autonomous web browsing, cited report; takes minutes when available).
+- **web_image** — text→image generation (auto: Gemini web → ChatGPT web via CHATGPT_WEB_AUTH_KEY / codex login → Z.ai GLM-Image → custom OpenAI-images endpoint; \`model\`/\`n\`/\`size\` params).
+- **web_chat** — one-off chat completion — ChatGPT web (CHATGPT_WEB_AUTH_KEY / codex login; default when configured) or an OpenAI-compatible gateway (\`WEB_CHAT_API_BASE_URL\`; non-streaming).
+- **web_status** — provider config + health.
 
-- **\`web_search\`** — Search the web (auto: SearXNG → Brave → Firecrawl). Use
-  \`backend\` for explicit control, \`engines\` for SearXNG tuning.
-- **\`web_extract\`** — Extract readable content from a URL (auto: static JSDOM
-  → dynamic Firecrawl → full Crawl4AI → agy model-backed). Use \`mode\` for
-  explicit control.
-- **\`web_map\`** — Discover URLs from a site (Firecrawl Map).
-- **\`web_crawl\`** — Crawl multiple pages. \`mode: "light"\` (Firecrawl) or
-  \`mode: "full"\` (Crawl4AI).
-- **\`web_screenshot\`** / **\`web_pdf\`** — Visual/page capture (Crawl4AI).
-- **\`web_status\`** — Check provider configuration and server health.
-
-Backend selection rules:
-
-- Firecrawl Search has poor semantic accuracy on domain-specific queries; prefer
-  SearXNG or Brave for precision (force via \`backend\`).
-- Firecrawl Scrape fails on bot-protected sites (e.g. Ansible docs); Crawl4AI
-  handles those (force via \`mode: "full"\`), and agy (Gemini/Claude read_url)
-  handles the rest as a last-resort fallback (force via \`mode: "agy"\`).
-- Always cite source URLs when web results materially support an answer.`;
+Rules: Firecrawl Search is weak on domain-specific queries — prefer SearXNG/Brave; Firecrawl Scrape fails on bot-protected sites — use Crawl4AI (\`mode: "full"\`) then agy (\`mode: "agy"\`); cite source URLs.`;
 
 
 // ---------------------------------------------------------------------------
 // Extension entry point
 // ---------------------------------------------------------------------------
+
+/** Validate a requested image size: WxH, 3-4 digits each. Present-but-invalid throws (never silently generates a square). */
+function parseSizeParam(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const s = String(value);
+  if (!/^\d{3,4}x\d{3,4}$/.test(s)) throw new Error(`invalid size "${s}": expected WxH with 3-4 digits each, e.g. 960x1728`);
+  return s;
+}
 
 export default function piWebExtension(pi: ExtensionAPI) {
   // ── web_search ────────────────────────────────────────────────────────
@@ -92,13 +149,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
     description:
       "Search the web. Auto-selects backends: SearXNG, Brave, Firecrawl.",
     promptSnippet: "Search current web results",
-    promptGuidelines: [
-      "Source discovery, docs, facts, and general search.",
-      "Broad discovery uses SearXNG; precision/site/docs use Brave; Firecrawl is fallback.",
-      "Force backend via backend:'brave'|'searxng' for poor auto results.",
-      "Use engines='google,github' for SearXNG tuning.",
-      "Cite source URLs.",
-    ],
+    promptGuidelines: ["Source discovery, docs, facts. Precision/site/docs → Brave via backend:'brave'; tune SearXNG via engines.", "Cite source URLs."],
     parameters: Type.Object({
       query: Type.String(),
       count: Type.Optional(Type.Number({ default: 5 })),
@@ -140,14 +191,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
     description:
       "Extract readable content from a URL. Auto mode: static\u2192dynamic\u2192full\u2192agy.",
     promptSnippet: "Extract readable webpage content as markdown",
-    promptGuidelines: [
-      "Clean markdown from a known URL.",
-      "mode: 'static' (no API key, JSDOM), 'dynamic' (Firecrawl JS), 'full' (Crawl4AI), 'agy' (Gemini/Claude via agy).",
-      "'auto' tries static\u2192dynamic\u2192full\u2192agy; see diagnostics for fallback chain.",
-      "mode: 'agy' uses agy's native read_url for bot-protected/JS-heavy pages \u2014 last-resort fallback in auto.",
-      "Use prompt+schema for structured JSON extraction (dynamic/agy modes).",
-      "Cite the source URL.",
-    ],
+    promptGuidelines: ["Markdown from a known URL; prompt+schema for structured JSON extraction.", "Cite the source URL."],
     parameters: Type.Object({
       url: Type.String(),
       mode: Type.Optional(Type.Union(
@@ -191,11 +235,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
     description:
       "Discover site URLs via Firecrawl Map.",
     promptSnippet: "Map site URLs",
-    promptGuidelines: [
-      "Discover site URLs before crawling. Prefer web_extract for small jobs.",
-      "Best on base domains. sitemap:'only' for sub-path discovery.",
-      "Keep limits small unless broad discovery is requested.",
-    ],
+    promptGuidelines: ["URL discovery before crawling; prefer web_extract for small jobs."],
     parameters: Type.Object({
       url: Type.String(),
       limit: Type.Optional(Type.Number({ default: 100 })),
@@ -234,21 +274,17 @@ export default function piWebExtension(pi: ExtensionAPI) {
     description:
       "Crawl pages. Firecrawl 'light' or Crawl4AI 'full' headless mode.",
     promptSnippet: "Crawl a small site section",
-    promptGuidelines: [
-      "Prefer web_map + web_extract over crawl for small jobs.",
-      "'light'=Firecrawl (url param), 'full'=Crawl4AI (urls[] param).",
-      "Keep limit low (default 10).",
-    ],
+    promptGuidelines: ["'light'=Firecrawl (url), 'full'=Crawl4AI (urls[]). Prefer web_map + web_extract for small jobs."],
     parameters: Type.Object({
-      url: Type.Optional(Type.String({ description: "URL for Firecrawl-style crawl (mode:'light')." })),
-      urls: Type.Optional(Type.Array(Type.String(), { description: "URLs for Crawl4AI-style crawl (mode:'full'), up to 100." })),
+      url: Type.Optional(Type.String({ description: "URL for mode:'light' (Firecrawl)." })),
+      urls: Type.Optional(Type.Array(Type.String(), { description: "URLs for mode:'full' (Crawl4AI), up to 100." })),
       mode: Type.Optional(Type.Union([Type.Literal("light"), Type.Literal("full")], { default: "light", description: "'light'(Firecrawl) or 'full'(Crawl4AI)." })),
       limit: Type.Optional(Type.Number({ default: 10 })),
-      include_paths: Type.Optional(Type.String({ description: "Comma-separated paths to include (Firecrawl mode)." })),
-      exclude_paths: Type.Optional(Type.String({ description: "Comma-separated paths to exclude (Firecrawl mode)." })),
-      poll: Type.Optional(Type.Boolean({ default: false, description: "Poll for completion (Firecrawl mode)." })),
-      browser_config: Type.Optional(Type.Any({ description: "BrowserConfig JSON (full mode only)." })),
-      crawler_config: Type.Optional(Type.Any({ description: "CrawlerRunConfig JSON (full mode only)." })),
+      include_paths: Type.Optional(Type.String({ description: "Comma-separated include paths (light mode)." })),
+      exclude_paths: Type.Optional(Type.String({ description: "Comma-separated exclude paths (light mode)." })),
+      poll: Type.Optional(Type.Boolean({ default: false, description: "Poll until completion (light mode)." })),
+      browser_config: Type.Optional(Type.Any({ description: "BrowserConfig JSON (full mode)." })),
+      crawler_config: Type.Optional(Type.Any({ description: "CrawlerRunConfig JSON (full mode)." })),
       content_chars: Type.Optional(Type.Number({ default: 20000 })),
       ...firecrawlControlSchema,
       ...crawl4aiControlSchema,
@@ -320,38 +356,89 @@ export default function piWebExtension(pi: ExtensionAPI) {
     name: "web_screenshot",
     label: "Web Page Screenshot",
     description:
-      "Full-page PNG screenshot via Crawl4AI.",
+      "Full-page PNG screenshot via the Crawl4AI daemon, or via local headless Chrome for localhost/private/file URLs (auto-detected, engine overridable). The PNG is returned inline as an image block.",
     promptSnippet: "Screenshot a webpage",
-    promptGuidelines: [
-      "Use when web_extract fails on JS-heavy or bot-protected pages.",
-      "wait_for (default 2s) delays capture for dynamic content.",
-    ],
+    promptGuidelines: ["PNG returned inline (multimodal models see it); use when web_extract fails on JS-heavy pages, or to visually inspect a built UI. Local dev servers (localhost/LAN/file://) capture automatically via local Chrome."],
     parameters: Type.Object({
       url: Type.String(),
       wait_for: Type.Optional(Type.Number({ default: 2, description: "Seconds to wait before capture." })),
-      wait_for_images: Type.Optional(Type.Boolean({ default: false, description: "Wait for images before capture." })),
+      wait_for_images: Type.Optional(Type.Boolean({ default: false })),
+      engine: Type.Optional(engineSchema.engine),
+      width: Type.Optional(Type.Number({ default: 1280, description: "Local engine: viewport width." })),
+      height: Type.Optional(Type.Number({ default: 800, description: "Local engine: viewport height (full_page uses 8000)." })),
+      full_page: Type.Optional(Type.Boolean({ default: false, description: "Local engine: capture a tall 8000px window to approximate full page." })),
       ...crawl4aiControlSchema,
       ...sharedControlSchema,
     }),
     async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
-      const config = loadCrawl4aiConfig(params as Record<string, unknown>, cwdFromContext(ctx), includeProjectEnv(ctx));
-      const result = await fetchCrawl4aiScreenshot(
-        config,
-        params.url as string,
-        params.wait_for as number | undefined,
-        params.wait_for_images as boolean | undefined,
-        signal,
-      );
-      const screenshot = result.screenshot as string | undefined;
-      const artifactUrl = result.url as string | undefined;
-      const mime = result.mime as string | undefined;
-      const size = result.size as number | undefined;
-      let text = `Screenshot: ${params.url}\n`;
-      if (screenshot) text += `Data: base64 PNG (${screenshot.length} chars)\n`;
+      const url = params.url as string;
+      let engine = resolveEngine(params.engine as string | undefined, url);
+      let screenshot: string | undefined;
+      let mime: string | undefined;
+      let size: number | undefined;
+      let artifactUrl: string | undefined;
+      let details: Record<string, unknown> = {};
+
+      if (engine === "local") {
+        const cap = await captureLocalScreenshot({
+          url,
+          width: params.width as number | undefined,
+          height: params.height as number | undefined,
+          fullPage: params.full_page as boolean | undefined,
+          waitForSec: params.wait_for as number | undefined,
+          signal,
+        });
+        screenshot = cap.base64;
+        mime = cap.mime;
+        size = cap.size;
+        details = { mime: cap.mime, size: cap.size };
+      } else {
+        const config = loadCrawl4aiConfig(params as Record<string, unknown>, cwdFromContext(ctx), includeProjectEnv(ctx));
+        try {
+          const result = await fetchCrawl4aiScreenshot(
+            config,
+            url,
+            params.wait_for as number | undefined,
+            params.wait_for_images as boolean | undefined,
+            signal,
+          );
+          if (result.success === false) {
+            throw new Error(String(result.error_message ?? "Crawl4AI screenshot failed"));
+          }
+          screenshot = result.screenshot as string | undefined;
+          artifactUrl = result.url as string | undefined;
+          mime = result.mime as string | undefined;
+          size = result.size as number | undefined;
+          details = { ...result };
+        } catch (err) {
+          // Daemon can't render this URL (SSRF-blocked); retry via local Chrome.
+          if (!isSsrfBlocked(err) || !findChromeBinary()) throw err;
+          engine = "local";
+          const cap = await captureLocalScreenshot({
+            url,
+            width: params.width as number | undefined,
+            height: params.height as number | undefined,
+            fullPage: params.full_page as boolean | undefined,
+            waitForSec: params.wait_for as number | undefined,
+            signal,
+          });
+          screenshot = cap.base64;
+          mime = cap.mime;
+          size = cap.size;
+          details = { mime: cap.mime, size: cap.size, fallback: "daemon SSRF-blocked this URL" };
+        }
+      }
+
+      let text = `Screenshot: ${url}\nEngine: ${engine === "local" ? "local-chrome" : "crawl4ai"}\n`;
       if (artifactUrl) text += `Artifact: ${artifactUrl}\n`;
       if (mime) text += `MIME: ${mime}\n`;
       if (size) text += `Size: ${size} bytes\n`;
-      return { content: [{ type: "text" as const, text: truncateText(text) }], details: { ...result, url: params.url } };
+      // Return the PNG as a real image block so multimodal models see it.
+      const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
+        { type: "text", text: truncateText(text) },
+      ];
+      if (screenshot) content.push({ type: "image", data: screenshot, mimeType: mime || "image/png" });
+      return { content, details: { ...details, url, engine } };
     },
   });
 
@@ -360,28 +447,249 @@ export default function piWebExtension(pi: ExtensionAPI) {
     name: "web_pdf",
     label: "Web Page PDF",
     description:
-      "PDF document via Crawl4AI.",
+      "PDF document via the Crawl4AI daemon, or via local headless Chrome for localhost/private/file URLs (auto-detected, engine overridable).",
     promptSnippet: "PDF a webpage",
-    promptGuidelines: [
-      "Printable or archivable page snapshot.",
-      "Returns base64 PDF string.",
-    ],
+    promptGuidelines: ["Printable/archivable page snapshot; returns base64 PDF. Local dev servers capture automatically via local Chrome."],
     parameters: Type.Object({
       url: Type.String(),
+      engine: Type.Optional(engineSchema.engine),
       ...crawl4aiControlSchema,
       ...sharedControlSchema,
     }),
     async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
-      const config = loadCrawl4aiConfig(params as Record<string, unknown>, cwdFromContext(ctx), includeProjectEnv(ctx));
-      const result = await fetchCrawl4aiPdf(config, params.url as string, signal);
-      const pdf = result.pdf as string | undefined;
-      const artifactUrl = result.url as string | undefined;
-      const size = result.size as number | undefined;
-      let text = `PDF: ${params.url}\n`;
+      const url = params.url as string;
+      let engine = resolveEngine(params.engine as string | undefined, url);
+      let pdf: string | undefined;
+      let artifactUrl: string | undefined;
+      let size: number | undefined;
+      let details: Record<string, unknown> = {};
+
+      if (engine === "local") {
+        const cap = await captureLocalPdf({ url, signal });
+        pdf = cap.base64;
+        size = cap.size;
+        details = { mime: cap.mime, size: cap.size };
+      } else {
+        const config = loadCrawl4aiConfig(params as Record<string, unknown>, cwdFromContext(ctx), includeProjectEnv(ctx));
+        try {
+          const result = await fetchCrawl4aiPdf(config, url, signal);
+          pdf = result.pdf as string | undefined;
+          artifactUrl = result.url as string | undefined;
+          size = result.size as number | undefined;
+          details = { ...result };
+        } catch (err) {
+          if (!isSsrfBlocked(err) || !findChromeBinary()) throw err;
+          engine = "local";
+          const cap = await captureLocalPdf({ url, signal });
+          pdf = cap.base64;
+          size = cap.size;
+          details = { mime: cap.mime, size: cap.size, fallback: "daemon SSRF-blocked this URL" };
+        }
+      }
+
+      let text = `PDF: ${url}\nEngine: ${engine === "local" ? "local-chrome" : "crawl4ai"}\n`;
       if (pdf) text += `Data: base64 PDF (${pdf.length} chars)\n`;
       if (artifactUrl) text += `Artifact: ${artifactUrl}\n`;
       if (size) text += `Size: ${size} bytes\n`;
-      return { content: [{ type: "text" as const, text: truncateText(text) }], details: { ...result, url: params.url } };
+      return { content: [{ type: "text" as const, text: truncateText(text) }], details: { ...details, url, engine } };
+    },
+  });
+
+  // ── web_research ─────────────────────────────────────────────────────
+  pi.registerTool({
+    name: "web_research",
+    label: "Web Research (Gemini)",
+    description:
+      "AI-synthesized web research via Gemini (gemini.google.com web tier, cookie auth). Mode 'ask' returns a quick grounded answer with source links (works guest-mode, Flash only). Mode 'research' runs Gemini Deep Research — plan turn, 'Start research' confirm, then polls until the cited report lands. Requires GEMINI_WEB_SECURE_1PSID (+ fresh __Secure-1PSIDTS); the plan turn runs over plain Node, but confirm (execution start) and report polling are gated server-side and may refuse from this transport (verified 2026-09-14: confirm needs a browser-grade TLS fingerprint) — refusals return an honest partial result (plan + transcript + note) instead of the report. Takes minutes when available.",
+    promptSnippet: "AI-synthesized research with citations",
+    promptGuidelines: [
+      "Use for AI-synthesized research with sources (mode ask = quick grounded answer; mode research = multi-minute Deep Research report). NOT for URL-list searches (web_search) or single-URL extraction (web_extract). Cite the returned source URLs.",
+    ],
+    parameters: Type.Object({
+      query: Type.String({ description: "Research question or topic." }),
+        mode: Type.Optional(Type.Union(
+          [Type.Literal("ask"), Type.Literal("research")],
+          { default: "ask", description: "ask = quick grounded answer (guest OK); research = full Deep Research report (cookie required; runs the pure-Node DR client — plan/confirm execute on live sessions, degraded sessions return an honest partial result)." },
+        )),
+      model: Type.Optional(Type.String({ description: "Gemini model for ask mode (e.g. gemini-3-flash). Discovered from the account by default." })),
+      ...sharedControlSchema,
+    }),
+    async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
+      const config = loadGeminiWebConfig(cwdFromContext(ctx), includeProjectEnv(ctx));
+      const mode = (params.mode as string) || "ask";
+      const query = params.query as string;
+      try {
+        if (mode === "research") {
+          const timeoutMs = Math.min(Math.max((params.timeout_ms as number) ?? 600_000, 30_000), 1_800_000);
+          const result = await geminiResearch(query, { config, timeoutMs, signal });
+          const meta = [
+            "Mode: research (Gemini Deep Research)",
+            result.title ? `Title: ${result.title}` : null,
+            result.eta ? `ETA: ${result.eta}` : null,
+          ].filter(Boolean).join("\n");
+          const sources = result.sources.length ? result.sources.map((s, i) => `${i + 1}. ${s}`).join("\n") : "(none found in report text)";
+          const text = `${meta}\n\n${result.text}\n\n--- Sources (extracted from report) ---\n${sources}`;
+          return { content: [{ type: "text" as const, text: truncateText(text) }], details: { mode, ...result } };
+        }
+        const askTimeoutMs = Math.min(Math.max((params.timeout_ms as number) ?? 120_000, 30_000), 600_000);
+        const result = await geminiAsk(query, { config, model: params.model as string | undefined, timeoutMs: askTimeoutMs, signal });
+        const meta = [
+          "Mode: ask",
+          `Model: ${result.model ?? "unknown"}`,
+          result.guest ? "Guest mode (no cookie — Flash only; set GEMINI_WEB_SECURE_1PSID for full access)" : "Cookie auth",
+        ].join("\n");
+        const sources = result.sources.length ? result.sources.map((s, i) => `${i + 1}. ${s}`).join("\n") : "(none found in answer text)";
+        const text = `${meta}\n\n${result.text}\n\n--- Sources (extracted from answer) ---\n${sources}`;
+        return { content: [{ type: "text" as const, text: truncateText(text) }], details: { mode, ...result } };
+      } catch (err) {
+        throw new Error(describeGeminiError(err));
+      }
+    },
+  });
+
+  // ── web_image ────────────────────────────────────────────────────────
+  pi.registerTool({
+    name: "web_image",
+    label: "Web Image Generation",
+    description:
+      "Generate images from text via free upstream providers, with fallback: Gemini web (gemini.google.com, guest or cookie auth), ChatGPT web (subscription via CHATGPT_WEB_AUTH_KEY / codex login, image_generation tool), Z.ai official API (GLM-Image via ZAI_API_KEY), or any custom OpenAI-compatible images endpoint (WEB_IMAGE_API_BASE_URL). Optional size=WxH for zai/custom (glm-image enums incl. 960x1728 portrait; omit = server default, usually square). Returns saved file paths plus the images inline.",
+    promptSnippet: "Generate images via free upstreams (Gemini web, ChatGPT web, Z.ai GLM-Image)",
+    promptGuidelines: [
+      "Use for image GENERATION from a text prompt. provider auto falls back gemini → chatgpt → zai → custom. Portrait/aspect-sensitive prompts: pass size (zai/custom), e.g. 960x1728 — default is square. Capturing an EXISTING page is web_screenshot, not this.",
+    ],
+    parameters: Type.Object({
+      prompt: Type.String({ description: "Image description." }),
+      provider: Type.Optional(Type.Union(
+        [Type.Literal("auto"), Type.Literal("gemini"), Type.Literal("chatgpt"), Type.Literal("zai"), Type.Literal("custom")],
+        { default: "auto", description: "auto = gemini → chatgpt (if CHATGPT_WEB_AUTH_KEY/codex login) → zai (if ZAI_API_KEY) → custom (if WEB_IMAGE_API_BASE_URL); pin one to skip fallback." },
+      )),
+      model: Type.Optional(Type.String({ description: "Provider-specific model (e.g. glm-image, or a Gemini image-capable model id). Omit for the provider default." })),
+      n: Type.Optional(Type.Number({ default: 1, description: "Number of images, 1-4 (applies to zai/custom; the gemini web tier returns its own count)." })),
+      size: Type.Optional(Type.String({ pattern: "^\\d{3,4}x\\d{3,4}$", description: "Image size as WxH (zai/custom only). glm-image enums: 1280x1280 (default), 1568x1056, 1056x1568, 1472x1088, 1088x1472, 1728x960, 960x1728. Omit for the provider default." })),
+      out_dir: Type.Optional(Type.String({ description: "Directory for saved images (default: fresh temp dir)." })),
+      ...sharedControlSchema,
+    }),
+    async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
+      const cwd = cwdFromContext(ctx);
+      const trusted = includeProjectEnv(ctx);
+      const prompt = params.prompt as string;
+      const n = Math.min(Math.max(Math.trunc((params.n as number) ?? 1) || 1, 1), 4);
+      const timeoutMs = Math.min(Math.max((params.timeout_ms as number) ?? 180_000, 10_000), 600_000);
+      const outDir = params.out_dir
+        ? path.resolve(cwd, String(params.out_dir))
+        : await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-web-image-"));
+      const result = await generateImageWithFallback({
+        prompt,
+        model: params.model as string | undefined,
+        n,
+        size: parseSizeParam(params.size),
+        outDir,
+        provider: (params.provider as "auto" | ImageProvider) ?? "auto",
+        geminiConfig: loadGeminiWebConfig(cwd, trusted),
+        apiConfig: loadImageApiConfig(cwd, trusted),
+        rateConfig: loadImageRateConfig(cwd, trusted),
+        ...(() => {
+          const cgpt = loadChatGptAuth(cwd, trusted);
+          return { chatgptAuth: cgpt.auth, ...(cgpt.problem ? { chatgptProblem: cgpt.problem } : {}) };
+        })(),
+        timeoutMs,
+        signal,
+      });
+      const blocks = await Promise.all(result.paths.map(toImageBlock));
+      const text = [
+        `Provider: ${result.provider}${result.model ? ` (${result.model})` : ""}`,
+        `Saved: ${result.paths.length} image(s)`,
+        ...result.paths.map((p) => `  ${p}`),
+        ...(result.urls.length
+          ? [
+              "Not saved (download failed — URL openable directly):",
+              ...result.urls.map((u, i) => `  ${u}${result.downloadErrors?.[i] ? `  (${result.downloadErrors[i]})` : ""}`),
+            ]
+          : []),
+        result.attempts.length ? `Provider notes: ${result.attempts.join(" | ")}` : null,
+        result.note ?? null,
+      ].filter(Boolean).join("\n");
+      const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
+        { type: "text" as const, text },
+        ...blocks,
+      ];
+      return { content, details: { provider: result.provider, model: result.model, paths: result.paths, urls: result.urls, downloadErrors: result.downloadErrors, attempts: result.attempts } };
+    },
+  });
+
+  // ── web_chat ─────────────────────────────────────────────────────────
+  pi.registerTool({
+    name: "web_chat",
+    label: "Web Chat (ChatGPT web / gateway)",
+    description:
+      "One-off chat completion — ChatGPT web tier (subscription, via CHATGPT_WEB_AUTH_KEY / codex login; default when configured) or any OpenAI-compatible gateway (WEB_CHAT_API_BASE_URL). Non-streaming Q&A; not a provider — use /model to switch your main model.",
+    promptSnippet: "One-off chat via ChatGPT web or an OpenAI-compatible gateway",
+    promptGuidelines: [
+      "Use for a quick one-off second opinion, classification, or short generation call. Grounded research with sources → web_research; switching your main chat model → /model.",
+    ],
+    parameters: Type.Object({
+      prompt: Type.String({ description: "The question or instruction." }),
+      provider: Type.Optional(Type.Union(
+        [Type.Literal("chatgpt"), Type.Literal("gateway")],
+        { description: "chatgpt = ChatGPT web (CHATGPT_WEB_AUTH_KEY / codex login); gateway = WEB_CHAT_API_BASE_URL. Default: chatgpt when configured, else gateway." },
+      )),
+      model: Type.Optional(Type.String({ description: "Model id (chatgpt: e.g. gpt-5.5; gateway: e.g. gpt-5.3-mini). Omit for the provider default." })),
+      system: Type.Optional(Type.String({ description: "Optional system prompt." })),
+      ...sharedControlSchema,
+    }),
+    async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
+      const cwd = cwdFromContext(ctx);
+      const trusted = includeProjectEnv(ctx);
+      const wantChatGpt = params.provider === "chatgpt" || (params.provider === undefined && Boolean(loadChatGptAuth(cwd, trusted).auth));
+      if (wantChatGpt) {
+        const cgpt = loadChatGptAuth(cwd, trusted);
+        if (!cgpt.auth) {
+          throw new Error(
+            `ChatGPT web chat is not configured. ${cgpt.problem ?? "Set CHATGPT_WEB_AUTH_KEY (the tokens JSON from ~/.codex/auth.json after `codex login`, or a bare access-token JWT) in ~/.pi/agent/.env.local"} — or run codex login — then restart pi. provider=gateway uses WEB_CHAT_API_BASE_URL instead.`,
+          );
+        }
+        const timeoutMs = Math.min(Math.max((params.timeout_ms as number) ?? 120_000, 10_000), 300_000);
+        try {
+          const result = await chatgptWebChat({
+            auth: cgpt.auth,
+            prompt: params.prompt as string,
+            system: params.system as string | undefined,
+            model: params.model as string | undefined,
+            cwd,
+            includeCwdEnv: trusted,
+            timeoutMs,
+            signal,
+          });
+          const text = `Model: ${result.model ?? "chatgpt default"}\n\n${result.text}`;
+          return { content: [{ type: "text" as const, text: truncateText(text) }], details: { model: result.model, usage: result.usage } };
+        } catch (err) {
+          if ((err as Error)?.name === "AbortError") throw err;
+          throw new Error(describeChatGptError(err));
+        }
+      }
+      const config = loadChatConfig(cwd, trusted);
+      if (!config) {
+        throw new Error(
+          "web_chat is not configured. Set WEB_CHAT_API_BASE_URL (and optional WEB_CHAT_API_KEY) in ~/.pi/agent/.env.local — any OpenAI-compatible /chat/completions gateway works (a ChatGPT web bridge, https://api.openai.com/v1, …) — then restart pi.",
+        );
+      }
+      const timeoutMs = Math.min(Math.max((params.timeout_ms as number) ?? 120_000, 10_000), 300_000);
+      try {
+        const result = await chatgptChat({
+          baseUrl: config.baseUrl,
+          apiKey: config.apiKey,
+          prompt: params.prompt as string,
+          model: params.model as string | undefined,
+          system: params.system as string | undefined,
+          timeoutMs,
+          signal,
+        });
+        const text = `Model: ${result.model ?? "gateway default"}\n\n${result.text}`;
+        return { content: [{ type: "text" as const, text: truncateText(text) }], details: { model: result.model, usage: undefined } };
+      } catch (err) {
+        if ((err as Error)?.name === "AbortError") throw err;
+        throw new Error(describeChatApiError(err));
+      }
     },
   });
 
@@ -392,11 +700,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
     description:
       "Show web provider config status without printing secrets.",
     promptSnippet: "Check web provider config and server status",
-    promptGuidelines: [
-      "Check which backends are configured and their server status.",
-      "Never prints secrets — reports only presence and source.",
-      "apiKeyFound:false is normal for self-hosted Firecrawl; check ready field.",
-    ],
+    promptGuidelines: ["Reports backend presence/health; never prints secrets."],
     parameters: Type.Object({}),
     async execute(_id: string, _params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
       const cwd = cwdFromContext(ctx);
@@ -409,6 +713,9 @@ export default function piWebExtension(pi: ExtensionAPI) {
       const fireUrl = findEnvValue("FIRECRAWL_API_URL", cwd, trusted);
       const c4aiUrl = findEnvValue("CRAWL4AI_API_URL", cwd, trusted);
       const c4aiToken = findEnvValue("CRAWL4AI_API_TOKEN", cwd, trusted);
+      const geminiCfg = loadGeminiWebConfig(cwd, trusted);
+      const imageApiCfg = loadImageApiConfig(cwd, trusted);
+      const chatgptCfg = loadChatGptAuth(cwd, trusted);
 
       const { isAgyInstalled } = await import("./lib/agy");
 
@@ -433,6 +740,33 @@ export default function piWebExtension(pi: ExtensionAPI) {
           apiTokenSource: c4aiToken.value ? c4aiToken.source : "not set",
         },
         agy: { installed: isAgyInstalled() },
+        geminiWeb: {
+          configured: Boolean(geminiCfg.psid),
+          cookieSource: geminiCfg.psidSource,
+          proxy: Boolean(geminiCfg.proxy),
+          cookieStore: cookieStoreSnapshot(),
+        },
+        imageProviders: {
+          gemini: { configured: Boolean(geminiCfg.psid), guestPossible: true },
+          chatgpt: { configured: Boolean(chatgptCfg.auth) },
+          zai: { configured: Boolean(imageApiCfg.zai) },
+          custom: imageApiCfg.custom
+            ? { configured: true, label: imageApiCfg.custom.label }
+            : { configured: false },
+          rate: imageRateSnapshot(),
+        },
+        webChat: (() => {
+          const cfg = loadChatConfig(cwd, trusted);
+          return {
+            configured: Boolean(cfg),
+            baseUrl: cfg?.baseUrl,
+            keyFound: Boolean(cfg?.apiKey),
+            source: cfg?.source ?? "not set",
+            defaultProvider: loadChatGptAuth(cwd, trusted).auth ? "chatgpt" : "gateway",
+          };
+        })(),
+        chatgptWeb: chatgptAuthSnapshot(chatgptCfg),
+        localChrome: { path: findChromeBinary() ?? "not found" },
       };
 
       // Crawl4AI health check
@@ -453,7 +787,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
   // Inject the backend-selection protocol only when a web_* tool is actually
   // active, so recon agents / sessions without pi-web carry zero overhead.
   pi.on("before_agent_start", async (event) => {
-    const active = event.systemPromptOptions?.selectedTools ?? [];
+    const active = event.systemPromptOptions?.selectedTools ?? pi.getActiveTools();
     if (!active.some((t) => t.startsWith("web_"))) return;
     return { systemPrompt: `${event.systemPrompt}\n\n${WEB_ROUTING_GUIDANCE}` };
   });

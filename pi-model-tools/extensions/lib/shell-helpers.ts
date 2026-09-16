@@ -49,7 +49,11 @@ export function dedicatedToolForShellCommand(command: unknown, activeTools: read
   if (!trimmed || !commandIsSimple(trimmed)) return undefined;
   if (/^(npm|pnpm|yarn|bun|node|npx|git|make|cargo|go|pytest|python|tsx|tsc|awk)\b/.test(trimmed)) return undefined;
   if (/^ls\b/.test(trimmed) && activeTools.includes("ls")) return "ls";
+  // Prefer the FFF search tools over the plain builtins when registered —
+  // steering "use the dedicated grep tool" should point at ffgrep, not grep.
+  if (/^find\b/.test(trimmed) && activeTools.includes("fffind")) return "fffind";
   if (/^find\b/.test(trimmed) && activeTools.includes("find")) return "find";
+  if (/^(grep|rg|ag|ack)\b/.test(trimmed) && activeTools.includes("ffgrep")) return "ffgrep";
   if (/^(grep|rg|ag|ack)\b/.test(trimmed) && activeTools.includes("grep")) return "grep";
   if (/^cat\s+\S+\s*$/.test(trimmed) && activeTools.includes("read")) return "read";
   if (/^head\s+/.test(trimmed) && activeTools.includes("read")) return "read";
@@ -193,7 +197,29 @@ export function detectReasoningRejection(errorText: string): boolean {
   return false;
 }
 
-export function categorizeToolError(toolName: string, errorResult: unknown): ErrorInfo {
+/**
+ * Closest active tool for a missing name — shared-prefix/containment scoring,
+ * no dependency. Returns undefined when nothing scores above zero.
+ */
+export function closestToolHint(missing: string, activeTools: readonly string[] = []): string | undefined {
+  const m = missing.toLowerCase();
+  let best: { name: string; score: number } | undefined;
+  for (const tool of activeTools) {
+    const t = tool.toLowerCase();
+    let score = 0;
+    if (t === m) continue;
+    if (m.length >= 3 && (t.includes(m) || m.includes(t))) score = 3;
+    else if (m.length >= 3) {
+      // Count shared leading characters
+      while (score < Math.min(m.length, t.length) && m[score] === t[score]) score++;
+    }
+    if (score > (best?.score ?? 0)) best = { name: tool, score };
+  }
+  if (!best || best.score < 2) return undefined;
+  return `Tool '${missing}' is not active in this session. Closest available: ${best.name}.`;
+}
+
+export function categorizeToolError(toolName: string, errorResult: unknown, activeToolNames: readonly string[] = []): ErrorInfo {
   const text = (isRecord(errorResult) && Array.isArray(errorResult.content)
     ? errorResult.content.map((p) => isRecord(p) && typeof p.text === "string" ? p.text : "").join("\n")
     : String(errorResult ?? "")).toLowerCase();
@@ -205,8 +231,21 @@ export function categorizeToolError(toolName: string, errorResult: unknown): Err
   if (/rate limit|429|too many requests|exceeded.*limit/i.test(text)) return { category: "rate_limit", toolName, hint: "Rate-limited. Wait before retrying or simplify the request." };
   if (/timed? ?out|timeout/i.test(text)) return { category: "timeout", toolName, hint: "Timed out. Use simpler inputs or reduce scope." };
   if (/validation failed|invalid_type|required|missing.*(field|argument|property)/i.test(text)) return { category: "validation", toolName, hint: "Invalid arguments. Provide all required fields with correct types." };
+  // tool_not_found BEFORE path_not_found: "Tool read_file not found" contains
+  // "file not found" and would otherwise classify as a path error, defeating
+  // the closest-tool hint for the most common hallucinated names (read_file,
+  // edit_file, write_file).
+  if (/no such tool|unknown tool|is not a function|tool\s+\S+\s+(?:was\s+)?not found/i.test(text)) {
+    // Session mining: models call plausible-but-inactive names (ffind/grep in
+    // tool-clamped sessions). Naming the closest ACTIVE tool converts first try.
+    const m = text.match(/tool\s+["']?([a-z_0-9:-]+)["']?\s+(?:was\s+)?not found/i)
+      ?? text.match(/^tool\s+["']?([a-z_0-9:-]+)["']?\s+not found/i)
+      ?? text.match(/(?:no such|unknown) tool:\s*["']?([a-z_0-9:-]+)/i);
+    const missing = m?.[1];
+    const extra = missing && closestToolHint(missing, activeToolNames);
+    return { category: "tool_not_found", toolName, hint: extra ?? "Use only exact Pi tool names. Never invent names like read_file." };
+  }
   if (/enoent|no such file or directory|(?:file|path) not found/i.test(text)) return { category: "path_not_found", toolName, hint: "Path missing or guessed. Discover the exact path with find first." };
-  if (/no such tool|unknown tool|is not a function|tool\s+\S+\s+(?:was\s+)?not found/i.test(text)) return { category: "tool_not_found", toolName, hint: "Use only exact Pi tool names. Never invent names like read_file." };
   if (/(?:http(?: status)?|status(?: code)?|api(?: error)?)[^\n]{0,20}[45]\d{2}\b|\b[45]\d{2}\s+(?:bad request|unauthorized|forbidden|not found|conflict|too many requests|internal server error|bad gateway|service unavailable|gateway timeout)\b/i.test(text)) return { category: "api_error", toolName, hint: `Tool call to ${toolName} failed. Retry with simpler inputs.` };
   return { category: "unknown", toolName, hint: "Previous tool call(s) had errors. Use simpler inputs." };
 }

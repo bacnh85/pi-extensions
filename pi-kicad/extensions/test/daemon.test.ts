@@ -94,7 +94,7 @@ function makeDaemon(opts: {
 describe("daemon", () => {
   describe("buildSpawnArgs", () => {
     it("passes --config <path>", () => {
-      assert.deepEqual(buildSpawnArgs("/bin/konnect", "/tmp/k.toml"), ["--config", "/tmp/k.toml"]);
+      assert.deepEqual(buildSpawnArgs("/tmp/k.toml"), ["--config", "/tmp/k.toml"]);
     });
   });
 
@@ -141,7 +141,7 @@ it("issue #20 L1: config file lands in a private mkdtemp dir (symlink-clobber ha
       assert.equal(spawnResult.calls.length, 1, "spawned its own rather than reusing the stranger");
       assert.isAbove(port, 0);
       const status = await d.getStatus();
-      assert.isFalse(status.reused, "stranger is never marked reused");
+      assert.isTrue(status.healthy);
     });
 
     it("spawns when the preferred port is empty and becomes healthy", async () => {
@@ -154,7 +154,6 @@ it("issue #20 L1: config file lands in a private mkdtemp dir (symlink-clobber ha
       assert.match(spawnResult.calls[0].args.join(" "), /--config/);
       assert.isAbove(port, 0, "got a free port (may differ from 31337 if occupied)");
       const status = await d.getStatus();
-      assert.isFalse(status.reused);
       assert.isTrue(status.healthy);
     });
 

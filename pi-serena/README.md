@@ -33,6 +33,7 @@ After install or update, restart Pi or run `/reload` in an existing Pi session.
 - `serena_search_for_pattern`
 - `serena_replace_content`
 - `serena_restart_language_server`
+- `serena_restart_worker`
 - `serena_get_current_config`
 - `serena_get_diagnostics_for_file`
 - `serena_check_onboarding_performed`

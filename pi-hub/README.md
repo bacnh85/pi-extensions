@@ -4,8 +4,6 @@ Interactive installer for [Pi coding agent](https://github.com/earendil-works/pi
 
 Inspired by [vercel-labs/skills](https://github.com/skills): one command, interactive multi-select, sensible defaults.
 
-Current version: **0.1.3**
-
 ## Quick start
 
 ```bash
@@ -24,11 +22,11 @@ Requirements: Node ≥ 20 and the [`pi` CLI](https://github.com/earendil-works/p
 npx @bacnh85/pi-hub
 ```
 
-- Lists all 32 curated `@bacnh85` packages with full-width descriptions
+- Lists every curated `@bacnh85` package with full-width descriptions
 - `↑`/`↓` move · `space` toggle · `a` toggle all · `enter` confirm · `q` quit
 - The detail line under the list shows the full npm name + description of the highlighted package
-- On confirm, prints what will be installed, then runs `pi install` per package (passes through pi's own output)
-- Add `-y` to skip the confirmation, `-l` to install project-local instead of user-scope
+- Confirming the picker installs immediately — `pi install` runs per package (passes through pi's own output)
+- `-y` installs quietly (suppresses the "Will install" list), `-l` installs project-local instead of user-scope
 
 ### `add` — install without browsing
 
@@ -85,25 +83,24 @@ npx @bacnh85/pi-hub update                   # runs pi update --extensions
 | Flag | Description |
 |---|---|
 | `-l, --local` | project-local install (`.pi/settings.json`) instead of user scope |
-| `-y, --yes` | skip confirmation |
+| `-y, --yes` | quiet — suppress the "Will install" list (interactive mode) |
 | `--json` | machine-readable output (`find`) |
 | `-h, --help` | help |
 
-## Curated catalog (32 packages)
+## Curated catalog
 
 | Package | Description |
 |---|---|
 | `pi-a2a` | A2A Protocol v1.0 bidirectional — distribute tasks to remote agents, be called by them |
 | `pi-advisor` | Automatic advisor: a second model reviews each settled turn and injects severity-routed notes |
 | `pi-agy` | Google Antigravity CLI bridge — delegate bulk scaffolding, refactors, test generation |
+| `pi-attachments` | Image and file attachments — pastes/drops become file references and inline images |
 | `pi-budget` | Spend cap enforcement — halts the agent when session cost exceeds `--budget` USD |
-| `pi-chatgpt-web` | ChatGPT web-tier provider via self-hosted OpenAI-compatible bridge |
 | `pi-checkpoint` | Git-backed undo/redo — `/undo` rolls back a message AND its file changes |
 | `pi-commandcode` | Connect to Command Code's OpenAI-compatible Provider API |
-| `pi-config-panel` | Shared interactive config-panel kernel for Pi extensions (library) |
+| `pi-cron` | Scheduled jobs — cron-style prompts fired into the live session, with crontab export |
 | `pi-evolve` | Trajectory-based self-learning loop — captures tool calls, extracts and injects learnings |
 | `pi-fff` | FFF-powered fuzzy file and content search |
-| `pi-hub` | This installer (listed for completeness — you're already using it) |
 | `pi-init` | Guided AGENTS.md generation — `/init` scans the repo and generates/updates AGENTS.md |
 | `pi-kicad` | KiCad CAD-design extension — drive schematic capture and PCB layout |
 | `pi-model-tools` | Unified tool-wrapping, argument repair, DeepSeek V4 guidance, apply_patch diff tool |
@@ -116,14 +113,15 @@ npx @bacnh85/pi-hub update                   # runs pi update --extensions
 | `pi-ponytail` | Lazy senior dev mode — YAGNI/stdlib-first coding discipline |
 | `pi-references` | External context roots — alias sibling dirs or git repos as `@docs`/`@sdk` |
 | `pi-review` | Isolated read-only code review with corrected same-session fallback |
+| `pi-selfskills` | Skill self-improvement — one skill_manage tool to patch, create, and restore skills |
 | `pi-router` | Connect to any OpenAI-compatible AI router via its /v1 API |
 | `pi-rtk` | Bash command token rewriting through RTK |
 | `pi-serena` | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) |
 | `pi-sub` | Subscription usage footer for OpenAI Codex, OpenCode Go, Z.ai |
 | `pi-subagent` | Isolated in-process subagents with parallel/chain modes and git worktree isolation |
-| `pi-themes` | Ayu-based theme collection (dark, mirage, light) |
+| `pi-themes` | Ayu variants (dark, mirage, light) + Catppuccin Mocha |
 | `pi-ux` | Anti-slop UI/UX design discipline — DESIGN.md anchoring + deterministic slop-audit gates |
-| `pi-web` | Unified web search, content extraction, site mapping/crawling, screenshots/PDFs |
+| `pi-web` | Web search, page extraction, Firecrawl scraping/crawling, Crawl4AI headless browser crawling, Gemini web-tier research, free upstream image generation, one-off gateway chat |
 | `pi-windows-tools` | Windows-specific tools for Pi |
 
 Install any of them by directory name: `npx @bacnh85/pi-hub add pi-munin`.
@@ -163,7 +161,7 @@ npx @bacnh85/pi-hub add pi-permission -l
 
 ## Changelog
 
-See [CHANGELOG.md](./CHANGELOG.md). Versions: 0.1.0 initial, 0.1.1 redraw fix, 0.1.2 catalog self-reference fix, 0.1.3 hang fix + full-width descriptions.
+See [CHANGELOG.md](./CHANGELOG.md). Versions: 0.1.0 initial, 0.1.1 redraw fix, 0.1.2 catalog self-reference fix, 0.1.3 hang fix + full-width descriptions, 0.1.4 Windows fixes + catalog cleanup.
 
 ## License
 

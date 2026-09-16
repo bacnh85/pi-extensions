@@ -1,0 +1,61 @@
+{
+  "name": "@bacnh85/pi-attachments",
+  "version": "0.3.1",
+  "description": "Image and file attachments for Pi — converts pasted/dropped file paths into real image attachments, collapses large text pastes into readable file references, inlines text files, and pastes clipboard file references.",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-attachments",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git",
+    "directory": "pi-attachments"
+  },
+  "bugs": {
+    "url": "https://github.com/bacnh85/pi-extensions/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "attachments",
+    "images",
+    "clipboard"
+  ],
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "extensions/index.ts",
+    "extensions/package.json",
+    "extensions/lib/"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "cd extensions && npx mocha",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.84.3 <0.86.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.85.0",
+    "@earendil-works/pi-coding-agent": "^0.85.0",
+    "@earendil-works/pi-tui": "^0.85.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.19.43",
+    "chai": "^4.5.0",
+    "mocha": "^11.8.0",
+    "tsx": "^4.22.4",
+    "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "serialize-javascript@>=5.0.0 <7.0.5": "^7.0.5",
+    "js-yaml@>=4.0.0 <4.3.1": "^4.3.1",
+    "brace-expansion@>=2.0.0 <2.1.4": "^2.1.4",
+    "diff": "^8.0.3"
+  }
+}

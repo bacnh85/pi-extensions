@@ -1,11 +1,11 @@
 ---
 name: pi-web
-description: Web search, content extraction, site crawling, and page capture via the pi-web extension. Use when the user needs current web search results, documentation lookup, factual research, source discovery, URL-to-markdown extraction, JSON extraction from websites, site URL discovery, site crawling, or page screenshots/PDFs. Use when the user mentions searching the web, finding docs, looking something up, researching, scraping/extracting content from a URL, or capturing a page.
+description: Web search, content extraction, site crawling, page capture, Gemini web-tier research, image generation (ChatGPT web via CHATGPT_WEB_AUTH_KEY/codex login, Z.ai GLM-Image), and one-off ChatGPT-web/gateway chat via the pi-web extension. Use when the user needs current web search results, documentation lookup, factual research, AI-synthesized research with sources (Gemini Deep Research), image generation from text (ChatGPT web image_generation tool, Z.ai GLM-Image; the Gemini web provider is currently TLS-gated), one-off ChatGPT/gateway chat, source discovery, URL-to-markdown extraction, JSON extraction from websites, site URL discovery, site crawling, or page screenshots/PDFs. Use when the user mentions searching the web, finding docs, looking something up, researching deeply, generating/creating an image, asking another model, ChatGPT chat/images, scraping/extracting content from a URL, or capturing a page.
 ---
 
 # pi-web — Unified Web Tools
 
-Use the **7 unified tools** from the `pi-web` extension for all web-related tasks. These tools automatically select the best backend from SearXNG, Brave Search, Firecrawl, Crawl4AI, and agy (when installed) — you don't need to know which backend to use. Search selection is adaptive: broad discovery prefers self-hosted SearXNG, while precision-sensitive queries and inline content prefer Brave.
+Use the **10 unified tools** from the `pi-web` extension for all web-related tasks. These tools automatically select the best backend from SearXNG, Brave Search, Firecrawl, Crawl4AI, and agy (when installed) — you don't need to know which backend to use. Search selection is adaptive: broad discovery prefers self-hosted SearXNG, while precision-sensitive queries and inline content prefer Brave.
 
 ## Quick Reference
 
@@ -15,8 +15,11 @@ Use the **7 unified tools** from the `pi-web` extension for all web-related task
 | `web_extract` | Extract readable content from a URL | Static (JSDOM) → Dynamic (Firecrawl) → Full (Crawl4AI) → agy (model-backed) |
 | `web_map` | Discover URLs from a site | Firecrawl Map (only option) |
 | `web_crawl` | Crawl multiple pages from a site | Light (Firecrawl) or Full (Crawl4AI) |
-| `web_screenshot` | Capture page screenshot as PNG | Crawl4AI (only option) |
-| `web_pdf` | Generate page PDF | Crawl4AI (only option) |
+| `web_screenshot` | Capture page screenshot as PNG | Crawl4AI daemon (public URLs) or local headless Chrome (localhost/LAN/file URLs — auto-detected) |
+| `web_pdf` | Generate page PDF | Crawl4AI daemon (public URLs) or local headless Chrome (localhost/LAN/file URLs — auto-detected) |
+| `web_research` | AI-synthesized research with sources | Gemini web tier: ask = grounded answer (guest OK); research = full Deep Research via the pure-Node DR client (live cookie; stale sessions return an honest partial result) |
+| `web_image` | Generate images from a text prompt | Z.ai GLM-Image (`ZAI_API_KEY`, working path; `size` param for aspect, e.g. `960x1728` portrait) → custom OpenAI-images endpoint; Gemini web provider currently refuses non-browser TLS (gated server-side) |
+| `web_chat` | One-off chat via an OpenAI-compatible gateway | `WEB_CHAT_API_BASE_URL` (ChatGPT web bridge, official OpenAI, …) |
 | `web_status` | Check provider configuration and health | — |
 
 ## Decision Tree
@@ -52,6 +55,21 @@ What do you need?
 │
 ├── Printable/archivable PDF of a page
 │   → web_pdf
+│
+├── AI-synthesized research with sources (synthesis, comparisons, reports)
+│   → web_research
+│     ├─ quick grounded answer: mode=ask (default; guest OK, Flash-only)
+│     └─ multi-minute Deep Research report: mode=research (fresh cookie; currently blocked by Gemini's non-browser refusal)
+│     note: keep the source browser session closed (an open Gemini tab supersedes the pasted cookie); rotation is opt-in diagnostics only (GEMINI_WEB_KEEPALIVE=1)
+│
+├── Generate an image from a text prompt (NOT capturing an existing page)
+│   → web_image
+│     ├─ default: provider=auto (skips TLS-gated Gemini after refusals → Z.ai GLM-Image → custom endpoint)
+│     ├─ portrait/aspect prompts: pass size (zai/custom), e.g. size=960x1728 — default is square
+│     └─ pin/model: provider=zai model=glm-image, or any custom OpenAI-images endpoint
+│
+├── One-off chat with another model (second opinion, classification)
+│   → web_chat (WEB_CHAT_API_BASE_URL gateway; non-streaming; no tools)
 │
 └── Check what web tools are configured
     → web_status

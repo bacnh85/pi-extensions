@@ -1,11 +1,14 @@
 {
   "name": "@bacnh85/pi-themes",
-  "version": "0.1.1",
-  "description": "Custom pi themes collection — Ayu-based dark, mirage, and light variants",
+  "version": "0.2.0",
+  "description": "Custom pi themes collection — Ayu variants (dark, mirage, light) + Catppuccin Mocha",
   "license": "MIT",
   "author": "bacnh85",
   "publishConfig": {
     "access": "public"
+  },
+  "scripts": {
+    "test": "node scripts/validate-themes.mjs && npm pack --dry-run"
   },
   "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-themes",
   "repository": {
@@ -20,7 +23,8 @@
     "pi-package",
     "pi-theme",
     "pi-themes",
-    "ayu"
+    "ayu",
+    "catppuccin"
   ],
   "files": [
     "themes",

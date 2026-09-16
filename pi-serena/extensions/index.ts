@@ -9,10 +9,10 @@ import { repairSymbolNameKey } from "./lib/symbol-key";
 
 const DEFAULT_CONTEXT = "ide";
 
-const PROJECT_PARAM = Type.Optional(Type.String({ description: "Project path or registered Serena project name. Default: CWD." }));
-const CONTEXT_PARAM = Type.Optional(Type.String({ description: "Serena context name. Default: ide. Available: agent, chatgpt, claude-code, codex, copilot-cli, desktop-app, ide, jb-ai-assistant, junie, oaicompat-agent, vscode." }));
-const MAX_CHARS_PARAM = Type.Optional(Type.Number({ description: "Max response chars. Default: Serena config." }));
-const TIMEOUT_MS_PARAM = Type.Optional(Type.Number({ description: "Timeout in ms. Default: 120000." }));
+const PROJECT_PARAM = Type.Optional(Type.String({ description: "Project path. Default: CWD." }));
+const CONTEXT_PARAM = Type.Optional(Type.String({ description: "Serena context name. Default: ide." }));
+const MAX_CHARS_PARAM = Type.Optional(Type.Number({ description: "Max response chars." }));
+const TIMEOUT_MS_PARAM = Type.Optional(Type.Number({ description: "Timeout in ms." }));
 
 const OUTPUT_MAX_BYTES = 50 * 1024;
 const OUTPUT_MAX_LINES = 2_000;
@@ -105,16 +105,16 @@ const diagnosticsSchema = Type.Object({
 
 const searchPatternSchema = Type.Object({
   ...controlSchema,
-  pattern: Type.String({ description: "Pattern to search for." }),
-  relative_path: Type.Optional(Type.String({ description: "Optional dir restriction relative to project root." })),
-  paths_include_glob: Type.Optional(Type.String({ description: "Glob for included paths." })),
-  paths_exclude_glob: Type.Optional(Type.String({ description: "Glob for excluded paths." })),
-  context_lines_before: Type.Optional(Type.Number({ description: "Context lines before each match." })),
-  context_lines_after: Type.Optional(Type.Number({ description: "Context lines after each match." })),
-  restrict_search_to_code_files: Type.Optional(Type.Boolean({ description: "Restrict search to source/code files when supported by Serena." })),
-  multiline: Type.Optional(Type.Boolean({ description: "Treat the pattern as a multiline regular expression when supported by Serena." })),
+  pattern: Type.String({ description: "Text or regex to search for." }),
+  relative_path: Type.Optional(Type.String({ description: "Optional dir restriction." })),
+  paths_include_glob: Type.Optional(Type.String()),
+  paths_exclude_glob: Type.Optional(Type.String()),
+  context_lines_before: Type.Optional(Type.Number()),
+  context_lines_after: Type.Optional(Type.Number()),
+  restrict_search_to_code_files: Type.Optional(Type.Boolean()),
+  multiline: Type.Optional(Type.Boolean({ description: "Unsupported; always false." })),
   max_answer_chars: MAX_CHARS_PARAM,
-  limit: Type.Optional(Type.Number({ description: "Max matches to return." })),
+  limit: Type.Optional(Type.Number({ description: "Max matches." })),
 });
 
 const replaceContentSchema = Type.Object({
@@ -123,7 +123,7 @@ const replaceContentSchema = Type.Object({
   needle: Type.Optional(Type.String({ description: "Text or regex to replace." })),
   repl: Type.Optional(Type.String({ description: "Replacement text." })),
   mode: Type.Optional(Type.Union([Type.Literal("literal"), Type.Literal("regex")], { description: "Literal or regex." })),
-  allow_multiple_occurrences: Type.Optional(Type.Boolean({ description: "Allow replacing multiple matches when supported." })),
+  allow_multiple_occurrences: Type.Optional(Type.Boolean()),
 });
 
 function truncateText(text: string): string {
@@ -174,10 +174,22 @@ function resultText(response: SerenaWorkerResponse): string {
 // child session that loaded pi-serena spawned a separate Python process that leaked on
 // child dispose (no shutdown hook). One worker serves all callers.
 let worker: SerenaWorkerClient | undefined;
+// Most recent session's ctx. The worker's status callback reads this at call
+// time so status updates never land on a stale session's ui after replacement.
+let currentCtx: { ui?: { setStatus?: (key: string, value: string | undefined) => void } } | undefined;
 
 export default function serenaToolsExtension(pi: ExtensionAPI) {
   const getWorker = (ctx?: { ui?: { setStatus?: (key: string, value: string | undefined) => void } }) => {
-    if (!worker) worker = new SerenaWorkerClient((status) => ctx?.ui?.setStatus?.("serena", status ? "serena ✓" : undefined));
+    if (ctx) currentCtx = ctx;
+    if (!worker) {
+      worker = new SerenaWorkerClient((status) => {
+        try {
+          currentCtx?.ui?.setStatus?.("serena", status ? "serena ✓" : undefined);
+        } catch {
+          // stale/tearing-down ctx — status updates are best-effort
+        }
+      });
+    }
     return worker;
   };
 
@@ -226,8 +238,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_status",
     label: "Serena Status",
     description: "Show Serena worker and project status.",
-    promptSnippet: "Check worker availability and project/tool state",
-    promptGuidelines: ["Check availability before semantic work."],
     parameters: statusSchema,
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const project = normalizeProject(params.project);
@@ -241,8 +251,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_list_tools",
     label: "Serena List Tools",
     description: "List active Serena tools for project/context.",
-    promptSnippet: "List available Serena tools",
-    promptGuidelines: ["Discover active tools for current project/context."],
     parameters: listToolsSchema,
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const project = normalizeProject(params.project);
@@ -258,8 +266,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_get_symbols_overview",
     label: "Serena Symbols Overview",
     description: "Get top-level symbols via the language server.",
-    promptSnippet: "Outline symbols in a source file",
-    promptGuidelines: ["Use before reading a whole file when symbols suffice."],
     parameters: overviewSchema,
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return callSerena(ctx, "get_symbols_overview", params);
@@ -270,8 +276,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_find_symbol",
     label: "Serena Find Symbol",
     description: "Find symbols by name path pattern.",
-    promptSnippet: "Find symbols by name path",
-    promptGuidelines: ["Navigate to named symbols before grep or read."],
     parameters: findSymbolSchema,
     prepareArguments: (args) => repairSymbolNameKey(args, true),
     async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -283,8 +287,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_find_referencing_symbols",
     label: "Serena Find References",
     description: "Find symbols referencing a given symbol.",
-    promptSnippet: "Find references/usages of a known symbol",
-    promptGuidelines: ["Use before changing public behavior or renames."],
     parameters: referencingSchema,
     prepareArguments: (args) => repairSymbolNameKey(args, false),
     async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -296,8 +298,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_replace_symbol_body",
     label: "Serena Replace Symbol Body",
     description: "Replace a function/class/method body via symbolic editing.",
-    promptSnippet: "Replace a known symbol body",
-    promptGuidelines: ["Use only after find_symbol identifies the target."],
     parameters: replaceBodySchema,
     prepareArguments: (args) => repairSymbolNameKey(args, false),
     async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -309,8 +309,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_insert_before_symbol",
     label: "Serena Insert Before Symbol",
     description: "Insert content before a known symbol definition.",
-    promptSnippet: "Insert code before a known symbol definition",
-    promptGuidelines: ["Insert code adjacent to a located symbol's definition."],
     parameters: insertSchema,
     prepareArguments: (args) => repairSymbolNameKey(args, false),
     async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -322,8 +320,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_insert_after_symbol",
     label: "Serena Insert After Symbol",
     description: "Insert content after a known symbol definition.",
-    promptSnippet: "Insert code after a known symbol definition",
-    promptGuidelines: ["Add sibling/helper symbols after a located definition."],
     parameters: insertSchema,
     prepareArguments: (args) => repairSymbolNameKey(args, false),
     async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -335,8 +331,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_rename_symbol",
     label: "Serena Rename Symbol",
     description: "Rename a symbol across the codebase.",
-    promptSnippet: "Rename a known symbol across references",
-    promptGuidelines: ["Cross-file renames after finding the exact symbol."],
     parameters: renameSchema,
     prepareArguments: (args) => repairSymbolNameKey(args, false),
     async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -348,8 +342,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_safe_delete_symbol",
     label: "Serena Safe Delete Symbol",
     description: "Delete a symbol with no remaining references.",
-    promptSnippet: "Safely delete an unreferenced symbol",
-    promptGuidelines: ["Delete an unreferenced symbol safely."],
     parameters: safeDeleteSchema,
     prepareArguments: (args) => repairSymbolNameKey(args, true),
     async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -361,8 +353,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_search_for_pattern",
     label: "Serena Search Pattern",
     description: "Search project files with path filtering.",
-    promptSnippet: "Search for text or regex",
-    promptGuidelines: ["Project-scoped text/regex search when symbol lookup falls short."],
     parameters: searchPatternSchema,
     async execute(_id, params, _signal, _onUpdate, ctx) {
       if (params.multiline === true) {
@@ -414,8 +404,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_replace_content",
     label: "Serena Replace Content",
     description: "Replace file content when symbolic editing isn't the right boundary.",
-    promptSnippet: "Content replacement in a project file",
-    promptGuidelines: ["Fallback for non-symbol content replacement."],
     parameters: replaceContentSchema,
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const normalized = { ...params };
@@ -432,8 +420,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_restart_language_server",
     label: "Serena Restart Language Server",
     description: "Restart the language server when diagnostics are stale.",
-    promptSnippet: "Restart the Serena language server",
-    promptGuidelines: ["Use when symbol retrieval or diagnostics appear stale.", "For a full worker restart (Python bridge), use serena_restart_worker instead."],
+    promptGuidelines: ["For a full worker restart (Python bridge), use serena_restart_worker instead."],
     parameters: emptyToolSchema,
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return callWorkerAction(ctx, "restart_language_server", params);
@@ -444,11 +431,21 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_restart_worker",
     label: "Serena Restart Worker",
     description: "Restart the persistent Serena Python worker process. Use when diagnostics seem stale or after configuration changes.",
-    promptSnippet: "Restart the persistent Serena worker (Python bridge)",
-    promptGuidelines: ["Use when the worker is unresponsive or after serena configuration changes.", "This kills and re-spawns the Python bridge process. Equivalent to /serena-restart."],
+    promptGuidelines: ["Use when the worker is unresponsive; kills and re-spawns the Python bridge."],
     parameters: emptyToolSchema,
     async execute(_id, _params, _signal, _onUpdate, ctx) {
-      getWorker(ctx).restart();
+      // restart() spawns eagerly; without Python installed it throws
+      // synchronously — surface that as a tool error, never a raw throw.
+      try {
+        getWorker(ctx).restart();
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify?.(`Failed to restart Serena worker: ${msg}`, "error");
+        return {
+          content: [{ type: "text" as const, text: `Failed to restart Serena worker: ${msg}` }],
+          details: { ok: false, error: msg },
+        };
+      }
       return {
         content: [{ type: "text" as const, text: "Serena worker restarted." }],
         details: { ok: true, result: "Worker restarted" },
@@ -460,8 +457,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_get_current_config",
     label: "Serena Current Config",
     description: "Show current project/config details.",
-    promptSnippet: "Inspect project, context, modes, tools, and backend config",
-    promptGuidelines: ["Check project activation, contexts, modes, or tool availability."],
     parameters: emptyToolSchema,
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const resp = await callWorkerAction(ctx, "config", params);
@@ -482,8 +477,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_check_onboarding_performed",
     label: "Serena Check Onboarding",
     description: "Check whether onboarding memories exist.",
-    promptSnippet: "Check whether project onboarding was already performed",
-    promptGuidelines: ["Check before relying on project memories (or use munin for cross-project)."],
     parameters: emptyToolSchema,
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return callSerena(ctx, "check_onboarding_performed", params);
@@ -494,8 +487,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_onboarding",
     label: "Serena Onboarding",
     description: "Run onboarding prompt for project memories.",
-    promptSnippet: "Start Serena project onboarding",
-    promptGuidelines: ["Run only when onboarding hasn't been done or user asks. Use munin for cross-project memory."],
     parameters: emptyToolSchema,
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return callSerena(ctx, "onboarding", params);
@@ -509,8 +500,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_find_declaration",
     label: "Serena Find Declaration",
     description: "Find the declaration of a symbol via the language server.",
-    promptSnippet: "Find a symbol's declaration",
-    promptGuidelines: ["Navigate to the definition of a known symbol."],
     parameters: symbolRefSchema,
     prepareArguments: (args) => repairSymbolNameKey(args, false),
     async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -522,8 +511,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_find_implementations",
     label: "Serena Find Implementations",
     description: "Find implementations of a symbol via the language server.",
-    promptSnippet: "Find implementations of a given symbol",
-    promptGuidelines: ["Locate implementations of interfaces, abstract methods, or base classes."],
     parameters: symbolRefSchema,
     prepareArguments: (args) => repairSymbolNameKey(args, false),
     async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -535,8 +522,6 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     name: "serena_get_diagnostics_for_file",
     label: "Serena File Diagnostics",
     description: "Get LSP diagnostics (errors, warnings, hints) for a file.",
-    promptSnippet: "Get diagnostics from the language server",
-    promptGuidelines: ["Inspect compiler/IDE diagnostics for a specific file."],
     parameters: diagnosticsSchema,
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return callWorkerAction(ctx, "get_diagnostics_for_file", params);
@@ -560,8 +545,13 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
   pi.registerCommand("serena-restart", {
     description: "Restart the persistent Serena worker",
     handler: async (_args, ctx) => {
-      getWorker(ctx).restart();
-      ctx.ui.notify("Restarted Serena worker", "info");
+      try {
+        getWorker(ctx).restart();
+        ctx.ui.notify("Restarted Serena worker", "info");
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`Failed to restart Serena worker: ${msg}`, "error");
+      }
     },
   });
 
@@ -616,7 +606,13 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
       // worker stop failed — proceed with cleanup
     } finally {
       worker = undefined;
-      ctx.ui.setStatus("serena", undefined);
+      currentCtx = undefined; // drop the dying session's ctx/UI reference
+      // ctx may already be stale/tearing down during shutdown — never throw here.
+      try {
+        ctx?.ui?.setStatus?.("serena", undefined);
+      } catch {
+        // best-effort cleanup
+      }
     }
   });
 }

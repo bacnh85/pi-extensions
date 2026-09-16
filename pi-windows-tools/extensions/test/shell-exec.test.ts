@@ -1,5 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "mocha";
 import { expect } from "chai";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildShellArgs, executeCommand, mergeEnv, shouldEncode, encodeForPwsh, resolveWslDistro } from "../lib/shell-exec";
 
 describe("shell-exec", function () {
@@ -135,6 +137,24 @@ describe("shell-exec", function () {
     expect(result.exitCode).to.equal(null);
   });
 
+  it("spawn error names the exe and includes the OS error message (0.5.4)", async () => {
+    // Point ComSpec at a nonexistent binary so spawn ENOENTs deterministically
+    // on every platform — nothing actually executes.
+    const prev = process.env.ComSpec;
+    const missing = join(tmpdir(), "definitely-missing-shell-" + Date.now() + ".exe");
+    process.env.ComSpec = missing;
+    try {
+      const result = await executeCommand("echo hi", { shell: "cmd" });
+      expect(result.exitCode).to.equal(1);
+      expect(result.stderr).to.include("Failed to spawn");
+      expect(result.stderr).to.include(missing);
+      expect(result.stderr).to.match(/ENOENT|not found|No such/i); // err.message carries the errno
+    } finally {
+      if (prev === undefined) delete process.env.ComSpec;
+      else process.env.ComSpec = prev;
+    }
+  });
+
   describe("mergeEnv", () => {
     it("includes all process.env keys", () => {
       const merged = mergeEnv({});
@@ -164,7 +184,9 @@ describe("shell-exec", function () {
 });
 
 // ponytail: spawn node (cross-platform, always present) to exercise onChunk end-to-end
-describe("onChunk streaming", () => {
+// shell: "cmd" below only exists on Windows (CI runs this package on windows-latest)
+const describeWin32 = process.platform === "win32" ? describe : describe.skip;
+describeWin32("onChunk streaming", () => {
   const nodeOut = "node -e process.stdout.write(JSON.stringify('hello'))";
   const nodeErr = "node -e process.stderr.write(JSON.stringify('boom'))";
 

@@ -10,12 +10,13 @@
 import { expect } from "chai";
 import piWebExtension from "../../index";
 
-function harness() {
+function harness(activeTools: string[] = []) {
   const tools: Record<string, any> = {};
   const handlers: Record<string, Function[]> = {};
   const pi: any = {
     registerTool(tool: any) { tools[tool.name] = tool; },
     on(name: string, handler: Function) { (handlers[name] ??= []).push(handler); },
+    getActiveTools: () => activeTools,
   };
   piWebExtension(pi);
   return { tools, handlers };
@@ -29,10 +30,10 @@ function callHook(handlers: Record<string, Function[]>, selectedTools: string[] 
 }
 
 describe("pi-web before_agent_start routing guidance", () => {
-  it("registers seven web_* tools", () => {
+  it("registers ten web_* tools", () => {
     const { tools } = harness();
     const webTools = Object.keys(tools).filter((n) => n.startsWith("web_"));
-    expect(webTools).to.have.length(7);
+    expect(webTools).to.have.length(10);
   });
 
   it("injects routing guidance when a web_* tool is active", async () => {
@@ -40,7 +41,7 @@ describe("pi-web before_agent_start routing guidance", () => {
     const result = await callHook(handlers, ["read", "web_search"]);
     expect(result.systemPrompt).to.include("BASE");
     expect(result.systemPrompt).to.include("Web Tool Routing (pi-web)");
-    expect(result.systemPrompt).to.include("Firecrawl Search has poor semantic accuracy");
+    expect(result.systemPrompt).to.include("Firecrawl Search is weak on domain-specific queries");
   });
 
   it("does not inject when no web_* tool is active", async () => {
@@ -50,8 +51,14 @@ describe("pi-web before_agent_start routing guidance", () => {
     expect(result).to.equal(undefined);
   });
 
-  it("does not inject when selectedTools is undefined", async () => {
-    const { handlers } = harness();
+  it("falls back to pi.getActiveTools() when selectedTools is undefined", async () => {
+    const { handlers } = harness(["read", "web_search"]);
+    const result = await callHook(handlers, undefined);
+    expect(result.systemPrompt).to.include("Web Tool Routing (pi-web)");
+  });
+
+  it("does not inject when selectedTools is undefined and no web_* tool is active", async () => {
+    const { handlers } = harness(["read", "bash"]);
     const result = await callHook(handlers, undefined);
     expect(result).to.equal(undefined);
   });

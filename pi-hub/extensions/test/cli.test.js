@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveSource, searchCatalog, mergeResults } from "../../cli.js";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { readSettingsPackages, resolveSource, searchCatalog, mergeResults } from "../../cli.js";
 
 test("resolveSource: passthrough for explicit sources", () => {
   assert.equal(resolveSource("npm:@foo/bar"), "npm:@foo/bar");
@@ -42,4 +45,20 @@ test("mergeResults: curated first, npm deduped by name", () => {
   assert.equal(merged[0].curated, true);
   assert.equal(merged[1].name, "some-other-pi-package");
   assert.ok(!("curated" in merged[1])); // npm entries never marked curated
+});
+
+test("readSettingsPackages: HOME/USERPROFILE-relative settings.json, string + {source} forms", () => {
+  const home = mkdtempSync(path.join(tmpdir(), "pi-hub-test-"));
+  try {
+    assert.deepEqual(readSettingsPackages({ HOME: home }), []); // missing file → []
+    mkdirSync(path.join(home, ".pi", "agent"), { recursive: true });
+    writeFileSync(
+      path.join(home, ".pi", "agent", "settings.json"),
+      JSON.stringify({ packages: ["npm:@x/a", { source: "npm:@x/b" }, { nope: true }] }),
+    );
+    assert.deepEqual(readSettingsPackages({ HOME: home }), ["npm:@x/a", "npm:@x/b"]);
+    assert.deepEqual(readSettingsPackages({ USERPROFILE: home }), ["npm:@x/a", "npm:@x/b"]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });

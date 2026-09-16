@@ -16,6 +16,8 @@
 
 import type { Message, Model } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import {
   createAgentSession,
@@ -32,6 +34,7 @@ import {
   type SubagentStatus,
   DEFAULT_TIMEOUT_MS,
   HARD_TIMEOUT_MS,
+  truncateParallelOutput,
 } from "./security.ts";
 
 // ---------------------------------------------------------------------------
@@ -122,6 +125,10 @@ export interface SubAgentResult {
   errorMessage?: string;
   /** Unified diff of changes made in an isolated worktree (sandbox: "worktree"). */
   patch?: string;
+  /** Set when merge:"3way" was requested: outcome of applying the patch to the parent checkout. */
+  mergeStatus?: "applied" | "conflict";
+  /** git apply error excerpt when mergeStatus === "conflict". */
+  mergeError?: string;
   /** Canonical result status (added in 0.6.0). */
   status?: SubagentStatus;
   /** Wall-clock duration of the run, set by runSubAgent (Date.now() - startedAt). */
@@ -146,6 +153,8 @@ export async function runSubAgent(options: {
   model: Model<any>;
   /** "worktree" runs the child in an isolated git worktree; the resulting diff is returned as result.patch. */
   sandbox?: "worktree";
+  /** With sandbox:"worktree", apply the captured diff to the parent checkout via `git apply --3way` after the run. */
+  merge?: "3way";
   /** Pi 0.80.10's canonical credential/model runtime. */
   modelRuntime?: unknown;
   /** Legacy Pi SDK session options retained for 0.80.6 tests and hosts. */
@@ -177,7 +186,7 @@ export async function runSubAgent(options: {
     cwd, systemPrompt, task, tools, model, modelRuntime, authStorage, modelRegistry, signal,
     agentName = "subagent", thinkingLevel = "off", onMessage, onProgress,
     timeoutMs = DEFAULT_INACTIVITY_TIMEOUT_MS, hardTimeoutMs = HARD_TIMEOUT_MS,
-    loadExtensions = false, projectTrusted = true, sandbox, exec,
+    loadExtensions = false, projectTrusted = true, sandbox, merge, exec,
   } = options;
   const result: SubAgentResult = {
     agent: agentName, task, exitCode: 0, messages: [], stderr: "",
@@ -229,11 +238,13 @@ export async function runSubAgent(options: {
     // ponytail: falls back to the in-process cwd when git is unavailable — the
     // worktree is an isolation optimization, not a hard requirement.
     let worktreeDir: string | undefined;
+    let worktreeRepoRoot: string | undefined;
     let childCwd = cwd;
     if (sandbox === "worktree") {
       const wt = await createWorktree(cwd, exec);
       if (wt.ok) {
         worktreeDir = wt.path;
+        worktreeRepoRoot = wt.repoRoot;
         childCwd = wt.path!;
       } else if (wt.error) {
         result.stderr = `Worktree unavailable (${wt.error}); running in workspace.`;
@@ -261,7 +272,10 @@ export async function runSubAgent(options: {
         const finish = (fn: () => void) => { if (!done) { done = true; unsubscribe?.(); fn(); } };
         unsubscribe = session.subscribe((event) => {
           try {
-            // Any SDK session lifecycle event is actual child activity, unlike a parent heartbeat.
+            // Any SDK session event — including message_update streaming
+            // deltas (thinking_delta/text_delta) — is real child activity
+            // and resets the idle timer. Only a stream with NO events at all
+            // for timeoutMs indicates a hung child.
             armIdle(); onProgress?.(snapshot(event.type));
             if (event.type === "message_end") {
               const msg = event.message as AgentMessage;
@@ -297,7 +311,25 @@ export async function runSubAgent(options: {
       if (worktreeDir) {
         // Capture the child's changes as a unified diff before tearing down.
         const diff = await captureWorktreeDiff(cwd, worktreeDir, exec);
-        if (diff.ok) result.patch = diff.diff;
+        if (diff.ok) {
+          result.patch = diff.diff;
+          // Opt-in 3-way merge: apply while the worktree still exists — the
+          // blobs `git add -A` staged live in the shared object DB and
+          // `git apply --3way` needs them. Applies are serialized (see
+          // applyWorktreePatch3way) so parallel siblings cannot race. Only
+          // successfully completed children auto-merge: a timed-out or
+          // aborted child's half-finished edits must not land on the parent
+          // checkout — their patch is still delivered for manual review.
+          if (merge === "3way" && result.status === "success" && worktreeRepoRoot && diff.diff && diff.diff !== "(no changes)") {
+            const applied = await applyWorktreePatch3way(worktreeRepoRoot, diff.diff, exec);
+            if (applied.ok) {
+              result.mergeStatus = "applied";
+            } else {
+              result.mergeStatus = "conflict";
+              result.mergeError = applied.stderr.slice(0, 1000);
+            }
+          }
+        }
         else if (diff.error) result.stderr = result.stderr ? `${result.stderr}; diff unavailable (${diff.error})` : `Diff unavailable (${diff.error})`;
       }
       return result;
@@ -323,7 +355,7 @@ export async function runSubAgent(options: {
 // ---------------------------------------------------------------------------
 
 /** Minimal exec fallback (child_process spawn) used when no exec is injected. */
-async function defaultExec(
+export async function defaultExec(
   command: string,
   args: string[],
   options?: { cwd?: string; timeout?: number },
@@ -358,7 +390,7 @@ async function runGit(
 export async function createWorktree(
   cwd: string,
   exec?: (command: string, args: string[], options?: { cwd?: string; timeout?: number }) => Promise<{ code: number; stdout: string; stderr: string }>,
-): Promise<{ ok: boolean; path?: string; error?: string }> {
+): Promise<{ ok: boolean; path?: string; repoRoot?: string; error?: string }> {
   try {
     const root = await runGit(cwd, ["rev-parse", "--show-toplevel"], exec);
     if (!root.ok) return { ok: false, error: root.stderr.trim() || "not a git repo" };
@@ -368,7 +400,7 @@ export async function createWorktree(
     const wtPath = path.join(repoRoot, ".pi-worktrees", id);
     const add = await runGit(repoRoot, ["worktree", "add", "--detach", wtPath, "HEAD"], exec);
     if (!add.ok) return { ok: false, error: add.stderr.trim() || "git worktree add failed" };
-    return { ok: true, path: wtPath };
+    return { ok: true, path: wtPath, repoRoot };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -401,6 +433,56 @@ export async function removeWorktree(
   try {
     await runGit(repoRoot, ["worktree", "remove", "--force", worktreeDir], exec);
   } catch { /* best effort */ }
+}
+
+/** Serialized `git apply` on the parent checkout: parallel siblings finishing
+ *  at the same time must not race the merge (OMP's withRepoLock equivalent). */
+let applyChain: Promise<unknown> = Promise.resolve();
+
+/** Apply a unified diff to the repo root via `git apply --3way`. Never throws;
+ *  ok:false means conflict/failure — the caller reports it and still delivers
+ *  the patch text for manual merging. */
+export async function applyWorktreePatch3way(
+  repoRoot: string,
+  diff: string,
+  exec?: (command: string, args: string[], options?: { cwd?: string; timeout?: number }) => Promise<{ code: number; stdout: string; stderr: string }>,
+): Promise<{ ok: boolean; stderr: string }> {
+  const run = applyChain.then(async (): Promise<{ ok: boolean; stderr: string }> => {
+    const tmp = path.join(os.tmpdir(), `pi-subagent-apply-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.patch`);
+    try {
+      // git apply interprets paths relative to cwd — write the diff to a file
+      // and apply at the repo root. captureWorktreeDiff trims trailing
+      // whitespace; git rejects a patch whose last line has no newline, so
+      // restore it (CRLF-aware: trimming "...\r\n" must not downgrade the
+      // final line ending to LF).
+      const patchText = diff.endsWith("\n") ? diff : `${diff}${diff.includes("\r\n") ? "\r\n" : "\n"}`;
+      await fs.writeFile(tmp, patchText, "utf8");
+      const res = await runGit(repoRoot, ["apply", "--3way", tmp], exec);
+      return { ok: res.ok, stderr: (res.stderr || res.stdout).trim() };
+    } catch (error) {
+      return { ok: false, stderr: error instanceof Error ? error.message : String(error) };
+    } finally {
+      await fs.rm(tmp, { force: true }).catch(() => { /* best effort */ });
+    }
+  });
+  applyChain = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+/** Model-facing patch block for a worktree result; "" when there is no patch.
+ *  Applied merges omit the diff (the parent checkout already has it);
+ *  conflicts include it plus the git apply error. */
+export function formatPatchBlock(result: SubAgentResult): string {
+  if (!result.patch || result.patch === "(no changes)") return "";
+  const lines = result.patch.split("\n").length;
+  if (result.mergeStatus === "applied") {
+    return `🌿 worktree patch (${lines} diff lines) — already applied to the parent checkout via 3-way merge.`;
+  }
+  const head = result.mergeStatus === "conflict"
+    ? `🌿 worktree patch (${lines} diff lines) — 3-way merge CONFLICTED; resolve the markers in the files, or merge manually:`
+    : `🌿 worktree patch (${lines} diff lines) — merge explicitly via apply_patch or \`git apply\` (or pass merge:"3way" next time):`;
+  const err = result.mergeError ? `\n\ngit apply: ${result.mergeError}` : "";
+  return `${head}${err}\n\n${truncateParallelOutput(result.patch)}`;
 }
 
 

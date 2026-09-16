@@ -226,10 +226,15 @@ export function validateMemoryKey(key: unknown): string {
   if (key.length > 200) {
     throw new Error("Memory key must be less than 200 characters");
   }
-  if (!/^[a-zA-Z0-9-_/]+$/.test(key)) {
-    throw new Error("Memory key can only contain alphanumeric characters, hyphens, underscores, and forward slashes");
+  // Models stamp version numbers into keys ("pi-a2a/gateway-token-0.6.2"),
+  // which the server rejects. Normalize instead of throwing — only chars the
+  // server rejects are substituted, so legacy keys (incl. "a--b") stay intact.
+  // Top munin failure family (session mining, 2026-08).
+  const normalized = key.replace(/[^a-zA-Z0-9-_/]+/g, "-");
+  if (!/[a-zA-Z0-9]/.test(normalized.replace(/[/_-]/g, ""))) {
+    throw new Error("Memory key must contain at least one alphanumeric character");
   }
-  return key;
+  return normalized;
 }
 
 export function validateSearchQuery(query: unknown): string {

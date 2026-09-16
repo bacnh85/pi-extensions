@@ -14,23 +14,26 @@ consult tool. Inspired by the advisor subsystem in
     turn during the post-steer calm-down window. The severity sets the note's
     authority wording (“nit — consider” vs “concern — address this” vs
     “blocker — fix before continuing”).
-  - Post-steer cooldown: after a note steers, non-blocker notes within the
-    next `immuneTurns` settled turns are deferred (LLM-visible next turn)
-    instead of waking the agent again — bounds ping-pong. Blockers always
-    steer immediately.
+  - Post-steer cooldown: after a note steers, nit notes within the next
+    `immuneTurns` settled turns are deferred (LLM-visible next turn)
+    instead of waking the agent again — bounds ping-pong. Concerns and
+    blockers always steer immediately.
 - **Emission guard** (noise control): content-free phrases ("lgtm", "done", …)
   are dropped, identical notes are deduped (severity escalation still passes),
   and at most one note is delivered per review cycle.
 - **On-demand `advisor` tool**: the primary model can consult the configured
   second model for strategic guidance with the full sanitized transcript —
   useful before committing to a consequential approach.
+- **Model fallback chain**: configure multiple reviewer models in priority
+  order — if the first is rate-limited / out of quota / unavailable, the next
+  one serves the review or consult automatically.
 - Review failures never break the primary loop; 3 consecutive failures pause
   watching for the session (`/advisor on` resumes).
 
 ## Install
 
 ```
-npm install -g @bacnh85/pi-advisor
+pi install npm:@bacnh85/pi-advisor
 ```
 
 > If you previously used pi-plan's advisor, remove that package's old advisor
@@ -40,10 +43,12 @@ npm install -g @bacnh85/pi-advisor
 ## Configure
 
 ```bash
-/advisor <provider/model>   # pick the reviewer/consult model (fuzzy match or picker)
-/advisor status             # model, watch state, counters
+/advisor <provider/model[, …]>  # set the chain (one model or comma-separated fallbacks)
+/advisor models             # edit the chain + per-slot thinking rows (TUI panel; non-TUI prints it)
+/advisor status             # model chain, watch state, counters
 /advisor on                 # enable watch for this session (also clears a pause)
-/advisor off                # clear the model (disables tool + watch)
+/advisor watch-off          # disable background watch for this session
+/advisor off                # clear the chain (disables tool + watch)
 ```
 
 Settings live in `~/.pi/agent/settings.json` (global) and `.pi/settings.json`
@@ -52,18 +57,32 @@ Settings live in `~/.pi/agent/settings.json` (global) and `.pi/settings.json`
 ```json
 {
   "pi-advisor": {
-    "model": "anthropic/claude-haiku",
+    "models": ["zai-coding-cn/glm-5.3:high", "opencode-go/deepseek-v4-pro"],
     "watch": { "enabled": true, "minToolCalls": 3, "immuneTurns": 3 }
   }
 }
 ```
 
-- `watch.enabled` (default `true`) — turn-end reviewing on session start
+- `models` — ordered fallback chain, first entry is primary. Accepts an array
+  or a comma-separated string (`"a/b, c/d"`). A trailing `:level`
+  (`minimal|low|medium|high|xhigh|max`) on an entry pins that candidate's
+  thinking; entries without one use the model's provider default, so each
+  fallback can carry its own level (`:high` on a strong primary, none on a
+  flash fallback). Legacy single `model` string is still honored. If the
+  primary is rate-limited or unavailable at review/consult time, the next
+  candidate serves automatically; a whole-chain failure counts as one review
+  failure (the 3-strike pause still applies). The advisor never falls back to
+  the primary model — it must never review its own turns.
+- `watch.enabled` (default `true`) — turn-end reviewing on session start (TUI only — print/rpc/json runs skip the watch; the on-demand advisor tool still works)
 - `watch.minToolCalls` (default `3`, `0` = every turn) — skip trivial turns
 - `watch.immuneTurns` (default `3`) — review window during which the same
   normalized note is not re-delivered (loop protection); distinct concerns and
   blockers still steer immediately.
 
+`/advisor router/glm-cn/glm-5.3, opencode-go/deepseek-v4-pro` sets the whole
+chain in one shot (completion works after each comma). A bare single model
+keeps the fuzzy picker fallback for ambiguous hints.
+
 Use a cheap, fast model for the watcher (it reviews every non-trivial turn);
-use a strong reasoner when consulting on demand — both use the same model in
-this version.
+use a strong reasoner when consulting on demand — both use the same chain in
+this version, so pick one that serves both roles.

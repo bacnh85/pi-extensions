@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.2 (2026-09-14)
+
+### Fixed
+
+- **buildInitPrompt always targeted AGENTS.md, even when the scan detected
+  CLAUDE.md.** Detection was honored in `/init check` only; the generation
+  prompt told the model to write AGENTS.md regardless. The prompt now uses the
+  detected context file (`scan.agentsFile`) as the write target, falling back
+  to AGENTS.md when no context file exists.
+
+## 0.1.1 (2026-09-12)
+
+### Fixed
+
+- **Handler no longer assumes `ctx`/`ctx.ui` always exist.** `ctx?.cwd ||
+  process.cwd()` and optional-chained `ctx?.ui?.notify` — siblings guard, the
+  command handler crashed when the context was missing.
+- **Prompts used `npm run …` even for pnpm/yarn/bun projects.** The generated
+  AGENTS.md now emits the detected package manager's run form
+  (`pnpm run test`, `yarn run build`, …); npm stays `npm run …`.
+- `/init check` reports WHICH context file was found (`AGENTS.md exists` vs
+  `CLAUDE.md exists`) instead of always claiming AGENTS.md.
+- Dropped the unused `resolve` import.
+
 ## 0.1.0
 
 - Initial release.

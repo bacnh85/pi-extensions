@@ -1,0 +1,285 @@
+// Gemini web cookie auto-refresh — keeps a one-time-pasted session alive.
+//
+// Google rotates __Secure-1PSIDTS on authenticated visits, so a pasted static
+// copy dies within minutes-to-hours. Google also ships the rotation endpoint
+// Chrome itself calls: POST https://accounts.google.com/RotateCookies issues a
+// fresh __Secure-1PSIDTS for the cookie session (a third-party experiment
+// reports this also covers DBSC-bound sessions today, but pi-web's supported
+// path is incognito/unbound cookies; 400/401 = session dead server-side). We rotate on a
+// 10-min keepalive (Google's declared cadence) and persist the rotated value
+// to a 0600 store file so later pi sessions reuse it.
+// Sources: HanaokaYuzu/Gemini-API utils/rotate_1psidts.py + constants.py;
+// empirical validation in teng-lin/notebooklm-py#345 (+#312).
+
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { findEnvValue } from "./config";
+
+const ROTATE_URL = "https://accounts.google.com/RotateCookies";
+// jspb sentinel body from Gemini-API — send raw so axios doesn't re-serialize
+// (JSON.stringify would rewrite [000,...] to [0,...]).
+// accounts.google.com refuses RotateCookies from non-browser user agents —
+// verified 2026-09-14: identical valid cookie, axios default UA → 400; Chrome
+// UA → 200 + fresh __Secure-1PSIDTS. Browser fingerprint required.
+const ROTATE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
+const ROTATE_CLIENT_HINTS: Record<string, string> = {
+  "User-Agent": ROTATE_UA,
+  "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not-A.Brand";v="24"',
+  "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-platform": '"Windows"',
+};
+
+const ROTATE_BODY = '[000,"-0000000000000000000"]';
+// Google declares the next rotation interval as 600s in the response body
+// (["identity.hfcr",600]) — used as the default keepalive cadence.
+const DEFAULT_ROTATE_INTERVAL_MS = 600_000;
+// HanaokaYuzu's anti-429 guard: never rotate more often than once a minute.
+const MIN_ROTATE_GAP_MS = 60_000;
+
+export interface CookieStoreEntry {
+  psid: string;
+  psidts: string;
+  updatedAt: number;
+}
+
+export interface RotateResult {
+  ok: boolean;
+  psidts?: string;
+  reason?: string;
+  /** true when the server itself rejected the rotation (400/401/no new TS) — informational only; rotation failures never clear the store (the paste TS keeps serving content). false on transport errors. */
+  stale?: boolean;
+}
+
+export type PostFn = (
+  url: string,
+  opts: { headers: Record<string, string>; body: string; proxy?: string; timeoutMs: number },
+) => Promise<{ status: number; setCookie: string[] }>;
+
+// ---------------------------------------------------------------------------
+// Cookie store: single 0600 JSON file, one active session.
+// The env-pasted PSID is the session identity; the store only carries freshness.
+// ---------------------------------------------------------------------------
+
+export function defaultStorePath(): string {
+  // findEnvValue honors process env + .env files like every sibling setting.
+  return findEnvValue("GEMINI_WEB_COOKIE_STORE").value || path.join(os.homedir(), ".pi", "agent", "gemini-web-cookies.json");
+}
+
+export function loadCookieStore(storePath: string = defaultStorePath()): CookieStoreEntry | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(storePath, "utf8")) as Partial<CookieStoreEntry>;
+    if (parsed.psid && parsed.psidts) {
+      return { psid: parsed.psid, psidts: parsed.psidts, updatedAt: Number(parsed.updatedAt) || 0 };
+    }
+  } catch {
+    /* missing or corrupt → treated as absent */
+  }
+  return null;
+}
+
+export function saveCookieStore(entry: CookieStoreEntry, storePath: string = defaultStorePath()): void {
+  fs.mkdirSync(path.dirname(storePath), { recursive: true });
+  // mode at creation — no world-readable window before the chmod (which stays
+  // for rewrites of pre-existing files whose mode may have drifted).
+  // write-then-rename: concurrent readers (keepalive tick, auto-heal, jar
+  // persist) must never observe an empty/partial store.
+  const tmp = `${storePath}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(entry, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, storePath);
+  fs.chmodSync(storePath, 0o600);
+}
+
+export function clearCookieStore(storePath: string = defaultStorePath()): void {
+  try {
+    fs.unlinkSync(storePath);
+  } catch {
+    /* already absent */
+  }
+}
+
+/** Store freshness for web_status — never includes cookie values. */
+export function cookieStoreSnapshot(storePath: string = defaultStorePath()): { present: boolean; ageSeconds?: number; path: string } {
+  const store = loadCookieStore(storePath);
+  return store
+    ? { present: true, ageSeconds: Math.max(0, Math.round((Date.now() - store.updatedAt) / 1000)), path: storePath }
+    : { present: false, path: storePath };
+}
+
+/**
+ * The PSIDTS to use: the ENV value (fresh paste) always wins — a stored TS
+ * can be superseded and must never shadow a re-paste for the same PSID. The
+ * store is only a restart fallback when the env has no TS at all (users who
+ * delegate cookie ownership to pi after a successful opt-in rotation).
+ */
+export function resolvePsidts(
+  psid: string | undefined,
+  envPsidts: string | undefined,
+  storePath: string = defaultStorePath(),
+): string | undefined {
+  if (envPsidts) return envPsidts;
+  if (!psid) return undefined;
+  const store = loadCookieStore(storePath);
+  return store && store.psid === psid && store.psidts ? store.psidts : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Rotation
+// ---------------------------------------------------------------------------
+
+function parseProxy(str: string): { protocol: string; host: string; port: number } | undefined {
+  try {
+    const u = new URL(str);
+    return { protocol: u.protocol.replace(":", ""), host: u.hostname, port: Number(u.port) || (u.protocol === "https:" ? 443 : 80) };
+  } catch {
+    return undefined;
+  }
+}
+
+/** @internal exported for tests — the real rotation POST (axios, no-follow) */
+export async function defaultPost(
+  url: string,
+  opts: { headers: Record<string, string>; body: string; proxy?: string; timeoutMs: number },
+): Promise<{ status: number; setCookie: string[] }> {
+  const axios = (await import("axios")).default;
+  const res = await axios.post(url, opts.body, {
+    headers: opts.headers,
+    // Read Set-Cookie off the first response — following redirects drops it
+    // (axios only surfaces final-response headers).
+    maxRedirects: 0,
+    // 401 is a signal to map, not an exception.
+    validateStatus: () => true,
+    timeout: opts.timeoutMs,
+    ...(opts.proxy ? { proxy: parseProxy(opts.proxy) } : {}),
+  });
+  const raw = res.headers["set-cookie"];
+  return { status: res.status, setCookie: Array.isArray(raw) ? raw : raw ? [raw] : [] };
+}
+
+function extractSetCookie(setCookie: string[], name: string): string | undefined {
+  for (const line of setCookie) {
+    const pair = line.split(";")[0];
+    const eq = pair.indexOf("=");
+    if (eq !== -1 && pair.slice(0, eq).trim() === name) return pair.slice(eq + 1).trim();
+  }
+  return undefined;
+}
+
+export async function rotateCookies(opts: {
+  psid: string;
+  psidts?: string;
+  proxy?: string;
+  timeoutMs?: number;
+  post?: PostFn;
+}): Promise<RotateResult> {
+  const post = opts.post ?? defaultPost;
+  const cookie = opts.psidts ? `__Secure-1PSID=${opts.psid}; __Secure-1PSIDTS=${opts.psidts}` : `__Secure-1PSID=${opts.psid}`;
+  try {
+    const res = await post(ROTATE_URL, {
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "https://accounts.google.com",
+        ...ROTATE_CLIENT_HINTS,
+        Cookie: cookie,
+      },
+      body: ROTATE_BODY,
+      proxy: opts.proxy,
+      timeoutMs: opts.timeoutMs ?? 15_000,
+    });
+    const fresh = extractSetCookie(res.setCookie, "__Secure-1PSIDTS");
+    if (fresh) return { ok: true, psidts: fresh };
+  // Only definitive rejections prove the session dead (store cleared).
+  // 403 (rate-limit/abuse soft-block), 429/5xx/3xx/other are transient or
+  // ambiguous — keep the store, like transport errors.
+  if (res.status === 400 || res.status === 401) {
+      return { ok: false, stale: true, reason: `unauthorized (${res.status}) — session expired server-side` };
+    }
+    return { ok: false, reason: `no new __Secure-1PSIDTS in response (status ${res.status}) — transient server response; store kept` };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Rotate once with store-first resolution and persist the outcome.
+ * Clears the store only when the server itself says the session is dead,
+ * so a stale store never shadows a future fresh paste (and a transient
+ * network error never wipes a good one).
+ */
+export async function refreshGeminiAuth(
+  cfg: { psid?: string; psidts?: string; proxy?: string },
+  opts: { post?: PostFn; storePath?: string } = {},
+): Promise<RotateResult & { store: string }> {
+  const storePath = opts.storePath ?? defaultStorePath();
+  if (!cfg.psid) return { ok: false, reason: "GEMINI_WEB_SECURE_1PSID not set — nothing to rotate", store: storePath };
+  const result = await rotateCookies({ psid: cfg.psid, psidts: resolvePsidts(cfg.psid, cfg.psidts, storePath), proxy: cfg.proxy, post: opts.post });
+  if (result.ok && result.psidts) {
+    saveCookieStore({ psid: cfg.psid, psidts: result.psidts, updatedAt: Date.now() }, storePath);
+  }
+  // NOTE: rotation failures never clear the store — the paste TS keeps
+  // serving content even when the rotation endpoint refuses (proven
+  // 2026-09-14: rotation 400/401 while authed ask still worked).
+  return { ...result, store: storePath };
+}
+
+// ---------------------------------------------------------------------------
+// Keepalive: one rotation tick + the lazy background timer.
+// ---------------------------------------------------------------------------
+
+/** One tick: skip when the store is fresh, else rotate+persist. Returns store freshness. */
+export async function keepaliveOnce(
+  cfg: { psid?: string; psidts?: string; proxy?: string },
+  opts: { post?: PostFn; storePath?: string } = {},
+): Promise<boolean> {
+  if (!cfg.psid) return false;
+  const storePath = opts.storePath ?? defaultStorePath();
+  const store = loadCookieStore(storePath);
+  // Fresh-store skip is psid-scoped: a fresh store for ANOTHER session must
+  // not stop this one from taking ownership of its own generation.
+  if (store && store.psid === cfg.psid && Date.now() - store.updatedAt < MIN_ROTATE_GAP_MS) return true;
+  return (await refreshGeminiAuth(cfg, opts)).ok;
+}
+
+let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+let keepalivePsid: string | undefined;
+
+/**
+ * OPT-IN background rotation timer (GEMINI_WEB_KEEPALIVE=1). DEFAULT OFF.
+ * Live testing (2026-09-14) showed RotateCookies-issued __Secure-1PSIDTS are
+ * REJECTED by gemini.google.com's privileged surfaces (Deep Research
+ * no-chat-id / image 403) while the original paste TS keeps serving — i.e.
+ * rotation poisons the session for privileged tools. The paste TS itself
+ * stays valid indefinitely as long as the browser doesn't compete for it.
+ */
+export function ensureKeepalive(
+  cfg: { psid?: string; psidts?: string; proxy?: string },
+  hooks?: { post?: PostFn; storePath?: string; intervalMs?: number },
+): void {
+  if (!cfg.psid) return;
+  if (keepaliveTimer && keepalivePsid === cfg.psid) return;
+  stopKeepalive();
+  if (findEnvValue("GEMINI_WEB_KEEPALIVE").value !== "1") return;
+  const parsed = Number(findEnvValue("GEMINI_WEB_ROTATE_INTERVAL_MS").value);
+  const intervalMs =
+    hooks?.intervalMs && hooks.intervalMs >= 1000
+      ? hooks.intervalMs
+      : Number.isFinite(parsed) && parsed >= MIN_ROTATE_GAP_MS
+        ? parsed
+        : DEFAULT_ROTATE_INTERVAL_MS;
+  keepalivePsid = cfg.psid;
+  keepaliveTimer = setInterval(() => {
+    void keepaliveOnce(cfg, hooks).catch(() => {});
+  }, intervalMs);
+  keepaliveTimer.unref?.();
+}
+
+export function stopKeepalive(): void {
+  if (keepaliveTimer) clearInterval(keepaliveTimer);
+  keepaliveTimer = null;
+  keepalivePsid = undefined;
+}
+
+/** @internal test hook — keepalive arm state */
+export function __keepaliveDebug(): { armed: boolean; psid: string | undefined; intervalMs: number | null } {
+  return { armed: keepaliveTimer !== null, psid: keepalivePsid, intervalMs: keepaliveTimer ? (keepaliveTimer as unknown as { _idleTimeout?: number })._idleTimeout ?? null : null };
+}

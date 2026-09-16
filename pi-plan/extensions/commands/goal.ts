@@ -177,6 +177,13 @@ export function registerGoal(pi: ExtensionAPI, a: GoalAccessors): void {
 
   pi.registerCommand("goal", {
     description: "Keep the agent working toward a verifiable condition: /goal <objective> | status | pause | resume | clear",
+    getArgumentCompletions: (prefix) => {
+      const q = prefix.trim().toLowerCase();
+      const kws = ["status", "pause", "resume", "clear"].filter((k) => k.startsWith(q));
+      const kwItems = kws.map((k) => ({ value: k, label: k }));
+      if (kwItems.length === 0) return null; // objective is free text
+      return kwItems;
+    },
     handler: async (args, ctx) => {
       const trimmed = args.trim();
       const goal = a.getGoal();
@@ -225,9 +232,13 @@ export function registerGoal(pi: ExtensionAPI, a: GoalAccessors): void {
   pi.registerCommand("goal-model", {
     description: "Configure the /goal evaluator model: /goal-model [model hint|off]",
     getArgumentCompletions: (prefix) => {
+      const kws = ["off"].filter((k) => k.startsWith(prefix.toLowerCase()));
+      const kwItems = kws.map((k) => ({ value: k, label: k, description: "clear evaluator model" }));
       const models = registry?.getAvailable() ?? [];
       const matches = prefix ? fuzzyFilter(models, prefix, modelSearchText) : models;
-      return matches.map((model) => ({ value: modelRef(model), label: model.id, description: model.provider }));
+      const modelItems = matches.map((model) => ({ value: modelRef(model), label: model.id, description: model.provider }));
+      const items = [...kwItems, ...modelItems];
+      return items.length > 0 ? items : null;
     },
     handler: async (args, ctx) => {
       registry = ctx.modelRegistry;
