@@ -1,6 +1,6 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { relative, resolve, isAbsolute, sep, join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -18,6 +18,7 @@ import {
   vaultNameForCwd,
   vaultWrite,
 } from "../index.js";
+import { execObsidian } from "../lib/cli.js";
 
 // ---------------------------------------------------------------------------
 // Replicate execObsidian's stdout filter for testing
@@ -321,6 +322,35 @@ describe("stdout filter", () => {
 
   it("handles empty output", () => {
     expect(filterStdout("")).to.equal("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// execObsidian spawnSync layer (real child process against a stub binary)
+// ---------------------------------------------------------------------------
+
+describe("execObsidian", () => {
+  it("reads >1MiB stdout without ENOBUFS (default 1MiB maxBuffer regression)", function () {
+    this.timeout(10_000);
+    // Stub `obsidian` on PATH printing 2MiB. With Node's default 1MiB
+    // maxBuffer, the overflowing stdout makes the read fail (ENOBUFS, or the
+    // child wedges on the full pipe until the timeout kill) → throw, so a
+    // clean return with the full stdout pins the 64MiB maxBuffer in
+    // lib/cli.ts at the real spawnSync layer.
+    const dir = mkdtempSync(join(tmpdir(), "pi-obsidian-maxbuf-"));
+    const oldPath = process.env.PATH;
+    try {
+      writeFileSync(join(dir, "obsidian"), "#!/bin/sh\nhead -c 2097152 /dev/zero | tr '\\000' a\n");
+      chmodSync(join(dir, "obsidian"), 0o755);
+      // POSIX PATH list separator is ":" (node:path's sep is the path
+      // separator "/" — do not confuse the two).
+      process.env.PATH = `${dir}:${oldPath ?? ""}`;
+      const r = execObsidian(["read", "path=x.md"]);
+      expect(r.stdout.length).to.equal(2097152);
+    } finally {
+      process.env.PATH = oldPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -946,6 +976,68 @@ it("issue #21: write/create/overwrite without content= or content_from= errors i
     } catch (e: any) {
       expect(e.message).to.include("file not found or unreadable");
       expect(e.message).to.include("gone.md");
+    }
+  });
+
+  // -- second review round: >1MiB notes, empty-create read budget, readHint precision --
+
+  it("vaultWrite create verifies >1MiB content through the real CLI read-back path", function () {
+    this.timeout(30_000);
+    // Just over 1MiB; varying alphabet (a single repeated char would make
+    // periodic base64 chunks byte-identical and trip the fake's retry dedup).
+    const content = "abcdefghijklmnopqrstuvwxyz".repeat(Math.ceil((1024 * 1024 + 1) / 26));
+    expect(content.length).to.be.above(1024 * 1024);
+    // vaultWrite spaces evals 75ms apart (EVAL_GAP_MS) via Atomics.wait; ~650
+    // chunks for 1MiB would be ~49s of pure gap. The fake needs no spacing, so
+    // stub the sync sleep for this test only (restored in finally).
+    const realWait = Atomics.wait;
+    (Atomics as any).wait = () => "ok";
+    try {
+      const fake = makeVaultFake();
+      const result = vaultWrite("big.md", content, "create", undefined, 100, fake.exec);
+      expect(result).to.equal("Created: big.md");
+      expect(fake.state().file).to.equal(content);
+    } finally {
+      (Atomics as any).wait = realWait;
+    }
+  });
+
+  it("empty-content create breaks the read-retry loop after exactly 1 attempt (no wasted SMB sleeps)", function () {
+    this.timeout(5000);
+    // The expected read-back for an empty create IS "": the loop must not burn
+    // the remaining attempts + 500ms sleeps before the passing compare.
+    const fake = makeVaultFake();
+    const result = vaultWrite("empty.md", "", "create", undefined, 100, fake.exec);
+    expect(result).to.equal("Created: empty.md");
+    expect(fake.state().readCalls).to.equal(1);
+  });
+
+  it("empty-content create still retries when the read itself throws (transient I/O error)", function () {
+    this.timeout(8000);
+    // A *throwing* read is distinguishable from a clean empty read via
+    // readError — the empty-note fast path must not swallow the retry budget
+    // in that case (3 inner reads x 2 outer write attempts = 6).
+    const fake = makeVaultFake({ readThrows: "transient smb i/o error" });
+    try {
+      vaultWrite("empty.md", "", "create", undefined, 100, fake.exec);
+      expect.fail("Should have thrown");
+    } catch (e: any) {
+      expect(e.message).to.include("file not found or unreadable");
+    }
+    expect(fake.state().readCalls).to.equal(6);
+  });
+
+  it("readHint fires only for the CLI missing-file pattern (not notes starting with 'Error: ')", () => {
+    // A note whose read-back starts with "Error: " but is NOT the CLI
+    // missing-file pattern must not get the "read returned:" hint. (The
+    // existing missing-file test above still asserts the hint IS shown.)
+    const fake = makeVaultFake({ readOverride: () => "Error: something else went wrong\n" });
+    try {
+      vaultWrite("errnote.md", "real content", "overwrite", undefined, 100, fake.exec);
+      expect.fail("Should have thrown");
+    } catch (e: any) {
+      expect(e.message).to.include("verification failed");
+      expect(e.message).to.not.include("read returned:");
     }
   });
 

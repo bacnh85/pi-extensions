@@ -438,8 +438,11 @@ export function vaultWrite(
   // --- write + verify, retried once on verification failure ---
   // Obsidian 1.13.x intermittently drops a chunk's write (silent no-op) during
   // multi-chunk writes. The verify step catches it; retrying the whole write
-  // repairs it (writes are idempotent; create retries as overwrite since the
-  // file now exists). Max 2 attempts — a persistent mismatch is a real error.
+  // repairs it (writes are idempotent; an explicit "File already exists" for a
+  // pre-existing file now throws fast via the fail-fast check below, so the
+  // create->overwrite retry only happens when the first write was silently
+  // dropped and the file is still absent). Max 2 attempts — a persistent
+  // mismatch is a real error.
   let attempts = 0;
   for (;;) {
     attempts++;
@@ -498,9 +501,17 @@ export function vaultWrite(
           fileContent = "";
           readError = e instanceof Error ? e.message : String(e);
         }
-        // Break ONLY when we actually got content. The target SMB case is
-        // empty stdout WITHOUT stderr (CLI drops the echo) — that must retry.
-        if (fileContent.length > 0) break;
+        // Break when we have content, or when the expected read-back IS empty:
+        // - non-empty content: the target SMB case is empty stdout WITHOUT
+        //   stderr (write-visibility propagation delay / CLI drops the echo)
+        //   — that must retry until content appears.
+        // - empty-content create/overwrite: the note legitimately reads back
+        //   "", so burning the remaining attempts + 500ms sleeps before the
+        //   passing compare would be wasted.
+        // - a *throwing* read (readError set) is a genuine I/O failure, not an
+        //   empty note — keep retrying it even for empty content.
+        const expectEmpty = !content && (effectiveMode === "create" || effectiveMode === "overwrite");
+        if (fileContent.length > 0 || (expectEmpty && !readError)) break;
       }
       if (!fileContent && readError) {
         throw new Error(`vaultWrite ${effectiveMode} verification failed for "${notePath}": file not found or unreadable (${readError.replace(/\s+/g, " ").slice(0, 200)})`);
@@ -511,10 +522,14 @@ export function vaultWrite(
       // itself round-trips byte-exact). Invert that rule before comparing so
       // notes ending in "\n" don't false-fail and notes without one don't pick
       // up the printer's newline.
+      // Consequence: the printer destroys the final-newline bit, so tail
+      // verify is newline-blind at the tail — appending "abc" vs "abc\n"
+      // verifies identically (inherent to the transport; do not assume
+      // byte-strictness there).
       const normalizeCliRead = (s: string) => (s.length > 0 && !s.endsWith("\n") ? s + "\n" : s);
       // Obsidian CLI reports missing files on STDOUT with exit 0
       // (`Error: File "..." not found.`). Surface that in mismatch messages.
-      const readHint = /^Error:\s/.test(fileContent)
+      const readHint = /^Error: File .* not found\./.test(fileContent)
         ? `; read returned: "${fileContent.trim().slice(0, 120)}"`
         : "";
 

@@ -15,6 +15,11 @@
   (the CLI printer's added newline is inverted instead of stripped), missing
   files produce an actionable error, and `create` on an existing file fails
   fast with a clear message.
+- **Notes larger than 1MiB no longer false-fail verification.** The shared
+  `execObsidian` spawnSync used Node's default 1MiB `maxBuffer`, so full-note
+  read output over 1MiB was truncated (ENOBUFS) and verification failed after
+  retries; raised to 64MiB in the shared helper (also fixes `content_from` /
+  direct read of large notes).
 
 ## 0.8.15 (2026-09-12)
 
