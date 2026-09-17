@@ -1,4 +1,6 @@
 import { createRequire } from "node:module";
+import fs from "node:fs";
+import path from "node:path";
 
 const require = createRequire(import.meta.url);
 const {
@@ -67,9 +69,13 @@ function auditParametersSchema() {
     type: "object",
     additionalProperties: false,
     properties: {
+      path: {
+        type: "string",
+        description: "Path to a CSS stylesheet file to audit verbatim (absolute or cwd-relative). PREFERRED over retyping `css` — retyped copies drift (inlined tokens, mislabeled pairs) and cause false audit failures. Exactly one of path/css.",
+      },
       css: {
         type: "string",
-        description: "CSS stylesheet content to audit (inline stylesheets, styled-components output, or a concatenated .css file).",
+        description: "CSS stylesheet content to audit (inline stylesheets, styled-components output, or a concatenated .css file). Prefer `path` for on-disk files. Exactly one of path/css.",
       },
       pairs: {
         type: "array",
@@ -90,6 +96,23 @@ function auditParametersSchema() {
       },
     },
   };
+}
+
+/**
+ * Resolve the stylesheet to audit: a file `path` read verbatim (preferred —
+ * retyped `css` drifts and causes false gate failures) or inline `css`.
+ * Exactly one of the two.
+ */
+export function resolveAuditCss(params, cwd) {
+  const css = typeof params.css === "string" ? params.css : "";
+  const hasCss = css.trim().length > 0;
+  const p = typeof params.path === "string" ? params.path.trim() : "";
+  if (hasCss && p) throw new Error("Pass exactly one of `path` or `css` — not both.");
+  if (!hasCss && !p) throw new Error("Pass a stylesheet to audit: `path` (preferred, read verbatim) or `css`.");
+  // Relative paths resolve against the tool-call cwd (falls back to the
+  // process cwd) — the session cwd can differ from this process's cwd.
+  if (p) return fs.readFileSync(path.resolve(cwd || process.cwd(), p), "utf8");
+  return css;
 }
 
 export function formatAuditResult(result) {
@@ -173,6 +196,7 @@ export default function uxExtension(pi) {
       "Run deterministic slop-audit gates on CSS: APCA contrast (perceptual; WCAG sidecar), off-system token values (hardcoded hex / ad-hoc shadows), missing interaction states (:focus-visible / :disabled + prefers-reduced-motion), and named AI slop tells (glassmorphism, gradient orbs, neon glow, default-card, tracked-out eyebrows, tinted near-black). No model needed — all gates are computable. In strict mode, handoff is blocked until this passes. AUDIT THE COMPLETE STYLESHEET, not fragments. If no contrast pairs are supplied, they are auto-extracted from rules that declare both colour and background.",
     promptSnippet: "Run deterministic UX slop-audit (APCA contrast + tokens + states + slop tells)",
     promptGuidelines: [
+      "Pass `path` to the stylesheet file — it is audited verbatim. NEVER retype or condense CSS into the `css` string when the file is on disk: retyped copies drift (inlined DESIGN.md shadow values, mislabeled pairs) and produce false failures or false confidence.",
       "Contrast, token-coverage, and slop-tells are computable, not judgement — use this tool instead of eyeballing or calling a vision model.",
       "Pass fg/bg colour pairs (hex or oklch()) + optional weight/size to set the APCA threshold; the WCAG ratio is shown as a compliance sidecar. Omit pairs and they are auto-extracted from colour+background rules — but hand-picking catches text-on-inherited-backgrounds that auto-extraction misses.",
       "Audit the COMPLETE stylesheet — fragment input falsely fails the States gate (no interactive selectors present) and misses off-system values elsewhere.",
@@ -180,8 +204,8 @@ export default function uxExtension(pi) {
       "State coverage flags interactive elements (button/a/input/...) missing :focus-visible or :disabled rules.",
     ],
     parameters: auditParametersSchema(),
-    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const css = typeof params.css === "string" ? params.css : "";
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const css = resolveAuditCss(params, ctx?.cwd);
       const pairs = Array.isArray(params.pairs) ? params.pairs : [];
       const result = audit({ css, pairs });
       return {

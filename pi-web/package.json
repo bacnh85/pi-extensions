@@ -1,7 +1,7 @@
 {
   "name": "@bacnh85/pi-web",
-  "version": "0.15.0",
-  "description": "Pi extension for web search, page extraction, Firecrawl scraping/crawling, Crawl4AI headless browser crawling, Gemini web-tier research, free upstream image generation (Gemini/ChatGPT web/Z.ai), and one-off ChatGPT-web/gateway chat.",
+  "version": "0.16.0",
+  "description": "Pi extension for web search, page extraction, Firecrawl scraping/crawling, Crawl4AI headless browser crawling, real-browser interaction (trusted click/type/evaluate via CDP), Gemini web-tier research, free upstream image generation (Gemini/ChatGPT web/Z.ai), and one-off ChatGPT-web/gateway chat.",
   "type": "module",
   "license": "MIT",
   "publishConfig": {

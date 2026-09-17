@@ -60,8 +60,11 @@ The **Direction playbook** ships in the skill as the positive layer: a typograph
 Deterministic slop-audit — no model needed, all gates are computable:
 
 ```
-ux_audit css="..." pairs=[{fg:"#111",bg:"#fff",label:"body",weight:400,size:16,min:4.5}]
+ux_audit path="web/src/app.css" pairs=[{fg:"#111",bg:"#fff",label:"body",weight:400,size:16,min:4.5}]
+ux_audit css="..." pairs=[...]
 ```
+
+Pass `path` to a stylesheet file — it is audited **verbatim**. Never retype or condense CSS into the `css` string when the file is on disk: retyped copies drift (inlined tokens, mislabeled pairs) and cause false gate failures or false confidence. Exactly one of `path`/`css`.
 
 | Gate | What it checks |
 |------|----------------|

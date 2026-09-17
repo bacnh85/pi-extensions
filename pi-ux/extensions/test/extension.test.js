@@ -115,7 +115,7 @@ test("ux_audit tool renders 'n/a' for an invalid colour pair", async () => withT
   const { tools } = createPiHarness();
   const out = await tools.get("ux_audit").execute(
     "id",
-    { css: "", pairs: [{ fg: "not-a-color", bg: "#fff", label: "bad", min: 4.5 }] },
+    { css: "/* pair gate only */ .x { color: #111; }", pairs: [{ fg: "not-a-color", bg: "#fff", label: "bad", min: 4.5 }] },
     undefined, undefined, { cwd: "." },
   );
   assert.match(out.content[0].text, /UX AUDIT FAILED/);

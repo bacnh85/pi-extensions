@@ -16,7 +16,7 @@ export interface LocalCapture {
 const CHROME_TIMEOUT_MS = 30_000;
 // ponytail: tall-window approximates full page (CLI has no fullPage flag) —
 // Playwright tier if this proves insufficient.
-const FULL_PAGE_HEIGHT = 8000;
+export const FULL_PAGE_HEIGHT = 8000;
 
 /** Locate a locally installed Chrome/Chromium (or Edge as a Windows fallback). */
 export function findChromeBinary(): string | null {
@@ -116,6 +116,7 @@ export interface ScreenshotArgsOpts {
   width: number;
   height: number;
   fullPage?: boolean;
+  reducedMotion?: boolean;
   waitForSec?: number;
 }
 
@@ -129,6 +130,7 @@ export function buildScreenshotArgs(opts: ScreenshotArgsOpts): string[] {
     `--user-data-dir=${opts.userDataDir}`,
     "--hide-scrollbars",
     `--window-size=${opts.width},${height}`,
+    ...(opts.reducedMotion ? ["--force-prefers-reduced-motion"] : []),
     ...(opts.waitForSec ? [`--virtual-time-budget=${Math.round(opts.waitForSec * 1000)}`] : []),
     `--screenshot=${opts.outPath}`,
     opts.url,
@@ -140,6 +142,7 @@ export function buildPdfArgs(opts: {
   outPath: string;
   userDataDir: string;
   url: string;
+  reducedMotion?: boolean;
 }): string[] {
   return [
     opts.chromePath,
@@ -148,6 +151,7 @@ export function buildPdfArgs(opts: {
     "--disable-gpu",
     `--user-data-dir=${opts.userDataDir}`,
     "--no-pdf-header-footer",
+    ...(opts.reducedMotion ? ["--force-prefers-reduced-motion"] : []),
     `--print-to-pdf=${opts.outPath}`,
     opts.url,
   ];
@@ -219,7 +223,7 @@ async function readCapture(outPath: string, mime: string): Promise<LocalCapture>
   return { base64: buf.toString("base64"), mime, size: buf.length };
 }
 
-function assertCaptureUrl(url: string): void {
+export function assertCaptureUrl(url: string): void {
   // Trust boundary: the URL becomes a spawn argv element — a scheme check
   // keeps strings like "--proxy-server=http://evil" from parsing as switches.
   if (!/^https?:\/\//i.test(url) && !/^file:\/\//i.test(url)) {
@@ -232,6 +236,7 @@ export async function captureScreenshot(opts: {
   width?: number;
   height?: number;
   fullPage?: boolean;
+  reducedMotion?: boolean;
   waitForSec?: number;
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -253,6 +258,7 @@ export async function captureScreenshot(opts: {
         width: opts.width ?? 1280,
         height: opts.height ?? 800,
         fullPage: opts.fullPage,
+        reducedMotion: opts.reducedMotion,
         waitForSec: opts.waitForSec,
       }),
       outPath,
@@ -261,12 +267,19 @@ export async function captureScreenshot(opts: {
     );
     return await readCapture(outPath, "image/png");
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    // SIGKILLed Chrome may still be writing profile files — retry briefly and
+    // never fail the capture over leftover temp state (OS cleans $TMPDIR).
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch {
+      // ponytail: best-effort cleanup
+    }
   }
 }
 
 export async function capturePdf(opts: {
   url: string;
+  reducedMotion?: boolean;
   signal?: AbortSignal;
   timeoutMs?: number;
 }): Promise<LocalCapture> {
@@ -284,6 +297,7 @@ export async function capturePdf(opts: {
         outPath,
         userDataDir: path.join(dir, "profile"),
         url: opts.url,
+        reducedMotion: opts.reducedMotion,
       }),
       outPath,
       opts.signal,
@@ -291,6 +305,10 @@ export async function capturePdf(opts: {
     );
     return await readCapture(outPath, "application/pdf");
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch {
+      // ponytail: best-effort cleanup
+    }
   }
 }

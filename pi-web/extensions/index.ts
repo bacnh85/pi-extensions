@@ -64,7 +64,12 @@ import {
   findChromeBinary,
   isSsrfBlocked,
   resolveEngine,
+  FULL_PAGE_HEIGHT,
 } from "./lib/chrome";
+import {
+  runInteraction,
+  type InteractStep,
+} from "./lib/cdp";
 
 // ---------------------------------------------------------------------------
 // Shared schema fragment
@@ -121,6 +126,7 @@ const WEB_ROUTING_GUIDANCE = `## Web Tool Routing (pi-web)
 - **web_map** — discover site URLs (Firecrawl Map).
 - **web_crawl** — multi-page crawl: \`mode: "light"\` (Firecrawl, url) or \`mode: "full"\` (Crawl4AI, urls[]).
 - **web_screenshot** / **web_pdf** — page capture (Crawl4AI).
+- **web_interact** — drive a real headless Chrome session: trusted click/type/press, JS evaluate, wait_for, screenshots + scrollWidth probe (use to verify UI behavior, not just looks).
 - **web_research** — AI-synthesized research via Gemini web (mode "ask" = grounded answer, guest OK; mode "research" = Deep Research report — plan, autonomous web browsing, cited report; takes minutes when available).
 - **web_image** — text→image generation (auto: Gemini web → ChatGPT web via CHATGPT_WEB_AUTH_KEY / codex login → Z.ai GLM-Image → custom OpenAI-images endpoint; \`model\`/\`n\`/\`size\` params).
 - **web_chat** — one-off chat completion — ChatGPT web (CHATGPT_WEB_AUTH_KEY / codex login; default when configured) or an OpenAI-compatible gateway (\`WEB_CHAT_API_BASE_URL\`; non-streaming).
@@ -367,11 +373,43 @@ export default function piWebExtension(pi: ExtensionAPI) {
       width: Type.Optional(Type.Number({ default: 1280, description: "Local engine: viewport width." })),
       height: Type.Optional(Type.Number({ default: 800, description: "Local engine: viewport height (full_page uses 8000)." })),
       full_page: Type.Optional(Type.Boolean({ default: false, description: "Local engine: capture a tall 8000px window to approximate full page." })),
+      reduced_motion: Type.Optional(Type.Boolean({ default: false, description: "Local engine: force prefers-reduced-motion. Staggered page-load reveals screenshot as blank sections otherwise; also doubles as a reduced-motion audit." })),
       ...crawl4aiControlSchema,
       ...sharedControlSchema,
     }),
     async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
       const url = params.url as string;
+      // Local capture with honest sub-500px handling: headless Chrome clamps
+      // --window-size to 500px (a "390 capture" renders 500 and crops), so
+      // widths below the clamp go through CDP device-metrics emulation and
+      // report a scrollWidth/innerWidth probe beside the PNG.
+      const captureLocalShot = async () => {
+        const width = (params.width as number | undefined) ?? 1280;
+        const reducedMotion = params.reduced_motion as boolean | undefined;
+        const waitForSec = params.wait_for as number | undefined;
+        const fullPage = params.full_page as boolean | undefined;
+        if (width < 500) {
+          const r = await runInteraction({
+            url,
+            viewport: { width, height: fullPage ? FULL_PAGE_HEIGHT : ((params.height as number | undefined) ?? 844) },
+            reducedMotion,
+            waitForSec,
+            signal,
+          });
+          const base64 = r.screenshot ?? "";
+          return { base64, mime: "image/png", size: Math.round((base64.length * 3) / 4), probe: r.probe, emulated: true, height: fullPage ? FULL_PAGE_HEIGHT : ((params.height as number | undefined) ?? 844) };
+        }
+        const cap = await captureLocalScreenshot({
+          url,
+          width,
+          height: params.height as number | undefined,
+          fullPage: params.full_page as boolean | undefined,
+          reducedMotion,
+          waitForSec,
+          signal,
+        });
+        return { ...cap, probe: undefined as { scrollWidth?: number; innerWidth?: number } | undefined, emulated: false };
+      };
       let engine = resolveEngine(params.engine as string | undefined, url);
       let screenshot: string | undefined;
       let mime: string | undefined;
@@ -380,18 +418,11 @@ export default function piWebExtension(pi: ExtensionAPI) {
       let details: Record<string, unknown> = {};
 
       if (engine === "local") {
-        const cap = await captureLocalScreenshot({
-          url,
-          width: params.width as number | undefined,
-          height: params.height as number | undefined,
-          fullPage: params.full_page as boolean | undefined,
-          waitForSec: params.wait_for as number | undefined,
-          signal,
-        });
+        const cap = await captureLocalShot();
         screenshot = cap.base64;
         mime = cap.mime;
         size = cap.size;
-        details = { mime: cap.mime, size: cap.size };
+        details = { mime: cap.mime, size: cap.size, ...(cap.probe ? { probe: cap.probe, emulated: true, emulatedHeight: (cap as { height?: number }).height } : {}) };
       } else {
         const config = loadCrawl4aiConfig(params as Record<string, unknown>, cwdFromContext(ctx), includeProjectEnv(ctx));
         try {
@@ -414,22 +445,21 @@ export default function piWebExtension(pi: ExtensionAPI) {
           // Daemon can't render this URL (SSRF-blocked); retry via local Chrome.
           if (!isSsrfBlocked(err) || !findChromeBinary()) throw err;
           engine = "local";
-          const cap = await captureLocalScreenshot({
-            url,
-            width: params.width as number | undefined,
-            height: params.height as number | undefined,
-            fullPage: params.full_page as boolean | undefined,
-            waitForSec: params.wait_for as number | undefined,
-            signal,
-          });
+          const cap = await captureLocalShot();
           screenshot = cap.base64;
           mime = cap.mime;
           size = cap.size;
-          details = { mime: cap.mime, size: cap.size, fallback: "daemon SSRF-blocked this URL" };
+          details = { mime: cap.mime, size: cap.size, ...(cap.probe ? { probe: cap.probe, emulated: true, emulatedHeight: (cap as { height?: number }).height } : {}), fallback: "daemon SSRF-blocked this URL" };
         }
       }
 
       let text = `Screenshot: ${url}\nEngine: ${engine === "local" ? "local-chrome" : "crawl4ai"}\n`;
+      if (details.probe) {
+        const probe = details.probe as { scrollWidth?: number; innerWidth?: number };
+        const emuHeight = (details.emulatedHeight as number | undefined) ?? (params.height as number | undefined) ?? 844;
+        text += `Viewport: ${params.width}x${emuHeight} (device-emulated${params.full_page ? ", full page" : ""})\n`;
+        text += `Probe: scrollWidth ${probe.scrollWidth ?? "?"} / innerWidth ${probe.innerWidth ?? "?"}${typeof probe.scrollWidth === "number" && typeof params.width === "number" && probe.scrollWidth > params.width ? " — CONTENT OVERFLOWS" : ""}\n`;
+      }
       if (artifactUrl) text += `Artifact: ${artifactUrl}\n`;
       if (mime) text += `MIME: ${mime}\n`;
       if (size) text += `Size: ${size} bytes\n`;
@@ -453,6 +483,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
     parameters: Type.Object({
       url: Type.String(),
       engine: Type.Optional(engineSchema.engine),
+      reduced_motion: Type.Optional(Type.Boolean({ default: false, description: "Local engine: force prefers-reduced-motion before printing." })),
       ...crawl4aiControlSchema,
       ...sharedControlSchema,
     }),
@@ -465,7 +496,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
       let details: Record<string, unknown> = {};
 
       if (engine === "local") {
-        const cap = await captureLocalPdf({ url, signal });
+        const cap = await captureLocalPdf({ url, reducedMotion: params.reduced_motion as boolean | undefined, signal });
         pdf = cap.base64;
         size = cap.size;
         details = { mime: cap.mime, size: cap.size };
@@ -480,7 +511,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
         } catch (err) {
           if (!isSsrfBlocked(err) || !findChromeBinary()) throw err;
           engine = "local";
-          const cap = await captureLocalPdf({ url, signal });
+          const cap = await captureLocalPdf({ url, reducedMotion: params.reduced_motion as boolean | undefined, signal });
           pdf = cap.base64;
           size = cap.size;
           details = { mime: cap.mime, size: cap.size, fallback: "daemon SSRF-blocked this URL" };
@@ -492,6 +523,102 @@ export default function piWebExtension(pi: ExtensionAPI) {
       if (artifactUrl) text += `Artifact: ${artifactUrl}\n`;
       if (size) text += `Size: ${size} bytes\n`;
       return { content: [{ type: "text" as const, text: truncateText(text) }], details: { ...details, url, engine } };
+    },
+  });
+
+  // ── web_interact ────────────────────────────────────────────────
+  pi.registerTool({
+    name: "web_interact",
+    label: "Web Page Interaction",
+    description:
+      "Drive a real headless Chrome session: open a URL and run steps in one call — trusted clicks (CDP mouse events, so user activation works: clipboard, login), typing, key presses, JS evaluate (value correctly unwrapped), wait_for selector/milliseconds, screenshots. Returns per-step results, a final inline PNG, and a scrollWidth/innerWidth probe. Local Chrome only (any http/https/file URL the local machine can reach). One call = one browser lifecycle; re-call with adjusted steps for exploratory flows.",
+    promptSnippet: "Interact with a webpage (click/type/evaluate) in headless Chrome",
+    promptGuidelines: [
+      "Use to VERIFY your own UI builds in the UX render-inspect loop: click the primary CTA, submit the form, read back state with evaluate — a screenshot alone proves nothing about behavior.",
+      "click/type go through CDP trusted input (user activation), so clipboard writes and gated APIs work — document.execCommand('copy') under a trusted click returns true.",
+      "Set viewport {width:390,height:844} for mobile briefs — honest device-metrics emulation (the CLI --window-size path clamps at 500px); the probe's scrollWidth reveals overflow (scrollWidth > width means broken CSS).",
+      "Steps run in order and stop at the first failure, so a broken selector surfaces loudly instead of silently no-op'ing later steps.",
+    ],
+    parameters: Type.Object({
+      url: Type.String({ description: "Page to open (http://, https://, or file://)." }),
+      // Wire format is a FLAT object with optional action fields, not a union of
+      // object variants: Z.ai's anthropic-compatible endpoint rejects anyOf nested
+      // inside anyOf with 400/1210, and the wait_for string|number union inside the
+      // step union is exactly that. Runtime still accepts the union shape.
+      steps: Type.Optional(
+        Type.Array(
+          Type.Object({
+            click: Type.Optional(Type.String({ description: "Selector to trusted-click (scrolled into view, clicked at center via CDP mouse events)." })),
+            type: Type.Optional(Type.Object({ selector: Type.String(), text: Type.String() }, { description: "Focus selector, then insert text." })),
+            press: Type.Optional(Type.String({ description: "Key to press: Enter, Tab, Escape, Backspace, Delete, ArrowUp/Down/Left/Right, Space, or a single character." })),
+            evaluate: Type.Optional(Type.String({ description: "JS expression to evaluate; resolved value returned (awaitPromise on)." })),
+            wait_for: Type.Optional(Type.String({ description: "Selector to wait for (5s budget)." })),
+            wait_ms: Type.Optional(Type.Number({ description: "Milliseconds to sleep." })),
+            screenshot: Type.Optional(Type.Boolean({ description: "Capture a PNG now; the last screenshot is returned inline. false = no-op here (the automatic final screenshot still runs)." })),
+            label: Type.Optional(Type.String({ description: "Optional label shown on the step's result line." })),
+          }, { description: "One action per step object — set exactly one action field. Actions run in order and stop at the first failure. Omit for open + screenshot + probe only." })),
+      ),
+      viewport: Type.Optional(
+        Type.Object({
+          width: Type.Number({ description: "Viewport width in CSS px (e.g. 390 for a phone)." }),
+          height: Type.Optional(Type.Number({ description: "Viewport height (default 800)." })),
+          device_scale_factor: Type.Optional(Type.Number({ description: "Device scale factor (default 1; 2 for retina-style captures)." })),
+        }),
+      ),
+      reduced_motion: Type.Optional(Type.Boolean({ default: false, description: "Emulate prefers-reduced-motion: reduce so staggered load reveals don't screenshot as blank sections." })),
+      grant: Type.Optional(Type.Array(Type.String(), { description: "Browser permissions to grant, e.g. [\"clipboardReadWrite\", \"clipboardSanitizedWrite\"] (CDP names). Friendly aliases \"clipboard-read\"/\"clipboard-write\" are mapped automatically." })),
+      wait_for: Type.Optional(Type.Number({ default: 2, description: "Seconds to settle after load before steps run." })),
+      ...sharedControlSchema,
+    }),
+    async execute(_id: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate: unknown, _ctx: any) {
+      const url = params.url as string;
+      // Flatten wait_ms back onto the union shape runInteraction validates
+      // ({ wait_for: number }); the schema is flat only because of the
+      // Z.ai anyOf-in-anyOf limit (see schema comment above).
+      const steps = ((params.steps ?? []) as Record<string, unknown>[]).map((s) => {
+        if (!("wait_ms" in s)) return s as InteractStep;
+        const { wait_ms, ...rest } = s;
+        return { ...rest, wait_for: wait_ms } as InteractStep;
+      });
+      const result = await runInteraction({
+        url,
+        steps,
+        viewport: params.viewport as { width: number; height?: number; device_scale_factor?: number } | undefined,
+        reducedMotion: params.reduced_motion as boolean | undefined,
+        grant: params.grant as string[] | undefined,
+        waitForSec: params.wait_for as number | undefined,
+        signal,
+      });
+      const lines = [`Interaction: ${url}`];
+      result.outcomes.forEach((o, i) => {
+        const value = o.ok && o.value !== undefined ? ` = ${JSON.stringify(o.value)}` : "";
+        lines.push(`${i + 1}. ${o.label} → ${o.ok ? `ok${value}` : `FAILED: ${o.error}`}`);
+      });
+      if (result.outcomes.some((o) => !o.ok)) lines.push("Stopped at the first failed step.");
+      if (result.navigatedTo) {
+        lines.push(`⚠ A step navigated the page to ${result.navigatedTo} — later steps ran against the NEW document.`);
+      }
+      const p = result.probe;
+      const overflow =
+        typeof p.scrollWidth === "number" && typeof params.viewport === "object" && params.viewport !== null
+          ? p.scrollWidth > (params.viewport as { width: number }).width
+          : false;
+      lines.push(
+        `Probe: scrollWidth ${p.scrollWidth ?? "?"} / innerWidth ${p.innerWidth ?? "?"}${overflow ? " — CONTENT OVERFLOWS the viewport" : ""}`,
+      );
+      const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
+        { type: "text", text: truncateText(lines.join("\n")) },
+      ];
+      if (result.screenshot) content.push({ type: "image", data: result.screenshot, mimeType: "image/png" });
+      return {
+        content,
+        details: {
+          url,
+          probe: result.probe,
+          ...(result.navigatedTo ? { navigatedTo: result.navigatedTo } : {}),
+          outcomes: result.outcomes.map(({ label, ok, value, error }) => ({ label, ok, value, error })),
+        },
+      };
     },
   });
 

@@ -174,7 +174,31 @@ web_screenshot url="http://localhost:3000" full_page=true width=1280
 web_screenshot url="https://example.com" engine="daemon"  # force the daemon
 ```
 
-Local-engine params: `width` (default 1280), `height` (default 800), `full_page` (captures a tall 8000px window — the Chrome CLI has no true full-page flag).
+Local-engine params: `width` (default 1280), `height` (default 800), `full_page` (captures a tall 8000px window — the Chrome CLI has no true full-page flag), `reduced_motion` (forces `--force-prefers-reduced-motion` — staggered page-load reveals otherwise screenshot as blank sections).
+
+**Honest mobile widths**: headless Chrome clamps `--window-size` to 500px, so a `width=390` capture would render at 500 and crop. `web_screenshot` routes `width < 500` through CDP device-metrics emulation instead and reports the truth in text: `Viewport: 390x844 (device-emulated)` + `Probe: scrollWidth X / innerWidth Y` (`scrollWidth > width` ⇒ `— CONTENT OVERFLOWS`).
+
+### `web_interact` — real-browser interaction
+
+Drives local headless Chrome over a zero-dependency CDP client (Node ≥22): open `url`, run `steps` in order, get per-step results, a final inline PNG, and a scrollWidth/innerWidth probe. One call = one browser lifecycle; steps stop at the first failure with the reason.
+
+```
+web_interact url="http://localhost:5173" viewport={width:390,height:844} reduced_motion=true \
+  grant=["clipboard-read","clipboard-write"] \
+  steps=[{click:"#copy"},{evaluate:"document.getElementById('status').textContent",label:"status"},
+         {type:{selector:"#email",text:"a@b.co"}},{press:"Enter"},{wait_for:"[data-success]"}]
+```
+
+| Step | Behavior |
+|------|----------|
+| `{click: "selector"}` | Trusted CDP mouse click at the element center (scrolled into view) — user activation is granted, so `execCommand('copy')`, logins, and gated APIs behave like a real user |
+| `{type: {selector, text}}` | Focus the element, then insert text |
+| `{press: "key"}` | Enter, Tab, Escape, Backspace, Delete, arrows, Space, or a single character |
+| `{evaluate: "expr", label}` | JS expression; the resolved value is returned (`awaitPromise` on) |
+| `{wait_for: "selector" \| ms}` | Poll for a selector (5s budget) or sleep ms |
+| `{screenshot: true}` | Capture now; the last screenshot is returned inline |
+
+Options: `viewport {width, height, device_scale_factor}` (honest device-metrics emulation — the probe's `scrollWidth > width` means overflowing CSS), `reduced_motion`, `grant` (browser permissions), `wait_for` (settle seconds after load), `timeout_ms`.
 
 ### `web_pdf` — Page PDF
 
@@ -195,7 +219,7 @@ The Crawl4AI daemon's browser runs on the daemon host — it cannot reach (and S
 | public URLs | Crawl4AI daemon |
 | daemon SSRF-blocks a URL | automatic local-Chrome retry |
 
-Override with `engine="local"` / `engine="daemon"`. Binary discovery: `CHROME_PATH` env, then standard Chrome/Chromium paths per OS (Edge as a Windows fallback). Captures use an isolated temp profile, a 30s timeout, and `--virtual-time-budget` for `wait_for`.
+Override with `engine="local"` / `engine="daemon"`. Binary discovery: `CHROME_PATH` env, then standard Chrome/Chromium paths per OS (Edge as a Windows fallback). Captures use an isolated temp profile, a 30s timeout, and `--virtual-time-budget` for `wait_for`. `web_interact` uses the same Chrome discovery plus a CDP websocket session (`--remote-debugging-port=0`, target created over the websocket — not the `/json/new` HTTP endpoint).
 
 ### `web_status` — Provider status
 

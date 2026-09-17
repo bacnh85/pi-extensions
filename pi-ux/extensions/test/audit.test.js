@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import {
   channelLuminance,
@@ -17,7 +20,7 @@ import {
   scanSlopTells,
   audit,
 } from "../../hooks/ux-audit.js";
-import { formatAuditResult } from "../index.js";
+import { formatAuditResult, resolveAuditCss } from "../index.js";
 
 // --- WCAG math ------------------------------------------------------------
 
@@ -592,4 +595,38 @@ test("scanOffSystem does NOT partial-match an 8-digit hex as a 6-digit value", (
   const off = scanOffSystem(".card { color: #ff000080; }", new Map());
   assert.ok(!off.hardcodedHex.includes("#ff0000"), "must not partial-match");
   assert.ok(off.hardcodedHex.includes("#ff000080"));
+});
+
+// --- resolveAuditCss: path vs css param handling ---------------------------
+
+test("resolveAuditCss reads a file verbatim via path", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ux-audit-"));
+  const file = path.join(dir, "app.css");
+  fs.writeFileSync(file, ".card { color: #111; background: #fff; }\n");
+  try {
+    assert.equal(resolveAuditCss({ path: file }), ".card { color: #111; background: #fff; }\n");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveAuditCss passes inline css through and enforces exclusivity", () => {
+  assert.equal(resolveAuditCss({ css: ".a { color: red; }" }), ".a { color: red; }");
+  assert.throws(() => resolveAuditCss({ css: ".a {}", path: "/tmp/x.css" }), /exactly one/);
+  assert.throws(() => resolveAuditCss({}), /Pass a stylesheet/);
+  assert.throws(() => resolveAuditCss({ css: "   " }), /Pass a stylesheet/);
+});
+
+test("resolveAuditCss resolves a relative path against the provided cwd, not process.cwd()", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ux-audit-"));
+  fs.writeFileSync(path.join(dir, "app.css"), ".x { color: red; }");
+  const prev = process.cwd();
+  try {
+    process.chdir(os.tmpdir());
+    assert.equal(resolveAuditCss({ path: "app.css" }, dir), ".x { color: red; }");
+    assert.throws(() => resolveAuditCss({ path: "app.css" }), /ENOENT/);
+  } finally {
+    process.chdir(prev);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

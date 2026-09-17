@@ -1,5 +1,84 @@
 # Changelog
 
+## 0.16.0 (2026-09-17)
+
+### Added
+
+- **`web_interact` tool** — drive a real headless Chrome session through a
+  CDP-over-native-WebSocket engine (`lib/cdp.ts`, zero deps, Node ≥22): one
+  call = one browser lifecycle. Steps run in order and stop at the first
+  failure with the reason: `click` (trusted CDP mouse events — user
+  activation works, so `execCommand('copy')` and login flows behave for real),
+  `type`, `press` (Enter/Tab/arrows/…), `evaluate` (value correctly
+  double-unwrapped, `awaitPromise` on), `wait_for` (selector or ms),
+  `screenshot`. Returns per-step results, a final inline PNG, and a
+  `scrollWidth`/`innerWidth` probe. Options: `viewport` (honest
+  device-metrics emulation — immune to the headless 500px window clamp),
+  `reduced_motion` (staggered load reveals screenshot as blank sections
+  otherwise), `grant` (browser permissions, e.g. clipboard).
+- `web_screenshot`/`web_pdf` `reduced_motion` parameter →
+  `--force-prefers-reduced-motion` on the local CLI engine.
+- **Honest sub-500px captures**: `web_screenshot` local engine with
+  `width < 500` automatically routes through CDP device emulation and reports
+  `Viewport: WxH (device-emulated)` + the probe line (`scrollWidth > width`
+  ⇒ `— CONTENT OVERFLOWS`) instead of rendering 500px and cropping.
+
+### Fixed
+
+- Local capture cleanup no longer throws intermittent `ENOTEMPTY`: Chrome is
+  SIGKILLed the moment the PNG is size-stable but may still write profile
+  files; temp-dir removal now retries briefly and never fails the capture
+  over leftover temp state.
+- **`web_interact` `grant` permissions are aliased**: Chrome CDP rejects
+  `"clipboard-read"`/`"clipboard-write"` (`Unknown permission type`); the
+  friendly names map to `clipboardReadWrite`/`clipboardSanitizedWrite` (found
+  by an independent herdr UX-loop test session).
+- **Hidden-element clicks fail loudly**: a zero-size rect (display:none)
+  would have dispatched a trusted click at the viewport origin (0,0) —
+  hitting whatever interactive element lives there with user activation while
+  reporting ok. Now errors `element not visible (zero size)`.
+- **The scrollWidth probe can no longer discard results**: a failed probe
+  evaluate (ws closed after abort, target crash) used to reject the whole
+  call; the probe is advisory and yields `{}` while outcomes/screenshots are
+  returned.
+- **`web_screenshot` honors `full_page` on the emulated (<500px) path** —
+  previously silently returned an 844px viewport; now captures the tall
+  8000px window like the CLI path.
+- **No false "step navigated" warning**: the in-step navigation tracker is
+  attached after the initial page load (real Chrome fires frameNavigated for
+  the initial main-frame navigation too, which flagged every call) and only
+  records main-frame navigations — subframe/iframe events carry a `parentId`
+  and are ignored.
+- **`type` step errors distinguish missing vs non-focusable**: a plain `div`
+  or disabled input now reports `element is not focusable` instead of the
+  misleading `no element matches`.
+- **Digit `press` keys emit `Digit1`-style codes** (were `Key1`), so page
+  handlers gating on `e.code` fire; `{screenshot: false}` steps are treated
+  as a declined capture instead of capturing and suppressing the auto-final.
+
+### Changed
+
+- **`web_interact` step schema flattened** (one optional action field per
+  step object, `wait_ms` split from `wait_for`): Z.ai's anthropic-compatible
+  endpoint rejects anyOf nested inside anyOf with 400/1210 — the nested-union
+  shape made every session request fail on that provider. `wait_ms` is mapped
+  back onto `wait_for` at runtime.
+- Mid-step navigations (form submit via Enter) are detected and annotated —
+  `⚠ A step navigated the page to <url>` in the result text and `navigatedTo`
+  in details, so post-navigation evaluates are never mistaken for "the
+  handler did nothing".
+
+### Notes
+
+- `Target.createTarget` goes over the websocket, never the `/json/new` HTTP
+  endpoint (whose method flipped to PUT in Chrome 111+).
+- Requires Node ≥22 for the native `WebSocket` global; `web_interact` fails
+  with a clear pointer to the manual CDP recipe (pi-ux `ux-capture` skill) on
+  older runtimes.
+- Smoke: `npx tsx extensions/scripts/cdp-smoke.ts` (real Chrome) verifies
+  trusted-click activation (`execCommand('copy')` → true), type+Enter submit,
+  wait_for, honest 390px probe, overflow detection, PNG magic bytes.
+
 ## 0.15.0 (2026-09-14)
 
 ### Added

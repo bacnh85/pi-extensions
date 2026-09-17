@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.6.0 (2026-09-17)
+
+### Added
+
+- **`ux_audit` accepts `path`** — audit a CSS file verbatim (absolute or
+  cwd-relative) instead of retyping it into the `css` string. Incident-driven:
+  retyped/condensed CSS drifted (inlined DESIGN.md shadow values, mislabeled
+  colour pairs) and produced false gate failures and false confidence.
+  Exactly one of `path`/`css`; the tool guidance now leads with
+  "NEVER retype CSS when the file is on disk".
+
+### Changed
+
+- **ux-capture skill**: new Interaction section — `web_interact` (pi-web
+  ≥0.16.0) as the default path for behavior verification, with the manual CDP
+  recipe (trusted input, double-unwrap, clipboard activation caveats) as
+  fallback; honest sub-500px capture + `reduced_motion` documented as native
+  pi-web behavior; the iframe-wrapper layout probe demoted to a manual-capture
+  fallback.
+- **ux-design skill** Step 4: render-and-inspect loop gains "Interact &
+  verify" — click the primary CTA, submit the form, read back state with
+  `web_interact` before the audit gate.
+
 ## 0.5.0 (2026-09-16)
 
 ### Added

@@ -136,8 +136,9 @@ even when `ux_audit` passes. (Text-only models, or genuinely no capture path
    - **Timidity:** cover the logo — could this page belong to anyone? Then amplify the display scale or the signature; the direction is not coming through.
    - **Type & overflow at target width:** display sizes actually large? measure comfortable? **any horizontal scroll, cut-off text, or squeezed badges at the target width?** orphans, cramped labels?
    - **Mood:** is the palette's temperature visible at a glance, or is it generic white+blue?
-4. **Visibility baseline.** Judge at what a viewer sees at 1×–3×. Nothing sub-visible can fail, and nothing sub-visible may be produced — no ±1px claims, no per-pixel diffs, no instrument-read values on either side.
-5. **Gates stay final.** `ux_audit` (Step 5) remains the blocking authority; vision settles only what looking can settle.
+4. **Interact & verify** — a screenshot proves looks, not behavior. Drive the page with `web_interact` (pi-web ≥0.16.0): click the primary CTA, submit the form, toggle a control, and read back state — steps stop at the first failure with the reason. Trusted CDP clicks grant user activation, so clipboard/login flows behave for real.
+5. **Visibility baseline.** Judge at what a viewer sees at 1×–3×. Nothing sub-visible can fail, and nothing sub-visible may be produced — no ±1px claims, no per-pixel diffs, no instrument-read values on either side.
+6. **Gates stay final.** `ux_audit` (Step 5) remains the blocking authority; vision settles only what looking can settle.
 
 ### Step 5 — Slop-audit gate (blocks handoff on fail)
 

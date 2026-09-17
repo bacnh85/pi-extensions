@@ -113,6 +113,11 @@ describe("buildScreenshotArgs", () => {
     const args = buildScreenshotArgs({ ...base, waitForSec: 2.5 });
     expect(args).to.include("--virtual-time-budget=2500");
   });
+
+  it("reducedMotion forces the prefers-reduced-motion flag", () => {
+    expect(buildScreenshotArgs({ ...base })).to.not.include("--force-prefers-reduced-motion");
+    expect(buildScreenshotArgs({ ...base, reducedMotion: true })).to.include("--force-prefers-reduced-motion");
+  });
 });
 
 describe("buildPdfArgs", () => {
@@ -125,7 +130,19 @@ describe("buildPdfArgs", () => {
     });
     expect(args).to.include("--print-to-pdf=/tmp/out.pdf");
     expect(args).to.include("--no-pdf-header-footer");
+    expect(args).to.not.include("--force-prefers-reduced-motion");
     expect(args[args.length - 1]).to.equal("http://localhost:3000");
+  });
+
+  it("reducedMotion forces the prefers-reduced-motion flag", () => {
+    const args = buildPdfArgs({
+      chromePath: "/usr/bin/chrome",
+      outPath: "/tmp/out.pdf",
+      userDataDir: "/tmp/profile",
+      url: "http://localhost:3000",
+      reducedMotion: true,
+    });
+    expect(args).to.include("--force-prefers-reduced-motion");
   });
 });
 

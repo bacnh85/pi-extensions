@@ -1,11 +1,11 @@
 ---
 name: pi-web
-description: Web search, content extraction, site crawling, page capture, Gemini web-tier research, image generation (ChatGPT web via CHATGPT_WEB_AUTH_KEY/codex login, Z.ai GLM-Image), and one-off ChatGPT-web/gateway chat via the pi-web extension. Use when the user needs current web search results, documentation lookup, factual research, AI-synthesized research with sources (Gemini Deep Research), image generation from text (ChatGPT web image_generation tool, Z.ai GLM-Image; the Gemini web provider is currently TLS-gated), one-off ChatGPT/gateway chat, source discovery, URL-to-markdown extraction, JSON extraction from websites, site URL discovery, site crawling, or page screenshots/PDFs. Use when the user mentions searching the web, finding docs, looking something up, researching deeply, generating/creating an image, asking another model, ChatGPT chat/images, scraping/extracting content from a URL, or capturing a page.
+description: Web search, content extraction, site crawling, page capture, web interaction (trusted click/type/evaluate in headless Chrome), Gemini web-tier research, image generation (ChatGPT web via CHATGPT_WEB_AUTH_KEY/codex login, Z.ai GLM-Image), and one-off ChatGPT-web/gateway chat via the pi-web extension. Use when the user needs current web search results, documentation lookup, factual research, AI-synthesized research with sources (Gemini Deep Research), image generation from text (ChatGPT web image_generation tool, Z.ai GLM-Image; the Gemini web provider is currently TLS-gated), one-off ChatGPT/gateway chat, source discovery, URL-to-markdown extraction, JSON extraction from websites, site URL discovery, site crawling, page screenshots/PDFs, or clicking buttons/typing/verifying UI behavior in a real browser. Use when the user mentions searching the web, finding docs, looking something up, researching deeply, generating/creating an image, asking another model, ChatGPT chat/images, scraping/extracting content from a URL, capturing a page, or interacting with a page (click a button, submit a form).
 ---
 
 # pi-web — Unified Web Tools
 
-Use the **10 unified tools** from the `pi-web` extension for all web-related tasks. These tools automatically select the best backend from SearXNG, Brave Search, Firecrawl, Crawl4AI, and agy (when installed) — you don't need to know which backend to use. Search selection is adaptive: broad discovery prefers self-hosted SearXNG, while precision-sensitive queries and inline content prefer Brave.
+Use the **11 unified tools** from the `pi-web` extension for all web-related tasks. These tools automatically select the best backend from SearXNG, Brave Search, Firecrawl, Crawl4AI, and agy (when installed) — you don't need to know which backend to use. Search selection is adaptive: broad discovery prefers self-hosted SearXNG, while precision-sensitive queries and inline content prefer Brave.
 
 ## Quick Reference
 
@@ -17,6 +17,7 @@ Use the **10 unified tools** from the `pi-web` extension for all web-related tas
 | `web_crawl` | Crawl multiple pages from a site | Light (Firecrawl) or Full (Crawl4AI) |
 | `web_screenshot` | Capture page screenshot as PNG | Crawl4AI daemon (public URLs) or local headless Chrome (localhost/LAN/file URLs — auto-detected) |
 | `web_pdf` | Generate page PDF | Crawl4AI daemon (public URLs) or local headless Chrome (localhost/LAN/file URLs — auto-detected) |
+| `web_interact` | Drive a real browser: trusted click/type/press, JS evaluate, wait_for, screenshots | Local headless Chrome via CDP (any http/https/file URL the local machine reaches) |
 | `web_research` | AI-synthesized research with sources | Gemini web tier: ask = grounded answer (guest OK); research = full Deep Research via the pure-Node DR client (live cookie; stale sessions return an honest partial result) |
 | `web_image` | Generate images from a text prompt | Z.ai GLM-Image (`ZAI_API_KEY`, working path; `size` param for aspect, e.g. `960x1728` portrait) → custom OpenAI-images endpoint; Gemini web provider currently refuses non-browser TLS (gated server-side) |
 | `web_chat` | One-off chat via an OpenAI-compatible gateway | `WEB_CHAT_API_BASE_URL` (ChatGPT web bridge, official OpenAI, …) |
@@ -26,6 +27,9 @@ Use the **10 unified tools** from the `pi-web` extension for all web-related tas
 
 ```
 What do you need?
+│
+├── Verify a UI you built actually WORKS (click CTA, submit form, read state)
+│   → web_interact (steps run in order, stop at first failure; final PNG inline + scrollWidth probe)
 │
 ├── Search results (URLs, snippets, docs lookup)
 │   → web_search
@@ -74,6 +78,21 @@ What do you need?
 └── Check what web tools are configured
     → web_status
 ```
+
+## `web_interact` — one call = one browser lifecycle
+
+Open `url`, run `steps` in order, get per-step results + a final inline PNG + a `scrollWidth`/`innerWidth` probe:
+
+- Steps: `{click: "selector"}` (trusted CDP mouse click — user activation works, so `execCommand('copy')` and login flows behave), `{type: {selector, text}}`, `{press: "Enter"}`, `{evaluate: "expr", label}` (value correctly unwrapped; `awaitPromise` on), `{wait_for: "selector" | ms}`, `{screenshot: true}`.
+- Steps stop at the first failure with the reason — a broken selector never silently no-ops later steps.
+- `viewport: {width: 390, height: 844}` = honest device-metrics emulation (the CLI `--window-size` path clamps at 500px); `scrollWidth > width` in the probe means overflowing CSS — fix the page, don't widen the viewport.
+- `reduced_motion: true` for pages with staggered load reveals (they screenshot as blank sections mid-animation otherwise); `grant: ["clipboard-read", "clipboard-write"]` for clipboard verification.
+- For exploratory flows, re-call with adjusted steps — no session state survives a call.
+
+## Honest captures (`web_screenshot` / `web_pdf`)
+
+- `width < 500` on the local engine automatically switches to CDP device emulation (a `--window-size=390` capture would render at 500px and crop, faking right-edge cuts) and reports a `Probe: scrollWidth X / innerWidth Y` line.
+- `reduced_motion: true` forces `--force-prefers-reduced-motion` — use it whenever a page has entrance animations.
 
 ## Auto-selection Details
 

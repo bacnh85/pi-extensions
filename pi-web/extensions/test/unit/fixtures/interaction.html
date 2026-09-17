@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<!-- Fixture for cdp-smoke.ts: exercises trusted click (user activation via
+     execCommand('copy')), typing, Enter handling, wait_for, and evaluate. -->
+<html>
+<head><meta charset="utf-8"><style>body{font-family:sans-serif;margin:16px}</style></head>
+<body>
+  <h1>Interaction fixture</h1>
+  <button id="copy">Copy</button>
+  <span id="copy-status">idle</span>
+  <form id="form">
+    <input id="name" placeholder="name" />
+    <button id="submit" type="submit">Submit</button>
+  </form>
+  <pre id="log"></pre>
+  <button id="ghost" style="display:none">Ghost</button>
+  <div id="later" hidden>appeared</div>
+  <script>
+    document.getElementById("copy").addEventListener("click", () => {
+      // User activation required: synthetic el.click() would return false.
+      const ok = document.execCommand("copy");
+      document.getElementById("copy-status").textContent = ok ? "copied" : "blocked";
+    });
+    document.getElementById("form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      document.getElementById("log").textContent +=
+        "submitted:" + document.getElementById("name").value + "\n";
+    });
+    setTimeout(() => { document.getElementById("later").hidden = false; }, 300);
+  </script>
+</body>
+</html>
