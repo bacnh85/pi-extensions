@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "mocha";
-import { runIsolatedChain } from "../lib/isolated-model";
+import { opencodeSessionHeaders, runIsolatedChain } from "../lib/isolated-model";
 
 /** Model ref that parseModel resolves; provider name is arbitrary. */
 const MODEL = "fake/timeout-model";
@@ -167,6 +167,48 @@ describe("runIsolatedChain candidate deadline", () => {
     const result = await runIsolatedChain(fakeCtx(provider) as never, [MODEL, MODEL], { systemPrompt: "s", messages: [] });
     assert.equal(result.text, "ok");
     assert.deepEqual(calls, 2);
+  });
+});
+
+describe("opencode session headers on the isolated path", () => {
+  // The compat / registered-provider stream path drops `transformHeaders`, so
+  // the session header must ride in `options.headers` or Console Go answers
+  // 400 MissingSessionID (bacnh85/pi-extensions#38).
+  it("builds the header only for opencode models with a session id", () => {
+    const expected = { "x-opencode-session": "ses_1", "x-opencode-client": "pi" };
+    assert.deepEqual(opencodeSessionHeaders({ provider: "opencode-go" }, "ses_1"), expected);
+    assert.deepEqual(opencodeSessionHeaders({ provider: "x", baseUrl: "https://opencode.ai/zen/go/v1" }, "ses_1"), expected);
+    assert.equal(opencodeSessionHeaders({ provider: "opencode-go" }, undefined), undefined);
+    assert.equal(opencodeSessionHeaders({ provider: "zai", baseUrl: "not-a-url" }, "ses_1"), undefined);
+  });
+
+  it("merges it into the stream options, letting auth headers win", async () => {
+    const seen: Array<Record<string, string>> = [];
+    const provider: FakeProvider = (_model, _context, options) => {
+      seen.push((options as Record<string, any>).headers);
+      return goodResponse("ok");
+    };
+    const ctx = fakeCtx(provider) as Record<string, any>;
+    ctx.sessionManager = { getSessionId: () => "ses_1" };
+    ctx.modelRegistry.find = () => ({ id: "omen-alpha", provider: "opencode-go", baseUrl: "https://opencode.ai/zen/go/v1" });
+    ctx.modelRegistry.getApiKeyAndHeaders = async () => ({ ok: true as const, apiKey: "k", headers: { authorization: "Bearer t" }, env: {} });
+    await runIsolatedChain(ctx as never, ["opencode-go/omen-alpha"], { systemPrompt: "s", messages: [] });
+    assert.equal(seen[0]["x-opencode-session"], "ses_1");
+    assert.equal(seen[0]["x-opencode-client"], "pi");
+    assert.equal(seen[0].authorization, "Bearer t");
+  });
+
+  it("adds nothing for a non-opencode model", async () => {
+    const seen: Array<Record<string, string>> = [];
+    const provider: FakeProvider = (_model, _context, options) => {
+      seen.push((options as Record<string, any>).headers);
+      return goodResponse("ok");
+    };
+    const ctx = fakeCtx(provider) as Record<string, any>;
+    ctx.sessionManager = { getSessionId: () => "ses_1" };
+    ctx.modelRegistry.find = () => ({ id: "claude", provider: "anthropic", baseUrl: "https://api.anthropic.com" });
+    await runIsolatedChain(ctx as never, ["anthropic/claude"], { systemPrompt: "s", messages: [] });
+    assert.equal(seen[0]["x-opencode-session"], undefined);
   });
 });
 

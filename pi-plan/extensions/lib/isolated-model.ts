@@ -7,6 +7,22 @@ export interface IsolatedContext {
   messages: any[];
 }
 
+/** OpenCode routes and caches per session; Console Go rejects requests without
+ *  the header. pi's main loop attaches it in ModelRuntime.prepareRequest via
+ *  `transformHeaders`, but that option is only honoured there — the compat /
+ *  registered-provider stream path this file uses drops it, so isolated calls
+ *  must merge the header into `options.headers` themselves. */
+export function opencodeSessionHeaders(
+  model: { provider?: string; baseUrl?: string },
+  sessionId: string | undefined,
+): Record<string, string> | undefined {
+  if (!sessionId) return undefined;
+  let host = "";
+  try { host = new URL(model.baseUrl ?? "").hostname; } catch { /* non-URL baseUrl: provider check decides */ }
+  const isOpenCode = model.provider === "opencode" || model.provider === "opencode-go" || host === "opencode.ai";
+  return isOpenCode ? { "x-opencode-session": sessionId, "x-opencode-client": "pi" } : undefined;
+}
+
 export function text(message: { content: Array<{ type: string; text?: string }> }): string {
   return message.content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("");
 }
@@ -26,7 +42,10 @@ export async function runIsolated(
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) throw new Error(auth.error);
   const provider = ctx.modelRegistry.getRegisteredProviderConfig(model.provider);
-  const options: Record<string, unknown> = { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, signal, reasoning };
+  // Session headers first so explicitly configured auth headers still win (matches
+  // pi's mergeProviderAttributionHeaders precedence).
+  const headers = { ...opencodeSessionHeaders(model, ctx.sessionManager?.getSessionId?.()), ...auth.headers };
+  const options: Record<string, unknown> = { apiKey: auth.apiKey, headers, env: auth.env, signal, reasoning };
   // ponytail: providers accept SimpleStreamOptions which expects ThinkingLevel for reasoning
   const streamOptions = options as any;
   const response = provider?.streamSimple

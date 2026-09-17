@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.2 (2026-09-15)
+
+### Fixed
+
+- **Advisor calls to OpenCode models failed with `400 MissingSessionID`.**
+  `runIsolated` streams through the compat / registered-provider path, which
+  drops pi's `transformHeaders` option — the only channel the main loop uses to
+  attach `x-opencode-session`. The header is now merged into
+  `options.headers` (same session id and `x-opencode-client: pi` marker as the
+  main loop). Same root cause as pi-plan's isolated commands.
+
 ## 0.3.1 (2026-09-14)
 
 ### Fixed

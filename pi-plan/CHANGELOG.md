@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.14.1 (2026-09-15)
+
+### Fixed
+
+- **Isolated commands (`/btw`, `/goal`, `/handoff`, `/specs`) failed on every
+  OpenCode model** with `400 MissingSessionID` ("Request is missing
+  x-opencode-session"). `runIsolated` streams through the compat /
+  registered-provider path, which drops pi's `transformHeaders` option — the
+  only channel the main loop uses to attach the session header. The header is
+  now merged into `options.headers`, which every provider path forwards, using
+  the same session id (`ctx.sessionManager.getSessionId()`) and
+  `x-opencode-client: pi` marker as the main loop, so routing and prompt
+  caching share one session identity. Non-OpenCode providers are unaffected.
+
 ## 0.14.0 (2026-09-14)
 
 ### Removed
