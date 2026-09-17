@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.1 (2026-09-17)
+
+### Fixed
+
+- Skill frontmatter `description` exceeded pi's 1024-character limit
+  (1107), triggering a `[Skill conflicts]` load error on every session.
+  Trimmed to 949 by dropping provider-internal parentheticals — all
+  trigger phrases intact.
+
 ## 0.16.0 (2026-09-17)
 
 ### Added
