@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **SMB/NFS vaults: write verification no longer false-fails after writes.**
+  Obsidian 1.13.x drops eval echoes when the async body does real I/O, and
+  network mounts delay read-back propagation, so the old in-eval verify
+  (`adapter.read` + hash inside the eval) saw empty output and reported
+  create/write/append/prepend as failed even though the note was written.
+  Verification now reads the note back through the CLI (`obsidian read`)
+  and hashes it in Node.js, with up to 3 attempts (500 ms apart) to ride out
+  propagation delays. Notes ending in a trailing newline verify byte-exact
+  (the CLI printer's added newline is inverted instead of stripped), missing
+  files produce an actionable error, and `create` on an existing file fails
+  fast with a clear message.
+- **Notes larger than 1MiB no longer false-fail verification.** The shared
+  `execObsidian` spawnSync used Node's default 1MiB `maxBuffer`, so full-note
+  read output over 1MiB was truncated (ENOBUFS) and verification failed after
+  retries; raised to 64MiB in the shared helper (also fixes `content_from` /
+  direct read of large notes).
+
 ## 0.8.15 (2026-09-12)
 
 ### Fixed

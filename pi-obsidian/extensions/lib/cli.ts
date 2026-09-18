@@ -11,6 +11,7 @@ export function execObsidian(args: string[], formatJson = false, timeoutMs = 30_
     timeout: timeoutMs,
     killSignal: "SIGKILL",
     windowsHide: true,
+    maxBuffer: 64 * 1024 * 1024, // full-note read output; default 1MiB truncates large notes (ENOBUFS)
   });
 
   const stdout = (result.stdout ?? "")

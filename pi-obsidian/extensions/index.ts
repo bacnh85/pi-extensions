@@ -303,39 +303,6 @@ export function buildPrependChunkScript(notePath: string, b64Chunk: string, inse
   return wrapEval(`const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('File not found after chunk 0');const o=await app.vault.adapter.read(tn);const m=o.match(/^---\\s*\\n[\\s\\S]*?\\n---\\s*\\n/);const i=m?m[0].length:0;const at=i+${insertOffset};await app.vault.adapter.write(tn,o.slice(0,at)+${b64Decode(b64Chunk)}+o.slice(at));return 'ok'`);
 }
 
-/** Build an eval script that reads the file back and returns "length hash". */
-export function buildVerifyScript(notePath: string): string {
-  const t = JSON.stringify(notePath);
-  const tn = `t.replace(/\\\\/g,'/')`;
-  return wrapEval(`const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('not found after write');const s=await app.vault.adapter.read(tn);const b=new TextEncoder().encode(s);let h=5381;for(let i=0;i<b.length;i++)h=((h<<5)+h+b[i])>>>0;return h+' '+b.length`);
-}
-
-/**
- * Verify the last N bytes of the file hash to the expected djb2 value.
- * Small script (embeds only a byte count), so it stays under the eval
- * payload ceiling even for large appended content. Catches a missing chunk 0
- * in multi-chunk append: file = OLD + chunk1..N hashes differently than the
- * full appended content at the tail.
- */
-export function buildTailHashScript(notePath: string, tailBytes: number): string {
-  const t = JSON.stringify(notePath);
-  const tn = `t.replace(/\\\\/g,'/')`;
-  return wrapEval(`const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('not found');const s=await app.vault.adapter.read(tn);if(s.length<${tailBytes})throw new Error('file shorter than appended content');const tail=s.slice(-${tailBytes});const b=new TextEncoder().encode(tail);let h=5381;for(let i=0;i<b.length;i++)h=((h<<5)+h+b[i])>>>0;return h+' '+b.length`);
-}
-
-/**
- * Verify the first N bytes after any frontmatter block hash to the expected
- * djb2 value — the full-content gate for prepend (mirror of
- * buildTailHashScript). Small script (embeds only a byte count), so it stays
- * under the eval payload ceiling. Catches a silently-no-op'd chunk 1..N in
- * multi-chunk prepend, which a chunk-0-only prefix check cannot.
- */
-export function buildPrefixHashScript(notePath: string, prefixBytes: number): string {
-  const t = JSON.stringify(notePath);
-  const tn = `t.replace(/\\\\/g,'/')`;
-  return wrapEval(`const t=${t};const tn=${tn};const f=app.vault.getAbstractFileByPath(t);if(!f)throw new Error('not found');let s=await app.vault.adapter.read(tn);const fm=s.match(/^---\\s*\\n[\\s\\S]*?\\n---\\s*\\n/);if(fm)s=s.slice(fm[0].length);if(s.length<${prefixBytes})throw new Error('file shorter than prepended content');const head=s.slice(0,${prefixBytes});const b=new TextEncoder().encode(head);let h=5381;for(let i=0;i<b.length;i++)h=((h<<5)+h+b[i])>>>0;return h+' '+b.length`);
-}
-
 /** Compute a djb2 hash + byte length for a UTF-8 string, matching the in-eval formula. */
 export function djb2Utf8(s: string): { hash: number; bytes: number } {
   // ponytail: djb2 length+hash; full-content compare if a collision ever bites
@@ -351,9 +318,10 @@ export function djb2Utf8(s: string): { hash: number; bytes: number } {
  * append, and prepend modes.  Splits large content into base64 chunks that
  * each fit in a single eval call, reassembling via adapter.read+adapter.write.
  *
- * After all chunks are written, a read-back verification confirms the content
- * was written correctly (via adapter.read, so no stale-cache false negatives),
- * decoupling success from what the CLI eval echoes.
+ * After all chunks are written, a read-back verification via the `obsidian read`
+ * CLI command confirms the content landed (eval echo is unreliable when the
+ * async body does real I/O — especially on SMB/network mounts), decoupling
+ * success from what the CLI eval echoes.
  *
  * Throws on any failure (empty output, eval "Error:" prefix, or verification
  * mismatch).
@@ -470,15 +438,23 @@ export function vaultWrite(
   // --- write + verify, retried once on verification failure ---
   // Obsidian 1.13.x intermittently drops a chunk's write (silent no-op) during
   // multi-chunk writes. The verify step catches it; retrying the whole write
-  // repairs it (writes are idempotent; create retries as overwrite since the
-  // file now exists). Max 2 attempts — a persistent mismatch is a real error.
+  // repairs it (writes are idempotent; an explicit "File already exists" for a
+  // pre-existing file now throws fast via the fail-fast check below, so the
+  // create->overwrite retry only happens when the first write was silently
+  // dropped and the file is still absent). Max 2 attempts — a persistent
+  // mismatch is a real error.
   let attempts = 0;
   for (;;) {
     attempts++;
     const effectiveMode = attempts > 1 && mode === "create" ? "overwrite" : mode;
 
     // --- first chunk: mode-specific initial write (tolerant: 1.13.x write echo can be empty; verify step is the real gate) ---
-    run(buildFirstScript(notePath, effectiveMode, b64Chunks[0]), effectiveMode, true);
+    const firstOut = run(buildFirstScript(notePath, effectiveMode, b64Chunks[0]), effectiveMode, true);
+    // Create on an existing file: surface the clear error instead of letting
+    // it degrade into an opaque verification mismatch.
+    if (effectiveMode === "create" && /File already exists/.test(firstOut)) {
+      throw new Error(`vaultWrite create failed for "${notePath}": ${firstOut}`);
+    }
 
     // --- remaining chunks: read + insert (prepend keeps chunks contiguous before
     // old content) or read + append to end (create/overwrite/append). Tolerant:
@@ -493,59 +469,109 @@ export function vaultWrite(
       }
     }
 
-    // --- verify: read back and confirm content ---
+    // --- verify: read back via CLI and confirm content externally ---
+    // Obsidian 1.13.x drops eval echo when the async body involves real I/O
+    // (adapter.read, setTimeout) — especially on SMB/network mounts where I/O
+    // latency exceeds the CLI's internal eval-result timeout. The `obsidian read`
+    // CLI command uses a different code path and is reliable. We read the file
+    // content here and compute the hash externally in Node.js.
     let verifyError: Error | undefined;
     try {
-      if (effectiveMode === "create" || effectiveMode === "overwrite") {
-        const verResult = run(buildVerifyScript(notePath), "verify");
-        if (verResult.startsWith("Error:")) {
-          throw new Error(`vaultWrite ${effectiveMode} verification failed for "${notePath}": ${verResult}`);
+      const readArgs: string[] = [];
+      if (vault) readArgs.push(`vault=${vault}`);
+      readArgs.push("read", `path=${notePath}`);
+      // Retry read up to 3 times with a short gap — SMB/network mounts have
+      // write-visibility propagation delays that can make a just-written file
+      // appear empty on immediate re-read.
+      let fileContent = "";
+      let readError = "";
+      for (let rAttempt = 0; rAttempt < 3; rAttempt++) {
+        if (rAttempt > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+        try {
+          // No "=>" prefix stripping: that decoration is eval-only. `read`
+          // prints raw content, so a note legitimately starting with "=>"
+          // must survive byte-exact.
+          const rr = exec(readArgs, false, timeoutMs);
+          fileContent = rr.stdout;
+          readError = rr.stderr || "";
+        } catch (e) {
+          // execObsidian throws on non-zero exit (e.g. missing file). Treat as
+          // an empty read and keep retrying; the friendly error below fires
+          // only if every attempt fails.
+          fileContent = "";
+          readError = e instanceof Error ? e.message : String(e);
         }
-        const [verHash, verBytes] = verResult.split(" ", 2).map(Number);
-        const expected = djb2Utf8(content);
-        if (verHash !== expected.hash || verBytes !== expected.bytes) {
+        // Break when we have content, or when the expected read-back IS empty:
+        // - non-empty content: the target SMB case is empty stdout WITHOUT
+        //   stderr (write-visibility propagation delay / CLI drops the echo)
+        //   — that must retry until content appears.
+        // - empty-content create/overwrite: the note legitimately reads back
+        //   "", so burning the remaining attempts + 500ms sleeps before the
+        //   passing compare would be wasted.
+        // - a *throwing* read (readError set) is a genuine I/O failure, not an
+        //   empty note — keep retrying it even for empty content.
+        const expectEmpty = !content && (effectiveMode === "create" || effectiveMode === "overwrite");
+        if (fileContent.length > 0 || (expectEmpty && !readError)) break;
+      }
+      if (!fileContent && readError) {
+        throw new Error(`vaultWrite ${effectiveMode} verification failed for "${notePath}": file not found or unreadable (${readError.replace(/\s+/g, " ").slice(0, 200)})`);
+      }
+      // CLI `read` prints file content byte-exact, EXCEPT the printer appends
+      // exactly one trailing "\n" when the content is non-empty and does not
+      // already end with "\n" (empirically verified on SMB vaults; adapter.write
+      // itself round-trips byte-exact). Invert that rule before comparing so
+      // notes ending in "\n" don't false-fail and notes without one don't pick
+      // up the printer's newline.
+      // Consequence: the printer destroys the final-newline bit, so tail
+      // verify is newline-blind at the tail — appending "abc" vs "abc\n"
+      // verifies identically (inherent to the transport; do not assume
+      // byte-strictness there).
+      const normalizeCliRead = (s: string) => (s.length > 0 && !s.endsWith("\n") ? s + "\n" : s);
+      // Obsidian CLI reports missing files on STDOUT with exit 0
+      // (`Error: File "..." not found.`). Surface that in mismatch messages.
+      const readHint = /^Error: File .* not found\./.test(fileContent)
+        ? `; read returned: "${fileContent.trim().slice(0, 120)}"`
+        : "";
+
+      if (effectiveMode === "create" || effectiveMode === "overwrite") {
+        // Hashing the full raw stdout is safe for real notes: execObsidian
+        // (lib/cli.ts) strips known CLI log lines ("Loading updated app
+        // package", outdated-installer notice) before we see them. Residual
+        // risk: a note whose own content matches one of those patterns would
+        // be filtered and false-fail — vanishingly unlikely, accepted.
+        const expected = djb2Utf8(normalizeCliRead(content));
+        const actual = djb2Utf8(fileContent);
+        if (actual.hash !== expected.hash || actual.bytes !== expected.bytes) {
           throw new Error(
             `vaultWrite ${effectiveMode} verification failed for "${notePath}": ` +
-            `written ${verBytes} bytes (hash ${verHash}), expected ${expected.bytes} bytes (hash ${expected.hash})`
+            `written ${actual.bytes} bytes (hash ${actual.hash}), expected ${expected.bytes} bytes (hash ${expected.hash})${readHint}`
           );
         }
       } else if (effectiveMode === "append") {
-        // Append: verify the FULL appended content is the file's tail by hashing
-        // the last content.length code units (small script — no content
-        // embedding, stays under the eval payload ceiling). Catches a missing
-        // chunk 0 in multi-chunk append: file = OLD + chunk1..N would not hash
-        // to the full content. Note: the eval's s.slice() uses UTF-16 code
-        // units, so content.length (not byte length) is the correct slice size.
         if (!content) break; // empty append is a no-op
-        const contentUnits = content.length;
-        const tailResult = run(buildTailHashScript(notePath, contentUnits), "verify-tail");
-        if (tailResult.startsWith("Error:")) {
-          throw new Error(`vaultWrite ${effectiveMode} verification failed for "${notePath}": ${tailResult}`);
-        }
-        const [tailHash, tailBytes] = tailResult.split(" ", 2).map(Number);
-        const expected = djb2Utf8(content);
-        if (tailHash !== expected.hash || tailBytes !== expected.bytes) {
+        const expectedTail = normalizeCliRead(content);
+        const tail = fileContent.slice(-expectedTail.length);
+        const expected = djb2Utf8(expectedTail);
+        const actual = djb2Utf8(tail);
+        if (actual.hash !== expected.hash || actual.bytes !== expected.bytes) {
           throw new Error(
             `vaultWrite ${effectiveMode} verification failed for "${notePath}": ` +
-            `tail ${tailBytes} bytes (hash ${tailHash}), expected ${expected.bytes} bytes (hash ${expected.hash})`
+            `tail ${actual.bytes} bytes (hash ${actual.hash}), expected ${expected.bytes} bytes (hash ${expected.hash})${readHint}`
           );
         }
       } else {
-        // Prepend: hash the FULL prepended content (first content.length code
-        // units after any frontmatter) — catches a silently-no-op'd chunk 1..N
-        // that a chunk-0-only prefix check would miss. s.slice() uses UTF-16
-        // code units, so content.length (not byte length) is the slice size.
+        // Prepend: verify the prepended content appears at the start (after frontmatter)
         const contentUnits = content.length;
-        const headResult = run(buildPrefixHashScript(notePath, contentUnits), "verify-prefix-hash");
-        if (headResult.startsWith("Error:")) {
-          throw new Error(`vaultWrite ${effectiveMode} verification failed for "${notePath}": ${headResult}`);
-        }
-        const [headHash, headBytes] = headResult.split(" ", 2).map(Number);
+        let body = fileContent;
+        const fmMatch = body.match(/^---\s*\n[\s\S]*?\n---\s*\n/);
+        if (fmMatch) body = body.slice(fmMatch[0].length);
+        const head = body.slice(0, contentUnits);
         const expected = djb2Utf8(content);
-        if (headHash !== expected.hash || headBytes !== expected.bytes) {
+        const actual = djb2Utf8(head);
+        if (actual.hash !== expected.hash || actual.bytes !== expected.bytes) {
           throw new Error(
             `vaultWrite ${effectiveMode} verification failed for "${notePath}": ` +
-            `head ${headBytes} bytes (hash ${headHash}), expected ${expected.bytes} bytes (hash ${expected.hash})`
+            `head ${actual.bytes} bytes (hash ${actual.hash}), expected ${expected.bytes} bytes (hash ${expected.hash})${readHint}`
           );
         }
       }
