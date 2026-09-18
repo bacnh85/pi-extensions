@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.17.0 (2026-09-18)
+
+### Added
+
+- **`web_interact` native dialog handling** — a click that opens a native
+  `confirm()`/`alert()`/`prompt()`/`beforeunload` can no longer hang the tool
+  call (previously the renderer blocked forever, the next step never
+  resolved, and the run died with "Chrome DevTools connection closed"):
+  `Page.javascriptDialogOpening` is answered automatically — **dismissed by
+  default** so destructive actions stay blocked — and reported on the step
+  result and at run level, e.g. `confirm("Delete?") → dismissed`.
+  The same engine powers the local paths of `web_screenshot`/`web_pdf`, so a
+  page that opens a dialog on load can no longer wedge those either.
+- **`dialog` step** — `{"dialog": "accept" | "dismiss"}` arms the answer for
+  the NEXT dialog once (consumed by the handler or expired at the following
+  step boundary — an unconsumed arm can never silently approve an unrelated
+  dialog steps later), so flows that must
+  accept a confirm are a single step instead of a `window.confirm` override
+  hack.
+- **Per-step timeout** — the previously-declared-but-unused `timeout_ms`
+  control param now budgets each step (default 60s, clamped 1s–600s); a
+  wedged step fails with the reason ("timed out — page likely blocked
+  (native dialog?) …") instead of hanging until the websocket dies. The
+  post-loop overflow probe and auto-final screenshot are bounded by the same
+  budget, so the whole call is guaranteed to resolve.
+
+Found in a live QA session (DTDS-CRM delete-verification): a native
+`confirm()` on the delete button hung `web_interact` with no way to
+interrupt. Verified against real Chrome: default branch leaves the record
+intact with the dialog reported; the armed-accept branch completes the
+delete.
+
 ## 0.16.1 (2026-09-17)
 
 ### Fixed

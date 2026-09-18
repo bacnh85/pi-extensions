@@ -87,6 +87,7 @@ Open `url`, run `steps` in order, get per-step results + a final inline PNG + a 
 - Steps stop at the first failure with the reason — a broken selector never silently no-ops later steps.
 - `viewport: {width: 390, height: 844}` = honest device-metrics emulation (the CLI `--window-size` path clamps at 500px); `scrollWidth > width` in the probe means overflowing CSS — fix the page, don't widen the viewport.
 - `reduced_motion: true` for pages with staggered load reveals (they screenshot as blank sections mid-animation otherwise); `grant: ["clipboard-read", "clipboard-write"]` for clipboard verification.
+- Native `confirm()`/`alert()` dialogs are auto-DISMISSED and reported on the step (`confirm("Delete?") → dismissed`) — destructive actions stay blocked unless you arm `{dialog: "accept"}` before the click. A step stuck past `timeout_ms` (default 60s) fails with the reason instead of hanging the call.
 - For exploratory flows, re-call with adjusted steps — no session state survives a call.
 
 ## Honest captures (`web_screenshot` / `web_pdf`)

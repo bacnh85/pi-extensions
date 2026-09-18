@@ -180,6 +180,8 @@ describe("validateSteps", () => {
       { evaluate: "1+1", label: "sum" },
       { wait_for: "#done" },
       { wait_for: 250 },
+      { dialog: "accept" },
+      { dialog: "dismiss" },
       { screenshot: true },
     ]);
   });
@@ -194,6 +196,7 @@ describe("validateSteps", () => {
     expect(() => validateSteps([{ click: 5 } as any])).to.throw(/selector string/);
     expect(() => validateSteps([{ type: { text: "x" } } as any])).to.throw(/selector, text/);
     expect(() => validateSteps([{ wait_for: true } as any])).to.throw(/selector string or a millisecond number/);
+    expect(() => validateSteps([{ dialog: "maybe" } as any])).to.throw(/"accept" or "dismiss"/);
   });
 });
 
@@ -485,5 +488,157 @@ describe("runInteraction (fake CDP server)", () => {
     }
     expect(err).to.exist;
     expect(String(err.message)).to.include("Invalid capture URL");
+  });
+
+  it("auto-dismisses a native confirm() opened by a click and reports it on the step", async () => {
+    const ws = new FakeWs();
+    ws.onSend = (frame) => {
+      const { method, id, params } = frame;
+      if (method === "Target.createTarget") return ws.reply(id, { targetId: "t1" });
+      if (method === "Target.attachToTarget") return ws.reply(id, { sessionId: "s1" });
+      if (method === "Page.navigate") {
+        ws.reply(id, {});
+        ws.event("Page.loadEventFired", {}, "s1");
+        return;
+      }
+      if (method === "Runtime.evaluate" && String(params?.expression ?? "").includes("getBoundingClientRect")) {
+        // The click's rect lookup: element found at (100, 50).
+        return ws.reply(id, { result: { type: "object", value: { x: 100, y: 50 } } });
+      }
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mouseReleased") {
+        // Real Chrome: the page's onclick called confirm() — renderer blocks until answered.
+        ws.event("Page.javascriptDialogOpening", { type: "confirm", message: "Delete this opportunity?" }, "s1");
+        return ws.reply(id, {});
+      }
+      ws.reply(id, {});
+    };
+    const result = await runInteraction({
+      url: "http://localhost:3000/",
+      steps: [{ click: "#delete" }, { evaluate: "1+1", label: "after" }],
+      wsFactory: () => ws,
+    });
+    // Safe default: dismissed (destructive stays blocked)…
+    const answer = ws.sent.find((f) => f.method === "Page.handleJavaScriptDialog");
+    expect(answer?.params).to.deep.include({ accept: false });
+    // …reported on the step and at run level, and the run continued past it.
+    expect(result.outcomes[0].dialogs).to.deep.equal(['confirm("Delete this opportunity?") → dismissed']);
+    expect(result.dialogs).to.deep.equal(['confirm("Delete this opportunity?") → dismissed']);
+    expect(result.outcomes[1].ok).to.equal(true);
+  });
+
+  it("answers a dialog with the armed {dialog} step and reverts to dismiss after one consumption", async () => {
+    const accepts: boolean[] = [];
+    const ws = new FakeWs();
+    ws.onSend = (frame) => {
+      const { method, id, params } = frame;
+      if (method === "Target.createTarget") return ws.reply(id, { targetId: "t1" });
+      if (method === "Target.attachToTarget") return ws.reply(id, { sessionId: "s1" });
+      if (method === "Page.navigate") {
+        ws.reply(id, {});
+        ws.event("Page.loadEventFired", {}, "s1");
+        return;
+      }
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mouseReleased") {
+        ws.event("Page.javascriptDialogOpening", { type: "confirm", message: "Delete?" }, "s1");
+        return ws.reply(id, {});
+      }
+      if (method === "Runtime.evaluate" && String(params?.expression ?? "").includes("getBoundingClientRect")) {
+        return ws.reply(id, { result: { type: "object", value: { x: 100, y: 50 } } });
+      }
+      if (method === "Runtime.evaluate" && String(params?.expression ?? "").includes("openAnother")) {
+        ws.event("Page.javascriptDialogOpening", { type: "confirm", message: "Again?" }, "s1");
+        return ws.reply(id, { result: { type: "number", value: 1 } });
+      }
+      if (method === "Page.handleJavaScriptDialog") {
+        accepts.push(Boolean((params as any).accept));
+        return ws.reply(id, {});
+      }
+      ws.reply(id, {});
+    };
+    const result = await runInteraction({
+      url: "http://localhost:3000/",
+      steps: [
+        { dialog: "accept" },
+        { click: "#delete" },
+        { evaluate: "window.openAnother()", label: "second" },
+      ] as any,
+      wsFactory: () => ws,
+    });
+    // Armed accept consumed by the first dialog; the second falls back to dismiss.
+    expect(accepts).to.deep.equal([true, false]);
+    expect(result.outcomes[0].label).to.equal("dialog accept");
+    expect(result.dialogs).to.deep.equal(['confirm("Delete?") → accepted', 'confirm("Again?") → dismissed']);
+  });
+
+  it("fails a step that exceeds the per-step timeout instead of hanging the run", async () => {
+    const ws = new FakeWs();
+    let wedged = false;
+    ws.onSend = (frame) => {
+      const { method, id, params } = frame;
+      if (method === "Target.createTarget") return ws.reply(id, { targetId: "t1" });
+      if (method === "Target.attachToTarget") return ws.reply(id, { sessionId: "s1" });
+      if (method === "Page.navigate") {
+        ws.reply(id, {});
+        ws.event("Page.loadEventFired", {}, "s1");
+        return;
+      }
+      // Simulate a fully wedged renderer (dialog race / hung evaluate): the
+      // blocked step AND every post-loop frame (overflow probe, auto-final
+      // screenshot) never answer — runInteraction must still resolve.
+      if (method === "Runtime.evaluate" && String(params?.expression ?? "") === "blocked") wedged = true;
+      if (wedged && (method === "Runtime.evaluate" || method === "Page.captureScreenshot")) return;
+      ws.reply(id, {});
+    };
+    const result = await runInteraction({
+      url: "http://localhost:3000/",
+      steps: [{ evaluate: "1+1" }, { evaluate: "blocked" }, { evaluate: "1+2" }],
+      stepTimeoutMs: 150,
+      wsFactory: () => ws,
+    });
+    expect(result.outcomes).to.have.lengthOf(2); // stopped at the timed-out step
+    expect(result.outcomes[0].ok).to.equal(true);
+    expect(result.outcomes[1].ok).to.equal(false);
+    expect(result.outcomes[1].error).to.match(/timed out after/);
+    // Bounded probe + auto-final: the run resolves promptly with outcomes
+    // intact, an empty probe, and no PNG (instead of hanging forever).
+    expect(result.probe).to.deep.equal({});
+    expect(result.screenshot).to.be.undefined;
+  });
+
+  it("expires an unconsumed {dialog} arm at the next step boundary", async () => {
+    const accepts: boolean[] = [];
+    const ws = new FakeWs();
+    ws.onSend = (frame) => {
+      const { method, id, params } = frame;
+      if (method === "Target.createTarget") return ws.reply(id, { targetId: "t1" });
+      if (method === "Target.attachToTarget") return ws.reply(id, { sessionId: "s1" });
+      if (method === "Page.navigate") {
+        ws.reply(id, {});
+        ws.event("Page.loadEventFired", {}, "s1");
+        return;
+      }
+      if (method === "Runtime.evaluate" && String(params?.expression ?? "").includes("openAnother")) {
+        // An UNRELATED dialog steps after the armed click never happened —
+        // the arm must have expired, so this falls back to dismiss.
+        ws.event("Page.javascriptDialogOpening", { type: "beforeunload", message: "Leave?" }, "s1");
+        return ws.reply(id, { result: { type: "number", value: 1 } });
+      }
+      if (method === "Page.handleJavaScriptDialog") {
+        accepts.push(Boolean((params as any).accept));
+        return ws.reply(id, {});
+      }
+      ws.reply(id, {});
+    };
+    const result = await runInteraction({
+      url: "http://localhost:3000/",
+      steps: [
+        { dialog: "accept" },
+        { evaluate: "1+1", label: "no dialog here" },
+        { evaluate: "window.openAnother()", label: "unrelated dialog" },
+      ] as any,
+      wsFactory: () => ws,
+    });
+    expect(accepts).to.deep.equal([false]); // NOT accepted
+    expect(result.dialogs).to.deep.equal(['beforeunload("Leave?") → dismissed']);
   });
 });

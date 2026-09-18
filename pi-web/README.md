@@ -196,9 +196,10 @@ web_interact url="http://localhost:5173" viewport={width:390,height:844} reduced
 | `{press: "key"}` | Enter, Tab, Escape, Backspace, Delete, arrows, Space, or a single character |
 | `{evaluate: "expr", label}` | JS expression; the resolved value is returned (`awaitPromise` on) |
 | `{wait_for: "selector" \| ms}` | Poll for a selector (5s budget) or sleep ms |
+| `{dialog: "accept" \| "dismiss"}` | The answer for the NEXT native dialog (`confirm`/`alert`/`prompt`/`beforeunload`); dialogs are auto-DISMISSED without it (destructive actions stay blocked) and every answer is reported on the step result, e.g. `confirm("Delete?") → dismissed` |
 | `{screenshot: true}` | Capture now; the last screenshot is returned inline |
 
-Options: `viewport {width, height, device_scale_factor}` (honest device-metrics emulation — the probe's `scrollWidth > width` means overflowing CSS), `reduced_motion`, `grant` (browser permissions), `wait_for` (settle seconds after load), `timeout_ms`.
+Options: `viewport {width, height, device_scale_factor}` (honest device-metrics emulation — the probe's `scrollWidth > width` means overflowing CSS), `reduced_motion`, `grant` (browser permissions), `wait_for` (settle seconds after load), `timeout_ms` (per-step budget, default 60s — a step stuck past it fails with the reason instead of hanging the call).
 
 ### `web_pdf` — Page PDF
 

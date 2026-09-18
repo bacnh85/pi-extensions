@@ -531,11 +531,13 @@ export default function piWebExtension(pi: ExtensionAPI) {
     name: "web_interact",
     label: "Web Page Interaction",
     description:
-      "Drive a real headless Chrome session: open a URL and run steps in one call — trusted clicks (CDP mouse events, so user activation works: clipboard, login), typing, key presses, JS evaluate (value correctly unwrapped), wait_for selector/milliseconds, screenshots. Returns per-step results, a final inline PNG, and a scrollWidth/innerWidth probe. Local Chrome only (any http/https/file URL the local machine can reach). One call = one browser lifecycle; re-call with adjusted steps for exploratory flows.",
+      "Drive a real headless Chrome session: open a URL and run steps in one call — trusted clicks (CDP mouse events, so user activation works: clipboard, login), typing, key presses, JS evaluate (value correctly unwrapped), wait_for selector/milliseconds, native dialog answer (dialog step), screenshots. Native confirm()/alert()/prompt()/beforeunload are auto-DISMISSED and reported per step; each step has a timeout_ms budget (default 60s, clamped 1s–600s) that fails loudly instead of hanging. Returns per-step results, a final inline PNG, and a scrollWidth/innerWidth probe. Local Chrome only (any http/https/file URL the local machine can reach). One call = one browser lifecycle; re-call with adjusted steps for exploratory flows.",
     promptSnippet: "Interact with a webpage (click/type/evaluate) in headless Chrome",
     promptGuidelines: [
       "Use to VERIFY your own UI builds in the UX render-inspect loop: click the primary CTA, submit the form, read back state with evaluate — a screenshot alone proves nothing about behavior.",
       "click/type go through CDP trusted input (user activation), so clipboard writes and gated APIs work — document.execCommand('copy') under a trusted click returns true.",
+      "Native confirm()/alert() dialogs are auto-DISMISSED (destructive actions stay blocked) and reported on the step result; to ACCEPT one, arm {\"dialog\":\"accept\"} before the triggering click.",
+      "A step stuck longer than timeout_ms (default 60s) fails with the reason instead of hanging the call — raise timeout_ms for legitimately slow evaluate steps.",
       "Set viewport {width:390,height:844} for mobile briefs — honest device-metrics emulation (the CLI --window-size path clamps at 500px); the probe's scrollWidth reveals overflow (scrollWidth > width means broken CSS).",
       "Steps run in order and stop at the first failure, so a broken selector surfaces loudly instead of silently no-op'ing later steps.",
     ],
@@ -555,6 +557,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
             wait_for: Type.Optional(Type.String({ description: "Selector to wait for (5s budget)." })),
             wait_ms: Type.Optional(Type.Number({ description: "Milliseconds to sleep." })),
             screenshot: Type.Optional(Type.Boolean({ description: "Capture a PNG now; the last screenshot is returned inline. false = no-op here (the automatic final screenshot still runs)." })),
+            dialog: Type.Optional(Type.String({ description: '"accept" or "dismiss" — the answer for the NEXT native dialog (confirm/alert/prompt/beforeunload); default auto-dismiss.' })),
             label: Type.Optional(Type.String({ description: "Optional label shown on the step's result line." })),
           }, { description: "One action per step object — set exactly one action field. Actions run in order and stop at the first failure. Omit for open + screenshot + probe only." })),
       ),
@@ -587,17 +590,21 @@ export default function piWebExtension(pi: ExtensionAPI) {
         reducedMotion: params.reduced_motion as boolean | undefined,
         grant: params.grant as string[] | undefined,
         waitForSec: params.wait_for as number | undefined,
+        // Per-step budget, clamped to a sane range — 0/negative would fail every step.
+        stepTimeoutMs:
+          typeof params.timeout_ms === "number" ? Math.min(Math.max(params.timeout_ms, 1_000), 600_000) : undefined,
         signal,
       });
       const lines = [`Interaction: ${url}`];
       result.outcomes.forEach((o, i) => {
         const value = o.ok && o.value !== undefined ? ` = ${JSON.stringify(o.value)}` : "";
-        lines.push(`${i + 1}. ${o.label} → ${o.ok ? `ok${value}` : `FAILED: ${o.error}`}`);
+        lines.push(`${i + 1}. ${o.label} → ${o.ok ? `ok${value}` : `FAILED: ${o.error}`}${o.dialogs ? ` [${o.dialogs.join("; ")}]` : ""}`);
       });
       if (result.outcomes.some((o) => !o.ok)) lines.push("Stopped at the first failed step.");
       if (result.navigatedTo) {
         lines.push(`⚠ A step navigated the page to ${result.navigatedTo} — later steps ran against the NEW document.`);
       }
+      if (result.dialogs?.length) lines.push(`Native dialogs: ${result.dialogs.join("; ")}`);
       const p = result.probe;
       const overflow =
         typeof p.scrollWidth === "number" && typeof params.viewport === "object" && params.viewport !== null
@@ -616,7 +623,8 @@ export default function piWebExtension(pi: ExtensionAPI) {
           url,
           probe: result.probe,
           ...(result.navigatedTo ? { navigatedTo: result.navigatedTo } : {}),
-          outcomes: result.outcomes.map(({ label, ok, value, error }) => ({ label, ok, value, error })),
+          ...(result.dialogs?.length ? { dialogs: result.dialogs } : {}),
+          outcomes: result.outcomes.map(({ label, ok, value, error, dialogs }) => ({ label, ok, value, error, dialogs })),
         },
       };
     },

@@ -12,6 +12,10 @@
 //   Input.dispatchMouseEvent at the element's center instead.
 // - Targets are created over the websocket (Target.createTarget), never the
 //   /json/new HTTP endpoint (PUT-vs-GET drift across Chrome versions).
+// - Native JS dialogs (confirm/alert/prompt/beforeunload) block the renderer
+//   forever unless answered — javascriptDialogOpening is auto-answered
+//   (dismiss by default, a {dialog} step arms the answer once) so a
+//   confirm()-triggering click can never hang the run (issue 2026-09-18).
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -23,6 +27,7 @@ import { assertCaptureUrl, findChromeBinary } from "./chrome";
 const DEVTOOLS_WAIT_MS = 15_000;
 const NAVIGATE_TIMEOUT_MS = 15_000;
 const WAIT_FOR_TIMEOUT_MS = 5_000;
+const DEFAULT_STEP_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 100;
 
 // ── Connection ────────────────────────────────────────────────────────────
@@ -220,9 +225,10 @@ export type InteractStep =
   | { press: string }
   | { evaluate: string; label?: string }
   | { wait_for: string | number }
+  | { dialog: "accept" | "dismiss" }
   | { screenshot: true };
 
-const STEP_KEYS = ["click", "type", "press", "evaluate", "wait_for", "screenshot"];
+const STEP_KEYS = ["click", "type", "press", "evaluate", "wait_for", "dialog", "screenshot"];
 
 /** Exactly one known action key per step, so bad input fails before Chrome launches. */
 export function validateSteps(steps: InteractStep[]): void {
@@ -246,6 +252,9 @@ export function validateSteps(steps: InteractStep[]): void {
     }
     if (key === "wait_for" && typeof (step as any).wait_for !== "string" && typeof (step as any).wait_for !== "number") {
       throw new Error(`wait_for step needs a selector string or a millisecond number; got: ${JSON.stringify(step)}`);
+    }
+    if (key === "dialog" && (step as any).dialog !== "accept" && (step as any).dialog !== "dismiss") {
+      throw new Error(`dialog step needs "accept" or "dismiss"; got: ${JSON.stringify(step)}`);
     }
   }
 }
@@ -305,16 +314,36 @@ export interface StepOutcome {
   value?: unknown;
   error?: string;
   image?: string;
+  /** Native dialogs (alert/confirm/prompt/beforeunload) that opened during this step. */
+  dialogs?: string[];
 }
 
 function stepLabel(step: InteractStep): string {
   if ("click" in step) return `click ${step.click}`;
   if ("type" in step) return `type "${step.type.text.slice(0, 40)}" into ${step.type.selector}`;
   if ("press" in step) return `press ${step.press}`;
+  if ("dialog" in step) return `dialog ${step.dialog}`;
   if ("evaluate" in step) return `evaluate${step.label ? ` (${step.label})` : ""}: ${step.evaluate.slice(0, 80)}`;
   if ("wait_for" in step) return `wait_for ${step.wait_for}`;
   return "screenshot";
 }
+
+/**
+ * Bound any CDP await: a wedged renderer (hung evaluate, dialog race) must
+ * fail loudly instead of hanging the call. Used for steps AND the post-loop
+ * probe/auto-screenshot — without it a step timeout would still hang forever
+ * on the unbounded probe that follows.
+ */
+function raceBounded<T>(p: Promise<T>, ms: number, timeoutError: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(timeoutError)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
+const stepTimeoutError = (ms: number) =>
+  `timed out after ${Math.round(ms / 1000)}s — page likely blocked (native dialog?) or evaluate never resolved; raise timeout_ms for slower steps`;
 
 async function waitForLoad(connection: CdpConnection, sessionId: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -451,6 +480,8 @@ export interface InteractionOpts {
   grant?: string[];
   /** Extra settle time after load, seconds (lets staggered reveals finish). */
   waitForSec?: number;
+  /** Per-step budget in ms (default 60s) — a step exceeding it fails with the reason. */
+  stepTimeoutMs?: number;
   signal?: AbortSignal;
   wsFactory?: WsFactory;
 }
@@ -460,6 +491,8 @@ export interface InteractionResult {
   /** Base64 PNG of the last screenshot step (or the automatic final one). */
   screenshot?: string;
   probe: { scrollWidth?: number; innerWidth?: number };
+  /** Every native dialog the run answered, e.g. `confirm("Delete?") → dismissed`. */
+  dialogs?: string[];
   /** Set when a step triggered a navigation — later steps ran on the NEW document. */
   navigatedTo?: string;
 }
@@ -487,6 +520,7 @@ export async function runInteraction(opts: InteractionOpts): Promise<Interaction
   let sessionId: string | undefined;
   try {
     const connection = browser.connection;
+    const stepTimeoutMs = opts.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
     const target = await connection.send("Target.createTarget", { url: "about:blank" });
     const targetId = target.targetId as string;
     sessionId = ((await connection.send("Target.attachToTarget", { targetId, flatten: true })) as { sessionId: string })
@@ -510,6 +544,21 @@ export async function runInteraction(opts: InteractionOpts): Promise<Interaction
     }
 
     await send("Page.enable");
+    // Native JS dialogs block the renderer forever unless answered — answer
+    // every one (default dismiss; a {dialog} step arms the answer once) and
+    // record it so the model sees what happened (issue 2026-09-18).
+    const dialogs: string[] = [];
+    let armedDialogAction: "accept" | "dismiss" | undefined;
+    connection.on("Page.javascriptDialogOpening", (params, sid) => {
+      if (sid !== sessionId) return;
+      const accept = armedDialogAction === "accept";
+      armedDialogAction = undefined;
+      const type = String(params.type ?? "dialog");
+      const message = String(params.message ?? "").slice(0, 80);
+      dialogs.push(`${type}("${message}") → ${accept ? "accepted" : "dismissed"}`);
+      // ponytail: best-effort answer — a dialog already gone must not fail the run
+      connection.send("Page.handleJavaScriptDialog", { accept }, sessionId).catch(() => {});
+    });
     const loaded = waitForLoad(connection, sessionId);
     await send("Page.navigate", { url: opts.url });
     await loaded;
@@ -537,7 +586,20 @@ export async function runInteraction(opts: InteractionOpts): Promise<Interaction
     let screenshot: string | undefined;
     for (const step of steps) {
       opts.signal?.throwIfAborted();
-      const outcome = await runStep(connection, sessionId!, step);
+      const seenDialogs = dialogs.length;
+      let outcome: StepOutcome;
+      if ("dialog" in step) {
+        armedDialogAction = step.dialog;
+        outcome = { label: stepLabel(step), ok: true };
+      } else {
+        const label = stepLabel(step);
+        outcome = await raceBounded(runStep(connection, sessionId!, step), stepTimeoutMs, stepTimeoutError(stepTimeoutMs))
+          .catch((err: Error) => ({ label, ok: false as const, error: err.message }));
+        // The arm covers exactly the step that follows it — an unconsumed
+        // accept must not silently approve an unrelated dialog steps later.
+        armedDialogAction = undefined;
+      }
+      if (dialogs.length > seenDialogs) outcome.dialogs = dialogs.slice(seenDialogs);
       outcomes.push(outcome);
       if (outcome.image) screenshot = outcome.image;
       if (!outcome.ok) break; // fail fast — later steps depend on earlier ones
@@ -548,22 +610,42 @@ export async function runInteraction(opts: InteractionOpts): Promise<Interaction
     let probe: { scrollWidth?: number; innerWidth?: number } = {};
     try {
       const probeRaw = unwrapEvaluate(
-        await send("Runtime.evaluate", {
-          expression: "JSON.stringify({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth })",
-          returnByValue: true,
-        }),
+        await raceBounded(
+          send("Runtime.evaluate", {
+            expression: "JSON.stringify({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth })",
+            returnByValue: true,
+          }),
+          stepTimeoutMs,
+          "overflow probe timed out (renderer wedged?)",
+        ),
       );
       probe = JSON.parse(String(probeRaw));
     } catch {
       // ponytail: advisory — leave probe empty
     }
 
-    if (!screenshot && steps.every((s) => !("screenshot" in s))) {
-      const shot = await send("Page.captureScreenshot", { format: "png" });
-      screenshot = shot.data as string;
+    // Auto-final whenever no image was captured yet — including when a
+    // requested screenshot step failed or was skipped by fail-fast.
+    if (!screenshot) {
+      try {
+        const shot = await raceBounded(
+          send("Page.captureScreenshot", { format: "png" }),
+          stepTimeoutMs,
+          "final screenshot timed out (renderer wedged?)",
+        );
+        screenshot = shot.data as string;
+      } catch {
+        // ponytail: advisory — collected outcomes matter more than the PNG
+      }
     }
 
-    return { outcomes, screenshot, probe, ...(navigatedTo ? { navigatedTo } : {}) };
+    return {
+      outcomes,
+      screenshot,
+      probe,
+      ...(dialogs.length ? { dialogs } : {}),
+      ...(navigatedTo ? { navigatedTo } : {}),
+    };
   } finally {
     opts.signal?.removeEventListener("abort", onAbort);
     browser.cleanup();
