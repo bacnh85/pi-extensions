@@ -35,6 +35,7 @@ import {
 } from "./config";
 import {
   audit,
+  redactConfiguredTokens,
   redactOutbound,
 } from "./security";
 import {
@@ -415,7 +416,9 @@ async function sendTask(opts: {
   }
 
   const ctx = opts.contextId || newContextId();
-  const safe = redactOutbound(message);
+  // Two-pass outbound redaction: configured tokens first (exact values this
+  // deployment knows), then credential-shaped patterns.
+  const safe = redactOutbound(redactConfiguredTokens(message, cfg));
   const rpcBody: JsonRpcRequest = {
     jsonrpc: "2.0",
     id: newTaskId(),

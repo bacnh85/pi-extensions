@@ -200,6 +200,62 @@ export function redactOutbound(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Configured-token redaction (security sweep 0919)
+// ---------------------------------------------------------------------------
+
+/** Minimum length for an exact-match redaction — shorter strings are too
+ *  collision-prone and must never mangle legitimate text. */
+const MIN_TOKEN_REDACT_LEN = 8;
+const TOKEN_REDACTED = "[redacted-token]";
+
+/**
+ * Collect every configured secret of this deployment: the inbound shared
+ * token, per-peer inbound tokens, per-peer outbound auth tokens (bearer /
+ * apiKey), and gateway registration tokens + upstream tokens (legacy block
+ * and the named map). Shape-based `redactOutbound` cannot know these values,
+ * so a reply echoing one would previously cross the trust boundary verbatim.
+ */
+export function collectConfiguredTokens(cfg: unknown): string[] {
+  const out = new Set<string>();
+  const add = (v: unknown): void => {
+    if (typeof v === "string" && v.length >= MIN_TOKEN_REDACT_LEN) out.add(v);
+  };
+  if (!cfg || typeof cfg !== "object") return [];
+  const c = cfg as {
+    peers?: Record<string, { auth?: { token?: unknown } }>;
+    server?: { sharedToken?: unknown; peerTokens?: Record<string, unknown> };
+    discovery?: {
+      gateway?: { token?: unknown; upstreamToken?: unknown };
+      gateways?: Record<string, { token?: unknown; upstreamToken?: unknown }>;
+    };
+  };
+  for (const peer of Object.values(c.peers ?? {})) add(peer?.auth?.token);
+  add(c.server?.sharedToken);
+  for (const tok of Object.values(c.server?.peerTokens ?? {})) add(tok);
+  add(c.discovery?.gateway?.token);
+  add(c.discovery?.gateway?.upstreamToken);
+  for (const gw of Object.values(c.discovery?.gateways ?? {})) {
+    add(gw?.token);
+    add(gw?.upstreamToken);
+  }
+  return [...out];
+}
+
+/**
+ * Redact exact occurrences of THIS deployment's configured tokens from
+ * outbound text. Chain with `redactOutbound` (shape-based) at the trust
+ * boundary: configured-token pass first, shape patterns second.
+ */
+export function redactConfiguredTokens(text: string, cfg: unknown): string {
+  if (!text) return text;
+  let out = text;
+  for (const tok of collectConfiguredTokens(cfg)) {
+    if (out.includes(tok)) out = out.split(tok).join(TOKEN_REDACTED);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Anti-loop turn cap
 // ---------------------------------------------------------------------------
 

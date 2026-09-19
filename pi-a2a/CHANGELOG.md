@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.10 (2026-09-20)
+
+### Fixed
+
+- **Outbound redaction now covers this deployment's own configured tokens.**
+  `redactOutbound` scrubbed only credential-*shaped* patterns (sk-\*, ghp_\*,
+  JWTs, `Bearer …`, emails), so an operator-chosen token echoed by the model —
+  a peer asking "what's my auth token?", an error string embedding a
+  `:token@host` URL — crossed the trust boundary verbatim: the reply artifact,
+  JSON-RPC response and dispatched send bodies carried the exact
+  `server.sharedToken` / `server.peerTokens[*]` / `peers[*].auth.token` /
+  `discovery.gateway(s)[*].token/upstreamToken` value. New
+  `collectConfiguredTokens(cfg)` + `redactConfiguredTokens(text, cfg)`
+  (security.ts) collect every configured secret (deduped, min length 8 so
+  short strings are never mangled, tolerant of partial config) and are chained
+  before the shape-based pass at all four outbound sites: `a2a_send` body,
+  reply artifact, internal-error part, failure part.
+
 ## 0.7.9 (2026-09-18)
 
 ### Fixed
