@@ -215,12 +215,20 @@ const TOKEN_REDACTED = "[redacted-token]";
  * and the named map). Shape-based `redactOutbound` cannot know these values,
  * so a reply echoing one would previously cross the trust boundary verbatim.
  */
-export function collectConfiguredTokens(cfg: unknown): string[] {
+export function collectConfiguredTokens(
+  cfg: unknown,
+  opts?: { extraTokens?: Record<string, string> },
+): string[] {
   const out = new Set<string>();
   const add = (v: unknown): void => {
     if (typeof v === "string" && v.length >= MIN_TOKEN_REDACT_LEN) out.add(v);
   };
-  if (!cfg || typeof cfg !== "object") return [];
+  if (!cfg || typeof cfg !== "object") {
+    // Even a missing config must still honor explicitly-supplied extra
+    // tokens (server-side minted inbound credentials live outside cfg).
+    for (const tok of Object.values(opts?.extraTokens ?? {})) add(tok);
+    return [...out];
+  }
   const c = cfg as {
     peers?: Record<string, { auth?: { token?: unknown } }>;
     server?: { sharedToken?: unknown; peerTokens?: Record<string, unknown> };
@@ -238,18 +246,30 @@ export function collectConfiguredTokens(cfg: unknown): string[] {
     add(gw?.token);
     add(gw?.upstreamToken);
   }
+  // Minted per-session inbound gateway tokens (secvuln2 0920): the server
+  // holds them in a side Map (`mintedInboundTokens`, consulted by
+  // authenticate() via extraTokens) precisely so cfg stays immutable — which
+  // means collectConfiguredTokens(cfg) cannot see them. They are live
+  // `agw-…` credentials persisted under <piDir>/a2a_gateways/, same trust
+  // class as everything above, so the redactor accepts them explicitly.
+  for (const tok of Object.values(opts?.extraTokens ?? {})) add(tok);
   return [...out];
 }
 
 /**
  * Redact exact occurrences of THIS deployment's configured tokens from
  * outbound text. Chain with `redactOutbound` (shape-based) at the trust
- * boundary: configured-token pass first, shape patterns second.
+ * boundary: configured-token pass first, shape patterns second. `opts.
+ * extraTokens` adds server-side minted inbound gateway tokens (outside cfg).
  */
-export function redactConfiguredTokens(text: string, cfg: unknown): string {
+export function redactConfiguredTokens(
+  text: string,
+  cfg: unknown,
+  opts?: { extraTokens?: Record<string, string> },
+): string {
   if (!text) return text;
   let out = text;
-  for (const tok of collectConfiguredTokens(cfg)) {
+  for (const tok of collectConfiguredTokens(cfg, opts)) {
     if (out.includes(tok)) out = out.split(tok).join(TOKEN_REDACTED);
   }
   return out;
@@ -340,15 +360,29 @@ export function audit(opts: {
    *  as its own field so post-mortems can find the step history from the
    *  audit log without parsing the preview text. */
   transcriptPath?: string;
+  /** Deployment config for preview redaction (secvuln2 0920, finding L-1):
+   *  the 300-char preview previously went to disk raw, so an inbound message
+   *  or outbound reply echoing a configured/minted token put that live
+   *  credential in <piDir>/a2a_audit.jsonl in plaintext. Best-effort: callers
+   *  that cannot supply a config simply skip the configured-token pass. */
+  config?: unknown;
+  /** Server-side minted inbound gateway tokens (outside cfg — see
+   *  collectConfiguredTokens); same preview-leak class as `config`. */
+  extraTokens?: Record<string, string>;
 }): void {
   try {
+    // Redact BEFORE truncating: slicing first could leave a token verbatim
+    // inside (or straddling) the 300-char window.
+    const cleaned = redactOutbound(
+      redactConfiguredTokens(opts.text, opts.config, { extraTokens: opts.extraTokens }),
+    );
     const line = JSON.stringify({
       ts: new Date().toISOString(),
       direction: opts.direction,
       identity: opts.identity,
       taskId: opts.taskId,
       // ponytail: bound preview, never the whole body — audit is for forensics
-      preview: opts.text.slice(0, 300),
+      preview: cleaned.slice(0, 300),
       ...(opts.transcriptPath ? { transcript: opts.transcriptPath } : {}),
     }) + "\n";
     const p = auditPath(opts.piDir);

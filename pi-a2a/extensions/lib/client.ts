@@ -429,7 +429,7 @@ async function sendTask(opts: {
     },
   };
 
-  audit({ piDir, direction: "outbound", identity: agentLabel, taskId: String(rpcBody.id), text: safe });
+  audit({ piDir, direction: "outbound", identity: agentLabel, taskId: String(rpcBody.id), text: safe, config: cfg });
   metrics.outboundTotal += 1;
 
   const started = Date.now();

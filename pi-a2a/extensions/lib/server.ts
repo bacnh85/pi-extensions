@@ -944,7 +944,7 @@ export class A2AServer {
     const controller = new AbortController();
     const st: StoredTask = { task, controller, done: false, identity, subscribeWatchers: [] };
     this.store.add(taskId, st);
-    audit({ piDir: this.piDir, direction: "inbound", identity, taskId, text: inboundText });
+    audit({ piDir: this.piDir, direction: "inbound", identity, taskId, text: inboundText, config: this.cfg, extraTokens: this.mintedInboundTokens });
     this.onActivity?.({ type: "arrived", taskId, identity, text: inboundText, contextId });
 
     // If an external abort fires (client disconnect on streams, or tasks/cancel
@@ -982,7 +982,7 @@ export class A2AServer {
               t.status.state = STATE_FAILED;
               t.status.message = {
                 role: "ROLE_AGENT",
-                parts: [{ text: redactOutbound(redactConfiguredTokens(`internal error: ${e?.message ?? String(e)}`, this.cfg)), mediaType: "text/plain" }],
+                parts: [{ text: redactOutbound(redactConfiguredTokens(`internal error: ${e?.message ?? String(e)}`, this.cfg, { extraTokens: this.mintedInboundTokens })), mediaType: "text/plain" }],
                 messageId: newContextId(),
               };
             });
@@ -1079,7 +1079,7 @@ export class A2AServer {
       // JWTs) before they are stored as artifacts or returned to the caller.
       // Configured-token pass runs first: exact values this deployment knows
       // (shared/peer/gateway tokens) that shape patterns cannot match.
-      const reply = redactOutbound(redactConfiguredTokens(out.reply ?? "", this.cfg));
+      const reply = redactOutbound(redactConfiguredTokens(out.reply ?? "", this.cfg, { extraTokens: this.mintedInboundTokens }));
       this.store.update(taskId, (t) => {
         t.status.state = finalState;
         t.artifacts = [
@@ -1125,7 +1125,7 @@ export class A2AServer {
             // Redacted: error messages can embed reply text (parse failures,
             // tool errors quoting the payload) — same outbound trust boundary
             // as the reply artifact.
-            parts: [{ text: redactOutbound(redactConfiguredTokens(reasonMsg ?? e?.message ?? String(e), this.cfg)), mediaType: "text/plain" }],
+            parts: [{ text: redactOutbound(redactConfiguredTokens(reasonMsg ?? e?.message ?? String(e), this.cfg, { extraTokens: this.mintedInboundTokens })), mediaType: "text/plain" }],
             messageId: newContextId(),
           };
         }
@@ -1340,6 +1340,8 @@ export class A2AServer {
       taskId,
       text: `[transcript] ${transcriptPath}${stepCount !== undefined ? ` (${stepCount} steps)` : ""}`,
       transcriptPath,
+      config: this.cfg,
+      extraTokens: this.mintedInboundTokens,
     });
   }
 

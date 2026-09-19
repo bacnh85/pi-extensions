@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.7.11 (2026-09-20)
+
+### Fixed
+
+- **Audit log previews are now redacted (secvuln sweep 0919, finding L-1).**
+  `audit()` stored a raw 300-char preview of the inbound message / outbound
+  reply / transcript line, so a token echoed in task text landed in
+  `<piDir>/a2a_audit.jsonl` in plaintext. Previews are now scrubbed with
+  `redactOutbound` + `redactConfiguredTokens` **before** truncation (order
+  matters: slice-then-redact could keep a token verbatim inside or straddling
+  the window). Callers pass `config` (and the server also its minted inbound
+  token map); audit stays best-effort for callers without a config.
+- **Outbound redaction now covers the server's minted inbound gateway tokens.**
+  Per-session `agw-…` caller tokens (minted for gateway entries without an
+  explicit `upstreamToken`, persisted under `<piDir>/a2a_gateways/`, accepted
+  via `authenticate()`'s `extraTokens`) are live credentials that
+  `collectConfiguredTokens(cfg)` could not see — they live in a server-side
+  map precisely so cfg stays immutable. `collectConfiguredTokens` /
+  `redactConfiguredTokens` accept `{ extraTokens }` (optional, back-compat),
+  and all four outbound sites + every audit call now feed the map through.
+- Server-boundary regression pins: reply artifact, failure message and audit
+  preview redaction are verified end-to-end at the HTTP boundary (unit-level
+  pins existed only for the 0919 helper functions).
+
 ## 0.7.10 (2026-09-20)
 
 ### Fixed

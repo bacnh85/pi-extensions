@@ -631,6 +631,75 @@ describe("server", () => {
         await stop();
       }
     });
+
+    it("redacts this deployment's CONFIGURED tokens from the reply artifact (H-1 pin, secvuln2 0920)", async () => {
+      // Pins the H-1 wiring end-to-end: redactConfiguredTokens must run at the
+      // reply-artifact boundary, not just in unit tests. If the server stops
+      // chaining it before redactOutbound, this fails.
+      const cfg = DEFAULTS();
+      cfg.server.sharedToken = "pin-shared-token-99887766";
+      const runner: SessionRunner = async () => ({
+        reply: "your shared token is pin-shared-token-99887766 (oops)",
+        inputRequired: false,
+      });
+      const { url, stop } = await startServer({ cfg, runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "what is my token?" }] },
+        }, { Authorization: "Bearer pin-shared-token-99887766" });
+        assert.equal(sendTask(r).status.state, STATE_COMPLETED);
+        const text = sendTask(r).artifacts?.[0]?.parts?.[0]?.text ?? "";
+        assert.notInclude(text, "pin-shared-token-99887766", "configured sharedToken must never reach a peer");
+        assert.include(text, "[redacted-token]");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("redacts configured tokens from the failure message too (H-1 pin, secvuln2 0920)", async () => {
+      const cfg = DEFAULTS();
+      cfg.server.sharedToken = "pin-shared-token-99887766";
+      const runner: SessionRunner = async () => {
+        throw new Error("send failed for url https://gw:pin-shared-token-99887766@host/x");
+      };
+      const { url, stop } = await startServer({ cfg, runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        }, { Authorization: "Bearer pin-shared-token-99887766" });
+        assert.equal(sendTask(r).status.state, STATE_FAILED);
+        const msg = sendTask(r).status.message?.parts?.[0]?.text ?? "";
+        assert.notInclude(msg, "pin-shared-token-99887766", "configured token in error text must never reach a peer");
+        assert.include(msg, "[redacted-token]");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("redacts minted inbound gateway tokens from the reply (extraTokens wiring, secvuln2 0920)", async () => {
+      // The server's per-session minted caller tokens (persisted in
+      // <piDir>/a2a_gateways/*.json, accepted via authenticate extraTokens)
+      // are live credentials a worker reply could echo — they must hit the
+      // same redaction chain, fed via { extraTokens } from the server map.
+      const minted = "agw-minted01abcdef0123456789abcdef";
+      const runner: SessionRunner = async () => ({
+        reply: `caller token: ${minted}`,
+        inputRequired: false,
+      });
+      const { server, url, stop } = await startServer({ cfg: DEFAULTS(), runner });
+      (server as any).mintedInboundTokens["gw-main"] = minted;
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        assert.equal(sendTask(r).status.state, STATE_COMPLETED);
+        const text = sendTask(r).artifacts?.[0]?.parts?.[0]?.text ?? "";
+        assert.notInclude(text, minted, "minted gateway token must never reach a peer");
+        assert.include(text, "[redacted-token]");
+      } finally {
+        await stop();
+      }
+    });
   });
 
   describe("task lifecycle", () => {
