@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.17.1 (2026-09-19)
+
+### Fixed
+
+- **`web_interact` press accepts `"Space"`** as an alias for `" "` (the docs
+  already advertised the named key; `KEY_MAP` now maps it to the identical
+  keyDown/keyUp events — regression-tested).
+- **SKILL.md routing honesty:** the `web_image` auto-fallback chain now lists
+  the `chatgpt` tier (gemini → chatgpt → zai → custom); the `web_chat` row
+  states ChatGPT web is the default provider when `CHATGPT_WEB_AUTH_KEY`/
+  codex login is configured (gateway is the fallback); the `web_research`
+  decision-tree branch no longer calls `mode=research` "blocked" — live
+  sessions run the full plan/confirm/report cycle, degraded/stale sessions
+  return an honest partial result (plan + transcript + note).
+- README environment-variable footnotes renumbered to sequential order
+  (were 1,2,3,4,6,5).
+
 ## 0.17.0 (2026-09-18)
 
 ### Added

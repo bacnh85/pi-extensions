@@ -106,7 +106,9 @@ herdr({ action: "status", name: "scout-1" })               // lifecycle state
 herdr({ action: "prompt", name: "scout-1", text: "...", wait: true })  // follow-up (continues the child's session)
 herdr({ action: "cancel", name: "scout-1" })               // esc, then ctrl+c if still working
 herdr({ action: "focus", name: "scout-1" })                // raise the agent's tab
-herdr({ action: "close-tab", name: "scout-1" })            // close the tab (only session-created tabs)
+herdr({ action: "read", name: "scout-1" })                  // recent pane output (best-effort fallback)
+herdr({ action: "close-tab", name: "scout-1" })             // close the tab (only session-created tabs)
+herdr({ action: "forget", name: "scout-1" })                // drop a stale registry entry (panes/tabs untouched)
 ```
 
 Trade-offs to know:

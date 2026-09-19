@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.5 (2026-09-18)
+
+- Fixed: turn-end cache-stats now falls back to 0 for missing or non-finite usage numbers (was `?? 0`, which passes NaN through and rendered "Hit rate: NaN%") — pinned by new unit test.
+- Docs: README model-detection section now covers the `-flash` suffix rule and DeepSeek V4.1 Flash.
+- Removed dead export `unregisterZaiAnthropicProvider` (zero callers).
+
 ## 0.8.4 (2026-09-14)
 
 ### Added

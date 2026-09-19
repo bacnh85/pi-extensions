@@ -216,4 +216,28 @@ it("issue #20 L1: config file lands in a private mkdtemp dir (symlink-clobber ha
       assert.isTrue(spawnResult.child.killed);
     });
   });
+
+  describe("KonnectDaemon.restart", () => {
+    it("kills the owned child, respawns, and reassigns the port", async () => {
+      const alive = { value: false };
+      const spawnResult: SpawnResult = { child: makeChild(), calls: [] };
+      const d = makeDaemon({ alive, spawnResult });
+      const p1 = await d.ensure();
+      const firstChild = spawnResult.child;
+
+      const p2 = await d.restart();
+      assert.isTrue(firstChild.killed, "old child killed on restart");
+      assert.equal(spawnResult.calls.length, 2, "respawned exactly once");
+      assert.notEqual(spawnResult.child, firstChild, "daemon tracks the new child");
+      assert.isAbove(p2, 0);
+      assert.equal(d.getPort(), p2, "port reassigned to the respawned daemon");
+      const status = await d.getStatus();
+      assert.isTrue(status.healthy);
+      assert.equal(status.port, p2);
+
+      d.stop();
+      assert.isTrue(spawnResult.child.killed, "stop kills only the respawned child");
+      assert.isTrue(firstChild.killed);
+    });
+  });
 });

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6 (2026-09-18)
+
+- `remove` rejects `-l/--local` with a clear error instead of silently ignoring it (local scope only applies to `add`).
+- Settings resolution honors `PI_CODING_AGENT_DIR` (wins over `HOME`/`USERPROFILE` when set) for `list`/`remove`.
+
 ## 0.1.5
 
 - Catalog: add the three missing entries (pi-attachments, pi-cron, pi-selfskills). Bare-shorthand `add pi-cron` previously fell through `resolveSource` to the unscoped npm name `pi-cron` (fails, or could hit an unvetted same-named package); all 33 installable packages are now curated.

@@ -7,6 +7,7 @@ import {
   resolveConfig,
   buildKiCadEnv,
   kiCadSharedSupportCandidates,
+  kiCadUserDirCandidates,
   DEFAULT_HTTP_PORT,
   type OsPlatform,
   type ResolvedConfig,
@@ -110,6 +111,27 @@ describe("discovery", () => {
     it("respects KICAD_SHARED_SUPPORT override", () => {
       const c = kiCadSharedSupportCandidates({ KICAD_SHARED_SUPPORT: "/opt/ss" }, "/h", "linux" as OsPlatform);
       assert.deepEqual(c, ["/opt/ss"]);
+    });
+  });
+
+  describe("kiCadUserDirCandidates", () => {
+    it("ignores APPDATA on non-win32 hosts (0.1.4 gate)", () => {
+      // A non-Windows host that happens to export APPDATA (CI images, wine
+      // envs) must not resolve its KiCad user dir from it.
+      const prev = process.env.APPDATA;
+      process.env.APPDATA = "C:\\Users\\me\\AppData\\Roaming";
+      try {
+        const darwin = kiCadUserDirCandidates(process.env, "/h", "darwin" as OsPlatform);
+        assert.deepEqual(darwin, ["/h/Library/Application Support/kicad"]);
+        const linux = kiCadUserDirCandidates(process.env, "/h", "linux" as OsPlatform);
+        assert.deepEqual(linux, ["/h/.local/share/kicad"]);
+        for (const p of [...darwin, ...linux]) {
+          assert.isFalse(p.includes("AppData"), `APPDATA leaked into non-win32 candidates: ${p}`);
+        }
+      } finally {
+        if (prev === undefined) delete process.env.APPDATA;
+        else process.env.APPDATA = prev;
+      }
     });
   });
 

@@ -2017,14 +2017,14 @@ export default function (pi: ExtensionAPI) {
     label: "Herdr",
     description: [
       "Control agents this session delegated to herdr panes (subagent runner:\"herdr\", automatic inside herdr).",
-      "Actions: list, status, read, prompt, cancel, focus, close-tab.",
+      "Actions: list, status, read, prompt, cancel, focus, close-tab, forget.",
     ].join(" "),
     parameters: HerdrControlParams,
-    promptSnippet: "Control delegated herdr pane agents (list/status/read/prompt/cancel/focus/close-tab)",
+    promptSnippet: "Control delegated herdr pane agents (list/status/read/prompt/cancel/focus/close-tab/forget)",
     promptGuidelines: [
-      "Use for oversight of herdr-delegated subagents: status/read to inspect, prompt to continue an agent's session, cancel to interrupt, focus to raise its tab.",
+      "Use for oversight of herdr-delegated subagents: status/read to inspect, prompt to continue an agent's session, cancel to interrupt, focus to raise its tab, forget to drop a stale registry entry.",
       "A blocked agent waits for human input — answer it in the pane directly, or cancel and re-delegate.",
-      "prompt/cancel only accept agents this session delegated; status/read/focus can inspect any live herdr agent; close-tab only accepts tabs this session created.",
+      "prompt/cancel/forget only accept agents this session delegated and close-tab only tabs it created; status/read/focus can inspect any live herdr agent.",
       "read is best-effort: pi renders on the terminal's alternate screen, so finished reports may not be scrollback-visible (delegated tasks deliver via report files instead).",
     ],
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
@@ -2044,7 +2044,6 @@ export default function (pi: ExtensionAPI) {
         return toolResult(`Missing name for action "${params.action}". Use a herdr agent name from action "list" (e.g. scout-1).`, true);
       }
       const name = params.name!;
-      // Mutating actions are scoped to agents this session delegated —
       // Mutating actions are scoped to agents this session delegated —
       // the model must not drive (or kill) panes it never spawned.
       if ((params.action === "prompt" || params.action === "cancel") && !isDelegatedHerdrAgent(name)) {

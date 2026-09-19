@@ -32,11 +32,11 @@ Variables:
 | `CRAWL4AI_API_TOKEN` | No (3) | — | Required if Crawl4AI auth enabled |
 | `GEMINI_WEB_SECURE_1PSID` | No (4) | — | `__Secure-1PSID` cookie from gemini.google.com — enables authed `web_research` (Deep Research) |
 | `GEMINI_WEB_PROXY` | No | — | Proxy URL for Gemini web calls (escape hatch if Google blocks the IP) |
-| `GEMINI_WEB_SECURE_1PSIDTS` | No (6) | — | Rotating `__Secure-1PSIDTS` cookie — bootstrap only; keep the source browser session closed so it isn't superseded (see "Keeping the session alive") |
+| `GEMINI_WEB_SECURE_1PSIDTS` | No (5) | — | Rotating `__Secure-1PSIDTS` cookie — bootstrap only; keep the source browser session closed so it isn't superseded (see "Keeping the session alive") |
 | `GEMINI_WEB_COOKIE_STORE` | No | `~/.pi/agent/gemini-web-cookies.json` | Where the pasted/rotated cookie state persists (0600) |
-| `GEMINI_WEB_KEEPALIVE` | No (7) | off | Set `1` to opt in to experimental background cookie rotation (see "Keeping the session alive") |
+| `GEMINI_WEB_KEEPALIVE` | No (6) | off | Set `1` to opt in to experimental background cookie rotation (see "Keeping the session alive") |
 | `GEMINI_WEB_ROTATE_INTERVAL_MS` | No | `600000` | Keepalive rotation cadence (min 60000) |
-| `ZAI_API_KEY` | No (5) | — | Z.ai API key — enables the `web_image` `zai` provider (GLM-Image via the official `api.z.ai`); `Z_AI_API_KEY` also accepted |
+| `ZAI_API_KEY` | No (7) | — | Z.ai API key — enables the `web_image` `zai` provider (GLM-Image via the official `api.z.ai`); `Z_AI_API_KEY` also accepted |
 | `WEB_IMAGE_API_BASE_URL` | No | — | `web_image` `custom` provider: any OpenAI-compatible images endpoint (e.g. `https://api.openai.com/v1`) |
 | `WEB_IMAGE_API_KEY` | No | — | Bearer key for the `custom` endpoint |
 | `WEB_IMAGE_API_LABEL` | No | — | Display label for the `custom` endpoint (default: host name) |
@@ -53,8 +53,9 @@ Variables:
 > (2) Required for hosted Firecrawl; optional for self-hosted instances without auth.
 > (3) Required for Crawl4AI v0.9+ default config.
 > (4) Without it `web_research mode=ask` still works in guest mode (Flash-only); `mode=research` errors with setup steps.
-> (6) Copy the current value from DevTools (Application → Cookies) alongside `__Secure-1PSID`; it rotates, so refresh it when auth degrades.
-> (5) `web_image`'s Gemini provider is currently gated server-side (browser-grade TLS fingerprint required — generation refuses over plain Node even with a valid cookie); `zai` activates when `ZAI_API_KEY` is present and is the reliable path, `custom` when `WEB_IMAGE_API_BASE_URL` is set.
+> (5) Copy the current value from DevTools (Application → Cookies) alongside `__Secure-1PSID`; it rotates, so refresh it when auth degrades.
+> (6) Off by default; experimental. Only arm it when instructed for a diagnosed dying session (see "Keeping the session alive").
+> (7) `web_image`'s Gemini provider is currently gated server-side (browser-grade TLS fingerprint required — generation refuses over plain Node even with a valid cookie); `zai` activates when `ZAI_API_KEY` is present and is the reliable path, `custom` when `WEB_IMAGE_API_BASE_URL` is set.
 
 Secrets are never printed; `web_status` reports only presence/source.
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.3 (2026-09-18)
+
+### Fixed
+
+- **Repeated DENIED calls no longer trip the doom-loop guard.** The call
+  signature was pushed into the doom-loop ring before allow/deny resolution,
+  so three identical denied calls surfaced "Doom-loop blocked" and masked the
+  real deny reason. Only allowed/ask outcomes now count toward the ring;
+  denied calls keep reporting the true deny reason every time. The guard
+  still fires for loops of allowed-but-identical calls (its original
+  purpose). Regression-tested.
+
 ## 0.2.2 (2026-09-14)
 
 ### Fixed

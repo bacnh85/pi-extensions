@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.9 (2026-09-18)
 
 ### Fixed
 
@@ -38,6 +38,8 @@
   `onRegistered` transition callback on `GatewayUpstream` (fires once, on
   first success) routes through the same announce path as a successful
   `start()`.
+- README documents the register backoff behavior (exponential cap, Retry-After,
+  heartbeat pause, reset on success) in the gateways/config section.
 
 ## 0.7.8 (2026-09-12)
 
@@ -335,7 +337,7 @@
   The first screen shows SERVER + DISCOVERY together, the next all remaining
   groups, so categories display like the settings.json structure.
 
-## Unreleased
+## 0.5.x–0.7.x follow-ups
 
 ### Fixed
 

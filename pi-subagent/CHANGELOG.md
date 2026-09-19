@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.22.2 (2026-09-18)
+
+### Fixed
+
+- **herdr control tool is discoverable-complete.** The tool description,
+  prompt snippet, and prompt guidelines omitted the `forget` action (schema
+  and switch already accepted it since 0.21.1), and the session-scope wording
+  covered only prompt/cancel — it now states that prompt/cancel/forget accept
+  only agents this session delegated and close-tab only tabs it created
+  (status/read/focus can inspect any live herdr agent). Also removed a
+  duplicated comment line in the same region.
+- **README herdr action list completed** — the `herdr` tool example now shows
+  all eight actions (`read` and `forget` were missing).
+
 ## 0.22.1 (2026-09-13)
 
 ### Fixed

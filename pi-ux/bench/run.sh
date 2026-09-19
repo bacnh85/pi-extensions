@@ -2,20 +2,20 @@
 # pi-ux design benchmark — run one brief headless with pi + pi-ux, then capture
 # rendered evidence for rubric scoring. Results are gitignored.
 #
-# usage: bench/run.sh <landing|dashboard|mobile> [run-label]
+# usage: bench/run.sh <landing|dashboard|mobile|portfolio|pricing|settings> [run-label]
 #
 # Environment: pi on PATH; zai-anthropic auth in ~/.pi/agent/auth.json;
 # Chrome installed (or CHROME_PATH set). Same model flags every run so runs
 # are comparable.
 set -euo pipefail
 
-BRIEF_NAME="${1:?usage: run.sh <landing|dashboard|mobile> [run-label]}"
+BRIEF_NAME="${1:?usage: run.sh <landing|dashboard|mobile|portfolio|pricing|settings> [run-label]}"
 LABEL="${2:-$(date +%Y-%m-%dT%H%M%S)}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 PKG="$(cd "$DIR/.." && pwd)"
 ROOT="$(dirname "$PKG")"
 BRIEF="$DIR/briefs/$BRIEF_NAME.md"
-[ -f "$BRIEF" ] || { echo "no such brief: $BRIEF_NAME (landing|dashboard|mobile)"; exit 1; }
+[ -f "$BRIEF" ] || { echo "no such brief: $BRIEF_NAME (landing|dashboard|mobile|portfolio|pricing|settings)"; exit 1; }
 command -v pi >/dev/null || { echo "pi not on PATH"; exit 1; }
 
 OUT="$DIR/results/$LABEL/$BRIEF_NAME"

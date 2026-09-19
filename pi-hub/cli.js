@@ -82,7 +82,10 @@ function pi(args) {
 }
 
 export function readSettingsPackages(env = process.env) {
-  const settingsPath = path.join(env.HOME ?? env.USERPROFILE ?? os.homedir(), ".pi", "agent", "settings.json");
+  // PI_CODING_AGENT_DIR points at the agent dir itself, so settings.json sits directly in it
+  const settingsPath = env.PI_CODING_AGENT_DIR
+    ? path.join(env.PI_CODING_AGENT_DIR, "settings.json")
+    : path.join(env.HOME ?? env.USERPROFILE ?? os.homedir(), ".pi", "agent", "settings.json");
   try {
     const s = JSON.parse(readFileSync(settingsPath, "utf8"));
     return (s.packages ?? [])
@@ -239,6 +242,10 @@ async function cmdInteractive(flags) {
 }
 
 function cmdRemove(refs, flags) {
+  if (flags.local) {
+    console.log(paint.red("-l/--local is only valid with add — remove takes package names"));
+    return 1;
+  }
   let sources = refs.map(resolveSource);
   if (!sources.length) {
     const installed = readSettingsPackages().filter((p) => p.startsWith("npm:"));

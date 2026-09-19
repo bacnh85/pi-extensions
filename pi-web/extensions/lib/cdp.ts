@@ -287,6 +287,7 @@ const KEY_MAP: Record<string, KeyEvent> = {
   ArrowLeft: { code: "ArrowLeft", key: "ArrowLeft", windowsVirtualKeyCode: 37 },
   ArrowRight: { code: "ArrowRight", key: "ArrowRight", windowsVirtualKeyCode: 39 },
   " ": { code: "Space", key: " ", windowsVirtualKeyCode: 32, text: " " },
+  Space: { code: "Space", key: " ", windowsVirtualKeyCode: 32, text: " " },
 };
 
 /** Map a press step key to CDP keyDown/keyUp descriptors. */

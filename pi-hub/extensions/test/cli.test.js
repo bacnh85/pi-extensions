@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { readSettingsPackages, resolveSource, searchCatalog, mergeResults } from "../../cli.js";
+import { readSettingsPackages, resolveSource, searchCatalog, mergeResults, main } from "../../cli.js";
 
 test("resolveSource: passthrough for explicit sources", () => {
   assert.equal(resolveSource("npm:@foo/bar"), "npm:@foo/bar");
@@ -61,4 +61,33 @@ test("readSettingsPackages: HOME/USERPROFILE-relative settings.json, string + {s
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+test("readSettingsPackages: PI_CODING_AGENT_DIR wins over HOME/USERPROFILE", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "pi-hub-test-"));
+  try {
+    writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ packages: ["npm:@x/c"] }));
+    assert.deepEqual(readSettingsPackages({ PI_CODING_AGENT_DIR: dir, HOME: "/nonexistent" }), ["npm:@x/c"]);
+    // empty string counts as unset → falls back to HOME layout
+    mkdirSync(path.join(dir, ".pi", "agent"), { recursive: true });
+    writeFileSync(path.join(dir, ".pi", "agent", "settings.json"), JSON.stringify({ packages: ["npm:@x/d"] }));
+    assert.deepEqual(readSettingsPackages({ PI_CODING_AGENT_DIR: "", HOME: dir }), ["npm:@x/d"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("remove rejects -l/--local — only valid with add", async () => {
+  const logs = [];
+  const orig = console.log;
+  console.log = (msg) => logs.push(msg);
+  let code;
+  try {
+    code = await main(["remove", "-l", "pi-plan"]);
+  } finally {
+    console.log = orig;
+  }
+  assert.equal(code, 1, "exit code 1 on flag misuse");
+  assert.equal(logs.length, 1, "error only — no `pi remove` ran");
+  assert.match(logs[0], /-l\/--local is only valid with add — remove takes package names/);
 });

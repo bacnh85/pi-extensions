@@ -169,6 +169,10 @@ describe("buildPressEvents", () => {
   it("rejects unknown multi-character keys", () => {
     expect(() => buildPressEvents("CapsLock")).to.throw(/unsupported key/);
   });
+
+  it('"Space" alias produces identical events to " "', () => {
+    expect(buildPressEvents("Space")).to.deep.equal(buildPressEvents(" "));
+  });
 });
 
 describe("validateSteps", () => {

@@ -286,29 +286,11 @@ export default function permissionExtension(pi) {
   const recent = [];
   const DOOM_THRESHOLD = 3;
 
-  pi.on("tool_call", async (event, ctx) => {
-    // Settings.json first (production), then the legacy getSetting stub (tests).
-    const rules =
-      readSettingsKey(ctx?.cwd, "permission") ??
-      pi.getSetting?.("permission") ??
-      pi.config?.permission;
-    if (!rules) return undefined; // not configured → no opinion
-
+  // Rule resolution for a tool call: undefined = allow, { block, reason } =
+  // deny. Doom-loop counting lives in the handler wrapper below.
+  async function resolveCall(rules, event, ctx) {
     const { toolName, input } = event;
     const home = ctx.home || process.env.HOME || "";
-
-    // ── Doom-loop guard ────────────────────────────────────────────────
-    // Block the Nth identical consecutive call. Cheap insurance vs model loops.
-    const sig = JSON.stringify({ toolName, input });
-    const last3 = recent.slice(-(DOOM_THRESHOLD - 1));
-    if (last3.length === DOOM_THRESHOLD - 1 && last3.every((s) => s === sig)) {
-      try {
-        ctx.ui.notify(`Doom-loop blocked: \`${toolName}\` repeated ${DOOM_THRESHOLD}×`, "warning");
-      } catch { /* best-effort */ }
-      return { block: true, reason: `doom-loop: ${toolName} repeated ${DOOM_THRESHOLD} times` };
-    }
-    recent.push(sig);
-    if (recent.length > DOOM_THRESHOLD) recent.shift();
 
     // ── Rule resolution ────────────────────────────────────────────────
     // external_directory is a deny-only boundary gate: a path outside cwd is
@@ -405,6 +387,36 @@ export default function permissionExtension(pi) {
     } catch {
       return { block: true, reason: `approval prompt failed (${matchedRule})` };
     }
+  }
+
+  pi.on("tool_call", async (event, ctx) => {
+    // Settings.json first (production), then the legacy getSetting stub (tests).
+    const rules =
+      readSettingsKey(ctx?.cwd, "permission") ??
+      pi.getSetting?.("permission") ??
+      pi.config?.permission;
+    if (!rules) return undefined; // not configured → no opinion
+
+    // ── Doom-loop guard ────────────────────────────────────────────────
+    // Block the Nth identical consecutive call. Cheap insurance vs model loops.
+    // Only allowed/ask outcomes count toward the ring: repeated DENIED calls
+    // must keep reporting the real deny reason, not a doom-loop mask.
+    const { toolName, input } = event;
+    const sig = JSON.stringify({ toolName, input });
+    const last3 = recent.slice(-(DOOM_THRESHOLD - 1));
+    if (last3.length === DOOM_THRESHOLD - 1 && last3.every((s) => s === sig)) {
+      try {
+        ctx.ui.notify(`Doom-loop blocked: \`${toolName}\` repeated ${DOOM_THRESHOLD}×`, "warning");
+      } catch { /* best-effort */ }
+      return { block: true, reason: `doom-loop: ${toolName} repeated ${DOOM_THRESHOLD} times` };
+    }
+
+    const result = await resolveCall(rules, event, ctx);
+    if (!result?.block) {
+      recent.push(sig);
+      if (recent.length > DOOM_THRESHOLD) recent.shift();
+    }
+    return result;
   });
 
   // Reset doom-loop + session-allow memory on new session so a prior session's

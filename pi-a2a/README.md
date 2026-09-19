@@ -293,6 +293,9 @@ gateway group is hidden when its block is inert — all-empty + disabled):
    a replacement token.
 - The directory fetch (`GET /.well-known/agent.json`) always uses the shared
   token — unchanged by PATCH heartbeats.
+- **Failed registers back off exponentially (capped at 5 min).** A numeric
+  `Retry-After` header is honored when larger, the heartbeat pauses while
+  backed off, and success resets the backoff — no user action needed.
 
 ### Per-session identity (unique caller attribution)
 

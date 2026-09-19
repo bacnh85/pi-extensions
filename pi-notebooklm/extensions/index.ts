@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -212,8 +212,29 @@ export function requiresYesFlag(args: string[]): boolean {
   return !hasRealFlag(args, ["-y", "--yes"]);
 }
 
-// Directory of the most recent truncation temp file, for one-generation-behind cleanup.
-let lastTruncationDir: string | null = null;
+// Known truncation temp dirs, for best-effort age-gated cleanup. Capped so a
+// long-lived process can't grow the registry unboundedly. Exported for tests.
+export const TRUNCATION_DIRS: string[] = [];
+const TRUNCATION_DIRS_CAP = 20;
+const TRUNCATION_DIR_MAX_AGE_MS = 10 * 60 * 1000;
+
+/** Delete truncation temp dirs older than 10 minutes. Best-effort: any error
+ *  (ENOENT on a concurrently-removed dir, etc.) is swallowed — cleanup must
+ *  never break the tool result. */
+function sweepOldTruncationDirs(): void {
+  const now = Date.now();
+  for (let i = TRUNCATION_DIRS.length - 1; i >= 0; i--) {
+    const dir = TRUNCATION_DIRS[i]!;
+    try {
+      if (now - statSync(dir).mtimeMs > TRUNCATION_DIR_MAX_AGE_MS) {
+        rmSync(dir, { recursive: true, force: true });
+        TRUNCATION_DIRS.splice(i, 1);
+      }
+    } catch {
+      // best-effort — a stray temp dir is never worth failing the call over
+    }
+  }
+}
 
 /** Check if args contain interactive setup commands that require a terminal. */
 export function isBlockedInteractive(args: string[]): { blocked: boolean; message?: string } {
@@ -261,17 +282,12 @@ export function truncateOutput(text: string): { text: string; truncated: boolean
     return { text, truncated: false };
   }
 
-  // Best-effort cleanup: the previous truncation dir is removed when the next
-  // truncation happens (the newest one must stay alive for the model to read).
-  if (lastTruncationDir) {
-    try {
-      rmSync(lastTruncationDir, { recursive: true, force: true });
-    } catch {
-      // best-effort — a stray temp dir is never worth failing the call over
-    }
-  }
+  // Age-gated cleanup: remove truncation dirs older than 10 minutes so recent
+  // output (possibly from parallel tool calls in the same turn) survives.
+  sweepOldTruncationDirs();
   const dir = mkdtempSync(join(tmpdir(), "pi-notebooklm-"));
-  lastTruncationDir = dir;
+  TRUNCATION_DIRS.push(dir);
+  if (TRUNCATION_DIRS.length > TRUNCATION_DIRS_CAP) TRUNCATION_DIRS.shift();
   const tempPath = join(dir, "full-output.txt");
   writeFileSync(tempPath, text, "utf8");
 

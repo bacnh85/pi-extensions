@@ -243,6 +243,24 @@ test("doom-loop does not trigger on different commands", async () => {
   assert.equal(result, undefined, "different command resets loop tracking");
 });
 
+test("denied calls do not count toward doom-loop: deny reason reported every time", async () => {
+  const pi = harness({ rules: { bash: { "rm *": "deny" } } });
+  const call = { toolName: "bash", input: { command: "rm x" } };
+  const c = ctx();
+  for (let i = 1; i <= 3; i++) {
+    const result = await pi.handler(call, c);
+    assert.equal(result.block, true, `${i}th call: blocked`);
+    assert.match(result.reason, /denied by permission rule/, `${i}th call: real deny reason, not doom-loop`);
+  }
+  assert.equal(c.notifies.length, 0, "no doom-loop notification");
+  // a subsequent allowed call still trips the guard (ring works for allowed loops)
+  const allowCall = { toolName: "bash", input: { command: "ls" } };
+  await pi.handler(allowCall, c);
+  await pi.handler(allowCall, c);
+  const doom = await pi.handler(allowCall, c);
+  assert.match(doom.reason, /doom-loop/);
+});
+
 // ── external_directory boundary ───────────────────────────────────────────
 
 test("external_directory: blocks writes outside cwd by default", async () => {

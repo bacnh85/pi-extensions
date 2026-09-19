@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { hasUnsupportedRtkFind } from "../findFallback.js";
 import { parseSemver, supportsFindPassthrough } from "../version-gate.js";
-
 test("always rejects mutating/consumer find predicates (any rtk version)", () => {
   assert.equal(hasUnsupportedRtkFind('rtk find . -type f -name "*.ts" -exec wc -l {} \\;'), true);
   assert.equal(hasUnsupportedRtkFind('rtk find . -name "*.js" -execdir rm {} \\;'), true);
@@ -62,4 +61,6 @@ test("sibling module export surfaces are frozen (jiti reload staleness)", async 
   assert.deepEqual(Object.keys(vg).sort(), ["RTK_FIND_PASSTHROUGH_VERSION", "parseSemver", "supportsFindPassthrough"]);
   const ff = await import("../findFallback.js");
   assert.deepEqual(Object.keys(ff), ["hasUnsupportedRtkFind"]);
+  const sr = await import("../safe-rewrite.js");
+  assert.deepEqual(Object.keys(sr).sort(), ["isEvalCommand", "isSafeRewrite"]);
 });

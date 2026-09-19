@@ -1298,6 +1298,62 @@ describe("tool gating in plan mode", () => {
     });
   }
 
+  // CHANGELOG 0.12.0 bash-classifier example matrix, table-driven:
+  // "allow" = read-classified, auto-runs with no prompt; "confirm" = prompted
+  // exactly once then allowed; "block" = write-tier hard block.
+  const MATRIX_0_12_0: Array<[string, string, "allow" | "confirm" | "block"]> = [
+    // tar execute-class options always confirm
+    ["tar --to-command=CMD confirms", "tar -xzOf a.tgz --to-command=sh", "confirm"],
+    ["tar -I compress program confirms", "tar -tf a.tar -I sh", "confirm"],
+    ["tar --use-compress-program confirms", "tar -tzf a.tgz --use-compress-program=sh", "confirm"],
+    // sed s-command flag tails: e executes shell, w writes a file
+    ["sed s-flag e tail confirms", "sed 's/x/y/e' input.txt", "confirm"],
+    ["sed s-flag ge tail confirms", "sed 's/x/y/ge' input.txt", "confirm"],
+    ["sed s-flag gw tail confirms", "sed 's/x/y/gw out.txt' input.txt", "confirm"],
+    ["sed e;p command separator confirms", "sed 's/x/y/e;p' input.txt", "confirm"],
+    ["sed glued 1wout blocks", "sed -n '1wout' input.txt", "block"],
+    ["sed word-interior w reads", "sed -n '/twelve/p' notes.txt", "allow"],
+    // xargs payload classification
+    ["xargs -I substitution reads", "find . -name '*.md' | xargs -I {} grep foo {}", "allow"],
+    ["xargs sh -c confirms", "xargs sh -c 'echo hi'", "confirm"],
+    // while/until are transparent — body segments classify individually
+    ["while body write blocks", "while read -r f; do rm -rf $f; done", "block"],
+    ["until body write blocks", "until grep -q done state.lock; do rm -rf tmp; done", "block"],
+    ["until body read auto-allows", "until grep -q ready flag; do ls -la; done", "allow"],
+  ];
+
+  it("0.12.0 classifier example matrix: read/confirm/write dispositions", async () => {
+    let confirmations = 0;
+    const { handlers } = createFakePi(["read", "bash"], { plan: true });
+    const ctx = fakeCtx({
+      hasUI: true,
+      ui: {
+        confirm: async () => { confirmations++; return true; },
+        select: async () => { confirmations++; return "Allow once"; }, editor: async () => "",
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+
+    for (const [label, cmd, expected] of MATRIX_0_12_0) {
+      confirmations = 0;
+      const r = await tc({ toolName: "bash", input: { command: cmd } }, ctx);
+      if (expected === "allow") {
+        assert.equal(r, undefined, `${label}: auto-allowed`);
+        assert.equal(confirmations, 0, `${label}: no prompt`);
+      } else if (expected === "confirm") {
+        assert.equal(r, undefined, `${label}: confirmed then allowed`);
+        assert.equal(confirmations, 1, `${label}: prompted once`);
+      } else {
+        assert.ok(r?.block, `${label}: blocked`);
+        assert.ok(r?.reason?.includes("writing to the filesystem"), `${label}: write-tier reason`);
+      }
+    }
+  });
+
   it("auto-allows strict read-only bash commands without prompting", async () => {
     let confirmations = 0;
     const { handlers } = createFakePi(["read", "bash"], { plan: true });

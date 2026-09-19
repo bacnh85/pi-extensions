@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.5 (2026-09-18)
+
+### Fixed — session-allow keying for destructive commands
+
+- **"Allow for this session" for destructive-classified commands is now keyed
+  by the full normalized command (was: bare first token).** Approving
+  `rm -r build` added allowKey `rm`, which silently bypassed the danger gate
+  for EVERY later `rm` payload (`rm -rf C:\` included). Direct destructive
+  commands now remember only the exact approved command; re-running the exact
+  same command stays suppressed.
+- Interpreter wrapper set extended with `sudo`, `start`, `mshta`, `rundll32`,
+  and `cscript` — payloads behind these wrappers already keyed by full
+  command and now cover the wrapper too.
+- Package managers (`npm`/`pnpm`/`yarn`) keep first-token keying: approving
+  `npm publish` still covers `npm publish --tag next` (existing tested
+  behavior, unchanged).
+
 ## 0.5.4 (2026-09-12)
 
 ### Fixed — safety classification

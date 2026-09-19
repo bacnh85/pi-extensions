@@ -90,7 +90,7 @@ The full who-does-what table lives in the **`ux-routing`** skill (not injected â
 
 ## Benchmark
 
-`bench/` holds a design-quality harness: three fixed briefs (landing, dashboard, mobile), `run.sh` (headless `pi` run with the same model + screenshot capture), and a fixed scoring rubric. Used to measure output quality across pi-ux versions; results are gitignored.
+`bench/` holds a design-quality harness: six fixed briefs (landing, dashboard, mobile, portfolio, pricing, settings), `run.sh` (headless `pi` run with the same model + screenshot capture), and a fixed scoring rubric. Used to measure output quality across pi-ux versions; results are gitignored.
 
 ## Configuration
 

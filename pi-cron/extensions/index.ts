@@ -300,9 +300,9 @@ export function latestLog(logsDir: string, name: string): string | undefined {
   let newest: string | undefined;
   let newestMs = -1;
   try {
-  for (const f of readdirSync(logsDir)) {
-    // `${name}-<ts>.log` = in-process headless runs; `${name}.log` = export-installed crontab runs
-    if (f !== `${name}.log` && (!f.startsWith(`${name}-`) || !f.endsWith(".log"))) continue;
+    for (const f of readdirSync(logsDir)) {
+      // `${name}-<ts>.log` = in-process headless runs; `${name}.log` = export-installed crontab runs
+      if (f !== `${name}.log` && (!f.startsWith(`${name}-`) || !f.endsWith(".log"))) continue;
       const p = join(logsDir, f);
       const ms = statSync(p).mtimeMs;
       if (ms > newestMs) {

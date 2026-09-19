@@ -19,8 +19,8 @@ Use the **11 unified tools** from the `pi-web` extension for all web-related tas
 | `web_pdf` | Generate page PDF | Crawl4AI daemon (public URLs) or local headless Chrome (localhost/LAN/file URLs — auto-detected) |
 | `web_interact` | Drive a real browser: trusted click/type/press, JS evaluate, wait_for, screenshots | Local headless Chrome via CDP (any http/https/file URL the local machine reaches) |
 | `web_research` | AI-synthesized research with sources | Gemini web tier: ask = grounded answer (guest OK); research = full Deep Research via the pure-Node DR client (live cookie; stale sessions return an honest partial result) |
-| `web_image` | Generate images from a text prompt | Z.ai GLM-Image (`ZAI_API_KEY`, working path; `size` param for aspect, e.g. `960x1728` portrait) → custom OpenAI-images endpoint; Gemini web provider currently refuses non-browser TLS (gated server-side) |
-| `web_chat` | One-off chat via an OpenAI-compatible gateway | `WEB_CHAT_API_BASE_URL` (ChatGPT web bridge, official OpenAI, …) |
+| `web_image` | Generate images from a text prompt | Auto chain gemini (web tier, TLS-gated) → chatgpt (`CHATGPT_WEB_AUTH_KEY` / codex login) → Z.ai GLM-Image (`ZAI_API_KEY`; `size` param for aspect, e.g. `960x1728` portrait) → custom OpenAI-images endpoint |
+| `web_chat` | One-off chat completion | ChatGPT web tier is the DEFAULT when a credential is configured (`CHATGPT_WEB_AUTH_KEY` / codex login); gateway (`WEB_CHAT_API_BASE_URL`) is the fallback — non-streaming |
 | `web_status` | Check provider configuration and health | — |
 
 ## Decision Tree
@@ -63,17 +63,17 @@ What do you need?
 ├── AI-synthesized research with sources (synthesis, comparisons, reports)
 │   → web_research
 │     ├─ quick grounded answer: mode=ask (default; guest OK, Flash-only)
-│     └─ multi-minute Deep Research report: mode=research (fresh cookie; currently blocked by Gemini's non-browser refusal)
+│     └─ multi-minute Deep Research report: mode=research (live Gemini sessions run the full plan/confirm/report cycle; degraded/stale sessions return an honest partial result — plan + transcript + note — instead of the report)
 │     note: keep the source browser session closed (an open Gemini tab supersedes the pasted cookie); rotation is opt-in diagnostics only (GEMINI_WEB_KEEPALIVE=1)
 │
 ├── Generate an image from a text prompt (NOT capturing an existing page)
 │   → web_image
-│     ├─ default: provider=auto (skips TLS-gated Gemini after refusals → Z.ai GLM-Image → custom endpoint)
+│     ├─ default: provider=auto (gemini → chatgpt (CHATGPT_WEB_AUTH_KEY / codex login) → Z.ai GLM-Image → custom endpoint; skips TLS-gated Gemini after refusals)
 │     ├─ portrait/aspect prompts: pass size (zai/custom), e.g. size=960x1728 — default is square
 │     └─ pin/model: provider=zai model=glm-image, or any custom OpenAI-images endpoint
 │
 ├── One-off chat with another model (second opinion, classification)
-│   → web_chat (WEB_CHAT_API_BASE_URL gateway; non-streaming; no tools)
+│   → web_chat (ChatGPT web is the default when its credential is configured; else WEB_CHAT_API_BASE_URL gateway; non-streaming; no tools)
 │
 └── Check what web tools are configured
     → web_status

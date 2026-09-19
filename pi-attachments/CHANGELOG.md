@@ -4,8 +4,10 @@
 
 ### Fixed
 
-- Settings are re-read on session start — editing `attachments.*` in
-  settings.json now applies without restarting pi.
+- Most settings are re-read on session start — editing `attachments.*` in
+  settings.json applies to new sessions without restarting pi. Exception:
+  `pasteFileShortcut` registers its keybinding when the extension loads, so
+  changing it requires a full pi restart.
 
 ### Documentation
 

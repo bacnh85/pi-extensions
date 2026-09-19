@@ -52,15 +52,20 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
       const safe = classifyCommand(p.command);
       if (safe.risk === "confirm") {
         if (!ctx?.hasUI) return tr(`Command requires confirmation but UI is unavailable: ${safe.reasons.join("; ")}`);
-        // ponytail: session-allow keyed by first token — BUT interpreter/wrapper
-        // tokens run arbitrary payloads, so those key on the full command
-        // (one approval must not silence the danger gate for the interpreter).
-        const INTERPRETER_TOKENS = new Set(["pwsh", "powershell", "cmd", "cmd.exe", "wsl", "wsl.exe", "bash", "sh", "node", "npx", "python", "python3", "git-bash"]);
+        // ponytail: session-allow keying — interpreter/wrapper tokens run
+        // arbitrary payloads, and direct destructive verbs (rm, del, format,
+        // git reset --hard, …) take arbitrary targets, so both key on the FULL
+        // command: one approval must not silence the danger gate for every
+        // later payload of that verb. Package managers (npm/pnpm/yarn) keep
+        // bare first-token keying: approving npm covers later npm usage
+        // (`npm publish` → `npm publish --tag next`).
+        const INTERPRETER_TOKENS = new Set(["pwsh", "powershell", "cmd", "cmd.exe", "wsl", "wsl.exe", "bash", "sh", "node", "npx", "python", "python3", "git-bash", "sudo", "start", "mshta", "rundll32", "cscript"]);
         const raw = p.command.trim();
         const firstToken = raw.split(/\s+/)[0] || "";
-        const allowKey = INTERPRETER_TOKENS.has(firstToken.toLowerCase()) || /\.exe$/i.test(firstToken)
-          ? `cmd:${raw}`
-          : firstToken;
+        const lower = firstToken.toLowerCase();
+        const isInterpreter = INTERPRETER_TOKENS.has(lower) || /\.exe$/i.test(firstToken);
+        const exactOnly = isInterpreter || !["npm", "pnpm", "yarn"].includes(lower);
+        const allowKey = exactOnly ? `cmd:${raw}` : firstToken;
         if (allowKey && sessionAllowedCommands.has(allowKey)) {
           // approved "Allow for this session" earlier
         } else {
@@ -68,9 +73,8 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
             const c = String(s).replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim();
             return c.length > 120 ? c.slice(0, 120) + "…" : c;
           };
-          const isInterpreter = INTERPRETER_TOKENS.has(firstToken.toLowerCase()) || /\.exe$/i.test(firstToken);
           const choice = await ctx.ui.select(
-            `Run dangerous Windows command?\n\nCommand: ${clip(raw)}\n\nRisk: ${safe.reasons.join("; ")}\n\n"Allow for this session" ${isInterpreter ? "remembers only this exact command" : `remembers \`${clip(firstToken)}\` commands until the session ends.`}`,
+            `Run dangerous Windows command?\n\nCommand: ${clip(raw)}\n\nRisk: ${safe.reasons.join("; ")}\n\n"Allow for this session" ${exactOnly ? "remembers only this exact command" : `remembers \`${clip(firstToken)}\` commands until the session ends.`}`,
             ["Allow once", "Allow for this session", "Deny"],
           );
           if (choice === "Allow for this session") sessionAllowedCommands.add(allowKey);

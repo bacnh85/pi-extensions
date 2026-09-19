@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.41 (2026-09-18)
+
+### Changed
+
+- User-Agent strings on all usage requests (ChatGPT, Command Code, OmniRoute)
+  now derive from a single module-level constant read from the package.json
+  version, replacing the stale hardcoded `pi-sub/0.1.0` / `pi-sub/0.1.27`
+  strings that had drifted from the real version.
+
 ## 0.1.40 (2026-09-14)
 
 ### Tests

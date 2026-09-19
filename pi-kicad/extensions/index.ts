@@ -4,7 +4,6 @@ import { getDaemon } from "./lib/daemon.js";
 import {
   callKonnect,
   mapContent,
-  probeHealth,
   type KonnectCallResult,
 } from "./lib/konnect-client.js";
 import { runBatch, summarizeBatch, type BatchOp } from "./lib/batch.js";

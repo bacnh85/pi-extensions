@@ -1,6 +1,8 @@
 import { describe, it, beforeEach } from "mocha";
 import { expect } from "chai";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, utimesSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   isDestructive,
@@ -9,6 +11,7 @@ import {
   truncateOutput,
   extractCommandPath,
   extractOutputPaths,
+  TRUNCATION_DIRS,
 } from "../index.js";
 
 // ---------------------------------------------------------------------------
@@ -432,6 +435,26 @@ describe("truncateOutput", () => {
     expect(r.text).to.include("[truncated at 2000 lines]");
     expect(r.text).to.include("Full output saved to:");
     expect(r.tempPath).to.be.ok;
+  });
+
+  it("keeps the first call's temp file when a second truncation follows", () => {
+    const first = truncateOutput("x".repeat(60 * 1024));
+    expect(first.tempPath).to.be.ok;
+    const second = truncateOutput("y".repeat(60 * 1024));
+    expect(second.tempPath).to.be.ok;
+    expect(existsSync(first.tempPath!)).to.be.true;
+    expect(readFileSync(first.tempPath!, "utf8")).to.equal("x".repeat(60 * 1024));
+  });
+
+  it("sweeps truncation dirs older than 10 minutes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-notebooklm-test-"));
+    const oldTime = new Date(Date.now() - 11 * 60 * 1000);
+    utimesSync(dir, oldTime, oldTime);
+    TRUNCATION_DIRS.push(dir);
+    const big = "z".repeat(60 * 1024);
+    const r = truncateOutput(big);
+    expect(r.truncated).to.be.true;
+    expect(existsSync(dir)).to.be.false;
   });
 
   it("handles empty string", () => {

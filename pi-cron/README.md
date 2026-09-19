@@ -71,3 +71,4 @@ each session its own `PI_CODING_AGENT_DIR`.
 
 - Every fired job spends model tokens on a real turn — keep prompts short.
 - Schedule validation and fire-time math use `cron-parser`.
+- Headless cron children run with `HERDR_ENV` stripped (and `PI_CRON_DISABLED=1`), so they never auto-delegate to herdr panes — subagents in cron jobs always run in-process.

@@ -4,6 +4,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+/** Single source of truth for User-Agent strings — matches package.json version. */
+const PI_SUB_VERSION: string = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+  } catch {
+    return "unknown"; // ponytail: partial installs must not kill extension load
+  }
+})();
+
 /** Parse .env-style text into KEY→VALUE entries: `export ` prefix allowed,
  *  single/double quotes stripped, comment/blank/non-assignment lines ignored.
  *  No inline-comment stripping (a `#` in the value stays part of the value).
@@ -513,7 +522,7 @@ async function fetchUsageFromPiAuth(entry: PiAuthEntry, signal?: AbortSignal): P
       Accept: "application/json",
       Authorization: `Bearer ${entry.access}`,
       "ChatGPT-Account-Id": accountId,
-      "User-Agent": "pi-sub/0.1.0",
+      "User-Agent": `pi-sub/${PI_SUB_VERSION}`,
     },
     signal: combinedSignal,
   });
@@ -764,7 +773,7 @@ async function fetchCommandCodeUsage(signal?: AbortSignal): Promise<Subscription
     const headers = {
       Accept: "application/json",
       Authorization: `Bearer ${apiKey}`,
-      "User-Agent": "pi-sub/0.1.27",
+      "User-Agent": `pi-sub/${PI_SUB_VERSION}`,
     };
     const response = await fetch(COMMAND_CODE_USAGE_URL, { headers, signal: combinedSignal });
     if (!response.ok) {
@@ -958,7 +967,7 @@ function zaiUsageAdapter(providerId: string, usageUrl: string, displayName: stri
       const headers = {
         Accept: "application/json",
         Authorization: `Bearer ${apiKey}`,
-        "User-Agent": "pi-sub/0.1.0",
+        "User-Agent": `pi-sub/${PI_SUB_VERSION}`,
       };
       const response = await fetch(usageUrl, { headers, signal: combinedSignal });
 

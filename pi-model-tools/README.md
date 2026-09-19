@@ -36,7 +36,10 @@ detectFamily({ id: "deepseek-v4-flash", provider: "ocg" })   // → "deepseek-v4
 detectFamily({ id: "claude-opus-4.8" })                      // → null
 ```
 
-DeepSeek V4 matches any id containing `deepseek` and the word `v4`. GLM matches
+DeepSeek V4 matches any id containing `deepseek` plus either the word `v4`
+(any `deepseek-v4*`, incl. `v4.1`) or a `-flash` suffix segment (so the
+V4.1 Flash canonical id `deepseek-flash` and prefixed variants like
+`ds/deepseek-flash` are recognized). GLM matches
 any id containing `glm`. Non-matching models get repair + leak-clean only when
 a family is detected; everything degrades gracefully to a no-op otherwise.
 

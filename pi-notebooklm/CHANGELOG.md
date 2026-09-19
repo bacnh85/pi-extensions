@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.10 (2026-09-18)
+
+### Fixed
+
+- Truncation temp dirs are now age-gated (removed only when older than 10
+  minutes) instead of being deleted on the next truncation. Parallel
+  notebooklm tool calls in one turn no longer delete each other's saved full
+  output (which previously caused an ENOENT when the model read the temp
+  path). Cleanup remains best-effort and never breaks the tool result.
+
 ## 0.1.9 (2026-09-12)
 
 ### Fixed

@@ -806,9 +806,13 @@ export default function (pi: ExtensionAPI) {
     if (event.message.role !== "assistant") return;
     const usage = event.message.usage;
     if (!usage) return;
-    const input = usage.input ?? 0;
-    const cacheRead = usage.cacheRead ?? 0;
-    const cacheWrite = usage.cacheWrite ?? 0;
+    // `?? 0` covers missing fields; the finite check also rejects NaN (some
+    // OpenAI-compatible providers emit NaN usage) — NaN would poison the sums
+    // and surface as "Hit rate: NaN%" or hide the cache block entirely.
+    const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+    const input = num(usage.input);
+    const cacheRead = num(usage.cacheRead);
+    const cacheWrite = num(usage.cacheWrite);
     if (input === 0 && cacheRead === 0 && cacheWrite === 0) return;
     cacheStats.input += input;
     cacheStats.cacheRead += cacheRead;

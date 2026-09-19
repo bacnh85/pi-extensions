@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { scanProject, buildInitPrompt, checkFindings } from "../index.js";
+import { scanProject, buildInitPrompt, checkFindings, default as initExtension } from "../index.js";
 
 function fixture(setup) {
   const dir = mkdtempSync(join(tmpdir(), "pi-init-"));
@@ -259,4 +259,51 @@ test("check findings: JS repo without package.json still flagged as missing", ()
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---- command handler guards ----
+
+function captureHandler() {
+  const registered = {};
+  const sent = [];
+  initExtension({
+    registerCommand: (name, opts) => {
+      registered[name] = opts;
+    },
+    sendUserMessage: (msg) => sent.push(msg),
+  });
+  return { handler: registered.init.handler, sent };
+}
+
+test("command handler: invalid argument warns usage, never scans or sends", async () => {
+  const { handler, sent } = captureHandler();
+  const dir = fixture(() => {}); // if the guard leaked, this empty dir would get scanned + sent
+  const notes = [];
+  const ctx = { cwd: dir, ui: { notify: (msg, level) => notes.push([msg, level]) } };
+  await handler("bogus", ctx);
+  assert.deepEqual(notes, [["Usage: /init [force|check]", "warning"]]);
+  assert.equal(sent.length, 0, "no prompt sent");
+});
+
+test("command handler: busy (isIdle false) warns without running", async () => {
+  const { handler, sent } = captureHandler();
+  const dir = fixture(() => {});
+  const notes = [];
+  const ctx = {
+    cwd: dir,
+    isIdle: () => false,
+    ui: { notify: (msg, level) => notes.push([msg, level]) },
+  };
+  await handler("", ctx);
+  assert.equal(notes.length, 1);
+  assert.match(notes[0][0], /busy/i);
+  assert.equal(notes[0][1], "warning");
+  assert.equal(sent.length, 0, "no prompt sent while busy");
+});
+
+test("command handler: empty ctx (no ui/isIdle) falls back to process.cwd() and sends", async () => {
+  const { handler, sent } = captureHandler();
+  await assert.doesNotReject(() => handler("", {}));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /REPO SCAN/, "prompt built from the real cwd scan");
 });
