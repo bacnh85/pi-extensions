@@ -741,6 +741,91 @@ describe("client", () => {
     });
   });
 
+  describe("gateway-proxied a2a_status polling (GetTask SSRF pin)", () => {
+    const polledTask = {
+      id: "task-9",
+      contextId: "ctx-async",
+      status: { state: STATE_WORKING },
+    };
+
+    it("pins GetTask polls to the peer's gateway origin (LAN gateway is reachable)", async () => {
+      // LAN-hosted a2a-switchboard (private RFC1918 address): the SendMessage
+      // dispatch is pinned to the publishing gateway origin and succeeds, but
+      // GetTask polls of the non-blocking task must ride the SAME pin —
+      // assertSafeUrl would refuse every poll otherwise.
+      let sawGetTask = false;
+      globalThis.fetch = (async (url: string, init?: any) => {
+        if (init?.method === "POST") {
+          if (JSON.parse(init.body).method === "GetTask") sawGetTask = true;
+          return makeResp({ jsonrpc: "2.0", id: 1, result: { task: polledTask } }, 200);
+        }
+        return makeResp(null, 404);
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = {
+        url: "http://172.30.55.22:9920/peer/bob/",
+        auth: { type: "bearer", token: "gw-token" },
+        timeout: 5000,
+        capabilities: [],
+        viaGateway: true,
+        gatewayUrl: "http://172.30.55.22:9920",
+      };
+      const out = await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-9" });
+      assert.isTrue(sawGetTask, "GetTask must reach the pinned gateway — a2a_status must not refuse a LAN gateway origin");
+      assert.include(out, "working", "the polled task state must be returned, not an SSRF error");
+      assert.notInclude(out, "SSRF");
+    });
+
+    it("still refuses a GetTask URL outside the pinned gateway origin", async () => {
+      // The pin is an allowlist, not a bypass: a hijacked peer URL must never
+      // reach the wire even when the peer is marked viaGateway.
+      let sawPost = false;
+      globalThis.fetch = (async (_url: string, init?: any) => {
+        if (init?.method === "POST") {
+          sawPost = true;
+          return makeResp({ jsonrpc: "2.0", id: 1, result: { task: polledTask } }, 200);
+        }
+        return makeResp(null, 404);
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = {
+        url: "http://10.9.9.9:1/steal/",
+        auth: { type: "none" },
+        timeout: 5000,
+        capabilities: [],
+        viaGateway: true,
+        gatewayUrl: "http://172.30.55.22:9920",
+      };
+      const out = await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-9" });
+      assert.isFalse(sawPost, "a poll URL outside the pinned gateway origin must never reach the wire");
+      assert.include(out, "SSRF");
+    });
+
+    it("keeps the plain SSRF refusal for a private URL with no gateway pin available", async () => {
+      // viaGateway without gatewayUrl and no configured gateways → no pin can
+      // be derived → the normal assertSafeUrl applies (unchanged behavior).
+      let sawPost = false;
+      globalThis.fetch = (async (_url: string, init?: any) => {
+        if (init?.method === "POST") {
+          sawPost = true;
+          return makeResp({ jsonrpc: "2.0", id: 1, result: { task: polledTask } }, 200);
+        }
+        return makeResp(null, 404);
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = {
+        url: "http://172.30.55.22:9920/peer/bob/",
+        auth: { type: "none" },
+        timeout: 5000,
+        capabilities: [],
+        viaGateway: true,
+      };
+      const out = await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-9" });
+      assert.isFalse(sawPost, "no pin available → the private-range refusal must hold");
+      assert.include(out, "SSRF");
+    });
+  });
+
   describe("a2aList", () => {
     it("shows up to 20 tools with a +N more suffix", () => {
       const tools = Array.from({ length: 25 }, (_, i) => `tool_${i}`);

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.12 (2026-09-20)
+
+### Fixed
+
+- **`a2a_status` polls (GetTask) now ride the same gateway-origin SSRF pin as
+  SendMessage dispatches.** `sendTask` pins gateway-proxied peers
+  (`viaGateway`) to their publishing gateway origin, because LAN-hosted
+  a2a-switchboard gateways live in private RFC1918 ranges that `assertSafeUrl`
+  refuses by design — but `getTask` dropped the pin, so every `a2a_status`
+  poll of a non-blocking dispatch to a LAN gateway died with "refused SSRF"
+  while the dispatch itself succeeded. `getTask` now derives the identical
+  `gwOrigins` allowlist (`peer.gatewayUrl` first, configured gateway origins
+  as fallback, normal assertSafeUrl when no pin can be derived) and skips the
+  card fetch for proxied peers (a proxied card advertises the peer's DIRECT
+  url, which the pin would then reject — same rationale as sendTask).
+  Guard side pinned: a poll URL outside the pinned gateway origin still never
+  reaches the wire, and `viaGateway` without any derivable pin keeps the
+  plain private-range refusal.
+
 ## 0.7.11 (2026-09-20)
 
 ### Fixed

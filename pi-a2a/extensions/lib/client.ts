@@ -672,11 +672,15 @@ export async function getTask(opts: {
   const headers = peerRequestHeaders(opts.cfg, opts.peer);
   const timeout = opts.peer.timeout || opts.cfg.timeouts.send;
   // Best-effort card fetch (to learn the rpc URL); non-fatal on failure.
+  // Gateway peers are exempt: a proxied card advertises the peer's DIRECT
+  // url, which would bypass the gateway — pin the RPC to the proxy URL.
   let card: AgentCard | null = null;
-  try {
-    card = await fetchCard(opts.peer.url, headers, Math.min(timeout, 30000));
-  } catch {
-    /* tolerate */
+  if (!opts.peer.viaGateway) {
+    try {
+      card = await fetchCard(opts.peer.url, headers, Math.min(timeout, 30000));
+    } catch {
+      /* tolerate */
+    }
   }
   const rpcBody: JsonRpcRequest = {
     jsonrpc: "2.0",
@@ -684,7 +688,25 @@ export async function getTask(opts: {
     method: "GetTask",
     params: { id: opts.taskId },
   };
-  const resp = await postJsonRpc(rpcUrl(opts.peer.url, card), rpcBody, headers, timeout);
+  // SSRF pin: same gateway-origin allowlist as sendTask — a2a_status polls a
+  // task the gateway accepted, so the poll must ride the SAME pin. Without it
+  // assertSafeUrl refuses LAN-hosted gateways (private RFC1918 ranges) and
+  // every poll of a non-blocking dispatch dies with "refused SSRF".
+  let gwOrigins: Set<string> | undefined;
+  if (opts.peer.viaGateway) {
+    if (opts.peer.gatewayUrl) {
+      try {
+        gwOrigins = new Set([new URL(opts.peer.gatewayUrl).origin]);
+      } catch {
+        gwOrigins = undefined;
+      }
+    } else {
+      const origins = gatewayOrigins(opts.cfg);
+      // Empty set = no gateway configured → normal assertSafeUrl applies.
+      gwOrigins = origins.size > 0 ? origins : undefined;
+    }
+  }
+  const resp = await postJsonRpc(rpcUrl(opts.peer.url, card), rpcBody, headers, timeout, gwOrigins);
   if (resp.error) {
     const err = new Error(`peer returned an error: ${resp.error.message || JSON.stringify(resp.error)}`);
     (err as any).code = resp.error.code;
