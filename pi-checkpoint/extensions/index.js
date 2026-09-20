@@ -118,7 +118,7 @@ export default function checkpointExtension(pi) {
     await snapshot(ctx);
   });
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     // Eager reset so a stale stack from a prior session can't be /undone into.
     // sessionId may not be stable yet here, but clearing all state is always safe
     // because checkpoints are captured fresh on the first turn_start that follows.
@@ -126,7 +126,23 @@ export default function checkpointExtension(pi) {
     redoBuffer.length = 0;
     sessionCounter = 0;
     lastSessionId = ctx?.sessionManager?.getSessionId?.() || null;
+    if (isGitRepo(ctx?.cwd)) await pruneOldRefs(ctx);
   });
+
+  // Checkpoint refs live forever unless pruned. On session_start, delete refs
+  // older than REF_TTL_DAYS. Best-effort: any error is swallowed.
+  const REF_TTL_DAYS = 30;
+  async function pruneOldRefs(ctx) {
+    try {
+      const cutoff = Math.floor(Date.now() / 1000) - REF_TTL_DAYS * 86400;
+      const listed = await git(["for-each-ref", REF_NS, "--format=%(refname) %(committerdate:unix)"], ctx);
+      if (listed?.failed || !listed?.stdout) return;
+      for (const line of listed.stdout.split("\n")) {
+        const m = line.match(/^(\S+) (\d+)$/);
+        if (m && parseInt(m[2], 10) < cutoff) await git(["update-ref", "-d", m[1]], ctx);
+      }
+    } catch { /* best-effort */ }
+  }
 
   // Best-effort notify: never let a missing ctx.ui throw out of a command.
   function notify(ctx, msg, type = "info") {

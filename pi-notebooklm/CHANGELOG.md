@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.11 (2026-09-20)
+
+### Fixed
+
+- When the truncation-dir registry hits its cap (20), the evicted dir is now
+  removed from disk (best-effort) instead of being silently dropped from the
+  registry — the age-gated sweeper could never see it again, so the temp dir
+  (with full output content) leaked permanently. Eviction applies the same
+  10-minute age gate as the sweeper: an old evicted dir is deleted
+  immediately; a young one (its path possibly already handed to the model) is
+  deleted via an unref'd timer after the remaining age, so a later read never
+  ENOENTs.
+
 ## 0.1.10 (2026-09-18)
 
 ### Fixed

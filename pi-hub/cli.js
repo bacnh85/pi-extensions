@@ -237,7 +237,8 @@ async function cmdInteractive(flags) {
   }
   for (const source of sources) {
     console.log(paint.cyan(`pi install ${source}${flags.local ? " -l" : ""}`));
-    pi(["install", source, ...(flags.local ? ["-l"] : [])]);
+    const code = pi(["install", source, ...(flags.local ? ["-l"] : [])]);
+    if (code !== 0) console.log(paint.red(`install failed: ${source}`));
   }
 }
 

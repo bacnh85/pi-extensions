@@ -3,7 +3,7 @@
  *
  * Alias sibling directories or git repositories as `@docs`, `@sdk`, etc., and
  * reference them by name in chat. Local refs resolve at startup; git refs clone
- * lazily into a cache dir on first use. References with a `description` are
+ * eagerly into a cache dir at session start. References with a `description` are
  * injected into the agent's system prompt so the model knows they exist.
  *
  * Config (.pi/settings.json or ~/.pi/agent/settings.json):
@@ -189,7 +189,7 @@ export default function referencesExtension(pi) {
       {};
     const cwd = ctx?.cwd || process.cwd();
     const cacheRoot = join(
-      process.env.PI_CODING_AGENT_DIR || join(process.env.HOME || "", ".pi", "agent"),
+      process.env.PI_CODING_AGENT_DIR || join(os.homedir(), ".pi", "agent"),
       CACHE_DIR_SUFFIX,
     );
     refs = Object.entries(cfg)
@@ -202,7 +202,7 @@ export default function referencesExtension(pi) {
     loadConfig(ctx);
     if (refs.length === 0) return;
 
-    // Ensure git refs are cloned (lazy, best-effort, non-blocking for local).
+    // Ensure git refs are cloned (eager at session start, best-effort, non-blocking).
     Promise.all(
       refs.map((r) =>
         ensureCloned(r, (cmd, args) => pi.exec(cmd, args, { cwd: ctx?.cwd })).then((ok) => {

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.3] - 2026-09-20
+
+- Docs: README now notes `volume` applies to Linux (`paplay`) only — macOS (`afplay`) and Windows (`beep`) ignore it.
+- Tests: `toastScript` is exported and covered by a Windows single-quote escaping test mirroring the macOS one.
+
 ## 0.1.2 - 2026-09-12
 
 Question notifications + reachable terminal fallback.

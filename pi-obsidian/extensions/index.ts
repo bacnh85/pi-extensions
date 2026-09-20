@@ -68,31 +68,47 @@ export function vaultNameForCwd(cwd: string | undefined, active: { name: string;
   return root && active && resolve(active.path) === root ? active.name : undefined;
 }
 
-function focusedVaultNameForCwd(cwd: string | undefined): string | undefined {
-  return vaultNameForCwd(cwd, parseVaultInfo(execObsidian(["vault"]).stdout));
+// ---------------------------------------------------------------------------
+// Focused-vault lookup — one memoized `obsidian vault` spawn per process
+// ---------------------------------------------------------------------------
+
+let _vaultLookup: { info?: { name: string; path: string }; error?: unknown } | null = null;
+
+function vaultLookup(): { info?: { name: string; path: string }; error?: unknown } {
+  if (_vaultLookup === null) {
+    let info: { name: string; path: string } | undefined;
+    try {
+      info = parseVaultInfo(execObsidian(["vault"]).stdout);
+    } catch (e) {
+      // Success is memoized; failure is NOT — a session started before the
+      // Obsidian app launches must recover once it does (pre-0.8.16 behavior
+      // retried per call; caching the error would make the failure permanent).
+      return { error: e };
+    }
+    if (!info) {
+      // Exit 0 but unparseable output (e.g. app mid-startup) — same rule:
+      // treat as "unknown this call", retry later, never cache.
+      return {};
+    }
+    _vaultLookup = { info };
+  }
+  return _vaultLookup;
 }
 
-// ---------------------------------------------------------------------------
-// Cross-vault detection (lazy cached)
-// ---------------------------------------------------------------------------
-
-let _allVaultRoots: string[] | null = null;
+function focusedVaultNameForCwd(cwd: string | undefined): string | undefined {
+  const { info, error } = vaultLookup();
+  if (error) throw error; // unchanged: name lookup surfaces CLI failure
+  return vaultNameForCwd(cwd, info);
+}
 
 /**
  * Lazily cached list of all known vault root paths.
  * Only the focused vault; multi-vault enumeration needs obsidian vault list --all.
+ * CLI failure (e.g. app not running) → no roots, same as before.
  */
 function allVaultRoots(): string[] {
-  if (_allVaultRoots !== null) return _allVaultRoots;
-  try {
-    const out = execObsidian(["vault"]).stdout;
-    const path = out.match(/^path\s+(.+)$/m)?.[1]?.trim();
-    _allVaultRoots = path ? [path] : [];
-  } catch {
-    _allVaultRoots = [];
-    return [];
-  }
-  return _allVaultRoots;
+  const { info } = vaultLookup();
+  return info ? [info.path] : [];
 }
 
 function redirectionDestination(command: string): string | undefined {
@@ -1123,7 +1139,10 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
             if (files.length > 0) return files.join("\n");
           }
           if (r.parsed && Array.isArray(r.parsed) && r.parsed.length > 0) return (r.parsed as string[]).sort().join("\n");
-        } catch { /* fall through */ }
+        } catch (e) {
+          // Real CLI failure must not masquerade as an empty vault — say so.
+          return `Obsidian CLI error: ${e instanceof Error ? e.message : String(e)}`;
+        }
         return "No files found.";
       }
 

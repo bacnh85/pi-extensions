@@ -1396,7 +1396,7 @@ export default function fffExtension(pi: ExtensionAPI) {
       // the agent can't accidentally mix patterns across pages.
       const effectiveLimit = resumed
         ? resumed.pageSize
-        : Math.max(1, Math.floor(params.limit ?? (override ? 1000 : DEFAULT_FIND_LIMIT)));
+        : Math.max(1, Math.floor(params.limit ?? DEFAULT_FIND_LIMIT));
       let query;
       try {
         query = resumed
@@ -1405,7 +1405,7 @@ export default function fffExtension(pi: ExtensionAPI) {
       } catch (e) {
         return {
           content: [{ type: "text", text: `Invalid path constraint: ${(e as Error).message}. Try without path/exclude constraints.` }],
-          details: override ? undefined : { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
+          details: { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
         };
       }
       const pattern = resumed ? resumed.pattern : params.pattern;
@@ -1434,27 +1434,18 @@ export default function fffExtension(pi: ExtensionAPI) {
       } catch (e) {
         return {
           content: [{ type: "text", text: `Search error: ${(e as Error).message}` }],
-          details: override ? undefined : { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
+          details: { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
         };
       }
       if (!searchResult.ok) {
         return {
           content: [{ type: "text", text: `Search failed: ${searchResult.error}` }],
-          details: override ? undefined : { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
+          details: { totalMatched: 0, totalFiles: 0, pageIndex: 0, hasMore: false },
         };
       }
 
       const result = searchResult.value;
-      const formatted = override
-        ? {
-            output: result.items
-              .slice(0, effectiveLimit)
-              .map((item) => item.relativePath)
-              .join("\n") || "No files found matching pattern",
-            weak: false,
-            shownCount: Math.min(result.items.length, effectiveLimit),
-          }
-        : formatFindOutput(result, effectiveLimit, pattern, pageIndex);
+      const formatted = formatFindOutput(result, effectiveLimit, pattern, pageIndex);
       let output = formatted.output;
 
       // Infer hasMore: native fileSearch fills pageSize when more results
@@ -1470,7 +1461,7 @@ export default function fffExtension(pi: ExtensionAPI) {
           `Query "${pattern}" produced only weak scattered fuzzy matches. Output capped at ${formatted.shownCount}/${result.totalMatched}.`,
         );
 
-      if (!override && !formatted.weak && hasMore) {
+      if (!formatted.weak && hasMore) {
         const remaining = result.totalMatched - shownSoFar;
         const cursorId = findCursorStore.store({
           cwd: activeCwd,
@@ -1487,12 +1478,6 @@ export default function fffExtension(pi: ExtensionAPI) {
       }
 
       if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
-      if (override) {
-        return {
-          content: [{ type: "text", text: output }],
-          details: hasMore ? { resultLimitReached: effectiveLimit } : undefined,
-        };
-      }
       return {
         content: [{ type: "text", text: output }],
         details: {

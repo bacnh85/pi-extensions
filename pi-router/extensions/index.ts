@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getSettings } from "./lib/config.js";
 import { migrateLegacyConfig } from "./lib/migrate.js";
-import { registerProvider, unregisterProvider, PROVIDER_ID } from "./lib/provider.js";
+import { registerProvider, PROVIDER_ID } from "./lib/provider.js";
 import { registerCommands } from "./commands/commands.js";
 
 /** Re-select the active router model so Pi picks up refreshed capability
@@ -44,4 +44,3 @@ export default function (pi: ExtensionAPI) {
   });
 }
 
-export { unregisterProvider };

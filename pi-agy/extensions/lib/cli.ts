@@ -151,12 +151,18 @@ function appendBounded(chunks: Buffer[], total: number, data: Buffer): number {
 }
 
 // ---------------------------------------------------------------------------
-// Pre-flight: verify agy binary exists and auth works
+// Shared pre-flight runner: spawn `agy <args>`, capture stderr, and map
+// ENOENT / timeout / non-zero exit to caller-specific messages.
 // ---------------------------------------------------------------------------
 
-export async function checkAgyHealth(cwd: string, signal?: AbortSignal): Promise<void> {
+async function runAgyCheck(
+  args: string[],
+  cwd: string,
+  signal: AbortSignal | undefined,
+  messages: { cancelled: string; failed: string; notWorkingPrefix: string; hint: string },
+): Promise<void> {
   const spawn = getSpawn();
-  const child = spawn("agy", ["--version"], {
+  const child = spawn("agy", args, {
     cwd,
     stdio: ["ignore", "ignore", "pipe"],
     timeout: PREFLIGHT_TIMEOUT_MS,
@@ -181,36 +187,41 @@ export async function checkAgyHealth(cwd: string, signal?: AbortSignal): Promise
     child.on("error", (err: Error) => {
       done(() => {
         if (signal?.aborted) {
-          reject(new Error("agy health check was cancelled"));
+          reject(new Error(messages.cancelled));
         } else if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-          reject(
-            new Error(
-              `Antigravity CLI is not installed. ${installHint()}`,
-            ),
-          );
+          reject(new Error(`Antigravity CLI is not installed. ${installHint()}`));
         } else {
-          reject(new Error(`agy health check failed: ${err.message}`));
+          reject(new Error(`${messages.failed}: ${err.message}`));
         }
       });
     });
     child.on("close", (code: number | null) => {
       done(() => {
         if (signal?.aborted) {
-          reject(new Error("agy health check was cancelled"));
+          reject(new Error(messages.cancelled));
           return;
         }
         if (code === 0) resolve();
         else {
           const msg = Buffer.concat(stderr).toString("utf8").trim();
           const label = code === null ? "timed out" : `exit ${code}`;
-          reject(
-            new Error(
-              `Antigravity CLI is not authenticated or not working (${label}). ${msg || "Run 'agy' interactively in your terminal to authenticate."}`,
-            ),
-          );
+          reject(new Error(`${messages.notWorkingPrefix} (${label}). ${msg || messages.hint}`));
         }
       });
     });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Pre-flight: verify agy binary exists and auth works
+// ---------------------------------------------------------------------------
+
+export async function checkAgyHealth(cwd: string, signal?: AbortSignal): Promise<void> {
+  return runAgyCheck(["--version"], cwd, signal, {
+    cancelled: "agy health check was cancelled",
+    failed: "agy health check failed",
+    notWorkingPrefix: "Antigravity CLI is not authenticated or not working",
+    hint: "Run 'agy' interactively in your terminal to authenticate.",
   });
 }
 
@@ -222,62 +233,11 @@ export async function checkAgyHealth(cwd: string, signal?: AbortSignal): Promise
 // Instead we run `agy models` which lists available models without needing
 // a TTY and proves the CLI is functional and can reach its backend.
 export async function checkAgyConnectivity(cwd: string, signal?: AbortSignal): Promise<void> {
-  const spawn = getSpawn();
-  const child = spawn("agy", ["models"], {
-    cwd,
-    stdio: ["ignore", "ignore", "pipe"],
-    timeout: PREFLIGHT_TIMEOUT_MS,
-    signal,
-  });
-
-  const stderr: Buffer[] = [];
-  let stderrBytes = 0;
-  child.stderr.on("data", (d: Buffer) => {
-    stderrBytes = appendBounded(stderr, stderrBytes, d);
-  });
-
-  let settled = false;
-
-  await new Promise<void>((resolve, reject) => {
-    const done = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      fn();
-    };
-
-    child.on("close", (code: number | null) => {
-      done(() => {
-        if (signal?.aborted) {
-          reject(new Error("agy connectivity check was cancelled"));
-          return;
-        }
-        if (code === 0) resolve();
-        else {
-          const label = code === null ? "timed out" : `exit ${code}`;
-          const msg = Buffer.concat(stderr).toString("utf8").trim();
-          reject(
-            new Error(
-              `agy connectivity check failed (${label}). ${msg || "Run 'agy' in the terminal to authenticate."}`,
-            ),
-          );
-        }
-      });
-    });
-    child.on("error", (err: Error) => {
-      done(() => {
-        if (signal?.aborted) {
-          reject(new Error("agy connectivity check was cancelled"));
-        } else if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-          reject(
-            new Error(
-              `Antigravity CLI is not installed. ${installHint()}`,
-            ),
-          );
-        } else {
-          reject(new Error(`agy connectivity check failed: ${err.message}`));
-        }
-      });
-    });
+  return runAgyCheck(["models"], cwd, signal, {
+    cancelled: "agy connectivity check was cancelled",
+    failed: "agy connectivity check failed",
+    notWorkingPrefix: "agy connectivity check failed",
+    hint: "Run 'agy' in the terminal to authenticate.",
   });
 }
 

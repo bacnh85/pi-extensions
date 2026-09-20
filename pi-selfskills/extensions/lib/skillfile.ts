@@ -6,8 +6,8 @@ import path from "node:path";
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
 
 /** sha256 hex prefix — backup names + read-time hash precondition. */
-export function contentHash(content: string): string {
-  return createHash("sha256").update(content, "utf8").digest("hex");
+export function contentHash(content: string | Buffer): string {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 export const SKILL_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;

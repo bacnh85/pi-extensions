@@ -65,10 +65,6 @@ export function detectAllShells(): ShellInfo[] {
   return (["pwsh", "powershell", "cmd", "git-bash", "wsl"] as WindowsShellKind[]).map(detectShell);
 }
 
-export function getAvailableShells(): ShellInfo[] {
-  return detectAllShells().filter(s => s.available);
-}
-
 export function getDefaultShell(): ShellInfo {
   const envShell = process.env.PI_WINDOWS_SHELL;
   if (isWindowsShellKind(envShell)) {

@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.3] - 2026-09-20
+
+### Fixed
+
+- Checkpoint refs (`refs/pi-checkpoints/<sid>/<n>`) are now pruned on
+  `session_start` when older than 30 days (`git for-each-ref` +
+  `git update-ref -d`), instead of accumulating forever. Best-effort:
+  failures are swallowed.
+
 ## 0.1.2 (2026-09-12)
 
 ### Fixed

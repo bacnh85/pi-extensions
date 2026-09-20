@@ -1,5 +1,8 @@
 import { assert } from "chai";
 import { EventEmitter } from "node:events";
+import { existsSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import {
   buildSpawnArgs,
   pickFreePort,
@@ -157,17 +160,50 @@ it("issue #20 L1: config file lands in a private mkdtemp dir (symlink-clobber ha
       assert.isTrue(status.healthy);
     });
 
-    it("throws if the child exits before becoming healthy", async () => {
-      const alive = { value: false };
-      const spawnResult: SpawnResult = { child: makeChild(), calls: [] };
-      const d = makeDaemon({ alive, spawnResult, exitImmediately: 1 });
-      try {
-        await d.ensure();
-        assert.fail("expected rejection");
-      } catch (e) {
-        assert.match((e as Error).message, /exited \(code 1\) before becoming healthy/);
-      }
-    });
+  it("throws if the child exits before becoming healthy", async () => {
+    const alive = { value: false };
+    const spawnResult: SpawnResult = { child: makeChild(), calls: [] };
+    const d = makeDaemon({ alive, spawnResult, exitImmediately: 1 });
+    try {
+      await d.ensure();
+      assert.fail("expected rejection");
+    } catch (e) {
+      assert.match((e as Error).message, /exited \(code 1\) before becoming healthy/);
+    }
+    // Reaped like the timeout path: no running:true zombie, no orphaned cfgDir.
+    assert.isTrue(spawnResult.child.killed, "dead child reaped by killChild");
+    const status = await d.getStatus();
+    assert.isFalse(status.running, "getStatus().running is false after the throw");
+  });
+
+  it("dead-child throw removes the mkdtemp cfgDir (real fs)", async () => {
+    const alive = { value: false };
+    let realDir: string | null = null;
+    const d = new KonnectDaemon(
+      {
+        env: { KONNECT_BINARY: "/bin/konnect", KICAD_CLI: "/bin/kicad-cli" },
+        home: "/h", platform: "darwin", cwd: "/proj", exists: () => true,
+      },
+      {
+        fetchImpl: healthFetch(alive),
+        spawnImpl: (() => makeChild({ exitImmediately: 1 })) as any,
+        writeFile: async () => {},
+        mkdir: async () => {},
+        tmpdir,
+        mkdtemp: async (prefix: string) => (realDir = await mkdtemp(prefix)),
+        now: () => 0,
+        sleep: async () => {},
+      },
+    );
+    try {
+      await d.ensure();
+      assert.fail("expected rejection");
+    } catch (e) {
+      assert.match((e as Error).message, /exited \(code 1\) before becoming healthy/);
+    }
+    assert.isNotNull(realDir);
+    assert.isFalse(existsSync(realDir!), "cfgDir removed on the dead-child path");
+  });
 
     it("throws and kills the child on startup timeout", async () => {
       const alive = { value: false }; // never becomes healthy
@@ -214,6 +250,143 @@ it("issue #20 L1: config file lands in a private mkdtemp dir (symlink-clobber ha
       await d.ensure();
       d.stop();
       assert.isTrue(spawnResult.child.killed);
+    });
+  });
+
+  describe("exit/signal handling", () => {
+    it("stop() removes the mkdtemp cfgDir (real fs)", async () => {
+      const alive = { value: true };
+      const spawnResult: SpawnResult = { child: makeChild(), calls: [] };
+      let realDir: string | null = null;
+      const d = new KonnectDaemon(
+        {
+          env: { KONNECT_BINARY: "/bin/konnect", KICAD_CLI: "/bin/kicad-cli" },
+          home: "/h", platform: "darwin", cwd: "/proj", exists: () => true,
+        },
+        {
+          fetchImpl: healthFetch(alive),
+          spawnImpl: ((b: string, args: string[]) => { spawnResult.calls.push({ binary: b, args }); return makeChild(); }) as any,
+          writeFile: async () => {},
+          mkdir: async () => {},
+          tmpdir,
+          mkdtemp: async (prefix: string) => (realDir = await mkdtemp(prefix)),
+          now: () => 0,
+          sleep: async () => {},
+        },
+      );
+      await d.ensure();
+      assert.isNotNull(realDir);
+      assert.isTrue(existsSync(realDir!), "cfgDir exists while daemon runs");
+      d.stop();
+      assert.isFalse(existsSync(realDir!), "stop() removed the cfgDir");
+    });
+
+    it("signal handlers clean up then terminate (130/143) without leaking listeners", async () => {
+      const intBefore = process.listeners("SIGINT");
+      const termBefore = process.listeners("SIGTERM");
+      const alive = { value: true };
+      const spawnResult: SpawnResult = { child: makeChild(), calls: [] };
+      const d = makeDaemon({ alive, spawnResult });
+      await d.ensure();
+      const addedInt = process.listeners("SIGINT").filter((l) => !intBefore.includes(l));
+      const addedTerm = process.listeners("SIGTERM").filter((l) => !termBefore.includes(l));
+      assert.equal(addedInt.length, 1, "one SIGINT handler bound");
+      assert.equal(addedTerm.length, 1, "one SIGTERM handler bound");
+
+      class ExitCall extends Error {
+        constructor(public code: number | undefined) { super("process.exit"); }
+      }
+      const origExit = process.exit;
+      (process as unknown as { exit: (c?: number) => void }).exit = (c?: number) => {
+        throw new ExitCall(c);
+      };
+      try {
+        // Real signal dispatch removes the once-listener BEFORE invoking it,
+        // and in production the daemon is a module singleton — its handlers
+        // are the process's only ones. Emulate both: detach every listener of
+        // the signal (the wrapper included — direct invocation doesn't),
+        // dispatch, restore.
+        const isolate = (sig: "SIGINT" | "SIGTERM") => {
+          const all = process.listeners(sig);
+          for (const l of all) process.removeListener(sig, l);
+          return () => {
+            for (const l of all) process.on(sig, l);
+          };
+        };
+        const restoreInt = isolate("SIGINT");
+        try {
+          addedInt[0]("SIGINT");
+          assert.fail("SIGINT handler must terminate");
+        } catch (e) {
+          assert.instanceOf(e, ExitCall);
+          assert.equal((e as ExitCall).code, 130, "SIGINT exits 130");
+        } finally {
+          restoreInt();
+        }
+        const restoreTerm = isolate("SIGTERM");
+        try {
+          addedTerm[0]("SIGTERM");
+          assert.fail("SIGTERM handler must terminate");
+        } catch (e) {
+          assert.instanceOf(e, ExitCall);
+          assert.equal((e as ExitCall).code, 143, "SIGTERM exits 143");
+        } finally {
+          restoreTerm();
+        }
+      } finally {
+        (process as unknown as { exit: (c?: number) => void }).exit = origExit;
+        for (const l of addedInt) process.removeListener("SIGINT", l);
+        for (const l of addedTerm) process.removeListener("SIGTERM", l);
+      }
+      assert.equal(process.listenerCount("SIGINT"), intBefore.length, "no SIGINT listener leak");
+      assert.equal(process.listenerCount("SIGTERM"), termBefore.length, "no SIGTERM listener leak");
+      d.stop();
+    });
+
+    it("defers to an existing signal handler: cleanup runs, host is not killed", async () => {
+      // pi's interactive host prepends its own SIGTERM shutdown handler (and
+      // guards SIGINT while suspended). When another listener owns the signal,
+      // the daemon handler must clean up but NOT exit — the owner's shutdown
+      // path fires 'exit', which runs our exit-hook cleanup again.
+      const termBefore = process.listeners("SIGTERM");
+      const alive = { value: true };
+      const spawnResult: SpawnResult = { child: makeChild(), calls: [] };
+      const d = makeDaemon({ alive, spawnResult });
+      await d.ensure();
+      const addedTerm = process.listeners("SIGTERM").filter((l) => !termBefore.includes(l));
+      assert.equal(addedTerm.length, 1, "one SIGTERM handler bound");
+
+      const owner = () => {}; // the host's own SIGTERM handler
+      process.on("SIGTERM", owner);
+      const origExit = process.exit;
+      (process as unknown as { exit: (c?: number) => void }).exit = (() => {
+        throw new Error("process.exit must not be called when another handler owns the signal");
+      }) as typeof process.exit;
+      try {
+        process.removeListener("SIGTERM", addedTerm[0]!); // real dispatch order
+        assert.doesNotThrow(() => addedTerm[0]!("SIGTERM"));
+        assert.isTrue(spawnResult.child.killed, "daemon child killed (cleanup ran)");
+      } finally {
+        (process as unknown as { exit: (c?: number) => void }).exit = origExit;
+        process.removeListener("SIGTERM", owner);
+      }
+      d.stop();
+    });
+
+    it("stop() unbinds the exit/signal handlers", async () => {
+      const intBefore = process.listeners("SIGINT");
+      const termBefore = process.listeners("SIGTERM");
+      const alive = { value: true };
+      const spawnResult: SpawnResult = { child: makeChild(), calls: [] };
+      const d = makeDaemon({ alive, spawnResult });
+      await d.ensure();
+      assert.isAbove(process.listenerCount("SIGINT"), intBefore.length, "bound on ensure");
+      assert.isAbove(process.listenerCount("SIGTERM"), termBefore.length, "bound on ensure");
+      d.stop();
+      // Handler lifetime tracks the daemon — discarded instances leave nothing
+      // registered (reset/respawn cycles must not accumulate handlers).
+      assert.equal(process.listenerCount("SIGINT"), intBefore.length, "SIGINT unbound on stop");
+      assert.equal(process.listenerCount("SIGTERM"), termBefore.length, "SIGTERM unbound on stop");
     });
   });
 

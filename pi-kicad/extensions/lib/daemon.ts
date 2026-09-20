@@ -16,6 +16,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFile, mkdir, mkdtemp } from "node:fs/promises";
+import { rmSync } from "node:fs";
 import {
   buildDaemonConfig,
   generateKonnectToml,
@@ -95,7 +96,20 @@ export class KonnectDaemon {
   private port: number | null = null;
   private startedAt: number | null = null;
   private stderrTail = "";
+  private cfgDir: string | null = null;
   private exitHandlerBound = false;
+  // Stable handler refs so stop() can unbind — without this, every discarded
+  // instance (_resetDaemon, tests) leaks a full set of process handlers, since
+  // exitHandlerBound is per-instance.
+  private exitCleanup = (): void => this.killChild();
+  private onSigint = (): void => {
+    this.exitCleanup();
+    if (process.listenerCount("SIGINT") === 0) process.exit(130);
+  };
+  private onSigterm = (): void => {
+    this.exitCleanup();
+    if (process.listenerCount("SIGTERM") === 0) process.exit(143);
+  };
 
   constructor(resolveOpts: ResolveOptions = {}, deps: DaemonDeps = {}) {
     this.config = resolveConfig(resolveOpts);
@@ -144,6 +158,7 @@ export class KonnectDaemon {
     // is a symlink-clobber target on multi-user hosts. mkdtemp gives us an
     // unpredictable, 0o700 directory — no O_EXCL dance needed.
     const cfgDir = await this.deps.mkdtemp(join(this.deps.tmpdir(), "pi-kicad-daemon-"));
+    this.cfgDir = cfgDir;
     const configPath = join(cfgDir, `daemon-${port}.toml`);
     await this.deps.writeFile(configPath, toml);
 
@@ -165,7 +180,11 @@ export class KonnectDaemon {
     const deadline = this.deps.now() + STARTUP_TIMEOUT_MS;
     while (this.deps.now() < deadline) {
       if (this.child.exitCode !== null || this.child.signalCode) {
-        throw new Error(`Konnect exited (code ${this.child.exitCode}) before becoming healthy.\n${this.stderrTail}`);
+        const message = `Konnect exited (code ${this.child.exitCode}) before becoming healthy.\n${this.stderrTail}`;
+        // Reap like the timeout path below: leaving the dead child set would
+        // report running:true and orphan this.cfgDir on the next ensure().
+        this.killChild();
+        throw new Error(message);
       }
       if (await probeHealth(port, { fetchImpl: this.deps.fetchImpl, timeoutMs: 1000 })) {
         this.port = port;
@@ -208,6 +227,7 @@ export class KonnectDaemon {
 
   stop(): void {
     this.killChild();
+    this.unbindExitHandler();
   }
 
   private killChild(): void {
@@ -219,14 +239,54 @@ export class KonnectDaemon {
       }
       this.child = null;
     }
+    if (this.cfgDir) {
+      try {
+        rmSync(this.cfgDir, { recursive: true, force: true });
+      } catch {
+        /* best-effort */
+      }
+      this.cfgDir = null;
+    }
   }
 
   private bindExitHandler(): void {
     if (this.exitHandlerBound) return;
     this.exitHandlerBound = true;
-    // Best-effort cleanup. beforeExit/exit fire on normal termination; a hard
-    // crash leaves the daemon running, which a later session reuses via health.
-    process.once("exit", () => this.killChild());
+    // 'exit' covers normal and host-managed shutdown paths. A once() SIGINT/
+    // SIGTERM handler REPLACES the default terminator, so when we are the only
+    // listener the handler must terminate explicitly after cleanup — otherwise
+    // the first Ctrl+C (print/RPC modes: pi's host registers no persistent
+    // SIGINT handler) leaves the host alive with a dead daemon and the handler
+    // disarmed. When another listener owns the signal (pi's interactive host
+    // prepends a SIGTERM shutdown handler and guards SIGINT while suspended),
+    // that handler's shutdown path fires 'exit' → cleanup, so exiting here
+    // would cut its graceful shutdown short — defer instead. 130/143 =
+    // 128+signal convention. killChild is idempotent, so signal-then-exit
+    // double-runs are harmless.
+    // 'exit' covers normal and host-managed shutdown paths. A once() SIGINT/
+    // SIGTERM handler REPLACES the default terminator, so when we are the only
+    // listener the handler must terminate explicitly after cleanup — otherwise
+    // the first Ctrl+C (print/RPC modes: pi's host registers no persistent
+    // SIGINT handler) leaves the host alive with a dead daemon and the handler
+    // disarmed. When another listener owns the signal (pi's interactive host
+    // prepends a SIGTERM shutdown handler and guards SIGINT while suspended),
+    // that handler's shutdown path fires 'exit' → cleanup, so exiting here
+    // would cut its graceful shutdown short — defer instead. 130/143 =
+    // 128+signal convention. killChild is idempotent, so signal-then-exit
+    // double-runs are harmless.
+    process.once("exit", this.exitCleanup);
+    process.once("SIGINT", this.onSigint);
+    process.once("SIGTERM", this.onSigterm);
+  }
+
+  // removeListener matches a once-wrapper via the original function too, so
+  // passing the fields removes the wrappers registered in bindExitHandler.
+  private unbindExitHandler(): void {
+    if (!this.exitHandlerBound) return;
+    this.exitHandlerBound = false;
+    process.removeListener("exit", this.exitCleanup);
+    process.removeListener("SIGINT", this.onSigint);
+    process.removeListener("SIGTERM", this.onSigterm);
   }
 }
 

@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import notifyExtension, { resolveConfig, notify, playSound, detectBackend, _resetBackendCacheForTest } from "../index.js";
+import notifyExtension, { resolveConfig, notify, playSound, detectBackend, toastScript, _resetBackendCacheForTest } from "../index.js";
 
 // ── resolveConfig ─────────────────────────────────────────────────────────
 
@@ -188,4 +188,21 @@ test("macOS notify escapes backslash and quote in body/title (review: MED)", () 
   assert.equal(escaped, 'He said \\"hi\\\\bye\\"');
   // Round-trip: unescape should recover original.
   assert.equal(escaped.replace(/\\(["\\])/g, "$1"), body);
+});
+
+test("Windows toastScript escapes single quotes in title/body (mirrors macOS test)", () => {
+  // PowerShell single-quoted strings escape ' by doubling it (''). Verify the
+  // generated script contains no raw unescaped ' inside the title/body slots.
+  const title = "Pi's done, isn't it?";
+  const body = "It's 100% 'complete'\\nnext line";
+  const script = toastScript(title, body);
+  // The escaped slots: every ' in the inputs is doubled in the output.
+  assert.ok(script.includes("Pi''s done, isn''t it?"), "title single quotes doubled");
+  assert.ok(script.includes("It''s 100% ''complete''"), "body single quotes doubled");
+  // Backslash is literal in PS single-quoted strings — must pass through untouched.
+  assert.ok(script.includes("complete''\\nnext"), "backslash passes through");
+  // Extract the two ''-slots and round-trip back to the originals.
+  const slots = [...script.matchAll(/'((?:[^']|'')*)'/g)].map((m) => m[1].replace(/''/g, "'"));
+  assert.ok(slots.includes(title), "title round-trips");
+  assert.ok(slots.includes(body), "body round-trips");
 });

@@ -1089,8 +1089,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
         return;
       }
       flow = {
-        baseline: head.code === 0 ? head.stdout.trim() : "unavailable",
-        initialDirty: dirty.code === 0 ? dirty.stdout.trim() : "unavailable",
+        baseline: head.stdout.trim(), // head.code === 0 && stdout non-empty guaranteed above
+        initialDirty: dirty.stdout.trim(), // dirty.code === 0 guaranteed above
         initialCachedPatch,
         initialUnstagedPatch,
         initialUntracked: untracked.code === 0 ? untracked.stdout.trim() : undefined,

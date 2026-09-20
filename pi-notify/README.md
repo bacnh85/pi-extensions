@@ -39,6 +39,10 @@ Add a `notify` object to `.pi/settings.json` (project) or `~/.pi/agent/settings.
 
 All keys default to `true` (sound defaults on, volume `0.4`). Omit the object entirely to get all notifications.
 
+`volume` only applies on Linux (`paplay --volume`, range 0–1). macOS (`afplay`)
+has no volume flag and ignores it — adjust the system volume; Windows uses a
+fixed `beep`.
+
 ## Flag
 
 | Flag | Description |

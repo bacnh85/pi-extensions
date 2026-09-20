@@ -2,7 +2,7 @@
 
 External context roots for [Pi](https://pi.dev).
 
-Alias sibling directories or git repositories as `@docs`, `@sdk`, etc., and reference them by name. Local refs resolve at startup; git refs clone lazily into a local cache on first use. References with a `description` are injected into the agent's system prompt so the model knows they exist. Inspired by OpenCode's `references` feature.
+Alias sibling directories or git repositories as `@docs`, `@sdk`, etc., and reference them by name. Local refs resolve at startup; git refs are cloned into a local cache at session start. References with a `description` are injected into the agent's system prompt so the model knows they exist. Inspired by OpenCode's `references` feature.
 
 ## Install
 
@@ -61,7 +61,7 @@ String values are parsed automatically:
 
 ## How it works
 
-1. On `session_start`, resolves local paths against the project cwd and ensures git refs are cloned into `~/.pi/agent/refs/<alias>/` (lazy, best-effort).
+1. On `session_start`, resolves local paths against the project cwd and ensures git refs are cloned into `~/.pi/agent/refs/<alias>/` (eager, best-effort, non-blocking).
 2. On every `before_agent_start`, appends the reference list (those with descriptions) to the system prompt so the model can read files under those roots when relevant.
 3. The `/refs` command lists what's configured and where it resolved.
 

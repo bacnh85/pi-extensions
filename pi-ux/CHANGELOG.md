@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.6.1] - 2026-09-20
+
+- Refactored: removed `normalizePersistedMode` — a pure alias of `normalizeMode`; callers updated.
+
 ## 0.6.0 (2026-09-17)
 
 ### Added

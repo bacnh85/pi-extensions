@@ -14,6 +14,7 @@ import {
   validateMemoryTags,
   validateMemoryKey,
   validateSearchQuery,
+  validateTagMode,
   classifyError,
   sanitizeErrorMessage,
   formatMemory,
@@ -215,6 +216,24 @@ describe("validateSearchQuery", () => {
 
   it("rejects non-string", () => {
     expect(() => validateSearchQuery(null)).to.throw("non-empty");
+  });
+});
+
+describe("validateTagMode", () => {
+  it("accepts all and any", () => {
+    expect(validateTagMode("all")).to.equal("all");
+    expect(validateTagMode("any")).to.equal("any");
+  });
+
+  it("passes through absent values (server default applies)", () => {
+    expect(validateTagMode(undefined)).to.equal(undefined);
+    expect(validateTagMode(null)).to.equal(undefined);
+    expect(validateTagMode("")).to.equal(undefined);
+  });
+
+  it("rejects anything else naming the valid values", () => {
+    expect(() => validateTagMode("either")).to.throw('Invalid tag_mode "either". Valid values: "all" (default), "any"');
+    expect(() => validateTagMode(1)).to.throw("Valid values");
   });
 });
 

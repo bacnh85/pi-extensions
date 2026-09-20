@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2 (2026-09-20)
+
+- **Fix: binary-safe backups (single-file AND batch paths)** — `write`, single-file `delete`, and batch `operations` snapshotted the current file via a UTF-8 string read, corrupting backups of binary bundled assets (unrestorable mangled bytes). `snapshot()`/`contentHash()` now accept `Buffer`; existing content is read and backed up without encoding on every path, and single-file restore round-trips bytes. SKILL.md paths keep text behavior (validation unchanged).
+
 ## 0.3.1
 
 - **Fix: deletion-snapshot ordering** — `snapshotDir` re-evaluated its millisecond stamp inside the collision loop, so a mid-loop tick could emit `T2-2` while bare `T2` stayed free; the next snapshot claimed `T2`, sorting **before** `T2-2`. Consequences: cap-pruning could delete the *newest* snapshot and `latestDeletedSnapshot`/restore could resolve a stale one (seen live as a CI test flake). The stamp is now evaluated once per call — names are strictly monotonic with creation order.

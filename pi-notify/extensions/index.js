@@ -140,7 +140,9 @@ export function notify(title, body, backend = detectBackend()) {
   }
 }
 
-function toastScript(title, body) {
+// Exported for tests (same as playSound/notify): the Windows script builder
+// carries escaping logic worth locking down.
+export function toastScript(title, body) {
   // Minimal cross-version toast: writes title+body via BurntToast-free approach.
   // ponytail: use msg.exe-free PowerShell one-liner; avoids WinRT type plumbing.
   const t = title.replace(/'/g, "''");

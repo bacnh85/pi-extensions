@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.17.2 (2026-09-20)
+
+### Fixed
+
+- **`web_crawl` light-mode poll loop honors `timeout_ms`** — previously the
+  loop polled up to 60×2s regardless of the caller's timeout. The deadline is
+  clamped 1s–600s (same as `web_interact` step budgets); when it passes, the
+  loop stops and returns the current incomplete crawl state with an explicit
+  note. Behavior is unchanged when `timeout_ms` is absent (iteration cap only).
+
 ## 0.17.1 (2026-09-19)
 
 ### Fixed

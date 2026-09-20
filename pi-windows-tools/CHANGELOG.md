@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.6 (2026-09-20)
+
+### Fixed
+
+- `executeCommand` now spawns with `windowsHide: true` — a console window no
+  longer flashes on every command (the `stop()` taskkill path already had it).
+
+### Removed
+
+- Dead export `getAvailableShells` (shell-detect.ts) — only its own test
+  referenced it; the test was removed with it.
+
 ## 0.5.5 (2026-09-18)
 
 ### Fixed — session-allow keying for destructive commands

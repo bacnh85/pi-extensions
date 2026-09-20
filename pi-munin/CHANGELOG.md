@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.5 (2026-09-20)
+
+### Fixed
+
+- **`munin_search` now validates `tag_mode`** — only `"all"` or `"any"` are
+  accepted; anything else throws a clear error naming the valid values
+  instead of passing an arbitrary string through to the server.
+
 ## 0.5.4 (2026-09-14)
 
 ### Fixed

@@ -108,11 +108,12 @@ export interface SnapshotResult {
 }
 
 /** Snapshot one file's content (relpath defaults to the skill file), then prune
- *  oldest beyond cap for THAT relpath. Same-millisecond + identical-hash
+ *  oldest beyond cap for THAT relpath. Content may be a Buffer — bundled
+ *  binary assets back up byte-for-byte. Same-millisecond + identical-hash
  *  collisions (rare) get a -N counter so the second snapshot is never lost. */
 export function snapshot(
   skillName: string,
-  content: string,
+  content: string | Buffer,
   cap: number,
   agentDirPath = agentDir(),
   relpath = "SKILL.md",
@@ -122,7 +123,7 @@ export function snapshot(
   const base = `${stamp()}-${contentHash(content).slice(0, 10)}`;
   let file = path.join(dir, `${base}.md`);
   for (let n = 2; existsSync(file); n++) file = path.join(dir, `${base}-${n}.md`);
-  writeFileSync(file, content, "utf8");
+  writeFileSync(file, content);
   const all = listBackups(skillName, relpath, agentDirPath).filter((f) => path.dirname(f) === dir);
   const pruned: string[] = [];
   for (const old of all.slice(0, Math.max(0, all.length - cap))) {

@@ -39,5 +39,5 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 ## Test
 
 ```bash
-RTK_DISABLED=1 pi -e ./pi-rtk
+node --test extensions/test/*.test.js
 ```

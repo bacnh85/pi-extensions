@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from "mocha";
 import { expect } from "chai";
-import { existsSync, mkdtempSync, readFileSync, utimesSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -444,6 +444,36 @@ describe("truncateOutput", () => {
     expect(second.tempPath).to.be.ok;
     expect(existsSync(first.tempPath!)).to.be.true;
     expect(readFileSync(first.tempPath!, "utf8")).to.equal("x".repeat(60 * 1024));
+  });
+
+  it("cap eviction is age-gated: young dir survives, old dir is deleted", () => {
+    // Young evicted dir: its path may already be in the model's hands, so it
+    // must still exist immediately after the 21st truncation (deletion is
+    // deferred to the remaining age instead).
+    const youngDir = mkdtempSync(join(tmpdir(), "pi-notebooklm-test-"));
+    writeFileSync(join(youngDir, "full-output.txt"), "fresh", "utf8");
+    TRUNCATION_DIRS.length = 0;
+    TRUNCATION_DIRS.push(youngDir);
+    // Fill the registry to the cap (20) with real dirs — the sweeper drops entries that don't exist on disk.
+    for (let i = 1; i < 20; i++) TRUNCATION_DIRS.push(mkdtempSync(join(tmpdir(), "pi-notebooklm-test-")));
+    const r = truncateOutput("w".repeat(60 * 1024));
+    expect(r.truncated).to.be.true;
+    expect(existsSync(youngDir)).to.be.true;
+    expect(TRUNCATION_DIRS).to.not.include(youngDir);
+    rmSync(youngDir, { recursive: true, force: true }); // deferred timer won't fire in-process — clean up here
+
+    // Old evicted dir (mtime backdated past the 10-minute gate) is removed immediately.
+    const oldDir = mkdtempSync(join(tmpdir(), "pi-notebooklm-test-"));
+    writeFileSync(join(oldDir, "full-output.txt"), "stale", "utf8");
+    const oldTime = new Date(Date.now() - 11 * 60 * 1000);
+    utimesSync(oldDir, oldTime, oldTime);
+    TRUNCATION_DIRS.length = 0;
+    TRUNCATION_DIRS.push(oldDir);
+    for (let i = 1; i < 20; i++) TRUNCATION_DIRS.push(mkdtempSync(join(tmpdir(), "pi-notebooklm-test-")));
+    const r2 = truncateOutput("v".repeat(60 * 1024));
+    expect(r2.truncated).to.be.true;
+    expect(existsSync(oldDir)).to.be.false;
+    expect(TRUNCATION_DIRS).to.not.include(oldDir);
   });
 
   it("sweeps truncation dirs older than 10 minutes", () => {

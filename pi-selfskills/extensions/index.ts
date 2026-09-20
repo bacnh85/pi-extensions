@@ -560,9 +560,9 @@ async function restoreAction(params: any, cwd: string, settings: ReturnType<type
       `No backup${params.backup ? ` named ${params.backup}` : ""} found for ${relpath} of skill "${skillName}" under ${backupRoot()}.`,
     );
   }
-  let backupContent: string;
+  let backupContent: Buffer;
   try {
-    backupContent = readFileSync(backupFile, "utf8");
+    backupContent = readFileSync(backupFile);
   } catch {
     return err(`Backup unreadable: ${backupFile}`);
   }
@@ -570,7 +570,7 @@ async function restoreAction(params: any, cwd: string, settings: ReturnType<type
   // are restored as-is.
   const target = relpath === "SKILL.md" ? gate.realpath : path.join(path.dirname(gate.realpath), relpath);
   if (relpath === "SKILL.md") {
-    const validated = validateSkillContent(backupContent, t.name);
+    const validated = validateSkillContent(backupContent.toString("utf8"), t.name);
     if (!validated.ok) {
       return err(`Refusing restore: backup content failed validation (${validated.reason}).`);
     }
@@ -579,10 +579,10 @@ async function restoreAction(params: any, cwd: string, settings: ReturnType<type
   // reasoning as patch); restore is itself reversible via the re-backup.
   let result: any;
   await withFileMutationQueue(target, async () => {
-    let current: string | null = null;
+    let current: Buffer | null = null;
     if (existsSync(target)) {
       try {
-        current = readFileSync(target, "utf8");
+        current = readFileSync(target);
       } catch {
         result = err(`File not readable: ${target}`);
         return;
@@ -688,7 +688,7 @@ async function writeAction(params: any, cwd: string, settings: ReturnType<typeof
     const existed = existsSync(target);
     let backupFile: string | null = null;
     try {
-      backupFile = existed ? snapshot(r.skillName, readFileSync(target, "utf8"), settings.backupCap, agentDir(), file).file : null;
+      backupFile = existed ? snapshot(r.skillName, readFileSync(target), settings.backupCap, agentDir(), file).file : null;
     } catch (e: any) {
       result = err(`Existing file unreadable, nothing written: ${target} (${e?.message ?? e})`);
       return;
@@ -738,7 +738,7 @@ async function deleteAction(params: any, cwd: string, settings: ReturnType<typeo
     await withFileMutationQueue(target, async () => {
       let backup;
       try {
-        backup = snapshot(r.skillName, readFileSync(target, "utf8"), settings.backupCap, agentDir(), file);
+        backup = snapshot(r.skillName, readFileSync(target), settings.backupCap, agentDir(), file);
       } catch (e: any) {
         result = err(`Existing file unreadable, nothing deleted: ${target} (${e?.message ?? e})`);
         return;
@@ -945,7 +945,7 @@ async function executeBatch(ops: any[], cwd: string, settings: ReturnType<typeof
         const existed = existsSync(p);
         let backup: string | null = null;
         try {
-          backup = existed ? snapshot(m.skillName, readFileSync(p, "utf8"), settings.backupCap, agentDir(), m.relpath).file : null;
+          backup = existed ? snapshot(m.skillName, readFileSync(p), settings.backupCap, agentDir(), m.relpath).file : null;
         } catch (e: any) {
           throw new Error(`existing file unreadable: ${p} (${e?.message ?? e})`);
         }

@@ -241,8 +241,7 @@ export default function (pi: ExtensionAPI) {
   // GLM Coding Plan via the Anthropic endpoint (ZCode parity). Registered
   // unconditionally — `apiKey: "$ZAI_ANTHROPIC_API_KEY"` makes /login
   // auto-available; the key resolves from auth.json or env at request time.
-  // Guarded: minimal fake-pi test harnesses don't stub registerProvider.
-  registerZaiAnthropicProvider?.(pi);
+  registerZaiAnthropicProvider(pi);
 
   let repairThisTurn = false;
   let hasErrorThisTurn = false;

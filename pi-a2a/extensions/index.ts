@@ -745,6 +745,9 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     getArgumentCompletions: (prefix) => {
       // Only the first token (peer name) is completable; the rest is free text.
       if (/\s/.test(prefix)) return null;
+      // lastA2aCtx is undefined until the first session_start (e.g. hot-reload);
+      // cfgFor(undefined) would throw.
+      if (!lastA2aCtx) return null;
       const cfg = cfgFor(lastA2aCtx as unknown as ExtensionContext);
       const peers = listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "", gatewayPeers: getGatewayPeers() });
       const q = prefix.trim().toLowerCase();

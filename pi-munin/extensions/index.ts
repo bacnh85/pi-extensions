@@ -10,6 +10,7 @@ import {
   validateMemoryTags,
   validateMemoryKey,
   validateSearchQuery,
+  validateTagMode,
   classifyError,
   sanitizeErrorMessage,
   getMuninConfig,
@@ -263,10 +264,11 @@ export default function muninExtension(pi: ExtensionAPI) {
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const { query, topK = 10, tags, tag_mode, since, before, include_total } = params as any;
       validateSearchQuery(query);
+      const tagMode = validateTagMode(tag_mode);
       const result = await withMuninClient(params, async (client, projectId) => {
         const searchParams: Record<string, unknown> = { query, topK };
         if (tags) searchParams.tags = parseTags(tags);
-        if (tag_mode) searchParams.tagMode = tag_mode;
+        if (tagMode) searchParams.tagMode = tagMode;
         if (since) searchParams.since = since;
         if (before) searchParams.before = before;
         if (include_total) searchParams.includeTotal = include_total;

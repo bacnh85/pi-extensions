@@ -250,6 +250,16 @@ export function validateSearchQuery(query: unknown): string {
   return query.trim();
 }
 
+/**
+ * Validate the search tag_mode parameter: only "all" or "any" are accepted.
+ * Returns undefined when absent (server default applies).
+ */
+export function validateTagMode(tagMode: unknown): string | undefined {
+  if (tagMode === undefined || tagMode === null || tagMode === "") return undefined;
+  if (tagMode === "all" || tagMode === "any") return tagMode;
+  throw new Error(`Invalid tag_mode "${String(tagMode)}". Valid values: "all" (default), "any"`);
+}
+
 // ---------------------------------------------------------------------------
 // Error classification
 // ---------------------------------------------------------------------------

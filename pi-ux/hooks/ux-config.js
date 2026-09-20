@@ -18,10 +18,6 @@ function normalizeMode(mode) {
   return RUNTIME_MODES.includes(normalized) ? normalized : null;
 }
 
-function normalizePersistedMode(mode) {
-  return normalizeMode(mode);
-}
-
 function isDeactivationCommand(text) {
   const t = String(text || '').trim().toLowerCase().replace(/[.!?\s]+$/, '');
   return t === 'stop ux' || t === 'normal mode';
@@ -102,7 +98,6 @@ module.exports = {
   getQuietStartup,
   getHideStatus,
   normalizeMode,
-  normalizePersistedMode,
   isDeactivationCommand,
   writeDefaultMode,
 };

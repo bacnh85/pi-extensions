@@ -190,3 +190,33 @@ test("a new turn clears the redo buffer (no stale re-apply)", async () => {
   await redo.handler("1", ctx);
   assert.match(ctx.notifies[ctx.notifies.length - 1].m, /Nothing to redo/);
 });
+test("session_start prunes checkpoint refs older than 30 days (new kept)", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const handlers = {};
+  const execCalls = [];
+  const fakePi = {
+    on(evt, handler) { handlers[evt] = handler; },
+    registerCommand() {},
+    async exec(_cmd, args) {
+      execCalls.push(args);
+      if (args[0] === "for-each-ref") {
+        return {
+          stdout: [
+            `refs/pi-checkpoints/oldsid/0 ${now - 31 * 86400}`, // old → delete
+            `refs/pi-checkpoints/oldsid/1 ${now - 30 * 86400}`, // exactly 30d → keep
+            `refs/pi-checkpoints/newsid/0 ${now - 60}`,         // new → keep
+          ].join("\n"),
+          stderr: "",
+        };
+      }
+      return { stdout: "", stderr: "" };
+    },
+  };
+  checkpointExtension(fakePi);
+  const repo = mkdtempSync(join(tmpdir(), "ck-prune-"));
+  TEMP_REPOS.push(repo);
+  mkdirSync(join(repo, ".git"));
+  await handlers.session_start({}, { cwd: repo, sessionManager: { getSessionId: () => "newsid" } });
+  const deletes = execCalls.filter((a) => a[0] === "update-ref" && a[1] === "-d").map((a) => a[2]);
+  assert.deepEqual(deletes, ["refs/pi-checkpoints/oldsid/0"]);
+});

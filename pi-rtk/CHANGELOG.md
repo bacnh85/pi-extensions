@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.2.3] - 2026-09-20
+
+- Docs: README Test section now names the real test command (`node --test extensions/test/*.test.js`) instead of a manual smoke run.
+
 ## 0.2.2 (2026-09-13)
 
 ### Fixed

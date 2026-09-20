@@ -1,6 +1,6 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import { detectAllShells, detectShell, getAvailableShells, getDefaultShell } from "../lib/shell-detect";
+import { detectAllShells, detectShell, getDefaultShell } from "../lib/shell-detect";
 import type { WindowsShellKind } from "../lib/shell-detect";
 
 describe("shell-detect", function () {
@@ -34,14 +34,6 @@ describe("shell-detect", function () {
       const info = detectShell(k);
       expect(info.kind).to.equal(k);
       expect(info.executable).to.be.a("string").and.not.empty;
-    }
-  });
-
-  it("getAvailableShells returns only available shells", function () {
-    if (process.platform !== "win32") this.skip();
-    const avail = getAvailableShells();
-    for (const s of avail) {
-      expect(s.available).to.be.true;
     }
   });
 

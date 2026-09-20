@@ -287,7 +287,32 @@ export function truncateOutput(text: string): { text: string; truncated: boolean
   sweepOldTruncationDirs();
   const dir = mkdtempSync(join(tmpdir(), "pi-notebooklm-"));
   TRUNCATION_DIRS.push(dir);
-  if (TRUNCATION_DIRS.length > TRUNCATION_DIRS_CAP) TRUNCATION_DIRS.shift();
+  if (TRUNCATION_DIRS.length > TRUNCATION_DIRS_CAP) {
+    const evicted = TRUNCATION_DIRS.shift();
+    // The sweeper can never see an evicted entry again — schedule its deletion
+    // here, with the same age gate as the sweeper: a young dir's path may
+    // already have been handed to the model, so deleting it now would ENOENT
+    // a later read. Delete immediately only if already old enough; otherwise
+    // defer by the remaining age.
+    if (evicted) {
+      let age = Number.MAX_SAFE_INTEGER;
+      try {
+        age = Date.now() - statSync(evicted).mtimeMs;
+      } catch {
+        /* treat unreadable/missing as ancient */
+      }
+      const remaining = Math.max(0, TRUNCATION_DIR_MAX_AGE_MS - age);
+      const del = () => {
+        try {
+          rmSync(evicted, { recursive: true, force: true });
+        } catch {
+          /* best-effort */
+        }
+      };
+      if (remaining === 0) del();
+      else setTimeout(del, remaining).unref();
+    }
+  }
   const tempPath = join(dir, "full-output.txt");
   writeFileSync(tempPath, text, "utf8");
 

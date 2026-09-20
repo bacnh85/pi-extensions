@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.8.6] - 2026-09-20
+
+- Fixed: removed dead optional chaining on `registerZaiAnthropicProvider?.(pi)` — it is a static import, the `?.` never fired.
+
 ## 0.8.5 (2026-09-18)
 
 - Fixed: turn-end cache-stats now falls back to 0 for missing or non-finite usage numbers (was `?? 0`, which passes NaN through and rendered "Hit rate: NaN%") — pinned by new unit test.

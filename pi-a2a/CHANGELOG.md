@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.10] - 2026-09-20
+
+### Fixed
+
+- `a2a-send` argument completions no longer throw before the first
+  `session_start` (e.g. after hot-reload): they return no completions while
+  `lastA2aCtx` is unset instead of calling `cfgFor(undefined)`.
+
 ## 0.7.9 (2026-09-18)
 
 ### Fixed

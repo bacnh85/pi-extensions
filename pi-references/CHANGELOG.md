@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.3 (2026-09-20)
+
+### Fixed
+
+- **`cacheRoot` now derives from `os.homedir()`** instead of
+  `process.env.HOME || ""` — on Windows (where `HOME` is typically unset) the
+  git-clone cache path collapsed to a bogus root-relative
+  `/.pi/agent/refs/<alias>` target.
+- README/doc-comment now state that git refs clone **eagerly at session
+  start**, not "lazily on first use" (the code has always cloned all refs in
+  the `session_start` handler).
+
 ## 0.1.2 (2026-09-12)
 
 ### Fixed

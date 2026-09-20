@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.7] - 2026-09-20
+
+### Fixed
+
+- Group windowing: a single group with more than `MAX_VISIBLE_ROWS` (18)
+  rows now renders in full instead of producing an empty panel with a
+  "1-0 of N" footer (the selected group is clamped into the window).
+
+### Changed
+
+- `ConfigPanelModel.invalidate()` (zero internal callers, but required by the
+  SDK's `Component` interface) is now documented with that contract role and
+  also requests a render after replaying the flat model.
+
 ## 0.1.6 (2026-09-12)
 
 ### Fixed

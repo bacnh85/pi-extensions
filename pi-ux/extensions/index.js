@@ -10,7 +10,6 @@ const {
   getQuietStartup,
   getHideStatus,
   normalizeMode,
-  normalizePersistedMode,
   isDeactivationCommand,
   writeDefaultMode,
 } = require("../hooks/ux-config.js");
@@ -21,14 +20,14 @@ export const readDefaultMode = getDefaultMode;
 export const readQuietStartup = getQuietStartup;
 
 export function resolveSessionMode(entries, fallbackMode = DEFAULT_MODE) {
-  const fallback = normalizePersistedMode(fallbackMode) || DEFAULT_MODE;
+  const fallback = normalizeMode(fallbackMode) || DEFAULT_MODE;
   if (!Array.isArray(entries)) return fallback;
 
   for (let i = entries.length - 1; i >= 0; i -= 1) {
     const entry = entries[i];
     if (entry?.type !== "custom" || entry?.customType !== "ux-mode") continue;
 
-    const mode = normalizePersistedMode(entry?.data?.mode);
+    const mode = normalizeMode(entry?.data?.mode);
     if (mode) return mode;
   }
 
@@ -36,7 +35,7 @@ export function resolveSessionMode(entries, fallbackMode = DEFAULT_MODE) {
 }
 
 export function parseUxCommand(text, defaultMode = DEFAULT_MODE) {
-  const fallback = normalizePersistedMode(defaultMode) || DEFAULT_MODE;
+  const fallback = normalizeMode(defaultMode) || DEFAULT_MODE;
   const normalizedText = String(text || "").trim().toLowerCase();
 
   if (!normalizedText) {
@@ -181,7 +180,7 @@ export default function uxExtension(pi) {
   }
 
   const setMode = (mode, ctx) => {
-    const normalized = normalizePersistedMode(mode);
+    const normalized = normalizeMode(mode);
     if (!normalized) return;
 
     pi.appendEntry("ux-mode", { mode: normalized });

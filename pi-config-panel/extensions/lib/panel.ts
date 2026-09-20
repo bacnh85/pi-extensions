@@ -345,8 +345,10 @@ export class ConfigPanelModel implements Component {
     this.onRequestRender?.();
   }
 
+  /** SDK Component contract — external invalidation replays the flat model. */
   invalidate(): void {
     this.rebuildFlat();
+    this.onRequestRender?.();
   }
 
   /** Replace the row model (after an action mutated the config, e.g. added an
@@ -423,6 +425,8 @@ export class ConfigPanelModel implements Component {
       if (selGroup <= last || first >= selGroup) break;
       first++;
     }
+    // A single group over budget still renders whole — an empty panel is worse.
+    if (last < selGroup) last = selGroup;
 
     const visibleStart = groupStarts[first]!;
     const visibleEnd = groupStarts[last + 1] ?? total;

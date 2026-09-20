@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.42] - 2026-09-20
+
+- Docs: troubleshooting no longer claims `COMMAND_CODE_API_KEY` / `ZAI_CODING_CN_API_KEY` env vars work — the code reads auth.json only (credentials stored via `pi /login`).
+- Docs: documented `ROUTER_MGMT_TOKEN` / `OMNIROUTE_MGMT_TOKEN` env vars for the OmniRoute raw USD-balance fetch (manage-scope credential override, falling back to the router API key).
+
 ## 0.1.41 (2026-09-18)
 
 ### Changed

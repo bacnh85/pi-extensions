@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.7] - 2026-09-20
+
+- Fixed: interactive installer now checks each `pi install` exit status like `add` does — a failed install prints `install failed: <source>` instead of silence.
+- Docs: dropped the stale inline "Versions:" sentence from the README (CHANGELOG owns history).
+
 ## 0.1.6 (2026-09-18)
 
 - `remove` rejects `-l/--local` with a clear error instead of silently ignoring it (local scope only applies to `add`).

@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.3.5] - 2026-09-20
+
+- Refactored: `checkAgyHealth` and `checkAgyConnectivity` share one parameterized spawn runner (`runAgyCheck`) — ~55 duplicated lines removed; both exported signatures, spawn args, and error messages unchanged.
+
 ## 0.3.4 (2026-09-12)
 
 ### Fixed

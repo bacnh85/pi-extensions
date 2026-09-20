@@ -275,6 +275,7 @@ describe("pi-fff tools", () => {
     writeFileSync(join(fixture, ".large"), "needle\n");
     truncateSync(join(fixture, ".large"), 10 * 1024 * 1024 + 1);
     writeFileSync(join(fixture, ".dense"), "x\n".repeat(1_000_000));
+    writeFileSync(join(fixture, ".bin"), "needle\nbinary\0data\n");
     const root = fakeFinder({ fileSearch: () => search([]), grep: () => grep([]), multiGrep: () => grep([]) });
     const runtime = harness(root, undefined, {}, { cwd: fixture });
     try {
@@ -283,6 +284,8 @@ describe("pi-fff tools", () => {
       expect(text(await run(runtime.tools.get("fffind"), { pattern: "*.ts", path: ".note" }))).to.equal("No files found matching pattern");
       expect(text(await run(runtime.tools.get("fffind"), { pattern: ".note", path: ".note", exclude: ".note" }))).to.equal("No files found matching pattern");
       expect(text(await run(runtime.tools.get("ffgrep"), { pattern: "needle", path: ".large" }))).to.equal("No matches found");
+      // NUL byte in the first chunk → binary file rejected even though "needle" matches
+      expect(text(await run(runtime.tools.get("ffgrep"), { pattern: "needle", path: ".bin" }))).to.equal("No matches found");
       const dense = await run(runtime.tools.get("ffgrep"), { pattern: "x", path: ".dense", limit: 1 });
       expect(text(dense)).to.include('cursor="grep:');
       const first = await run(runtime.tools.get("ffgrep"), { pattern: "needle", path: ".note", limit: 1 });

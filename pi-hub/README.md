@@ -161,7 +161,7 @@ npx @bacnh85/pi-hub add pi-permission -l
 
 ## Changelog
 
-See [CHANGELOG.md](./CHANGELOG.md). Versions: 0.1.0 initial, 0.1.1 redraw fix, 0.1.2 catalog self-reference fix, 0.1.3 hang fix + full-width descriptions, 0.1.4 Windows fixes + catalog cleanup.
+See [CHANGELOG.md](./CHANGELOG.md).
 
 ## License
 

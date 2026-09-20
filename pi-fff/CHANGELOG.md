@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.1 (2026-09-20)
+
+### Changed
+
+- Removed dead override-mode branches from the find tool's execute —
+  unreachable since the early `searchOverrideFind` return; non-override
+  values are used directly.
+
+### Tests
+
+- Added direct coverage for the manual hidden-file scanner's NUL-byte
+  rejection (`grepExplicitHiddenFile` via ffgrep execute); >10MB rejection
+  was already covered.
+
 ## 0.8.0 (2026-08-31)
 
 ### Changed

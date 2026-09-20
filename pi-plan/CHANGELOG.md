@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.2 (2026-09-20)
+
+### Changed
+
+- Removed dead `"unavailable"` ternary arms in workflow baseline capture —
+  both error paths already return before these lines, so the success values
+  are used directly.
+
 ## 0.14.1 (2026-09-15)
 
 ### Fixed

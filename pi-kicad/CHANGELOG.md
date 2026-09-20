@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.1.6] - 2026-09-20
+
+### Fixed
+
+- The `mkdtemp` daemon config dir (`pi-kicad-daemon-*`) is now removed in
+  `killChild` instead of leaking in the tmpdir until reboot — including when
+  the spawned Konnect dies before becoming healthy (that path now reaps the
+  child instead of leaving a `running: true` zombie and an orphaned dir for
+  the next `ensure()` to strand).
+- SIGINT/SIGTERM now run the same cleanup as `exit` and then terminate the
+  process (130/143) — **but only when no other listener owns the signal**:
+  pi's interactive host prepends its own SIGTERM shutdown handler (and guards
+  SIGINT while suspended); in that case cleanup runs and the host's handler
+  finishes its graceful shutdown (which fires `exit` → our cleanup again)
+  instead of being cut short by an exit race. A `once()` signal handler
+  suppresses the default terminator, so without an explicit exit the first
+  Ctrl+C in print/RPC modes left the host alive with a dead daemon and the
+  handler disarmed. The plain `exit` hook still covers host-managed shutdown
+  paths. Handlers remain idempotent against double-run, and `stop()` unbinds
+  them — handler lifetime tracks the daemon, so discard/respawn cycles don't
+  accumulate process signal listeners.
+- `callKonnect` removes its abort listener on completion — no more listener
+  leak per call on the caller's `AbortSignal` (`{once:true}` kept).
+- `probeHealth` clears its timeout in a `finally` (timer leaked on abort).
+
+### Removed
+
+- Unused `probeHealth` re-export from the extension entrypoint.
+
 ## 0.1.5 (2026-09-14)
 
 ### Maintenance

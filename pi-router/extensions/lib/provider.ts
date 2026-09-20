@@ -65,6 +65,3 @@ export function registerProvider(pi: ExtensionAPI, settings: RouterSettings): vo
   });
 }
 
-export function unregisterProvider(pi: ExtensionAPI): void {
-  pi.unregisterProvider(PROVIDER_ID);
-}

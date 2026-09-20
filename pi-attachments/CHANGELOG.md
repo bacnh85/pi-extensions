@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.3.2] - 2026-09-20
+
+- Fixed: `tray.resolve(raw)` hoisted out of the per-token loop — computed once per submitted message instead of once per `[[attach:]]` token.
+
 ## 0.3.1 (2026-09-12)
 
 ### Fixed

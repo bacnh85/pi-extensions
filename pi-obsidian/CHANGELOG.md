@@ -1,9 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.8.16 (2026-09-20)
 
 ### Fixed
 
+- **`files` command no longer reports "No files found." on real CLI failures.**
+  The non-recursive `files` exec was wrapped in a bare catch that fell through
+  to the empty-result message, so a non-zero exit / timeout / missing CLI was
+  indistinguishable from an empty vault (the recursive path already propagated
+  errors). Non-recursive command failures now return
+  `Obsidian CLI error: <message>`; genuine empty results keep
+  "No files found.".
+- **Focused-vault lookup memoized.** `focusedVaultNameForCwd` spawned
+  `obsidian vault` on every tool execute while `allVaultRoots` cached the
+  identical call. Both now derive from one memoized spawn; per-site error
+  behavior is unchanged (name lookup still surfaces CLI failure, root guard
+  still treats failure as no roots) — and failures or unparseable output are
+  not memoized, so a session started before the Obsidian app launches still
+  recovers on a later call.
 - **SMB/NFS vaults: write verification no longer false-fails after writes.**
   Obsidian 1.13.x drops eval echoes when the async body does real I/O, and
   network mounts delay read-back propagation, so the old in-eval verify

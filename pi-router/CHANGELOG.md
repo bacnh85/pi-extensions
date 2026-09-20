@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.8 (2026-09-20)
+
+### Removed
+
+- Deleted dead `unregisterProvider` export (zero callers repo-wide).
+
 ## 1.1.7 (2026-09-14)
 
 ### Fixed

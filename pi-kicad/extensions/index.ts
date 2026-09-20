@@ -236,4 +236,4 @@ function errMsg(err: unknown): string {
 }
 
 // Re-export the raw client for direct use / tests.
-export { callKonnect, mapContent, probeHealth } from "./lib/konnect-client.js";
+export { callKonnect, mapContent } from "./lib/konnect-client.js";

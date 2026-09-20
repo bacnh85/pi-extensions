@@ -6,11 +6,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const { DEFAULT_MODE, normalizeMode, normalizePersistedMode } = require('./ux-config');
+const { DEFAULT_MODE, normalizeMode, isDeactivationCommand } = require('./ux-config');
 const SKILL_PATH = path.join(__dirname, '..', 'skills', 'ux-design', 'SKILL.md');
 
 function getUxInstructions(mode) {
-  const configuredMode = normalizePersistedMode(mode) || DEFAULT_MODE;
+  const configuredMode = normalizeMode(mode) || DEFAULT_MODE;
   const effectiveMode = normalizeMode(configuredMode) || DEFAULT_MODE;
 
   const banner = effectiveMode === 'strict'

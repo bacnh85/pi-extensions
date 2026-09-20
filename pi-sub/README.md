@@ -82,6 +82,25 @@ The endpoint URL is read from `~/.pi/agent/settings.json` (`router.baseUrl`), en
 Router (172.30.55.22:20128) 145 tok/s
 ```
 
+#### Raw USD balance (credit-based upstreams)
+
+Credit-based upstreams (e.g. DeepSeek) only appear on the om-usage report as
+meaningless normalized percentages. When the report has no usable windows,
+`pi-sub` additionally queries OmniRoute's management usage API for the raw USD
+balance (shown as `M:$X.XX`): it discovers the connection id via the
+key-authable `GET /api/v1/me/status`, then reads `GET /api/usage/<connectionId>`
+(`quotas.credits_usd.remaining`).
+
+The management call needs a manage-scope credential: the router API key itself
+works when it holds the **manage** scope (OmniRoute dashboard → API Keys), or
+set one of these env vars to override it:
+
+- `ROUTER_MGMT_TOKEN` — manage-scope API key or `oma_` CLI token
+- `OMNIROUTE_MGMT_TOKEN` — legacy alias, checked second
+
+Without either, the router API key from auth.json is used as-is; if it lacks
+the manage scope the balance fetch simply returns nothing.
+
 ### Command Code
 
 Command Code exposes live usage windows via its `/alpha/billing/credits` endpoint (same Provider API key used for `/provider/v1` models — no cookies). The footer shows the active account/key label, 5-hour and weekly remaining windows with reset countdowns, and last response speed:
@@ -189,9 +208,9 @@ Refreshes are cached briefly to avoid excessive usage endpoint calls.
 
 - **OpenAI Codex**: Pi auth must contain an `openai-codex` OAuth entry in `~/.pi/agent/auth.json` or `$PI_CODING_AGENT_DIR/auth.json`. The entry must include `access` and `accountId` fields.
 - **OpenCode Go**: Pi auth must contain an `opencode-go` API key entry (via `/login` or env var). The entry must have a `key` field or an `accountId` field. OpenCode Go/Zen usage windows and Zen balance are not shown because no public API is currently documented for those values.
-- **Command Code**: Pi auth must contain a `commandcode` API key entry (via `/login commandcode` or the `COMMAND_CODE_API_KEY` env var). The entry must have a `key` field or an `accountId` field. Usage is read from `https://api.commandcode.ai/alpha/billing/credits` with the same key; 5-hour and weekly windows plus the monthly credit balance are displayed.
+- **Command Code**: Pi auth must contain a `commandcode` API key entry in `~/.pi/agent/auth.json` (add it with `pi /login` → commandcode; there is no env-var fallback). The entry must have a `key` field or an `accountId` field. Usage is read from `https://api.commandcode.ai/alpha/billing/credits` with the same key; 5-hour and weekly windows plus the monthly credit balance are displayed.
 - **Z.ai**: Pi auth must contain a `zai` entry in `auth.json` with a `key` field (the same API key used for Z.ai model access via `@czottmann/pi-zai-api`). The Z.ai provider must be registered (e.g., `pi install npm:@czottmann/pi-zai-api`).
-- **Z.ai Coding Plan (China)**: The built-in `zai-coding-cn` provider targets `https://open.bigmodel.cn/api/coding/paas/v4`. Pi auth must contain a `zai-coding-cn` entry with a `key` field (set via `/login` or the `ZAI_CODING_CN_API_KEY` env var). Quota is read from the BigModel endpoint `https://open.bigmodel.cn/api/monitor/usage/quota/limit`.
+- **Z.ai Coding Plan (China)**: The built-in `zai-coding-cn` provider targets `https://open.bigmodel.cn/api/coding/paas/v4`. Pi auth must contain a `zai-coding-cn` entry with a `key` field in `~/.pi/agent/auth.json` (add it with `pi /login`; there is no env-var fallback). Quota is read from the BigModel endpoint `https://open.bigmodel.cn/api/monitor/usage/quota/limit`.
 - For API-key-only providers, account labels come from stored auth metadata (`email`, `label`, `name`, or `accountId`) when available; otherwise `pi-sub` displays a non-secret SHA-256 key fingerprint such as `Z.ai key#1a2b3c4d`.
 - `pi-sub` redacts auth/token-related errors and never prints credentials.
 

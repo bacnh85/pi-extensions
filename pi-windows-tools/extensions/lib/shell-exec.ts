@@ -100,7 +100,7 @@ export function executeCommand(command: string, options: ExecOptions = {}): Prom
   const { exe, args } = buildShellArgs(shellKind, command, resolveWslDistro(shellKind, options.cwd));
 
   return new Promise((resolve) => {
-    const child = spawn(exe, args, { cwd, env: mergeEnv(options.env || {}) });
+    const child = spawn(exe, args, { cwd, env: mergeEnv(options.env || {}), windowsHide: true });
     let stdout = "";
     let stderr = "";
     let outputBytes = 0;

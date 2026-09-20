@@ -335,24 +335,38 @@ export default function piWebExtension(pi: ExtensionAPI) {
         signal,
       );
       const id = result.id || (result.data as Record<string, unknown> | undefined)?.id;
+      let pollTimedOut = false;
       if (params.poll && id && !Array.isArray(result.data)) {
         const { abortableSleep } = await import("./lib/retry");
+        // Honor timeout_ms for the whole poll loop (same clamp as web_interact
+        // step budgets); absent → legacy behavior (iteration cap only).
+        const deadline =
+          typeof params.timeout_ms === "number" ? Date.now() + Math.min(Math.max(params.timeout_ms, 1_000), 600_000) : 0;
         for (let i = 0; i < 60; i++) {
           result = await firecrawlRequest(fcConfig, "GET", `/crawl/${id}`, undefined, signal);
           if (["completed", "failed", "cancelled"].includes(
             String(result.status || (result.data as Record<string, unknown> | undefined)?.status || ""),
-          )) break;
+          ))
+            break;
+          if (deadline && Date.now() + 2000 > deadline) {
+            pollTimedOut = true;
+            break;
+          }
           await abortableSleep(2000, signal);
         }
       }
       const pages = Array.isArray(result.data)
         ? (result.data as Record<string, unknown>[])
         : ((result.data as Record<string, unknown>)?.data as Record<string, unknown>[]) || [];
-      const text = pages.length
+      let text = pages.length
         ? pages.map((p: Record<string, unknown>) => formatFirecrawlScrape({ data: p } as Record<string, unknown>, maxChars)).join("\n\n---\n\n")
         : id
           ? `Crawl started: ${id}\nUse poll=true or check Firecrawl status/dashboard.`
           : JSON.stringify(result, null, 2);
+      if (pollTimedOut) {
+        const status = String(result.status || (result.data as Record<string, unknown> | undefined)?.status || "unknown");
+        text += `\n\n⚠ Polling stopped at timeout_ms before the crawl finished (status: ${status}); this is the current incomplete state.`;
+      }
       return { content: [{ type: "text" as const, text: truncateText(text) }], details: result };
     },
   });

@@ -156,9 +156,12 @@ export async function probeHealth(
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 2000);
-    const res = await f(`${baseUrl(port)}${HEALTH_PATH}`, { signal: ctrl.signal });
-    clearTimeout(t);
-    return res.ok && (await res.text()).trim() === "ok";
+    try {
+      const res = await f(`${baseUrl(port)}${HEALTH_PATH}`, { signal: ctrl.signal });
+      return res.ok && (await res.text()).trim() === "ok";
+    } finally {
+      clearTimeout(t);
+    }
   } catch {
     return false;
   }
@@ -172,7 +175,8 @@ export async function callKonnect(opts: CallOptions): Promise<unknown> {
   const f = opts.fetchImpl ?? fetch;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 60_000);
-  if (opts.signal) opts.signal.addEventListener("abort", () => ctrl.abort(), { once: true });
+  const onAbort = () => ctrl.abort();
+  if (opts.signal) opts.signal.addEventListener("abort", onAbort, { once: true });
 
   let res: Response;
   try {
@@ -184,6 +188,9 @@ export async function callKonnect(opts: CallOptions): Promise<unknown> {
     });
   } finally {
     clearTimeout(timer);
+    // Drop the listener on normal completion so the caller's signal isn't
+    // retained by every finished call.
+    if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
   }
 
   if (!res.ok) {

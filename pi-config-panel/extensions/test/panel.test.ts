@@ -231,6 +231,22 @@ describe("panel kernel", () => {
     }
   });
 
+  it("single group over budget still renders its rows (no empty panel)", () => {
+    const cfg = DEFAULTS();
+    // 20 rows in one group exceeds MAX_VISIBLE_ROWS(18) → old windowing
+    // produced last=-1 and rendered zero rows with footer "1-0 of 20".
+    cfg.entries = Object.fromEntries(
+      Array.from({ length: 20 }, (_, i) => [String.fromCharCode(97 + i), `v${i}`]),
+    );
+    const groups = buildRows(cfg);
+    const model = new ConfigPanelModel([groups[1]!], null); // entries-only: 20 rows, 1 group
+    const lines = model.render(80).join("\n");
+    assert.include(lines, "ENTRIES");
+    assert.include(lines, "Entry a");
+    assert.include(lines, "Entry t");
+    assert.notInclude(lines, "1-0 of 20");
+  });
+
   it("custom title renders instead of the default", () => {
     const model = new ConfigPanelModel(buildRows(DEFAULTS()), null, "Command Code Configuration");
     const out = model.render(80).join("\n");

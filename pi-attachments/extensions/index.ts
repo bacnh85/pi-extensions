@@ -140,11 +140,12 @@ export default function piAttachments(pi: ExtensionAPI): void {
     // a. Resolve [[attach:name]] tokens (tray first, then persistent registry).
     //    `]` in a basename is allowed when not followed by the closing `]]`
     //    (e.g. a dropped file named "we]ird.png").
+    const trayItems = tray.resolve(raw); // once per message — loop-invariant
     for (const m of raw.matchAll(/\[\[attach:((?:[^\]]|\](?!\]))+)\]\]/g)) {
       const token = m[0];
       const name = m[1];
       const start = m.index;
-      const trayItem = tray.resolve(raw).find((i) => i.token === token);
+      const trayItem = trayItems.find((i) => i.token === token);
       const path = trayItem?.path ?? lookup(name);
       if (!path) continue; // unknown token — leave as-is for the model
 

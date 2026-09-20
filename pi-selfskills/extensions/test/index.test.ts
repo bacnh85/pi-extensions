@@ -568,6 +568,50 @@ describe("pi-selfskills extension", () => {
     expect(restored.includes(Buffer.from([0xef, 0xbf, 0xbd]))).to.equal(false); // no utf8 replacement char
   });
 
+  it("write over a binary bundled file backs up byte-identical content", async () => {
+    const skillDir = join(defaultSkillsDir(), "alpha");
+    writeSkill(defaultSkillsDir(), "alpha", "Rule one.\nSee references/logo.\n");
+    mkdirSync(join(skillDir, "references"), { recursive: true });
+    const bin = Buffer.from([0x89, 0x00, 0xff, 0xfe, 0x50, 0x4e, 0x47]);
+    writeFileSync(join(skillDir, "references", "img.png"), bin);
+    const { tools, ctx } = harness(cwd);
+    await tools.skill_manage.execute("id", { action: "read", skill: "alpha" }, undefined, undefined, ctx);
+    const w = await tools.skill_manage.execute(
+      "id",
+      { action: "write", skill: "alpha", file: "references/img.png", content: "replaced" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(w.content[0].text).to.include("backed up to");
+    const backupBytes = readFileSync(w.details.backup as string);
+    expect(backupBytes.equals(bin), "backup bytes identical").to.equal(true);
+    expect(backupBytes.includes(Buffer.from([0xef, 0xbf, 0xbd]))).to.equal(false); // no utf8 replacement char
+  });
+
+  it("batch write over a binary bundled file backs up byte-identical content (0.3.2 batch path)", async () => {
+    const skillDir = join(defaultSkillsDir(), "alpha");
+    writeSkill(defaultSkillsDir(), "alpha", "Rule one.\nSee references/logo.\n");
+    mkdirSync(join(skillDir, "references"), { recursive: true });
+    const bin = Buffer.from([0x89, 0x00, 0xff, 0xfe, 0x50, 0x4e, 0x47]);
+    writeFileSync(join(skillDir, "references", "img.png"), bin);
+    const { tools, ctx } = harness(cwd);
+    await tools.skill_manage.execute("id", { action: "read", skill: "alpha" }, undefined, undefined, ctx);
+    const b = await tools.skill_manage.execute(
+      "id",
+      { operations: [{ action: "write", skill: "alpha", file: "references/img.png", content: "replaced" }] },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(b.content[0].text).to.include("wrote");
+    const m = /\(backup (.+)\)/.exec(b.content[0].text as string);
+    expect(m, "backup path in batch output").to.not.equal(null);
+    const backupBytes = readFileSync(m![1]);
+    expect(backupBytes.equals(bin), "backup bytes identical").to.equal(true);
+    expect(backupBytes.includes(Buffer.from([0xef, 0xbf, 0xbd]))).to.equal(false); // no utf8 replacement char
+  });
+
   it("batch patch on an unreadable SKILL.md → structured error, no raw throw", function () {
     if (typeof process.getuid === "function" && process.getuid() === 0) this.skip(); // chmod ignored as root
     const file = writeSkill(defaultSkillsDir(), "alpha", "Rule one.\n");
