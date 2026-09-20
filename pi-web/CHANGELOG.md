@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.17.3 (2026-09-20)
+
+### Fixed
+
+- **`web_interact` no longer kills the whole pi process when Chrome dies mid-navigation** —
+  when `Page.navigate` rejects first (wedged Chrome closes the DevTools websocket), the load-wait
+  timer rejected 15s later with no consumer and the orphaned rejection escalated to a fatal
+  `uncaughtException`, exiting pi and losing the session. The `waitForLoad` rejection is now
+  marked handled at the source (same idiom as the Gemini `raceGuard`); awaiting still throws
+  normally, so navigation timeouts still surface as tool errors. Regression-tested with an
+  `unhandledRejection` spy (incident 2026-09-20, DTDS-CRM).
+
 ## 0.17.2 (2026-09-20)
 
 ### Fixed

@@ -18,6 +18,7 @@ import {
   runInteraction,
   unwrapEvaluate,
   validateSteps,
+  waitForLoad,
   type StepOutcome,
   type WsLike,
 } from "../../lib/cdp";
@@ -232,6 +233,25 @@ describe("CdpConnection over a fake websocket", () => {
     const p4 = conn.send("Runtime.evaluate");
     ws.close();
     expect(await rejectMsg(p4)).to.match(/closed/);
+  });
+
+  it("waitForLoad: orphaned timer rejection is pre-handled (pi-crash regression 2026-09-20)", async () => {
+    const ws = new FakeWs();
+    const conn = await CdpConnection.connect("ws://fake", () => ws);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    // Deliberately not awaited — simulates Page.navigate rejecting first so the
+    // caller skips `await loaded`; the 20ms timer then rejects with no consumer.
+    const loaded = waitForLoad(conn, "s1", 20);
+    try {
+      await new Promise((r) => setTimeout(r, 60));
+      expect(unhandled).to.deep.equal([]); // unpatched: contains the timeout Error
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    // Normal path intact: awaiting still throws (timeout still surfaces).
+    expect(await rejectMsg(loaded)).to.match(/Navigation timed out after 0\.02s/);
   });
 });
 

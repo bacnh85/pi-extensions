@@ -346,8 +346,14 @@ function raceBounded<T>(p: Promise<T>, ms: number, timeoutError: string): Promis
 const stepTimeoutError = (ms: number) =>
   `timed out after ${Math.round(ms / 1000)}s — page likely blocked (native dialog?) or evaluate never resolved; raise timeout_ms for slower steps`;
 
-async function waitForLoad(connection: CdpConnection, sessionId: string): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
+// Non-async on purpose: `async` would wrap the return in a NEW promise whose
+// rejection isn't covered by the mark-handled below.
+export function waitForLoad(
+  connection: CdpConnection,
+  sessionId: string,
+  timeoutMs: number = NAVIGATE_TIMEOUT_MS,
+): Promise<void> {
+  const promise = new Promise<void>((resolve, reject) => {
     // Register BEFORE navigate so the event can't race past us.
     const onLoaded = (_params: Record<string, unknown>, sid?: string) => {
       if (sid !== sessionId) return;
@@ -355,10 +361,17 @@ async function waitForLoad(connection: CdpConnection, sessionId: string): Promis
       resolve();
     };
     const timer = setTimeout(() => {
-      reject(new Error(`Navigation timed out after ${NAVIGATE_TIMEOUT_MS / 1000}s`));
-    }, NAVIGATE_TIMEOUT_MS);
+      reject(new Error(`Navigation timed out after ${timeoutMs / 1000}s`));
+    }, timeoutMs);
     connection.on("Page.loadEventFired", onLoaded);
   });
+  // Mark handled at the source: when Page.navigate rejects first (wedged Chrome
+  // closes the ws), the caller never awaits this — an orphaned timer rejection
+  // escalates to a fatal uncaughtException and kills pi (incident 2026-09-20).
+  // Same idiom as raceGuard in gemini.ts. Awaiting still throws normally, so
+  // navigation timeouts still surface as tool errors.
+  promise.catch(() => {});
+  return promise;
 }
 
 async function runStep(
