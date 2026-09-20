@@ -1284,6 +1284,98 @@ describe("reverse channel hardening", () => {
     assert.deepEqual(hits, ["/crlf"]);
     local.close(); gw.close();
   });
+
+  it("tolerates an undecodable body — dropped+logged, zero unhandled rejections, channel survives", async function () {
+    this.timeout(10000);
+    const hits: string[] = [];
+    const local = http.createServer((rq, rs) => {
+      hits.push(rq.url!);
+      rs.writeHead(200); rs.end("ok");
+    });
+    await new Promise<void>((r) => local.listen(0, "127.0.0.1", r));
+    const port = (local.address() as any).port;
+    const logs: string[] = [];
+    const gw = http.createServer((rq, rs) => {
+      if (rq.url!.split("?")[0] === "/channel") {
+        rs.writeHead(200, { "content-type": "text/event-stream" });
+        // Corrupted body first (invalid base64 — atob throws) …
+        rs.write(`event: request\ndata: ${JSON.stringify({ id: 10, method: "POST", path: "/bad", headers: {}, body_b64: "!!not-base64@@" })}\n\n`);
+        // … then a valid one: the stream must live on.
+        rs.write(`event: request\ndata: ${JSON.stringify({ id: 11, method: "GET", path: "/good", headers: {}, body_b64: "" })}\n\n`);
+        return;
+      }
+      rs.writeHead(404); rs.end();
+    });
+    await new Promise<void>((r) => gw.listen(0, "127.0.0.1", r));
+    const gwPort = (gw.address() as any).port;
+    const epoch = { value: 0 };
+    const cc = new ChannelClient(
+      { url: `http://127.0.0.1:${gwPort}`, token: TOKEN },
+      `http://127.0.0.1:${port}`,
+      (m) => logs.push(String(m)),
+      epoch,
+    );
+    // A malformed envelope must never surface as an unhandled rejection
+    // (dispatch is fire-and-forget: `void p.finally(...)` discards the derived
+    // promise). Attach before the envelopes flow so the observation itself is
+    // deterministic, and release it when the test ends.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => { unhandled.push(e); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await cc.start();
+      await new Promise((r) => setTimeout(r, 400));
+      assert.isEmpty(unhandled, `undecodable body must not reject unhandled: ${String(unhandled[0])}`);
+      assert.include(logs.join("\n"), "undecodable body", "drop is logged");
+      assert.deepEqual(hits, ["/good"], "bad body dropped without killing the stream");
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      cc.stop();
+      local.close(); gw.closeAllConnections?.(); gw.close();
+    }
+  });
+
+  it("cuts the stream when no SSE delimiter ever arrives (bounded frame accumulator)", async function () {
+    this.timeout(20000);
+    const logs: string[] = [];
+    const gw = http.createServer((rq, rs) => {
+      if (rq.url!.split("?")[0] === "/channel") {
+        rs.writeHead(200, { "content-type": "text/event-stream" });
+        // 64 KiB data lines, NEVER a blank line: handleFrame never runs, so the
+        // MAX_B64 envelope guard never sees this — only a cap on the
+        // accumulator itself bounds it.
+        const chunk = "data: " + "A".repeat(65_536) + "\n";
+        const iv = setInterval(() => rs.write(chunk), 20);
+        rs.on("close", () => clearInterval(iv));
+        return;
+      }
+      rs.writeHead(404); rs.end();
+    });
+    await new Promise<void>((r) => gw.listen(0, "127.0.0.1", r));
+    const gwPort = (gw.address() as any).port;
+    const epoch = { value: 0 };
+    const cc = new ChannelClient(
+      { url: `http://127.0.0.1:${gwPort}`, token: TOKEN },
+      "http://127.0.0.1:1",
+      (m) => logs.push(String(m)),
+      epoch,
+    );
+    try {
+      await cc.start();
+      // ~2s ≈ 6+ MB streamed with no delimiter — far past the largest legal
+      // envelope (≤4 MiB decoded); the accumulator must have been cut by now.
+      await new Promise((r) => setTimeout(r, 2200));
+      assert.include(
+        logs.join("\n"),
+        "oversized undelimited",
+        "undelimited flood logged and the stream cut",
+      );
+    } finally {
+      cc.stop();
+      gw.closeAllConnections?.();
+      gw.close();
+    }
+  });
 });
 
 describe("gateway diagnostics routing", () => {

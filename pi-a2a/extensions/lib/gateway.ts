@@ -672,6 +672,15 @@ interface ChannelRespEnvelope {
 const MAX_CHANNEL_BODY = 4 * 1024 * 1024;
 const MAX_B64 = Math.floor((MAX_CHANNEL_BODY * 4) / 3) + 4;
 
+/** Decode an envelope body; null when the gateway sent non-base64 garbage. */
+function decodeEnvelopeBody(b64: string): Uint8Array<ArrayBuffer> | null {
+  try {
+    return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
 /** Opens GET /channel and dispatches each `request` event to the local A2A
  *  server, posting the answer to /channel/response/{id}. Reconnects with
  *  capped backoff; aborts cleanly on stop() (epoch-guarded like register). */
@@ -777,6 +786,19 @@ export class ChannelClient {
       const { done, value } = await reader.read();
       if (done) return;
       buf += dec.decode(value, { stream: true });
+      // Undelimited-flood guard: the envelope size check lives in handleFrame,
+      // which only runs once a blank-line delimiter arrives — without a cap
+      // here, a gateway that never sends one grows this string without bound
+      // (the 4 MiB envelope guard would never trigger). Largest legal envelope
+      // is ≤ MAX_B64 chars of frame, so anything beyond that can never become
+      // a legal frame: cut the stream and reconnect fresh.
+      if (buf.length > MAX_B64) {
+        this.log(
+          `[a2a-gateway:${this.label}] dropped oversized undelimited SSE stream (${buf.length} buffered chars, no frame delimiter)`,
+        );
+        this.controller?.abort();
+        return;
+      }
       // Normalize CRLF → LF so \n\n framing works for both line endings.
       buf = buf.replace(/\r\n/g, "\n");
       let idx: number;
@@ -826,7 +848,13 @@ export class ChannelClient {
       this.log(`[a2a-gateway:${this.label}] dropped envelope with unsafe path: ${env.path}`);
       return;
     }
-    const binary = Uint8Array.from(atob(env.body_b64), (c) => c.charCodeAt(0));
+    const binary = decodeEnvelopeBody(env.body_b64);
+    if (!binary) {
+      // A hostile/broken gateway frame must not reject unhandled (dispatch is
+      // fire-and-forget) — drop the envelope, keep the channel alive.
+      this.log(`[a2a-gateway:${this.label}] dropped envelope with undecodable body (${env.body_b64.length} b64 chars)`);
+      return;
+    }
     const qs = env.query ? `?${env.query}` : "";
     const headers: Record<string, string> = { ...env.headers };
     if (this.cfg.localToken) headers.authorization = `Bearer ${this.cfg.localToken}`;

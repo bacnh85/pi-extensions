@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.13 (2026-09-21)
+
+### Fixed
+
+- **Reverse-channel envelopes with undecodable bodies no longer risk killing
+  the session.** `ChannelClient.dispatch` runs fire-and-forget
+  (`void p.finally(...)`), but the `atob` decode sat outside its `try` — a
+  gateway frame with malformed base64 (`"!!…"`, `"A"`, bad padding) rejected
+  unhandled. Decode now routes through `decodeEnvelopeBody()` (null on
+  garbage): the envelope is dropped with a log line, the channel stays alive,
+  and the next envelope flows. Pinned by an HTTP-boundary test asserting zero
+  unhandled rejections, the drop log, and stream survival.
+- **The channel's SSE frame accumulator is now bounded.** The 4 MiB envelope
+  guard lives in `handleFrame`, which only runs once a blank-line delimiter
+  arrives — a gateway streaming `data:` lines with no delimiter grew the
+  `readStream` buffer without limit (the envelope guard could never trigger).
+  Anything beyond `MAX_B64` buffered chars can never become a legal frame:
+  the stream is now cut (reconnects fresh) with a log line. Pinned by a flood
+  test (64 KiB `data:` lines, no delimiter, ~6 MB in ~2s).
+
 ## 0.7.12 (2026-09-20)
 
 ### Fixed
