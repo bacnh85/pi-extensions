@@ -48,9 +48,12 @@ export async function runIsolated(
   const options: Record<string, unknown> = { apiKey: auth.apiKey, headers, env: auth.env, signal, reasoning };
   // ponytail: providers accept SimpleStreamOptions which expects ThinkingLevel for reasoning
   const streamOptions = options as any;
+  // ponytail: pi-ai 0.86 brands this arg TranscriptContext, but streamSimple still
+  // normalizes a raw Context internally (0.85 hosts too) — cast keeps both alive.
+  const transcript = context as any;
   const response = provider?.streamSimple
-    ? provider.streamSimple(model, context, streamOptions)
-    : streamSimple(model, context, streamOptions);
+    ? provider.streamSimple(model, transcript, streamOptions)
+    : streamSimple(model, transcript, streamOptions);
   for await (const event of response) if (event.type === "text_delta") onDelta?.(event.delta);
   const result = await response.result();
   if (result.stopReason !== "stop") throw new Error(result.errorMessage ?? `Model stopped: ${result.stopReason}`);

@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-cron",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Scheduled jobs for Pi — cron-style jobs that fire a prompt into the live session while pi is running, with past-due catch-up and crontab export for 24/7 needs.",
   "license": "MIT",
   "publishConfig": {
@@ -46,11 +46,11 @@
     "cron-parser": "^5.10.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.84.3 <0.86.0",
+    "@earendil-works/pi-coding-agent": ">=0.84.3 <0.87.0",
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.85.0",
+    "@earendil-works/pi-coding-agent": "^0.86.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.43",
     "mocha": "^11.8.0",

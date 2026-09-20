@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.43] - 2026-09-20
+
+- Widened Pi SDK peer range to `<0.87.0` (devDeps to ^0.86.0); tested against Pi 0.86.0. No behavioral changes — the 0.86.0 audit found no affected code paths.
+
 ## [0.1.42] - 2026-09-20
 
 - Docs: troubleshooting no longer claims `COMMAND_CODE_API_KEY` / `ZAI_CODING_CN_API_KEY` env vars work — the code reads auth.json only (credentials stored via `pi /login`).

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.3
+
+- Widened Pi SDK peer range to `<0.87.0` (devDeps to ^0.86.0); tested against Pi 0.86.0. No behavioral changes — the 0.86.0 audit found no affected code paths.
+
 ## 0.3.2
 
 - Headless (pinned-job) children no longer inherit `HERDR_ENV`, so the

@@ -33,7 +33,7 @@ function makeThread(overrides: Partial<SubagentThread> = {}): SubagentThread {
   };
 }
 
-function assistantMsg(toolCalls: Array<{ id: string; name: string; args?: Record<string, unknown> }>): Message {
+function assistantMsg(toolCalls: Array<{ id: string; name: string; args?: Record<string, any> }>): Message {
   return {
     role: "assistant",
     content: toolCalls.map((tc) => ({
@@ -130,11 +130,12 @@ describe("deriveRecentToolCalls", () => {
 
   it("caps to the limit, keeping most recent", () => {
     const calls: Array<{ id: string; name: string }> = [];
-    for (let i = 0; i < 10; i++) calls.push({ id: `c${i}`, name: "read" });
+    for (let i = 0; i < 10; i++) calls.push({ id: `c${i}`, name: `t${i}` });
     const msgs = [assistantMsg(calls)];
     const result = deriveRecentToolCalls(msgs, 3);
     assert.equal(result.length, 3);
-    assert.equal(result[2]!.name, "read");
+    // Retained set must be the MOST RECENT three, in order.
+    assert.deepEqual(result.map((c) => c.name), ["t7", "t8", "t9"]);
   });
 });
 
