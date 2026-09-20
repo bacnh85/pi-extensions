@@ -700,6 +700,82 @@ describe("server", () => {
         await stop();
       }
     });
+
+    it("redacts the message/stream SSE error frame (last-resort catch, hard3 0920)", async () => {
+      // The .catch() tail of the message/stream promise chain writes a
+      // JSON-RPC error frame carrying raw e.message onto the wire. A rejection
+      // OUTSIDE executeTask's internal classification — here the onActivity
+      // callback throwing on "arrived", before the runner is even invoked —
+      // rejects messageSend and lands in that catch. The frame is an outbound
+      // trust boundary like every other: it must pass the same redaction
+      // chain (configured-token pass first, shape patterns second) instead of
+      // echoing raw error text to the peer.
+      const cfg = DEFAULTS();
+      cfg.server.sharedToken = "pin-shared-token-99887766";
+      const { url, stop } = await startServer({
+        cfg,
+        runner: stubRunner("never reached"),
+        onActivity: (a: any) => {
+          if (a.type === "arrived") {
+            throw new Error("send failed for url https://gw:pin-shared-token-99887766@host/x");
+          }
+        },
+      });
+      try {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer pin-shared-token-99887766",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: "sse-err",
+            method: "message/stream",
+            params: { message: { role: "ROLE_USER", parts: [{ text: "hi" }] } },
+          }),
+        });
+        const body = await resp.text();
+        assert.include(body, "error", "the stream must end in an error frame");
+        assert.notInclude(body, "pin-shared-token-99887766", "configured token must never ride the SSE error frame");
+        assert.include(body, "[redacted-token]");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("redacts the blocking JSON-RPC 500 (top-level handle catch, hard3 0920)", async () => {
+      // Same rejection class on the BLOCKING path: a throw that escapes
+      // messageSend without executeTask classifying it is caught by handle()'s
+      // top-level try/catch, which sends { error: "internal", message:
+      // e.message } — raw exception text across the wire. Same boundary, same
+      // redaction chain.
+      const cfg = DEFAULTS();
+      cfg.server.sharedToken = "pin-shared-token-99887766";
+      const { url, stop } = await startServer({
+        cfg,
+        runner: stubRunner("never reached"),
+        onActivity: (a: any) => {
+          if (a.type === "arrived") {
+            throw new Error("send failed for url https://gw:pin-shared-token-99887766@host/x");
+          }
+        },
+      });
+      try {
+        const r = await jsonRpc(
+          url,
+          "SendMessage",
+          { message: { role: "ROLE_USER", parts: [{ text: "hi" }] } },
+          { Authorization: "Bearer pin-shared-token-99887766" },
+        );
+        const wire = JSON.stringify(r);
+        assert.exists(r.error, "the escaping throw must surface as a JSON-RPC error response");
+        assert.notInclude(wire, "pin-shared-token-99887766", "configured token must never ride the 500 body");
+        assert.include(wire, "[redacted-token]");
+      } finally {
+        await stop();
+      }
+    });
   });
 
   describe("task lifecycle", () => {

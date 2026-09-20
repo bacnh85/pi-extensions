@@ -644,7 +644,28 @@ export class A2AServer {
 
     let lastErr: unknown = null;
     for (const port of attempts) {
-      const srv = createServer((req, res) => this.handle(req, res));
+      const srv = createServer((req, res) => {
+        this.handle(req, res).catch((e: any) => {
+          // handle()'s internal try/catch cannot see rejections adopted via
+          // `return this.handlePost(...)` inside its try — adoption happens
+          // after the catch clause. And this callback's promise is discarded
+          // by node:http, so without this .catch an escaping throw (e.g. an
+          // onActivity listener throwing synchronously out of messageSend)
+          // becomes an UNHANDLED REJECTION that kills the whole server
+          // process. Contain it: one last-resort 500, redacted like every
+          // other outbound boundary, best-effort (the socket may be gone).
+          try {
+            this.send(res, 500, {
+              error: "internal",
+              message: redactOutbound(
+                redactConfiguredTokens(e?.message ?? String(e), this.cfg, { extraTokens: this.mintedInboundTokens }),
+              ),
+            });
+          } catch {
+            /* response already gone */
+          }
+        });
+      });
       try {
         await new Promise<void>((resolve, reject) => {
           srv.once("error", reject);
@@ -1235,7 +1256,19 @@ export class A2AServer {
           }
         }
       })
-      .catch((e: any) => writeErr(-32603, e?.message || String(e)))
+      .catch((e: any) =>
+        // Last-resort error frame: e.message can embed configured/minted token
+        // values (or credential-shaped strings) the same way reply artifacts
+        // and failure messages can — this frame crosses the same outbound
+        // trust boundary, so it gets the identical redaction chain
+        // (configured-token exact-match pass first, shape patterns second).
+        writeErr(
+          -32603,
+          redactOutbound(
+            redactConfiguredTokens(e?.message || String(e), this.cfg, { extraTokens: this.mintedInboundTokens }),
+          ),
+        ),
+      )
       .finally(() => {
         metrics.streamsStarted += 1;
         try {

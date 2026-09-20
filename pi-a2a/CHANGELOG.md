@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.7.12 (2026-09-20)
+
+### Fixed
+
+- **The last two unredacted outbound sites now run the full redaction chain
+  (hardening round 3 — deep-pass #1 residual).** A sweep of every path where
+  worker/error output reaches the wire found two the prior rounds missed:
+  1. the `message/stream` SSE last-resort `.catch()` wrote raw `e.message`
+     into the JSON-RPC error frame (`-32603`), and
+  2. `handle()`'s top-level catch — meant to return `{error:"internal"}` —
+     could never fire for async dispatch: `return this.handlePost(…)` inside
+     the `try` adopts the rejection AFTER the catch clause, and node:http
+     discards the request-handler promise, so an escaping throw (e.g. an
+     `onActivity` listener throwing synchronously out of `messageSend`)
+     crashed the whole server process as an unhandled rejection.
+  Both paths now apply `redactConfiguredTokens` (configured + minted-token
+  exact-match pass, fed `extraTokens`) chained before `redactOutbound`
+  (shape patterns) — identical to reply artifacts and failure messages — and
+  the listener-level containment turns the process-killing rejection into a
+  best-effort redacted 500. Both pinned test-first at the HTTP boundary.
+
 ## 0.7.11 (2026-09-20)
 
 ### Fixed
