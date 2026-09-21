@@ -442,14 +442,23 @@ export default function evolveExtension(pi: ExtensionAPI) {
           // TTL hit: no Munin round-trip this turn.
           digest = cached.digest;
         } else {
-          // Cache miss: seed the cache in the BACKGROUND so the first message
-          // never blocks on a Munin round-trip (~1.6s). Injection is
-          // best-effort context ("apply when its trigger matches") — the agent
-          // rarely needs learnings before it has done any work — so the digest
-          // simply lands in the cache for message 2 onward.
-          seedInFlight = seedInjectCache(cacheKey, settings, String(event?.prompt ?? ""), ctx.cwd, ctx?.isProjectTrusted?.() === true)
+          const seed = seedInjectCache(cacheKey, settings, String(event?.prompt ?? ""), ctx.cwd, ctx?.isProjectTrusted?.() === true)
             .catch(() => { /* best-effort */ })
             .finally(() => { seedInFlight = null; });
+          if (cached === null) {
+            // First injection attempt of the session: seed SYNCHRONOUSLY so the
+            // digest is present from message 1. Injecting it at message 2
+            // rewrites the system prompt and busts the provider's prompt cache
+            // (~full-prefix miss on a ~35k-token coding-agent prompt).
+            // Bounded by seedInjectCache's internal timeout race (3s).
+            await seed;
+            digest = injectCache?.key === cacheKey ? injectCache.digest : "";
+          } else {
+            // TTL refresh: seed in the BACKGROUND — a mid-session round-trip
+            // (~1.6s) must not block the turn. Content changes here are rare
+            // (new learnings saved mid-session) and cost one incremental bust.
+            seedInFlight = seed;
+          }
         }
         if (digest) prompt = `${digest}\n\n---\n\n${prompt}`;
       } catch {
@@ -483,9 +492,9 @@ async function raceWithBudget<T>(p: Promise<T>, ms: number, onTimeout?: () => vo
   });
 }
 
-/** Bounded fetch of learnings + cache write. Runs in the background on a cache
- *  miss so the first message never blocks on Munin (the digest lands in the
- *  cache for message 2 onward — injection is best-effort context). */
+/** Bounded fetch of learnings + cache write. Awaited on the session's first
+ *  injection attempt so the digest is stable from message 1 (prompt-cache
+ *  stability); background on later TTL refreshes. */
 async function seedInjectCache(
   cacheKey: string,
   settings: ReturnType<typeof readEvolveSettings>,

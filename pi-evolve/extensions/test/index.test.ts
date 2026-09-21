@@ -611,7 +611,10 @@ describe("pi-evolve extension", () => {
       const { handlers } = harness(cwd);
       const event = { systemPrompt: "BASE", prompt: "docker networking" };
       const first = await handlers.before_agent_start[0](event, { cwd });
-      expect(first.systemPrompt).to.not.include("## Recent Learnings"); // seed runs async
+      // First injection is synchronous: the digest ships on message 1 so the
+      // system prompt is stable (provider prompt-cache must not bust at msg 2).
+      expect(first.systemPrompt).to.include("cached lesson text");
+      expect(searchCalls).to.equal(1);
       await awaitSeed();
       expect(searchCalls).to.equal(1);
       // Second turn within TTL: served from cache, no Munin round-trip.
@@ -646,11 +649,12 @@ describe("pi-evolve extension", () => {
         { cwd },
       );
       const elapsed = Date.now() - started;
-      // Fire-and-forget: the turn never blocks on Munin (header ships at once).
-      expect(elapsed).to.be.lessThan(50);
+      // First seed is awaited but BOUNDED: hanging Munin must not hang the
+      // session — search deadline (25ms) + recent fallback budget (1s).
+      expect(elapsed).to.be.lessThan(2000);
       expect(result.systemPrompt).to.include("pi-evolve: trajectory self-learning");
       expect(result.systemPrompt).to.not.include("## Recent Learnings");
-      // The background seed times out; the cache stays empty (no digest).
+      // The seed timed out; the cache stays empty (no digest).
       await awaitSeed();
     } finally {
       (MuninClient.prototype as any).search = originalSearch;
@@ -774,20 +778,14 @@ describe("pi-evolve extension", () => {
     };
     try {
       const { handlers } = harness(cwd);
-      // Fire-and-forget: first call returns at once (header only).
+      // First seed is awaited (bounded): search times out at 25ms, the fresh
+      // fallback budget lets the recent digest through on the SAME call.
       const first = await handlers.before_agent_start[0](
         { systemPrompt: "BASE", prompt: "docker" },
         { cwd },
       );
-      expect(first.systemPrompt).to.not.include("recent fallback lesson");
-      await awaitSeed();
-      // The fresh fallback budget lets the recent digest through on the next call.
-      const result = await handlers.before_agent_start[0](
-        { systemPrompt: "BASE", prompt: "docker" },
-        { cwd },
-      );
-      expect(result.systemPrompt).to.include("recent fallback lesson");
-      expect(result.systemPrompt).to.include("pi-evolve: trajectory self-learning");
+      expect(first.systemPrompt).to.include("recent fallback lesson");
+      expect(first.systemPrompt).to.include("pi-evolve: trajectory self-learning");
     } finally {
       (MuninClient.prototype as any).search = originalSearch;
       (MuninClient.prototype as any).recent = originalRecent;
