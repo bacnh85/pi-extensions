@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   commandCodeWindowToUsageWindow,
   parseEnvText,
+  parseGenericUsage,
   parseOmniUsageText,
   routerUpstreamPrefix,
   tokPerSecLabel,
@@ -151,4 +152,45 @@ test("tok/s: think/answer split math (answer = output − reasoning)", () => {
   assert.equal(tokPerSecLabel(200, 0, 10_000), "20 tok/s");
   assert.equal(tokPerSecLabel(1000, 1000, 10_000), "100 tok/s (100 think + 0 answer)");
   assert.equal(tokPerSecLabel(300, -1, 10_000), "30 tok/s");
+});
+
+// ── parseGenericUsage — yardmaster GET /v1/usage JSON ─────────────────────────
+
+test("generic usage: windows + credits map to footer fields", () => {
+  const g = parseGenericUsage({
+    provider: "zai",
+    windows: {
+      session: { remaining_pct: 47, reset_at: Date.now() + 2 * 3600_000 },
+      weekly: { remaining_pct: 99.4, reset_at: Date.now() + 26 * 3600_000 },
+    },
+    credits: { currency: "USD", balance: 42.5 },
+    providers: ["zai"],
+  });
+  assert.equal(g.fiveHour?.remaining, 47);
+  assert.equal(g.weekly?.remaining, 99); // clamped + rounded
+  assert.ok(g.fiveHour?.remainingLabel === "2H", `session label ${g.fiveHour?.remainingLabel}`);
+  assert.ok(g.weekly?.remainingLabel === "2D", `weekly label ${g.weekly?.remainingLabel}`); // ceil(26h/24h)
+  assert.ok(g.fiveHour?.resetLabel?.includes("⏱ reset in"), g.fiveHour?.resetLabel);
+  assert.equal(g.monthlyCredits, 42.5);
+  assert.equal(g.creditsCurrency, "USD");
+  assert.ok(g.breakdown?.includes("Session 47% left"), g.breakdown);
+  assert.ok(g.breakdown?.includes("🪙 Balance (USD) $42.50"), g.breakdown);
+});
+
+test("generic usage: deepseek balance-only report (no windows), CNY currency", () => {
+  const g = parseGenericUsage({ credits: { currency: "CNY", balance: 88 } });
+  assert.equal(g.fiveHour, undefined);
+  assert.equal(g.weekly, undefined);
+  assert.equal(g.monthlyCredits, 88);
+  assert.equal(g.creditsCurrency, "CNY");
+  assert.ok(g.breakdown?.includes("¥88.00 CNY"), g.breakdown);
+});
+
+test("generic usage: garbage/empty input falls through empty", () => {
+  assert.deepEqual(parseGenericUsage(null), {});
+  assert.deepEqual(parseGenericUsage("nope"), {});
+  assert.deepEqual(parseGenericUsage({ providers: [] }), {});
+  // NaN / missing remaining_pct windows are skipped, not fabricated
+  const g = parseGenericUsage({ windows: { session: { remaining_pct: "x" } } });
+  assert.equal(g.fiveHour, undefined);
 });

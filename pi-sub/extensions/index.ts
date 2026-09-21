@@ -418,6 +418,68 @@ function countdownToLabel(text: string): string | undefined {
   return secs ? formatRemainingTime(Date.now() / 1000 + secs) : undefined;
 }
 
+/** Human countdown from an epoch-ms reset timestamp: "2h 55m" / "1d 4h". */
+export function msCountdown(resetAtMs: number | undefined): string | undefined {
+  if (!resetAtMs) return undefined;
+  const s = Math.round((resetAtMs - Date.now()) / 1000);
+  if (s <= 0) return undefined;
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const parts = [d ? `${d}d` : "", h ? `${h}h` : "", m ? `${m}m` : ""].filter(Boolean);
+  return parts.length ? parts.join(" ") : "0m";
+}
+
+interface GenericUsage {
+  fiveHour?: UsageWindow;
+  weekly?: UsageWindow;
+  monthlyCredits?: number;
+  creditsCurrency?: string;
+  breakdown?: string;
+}
+
+/** Parse the general router usage API (GET <baseUrl>/usage, JSON —
+ *  yardmaster) into windows + credits: `{windows: {session, weekly}:
+ *  {remaining_pct, reset_at}, credits: {currency, balance}, providers: []}`.
+ *  Robust to missing sections; `{}` when nothing usable is present. */
+export function parseGenericUsage(data: unknown): GenericUsage {
+  const body = data as {
+    windows?: Record<string, { remaining_pct?: number; reset_at?: number }>;
+    credits?: { currency?: string; balance?: number };
+  } | null;
+  if (!body || typeof body !== "object") return {};
+  const toWindow = (w: { remaining_pct?: number; reset_at?: number } | undefined): UsageWindow | undefined => {
+    if (!w || typeof w.remaining_pct !== "number" || !Number.isFinite(w.remaining_pct)) return undefined;
+    const out: UsageWindow = { remaining: Math.max(0, Math.min(100, Math.round(w.remaining_pct))) };
+    if (w.reset_at) {
+      out.remainingLabel = formatRemainingTime(w.reset_at / 1000);
+      out.resetLabel = `⏱ reset in ${msCountdown(w.reset_at) ?? "unknown"}`;
+    }
+    return out;
+  };
+  const fiveHour = toWindow(body.windows?.session);
+  const weekly = toWindow(body.windows?.weekly);
+  const monthlyCredits = typeof body.credits?.balance === "number" && Number.isFinite(body.credits.balance)
+    ? body.credits.balance : undefined;
+  const creditsCurrency = body.credits?.currency ?? "USD";
+  const lines: string[] = [];
+  if (fiveHour) lines.push(`Session ${fiveHour.remaining}% left${fiveHour.resetLabel ? ` ${fiveHour.resetLabel}` : ""}`);
+  if (weekly) lines.push(`Weekly ${weekly.remaining}% left${weekly.resetLabel ? ` ${weekly.resetLabel}` : ""}`);
+  if (monthlyCredits !== undefined) {
+    const amt = creditsCurrency === "CNY" ? `¥${monthlyCredits.toFixed(2)} CNY` : `$${monthlyCredits.toFixed(2)}`;
+    lines.push(`🪙 Balance (${creditsCurrency}) ${amt}`);
+  }
+  const out: GenericUsage = {};
+  if (fiveHour) out.fiveHour = fiveHour;
+  if (weekly) out.weekly = weekly;
+  if (monthlyCredits !== undefined) {
+    out.monthlyCredits = monthlyCredits;
+    out.creditsCurrency = creditsCurrency;
+  }
+  if (lines.length) out.breakdown = lines.join("\n");
+  return out;
+}
+
 export function parseOmniUsageText(text: string): {
   personalDaily?: UsageWindow;
   personalWeekly?: UsageWindow;
@@ -510,6 +572,15 @@ if (process.env.PI_SUB_SELF_CHECK === "1") {
   assert(glmCn.session?.remaining === 99, "glm-cn session 99");
   assert(glmCn.session?.remainingLabel === "3H", "glm-cn reset label 3H");
   assert(glmCn.providerWeekly === undefined, "glm-cn weekly unavailable skipped");
+  // general usage API (yardmaster GET /v1/usage): JSON windows + credits
+  const gen = parseGenericUsage({
+    windows: { session: { remaining_pct: 47, reset_at: Date.now() + 2 * 3600_000 } },
+    credits: { currency: "USD", balance: 42.5 },
+  });
+  assert(gen.fiveHour?.remaining === 47, "generic session 47");
+  assert(gen.fiveHour?.remainingLabel === "2H", "generic reset label");
+  assert(gen.monthlyCredits === 42.5, "generic credits");
+  assert(parseGenericUsage(null).fiveHour === undefined, "generic null input");
 }
 
 async function fetchUsageFromPiAuth(entry: PiAuthEntry, signal?: AbortSignal): Promise<UsageApiSnapshot | undefined> {
@@ -612,6 +683,50 @@ async function fetchRouterUsage(signal?: AbortSignal, provider?: string): Promis
     accountLabel: cfg.baseUrl.replace(/^https?:\/\//, ""),
     lastActivity: "Now",
   };
+
+  // General usage API (yardmaster): GET <baseUrl>/usage?provider=<prefix> —
+  // JSON with windows (session/weekly remaining_pct + reset_at) and credits.
+  // baseUrl already ends in /v1 so no origin derivation is needed. Unknown
+  // provider slugs 404 → retry the aggregate (no query). Routers without this
+  // endpoint (OmniRoute) 404/return HTML → fall through to the om-usage text
+  // flow below. A 200 JSON without windows/credits also falls through.
+  if (apiKey) {
+    try {
+      const timeoutSignal = AbortSignal.timeout(7_000);
+      const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+      const usageUrl = (q: string) => `${cfg.baseUrl.replace(/\/$/, "")}/usage${q}`;
+      let response = await fetch(usageUrl(provider ? `?provider=${encodeURIComponent(provider)}` : ""), {
+        headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
+        signal: combined,
+      });
+      if (response.status === 404 && provider) {
+        response = await fetch(usageUrl(""), {
+          headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
+          signal: combined,
+        });
+      }
+      const ct = response.headers.get("content-type") ?? "";
+      if (response.ok && ct.includes("application/json")) {
+        const g = parseGenericUsage(await response.json());
+        if (g.fiveHour || g.weekly || g.monthlyCredits !== undefined) {
+          const account: SubscriptionAccountSnapshot = {
+            ...baseAccount,
+            plan: provider ? `Router · ${provider}` : "Router usage",
+            fiveHour: g.fiveHour,
+            weekly: g.weekly,
+            monthlyCredits: g.monthlyCredits,
+            usageBreakdown: g.breakdown,
+          };
+          return {
+            providerDisplayName: "Router",
+            accounts: [account],
+            activeAccount: account,
+            fetchedAt: Date.now(),
+          };
+        }
+      }
+    } catch { /* no general usage endpoint / transient — fall through */ }
+  }
 
   // OmniRoute exposes per-key usage at GET <origin>/api/usage/om-usage
   // (Bearer = the router API key). `?provider=` selects that upstream's quota

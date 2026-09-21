@@ -2,7 +2,7 @@
 
 Pi extension that shows subscription usage for the currently selected supported model provider.
 
- Supports OpenAI Codex (`openai-codex`) with live usage windows from ChatGPT's usage endpoint, OpenCode Go (`opencode-go`) with session cost tracking, and Z.ai GLM Coding Plan — both the international (`zai`) and China (`zai-coding-cn`, `open.bigmodel.cn`) endpoints — with quota monitoring. Also tracks Router (pi-router, `router` provider) with response-speed tracking and optional OmniRoute quota windows, and Command Code (`commandcode`) 5-hour/weekly windows and monthly credit balance. Displays a subscription footer status after Pi's built-in status/token usage line.
+ Supports OpenAI Codex (`openai-codex`) with live usage windows from ChatGPT's usage endpoint, OpenCode Go (`opencode-go`) with session cost tracking, and Z.ai GLM Coding Plan — both the international (`zai`) and China (`zai-coding-cn`, `open.bigmodel.cn`) endpoints — with quota monitoring. Also tracks Router (pi-router, `router` provider) with response-speed tracking and usage windows via yardmaster's general `GET /v1/usage` API (with OmniRoute's om-usage as fallback), and Command Code (`commandcode`) 5-hour/weekly windows and monthly credit balance. Displays a subscription footer status after Pi's built-in status/token usage line.
 
 ## Install
 
@@ -60,6 +60,23 @@ The `zai-anthropic` provider (registered by pi-model-tools, GLM through `api.z.a
 ```
 
 ### Router (pi-router — formerly 9router)
+
+For **yardmaster** instances the footer shows real usage via the general JSON
+usage API: `GET <baseUrl>/usage?provider=<prefix>` with the router API key
+(auth.json `router` credential from `/login router`, or `ROUTER_API_KEY` env).
+`<prefix>` is the upstream routing prefix of the selected model
+(`zai/glm-5.3-flash` → `zai`, `cmd/...` → command code, `ds/...` → deepseek);
+unknown prefixes fall back to the aggregate report. Unknown/older routers 404
+and `pi-sub` automatically falls back to the OmniRoute text flow below.
+Requirements: the API key must hold the usage permission (yardmaster dashboard
+→ Endpoints & keys → usage api → "allowed"; keys allow it by default).
+
+```text
+Router · zai R:96%/2H W:80%/1D 145 tok/s
+```
+
+Credit-based upstreams (DeepSeek) surface their raw balance the same way
+(shown as `M:$X.XX`) — no manage scope needed.
 
 For **OmniRoute** instances the footer shows real usage: `GET <origin>/api/usage/om-usage`
 with the router API key (auth.json `router` credential from `/login router`, or
