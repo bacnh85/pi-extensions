@@ -26,6 +26,17 @@ describe("TrajectoryBuffer", () => {
     expect(snap[1].errorCategory).to.equal("not_found");
   });
 
+  it("setCap clamps and drops oldest entries on shrink", () => {
+    const buf = new TrajectoryBuffer(200);
+    for (let i = 0; i < 5; i++) buf.record(`tool${i}`, "x");
+    buf.setCap(3);
+    expect(buf.size).to.equal(3);
+    expect(buf.snapshot()[0].tool).to.equal("tool2"); // tool0/tool1 evicted
+    buf.setCap(0); // clamps to >=1
+    expect(buf.size).to.equal(1);
+    expect(buf.snapshot()[0].tool).to.equal("tool4");
+  });
+
   it("matches by toolCallId for parallel same-tool calls (out-of-order results)", () => {
     const buf = new TrajectoryBuffer();
     buf.record("read", "a.ts", "A");

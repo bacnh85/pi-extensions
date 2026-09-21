@@ -1,6 +1,8 @@
 # Changelog
 
-## [0.8.6] - 2026-09-20
+## [0.8.7] - 2026-09-21
+
+- Docs: README fixes only — `str_replace_editor` is registered unconditionally (disable per-session via `/tools`); argument repair is enabled for all models (leak-clean/steering remain family-gated); tool count corrected to 8 (adds `str_replace_editor`).
 
 - Fixed: removed dead optional chaining on `registerZaiAnthropicProvider?.(pi)` — it is a static import, the `?.` never fired.
 

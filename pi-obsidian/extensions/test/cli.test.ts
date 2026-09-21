@@ -15,6 +15,7 @@ import {
   parseFlags,
   isObsidianVaultCwd,
   isPathInObsidianVault,
+  renameTag,
   vaultNameForCwd,
   vaultWrite,
 } from "../index.js";
@@ -1178,5 +1179,85 @@ it("issue #21: write/create/overwrite without content= or content_from= errors i
     filesMissingProperty("created", undefined, 100, captureFake);
     expect(codeArg).to.include("catch(e)");
     expect(codeArg).to.include("Error: ");
+  });
+
+  // -- renameTag dispatch (inject fake exec, execute the generated eval) --
+
+  // Execute the captured eval body against a stubbed app.vault so the real
+  // regex + replacement logic runs in-process (mirrors the in-app adapter).
+  async function runCapturedRenameEval(code: string, files: Record<string, string>): Promise<Record<string, string>> {
+    const written: Record<string, string> = {};
+    const app = {
+      vault: {
+        getMarkdownFiles: () => Object.keys(files).map((path) => ({ path })),
+        adapter: {
+          read: async (path: string) => files[path],
+          write: async (path: string, content: string) => { written[path] = content; },
+        },
+      },
+    };
+    const out = (await new Function("app", `return ${code}`)(app)) as string;
+    expect(out).to.not.include("Error:");
+    return written;
+  }
+
+  function captureCode() {
+    let code = "";
+    return {
+      fake: (args: string[], _fmt?: boolean, _ms?: number) => {
+        code = (args.find((a) => a.startsWith("code=")) || "").slice(5);
+        return { stdout: "=> ok", stderr: "", parsed: "" };
+      },
+      code: () => code,
+    };
+  }
+
+  it("renameTag from='#moc' matches whitespace-preceded tags, not mid-word occurrences", async () => {
+    const files: Record<string, string> = {
+      "a.md": "---\ntags:\n  - #moc\n---",
+      "b.md": "---\ntags: #moc\n---",
+      "c.md": "---\ntags: x#moc\n---", // mid-word: must NOT match
+    };
+    const cap = captureCode();
+    renameTag("#moc", "#zettel", false, undefined, 100, cap.fake);
+    const written = await runCapturedRenameEval(cap.code(), files);
+    expect(written["a.md"]).to.include("- #zettel");
+    expect(written["b.md"]).to.include("tags: #zettel");
+    expect(written["c.md"]).to.be.undefined; // x#moc untouched
+  });
+
+  it("renameTag from='moc' keeps \\b anchors; $& in to= lands literally", async () => {
+    const files: Record<string, string> = {
+      "a.md": "---\ntags: moc #moc x#moc\n---",
+    };
+    const cap = captureCode();
+    renameTag("moc", "z$&k", false, undefined, 100, cap.fake);
+    const written = await runCapturedRenameEval(cap.code(), files);
+    // \bmoc\b still matches all three shapes; a string replacement would have
+    // expanded $& into zmock — the function replacement inserts it literally.
+    expect(written["a.md"]).to.include("tags: z$&k #z$&k x#z$&k");
+  });
+
+  it("timeout_ms=NaN falls back to the 30s default instead of reaching spawnSync", async () => {
+    const { default: piObsidianExtension } = await import("../index.js");
+    let tool: any = null;
+    const mockPi: any = {
+      registerTool(t: any) { tool = t; },
+      on() {},
+    };
+    piObsidianExtension(mockPi);
+    const dir = mkdtempSync(join(tmpdir(), "pi-obsidian-nan-"));
+    const oldPath = process.env.PATH;
+    try {
+      writeFileSync(join(dir, "obsidian"), "#!/bin/sh\necho ok\n");
+      chmodSync(join(dir, "obsidian"), 0o755);
+      process.env.PATH = `${dir}:${oldPath ?? ""}`;
+      // Pre-fix: NaN reached spawnSync → ERR_OUT_OF_RANGE RangeError.
+      const r = await tool.execute("test-id", { run: "files missing-property=created vault=t", timeout_ms: NaN });
+      expect(JSON.stringify(r)).to.include("ok"); // stub ran via the fallback timeout
+    } finally {
+      process.env.PATH = oldPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

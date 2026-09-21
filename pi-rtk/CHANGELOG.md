@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.4] - 2026-09-21
+
+- Fix: `isEvalCommand` now flags `php -r`, `perl -E`, and `deno eval` inline
+  scripts so RTK never rewrites them (inline code was getting mangled).
+
 ## [0.2.3] - 2026-09-20
 
 - Docs: README Test section now names the real test command (`node --test extensions/test/*.test.js`) instead of a manual smoke run.

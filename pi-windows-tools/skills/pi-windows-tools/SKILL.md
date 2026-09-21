@@ -29,6 +29,7 @@ Configure with `PI_WINDOWS_TOOLS_ENABLED`, `PI_WINDOWS_SHELL`, `PI_GIT_BASH_PATH
 |------|-------------|
 | `windows_shell_detect` | List available shells with versions |
 | `windows_shell_exec` | Execute a command through a specific shell |
+| `windows_audit_log` | Show command history and exit codes (`clear: true` empties the log) |
 | `windows_path_to_windows` | Convert `/c/` or `/mnt/c/` to `C:\` |
 | `windows_path_to_wsl` | Convert `C:\` to `/mnt/c/` |
 | `windows_path_to_gitbash` | Convert `C:\` to `/c/` |

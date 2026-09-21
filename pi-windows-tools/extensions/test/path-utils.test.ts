@@ -4,8 +4,6 @@ import {
   toPosixPath,
   toWindowsPath,
   toWslPath,
-  normalizeWindowsPath,
-  isWindowsAbsolutePath,
   quoteForShell,
   parseWslUncPath,
 } from "../lib/path-utils";
@@ -118,45 +116,6 @@ describe("path-utils", () => {
     });
     it("strips distro from \\wsl$ UNC", () => {
       expect(toWslPath("\\\\wsl$\\Debian\\tmp")).to.equal("/tmp");
-    });
-  });
-
-  describe("normalizeWindowsPath", () => {
-    it("converts forward slashes to backslashes", () => {
-      expect(normalizeWindowsPath("C:/foo/bar")).to.equal("C:\\foo\\bar");
-    });
-    it("uppercases drive letter", () => {
-      expect(normalizeWindowsPath("c:\\windows")).to.equal("C:\\windows");
-    });
-    it("resolves . and ..", () => {
-      expect(normalizeWindowsPath("C:\\foo\\.\\bar\\..\\baz")).to.equal("C:\\foo\\baz");
-    });
-    it("deduplicates backslashes", () => {
-      expect(normalizeWindowsPath("C:\\foo\\\\\\bar")).to.equal("C:\\foo\\bar");
-    });
-  });
-
-  describe("isWindowsAbsolutePath", () => {
-    it("detects C:\\ as absolute", () => {
-      expect(isWindowsAbsolutePath("C:\\foo")).to.be.true;
-    });
-    it("detects C:/ as absolute", () => {
-      expect(isWindowsAbsolutePath("C:/foo")).to.be.true;
-    });
-    it("detects UNC as absolute", () => {
-      expect(isWindowsAbsolutePath("\\\\server\\share")).to.be.true;
-    });
-    it("detects \\\\?\\ long path prefix as absolute", () => {
-      expect(isWindowsAbsolutePath("\\\\?\\C:\\foo")).to.be.true;
-    });
-    it("detects \\\\.\\ device paths as absolute", () => {
-      expect(isWindowsAbsolutePath("\\\\.\\COM1")).to.be.true;
-    });
-    it("rejects relative paths", () => {
-      expect(isWindowsAbsolutePath("relative\\path")).to.be.false;
-    });
-    it("rejects POSIX absolute paths", () => {
-      expect(isWindowsAbsolutePath("/c/foo")).to.be.false;
     });
   });
 

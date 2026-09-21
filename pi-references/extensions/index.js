@@ -6,7 +6,7 @@
  * eagerly into a cache dir at session start. References with a `description` are
  * injected into the agent's system prompt so the model knows they exist.
  *
- * Config (.pi/settings.json or ~/.pi/agent/settings.json):
+ * Config (~/.pi/agent/settings.json, or .pi/settings.json in trusted projects):
  *   "references": {
  *     "docs": { "path": "../product-docs", "description": "Product behavior & conventions" },
  *     "sdk":  { "repository": "owner/repo", "branch": "main", "description": "JS SDK impl" }
@@ -29,11 +29,14 @@ import os from "node:os";
  * config must be read from <cwd>/.pi/settings.json → ~/.pi/agent/settings.json,
  * first existing file wins (per-package settings readers — extract to a shared
  * helper when a fourth copy appears).
+ *
+ * The project scope is gated on `ctx.isProjectTrusted()`: settings.json inside
+ * an untrusted checkout must not auto-run git clones or inject prompt text.
  */
-export function readSettingsKey(cwd, key) {
+export function readSettingsKey(cwd, key, { project = true } = {}) {
   const home = os.homedir();
   const dirs = [
-    join(cwd || process.cwd(), ".pi"),
+    ...(project ? [join(cwd || process.cwd(), ".pi")] : []),
     process.env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent"),
     join(home, ".pi", "agents"),
   ];
@@ -183,7 +186,9 @@ export default function referencesExtension(pi) {
   function loadConfig(ctx) {
     // Settings.json first (production), then the legacy getSetting stub (tests).
     const cfg =
-      readSettingsKey(ctx?.cwd, "references") ??
+      readSettingsKey(ctx?.cwd, "references", {
+        project: ctx?.isProjectTrusted?.() === true,
+      }) ??
       pi.getSetting?.("references") ??
       pi.config?.references ??
       {};

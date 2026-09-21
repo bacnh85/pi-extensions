@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import notifyExtension, { resolveConfig, notify, playSound, detectBackend, toastScript, _resetBackendCacheForTest } from "../index.js";
+import notifyExtension, { resolveConfig, notify, playSound, detectBackend, toastScript, sanitizeOsc, _resetBackendCacheForTest } from "../index.js";
 
 // ── resolveConfig ─────────────────────────────────────────────────────────
 
@@ -205,4 +205,39 @@ test("Windows toastScript escapes single quotes in title/body (mirrors macOS tes
   const slots = [...script.matchAll(/'((?:[^']|'')*)'/g)].map((m) => m[1].replace(/''/g, "'"));
   assert.ok(slots.includes(title), "title round-trips");
   assert.ok(slots.includes(body), "body round-trips");
+});
+
+test("sanitizeOsc strips escapes so OSC 777 payload stays well-formed (review: P2)", () => {
+  // Model-controlled input (ui_prompt_start title) tries to forge an OSC 52
+  // clipboard sequence and inject extra `;` fields.
+  const t = "\x1b]52;c;xxx\x07Injected";
+  const b = "Question: run; rm -rf /\x1b]777;notify;fake;pwn\x07";
+  const ts = sanitizeOsc(t);
+  const bs = sanitizeOsc(b);
+  // No C0 control (ESC/BEL) or DEL survives; no `;` field separator survives.
+  assert.ok(!/[\x00-\x1f\x7f]/.test(ts), "title has no control chars");
+  assert.ok(!/[\x00-\x1f\x7f]/.test(bs), "body has no control chars");
+  assert.ok(!ts.includes(";"), "title has no raw `;`");
+  assert.ok(!bs.includes(";"), "body has no raw `;`");
+  // Assembled 777 sequence: exactly one ESC (leading) and one BEL (trailing).
+  const seq = `\x1b]777;notify;${ts};${bs}\x07`;
+  assert.match(seq, /^\x1b]777;notify;/);
+  assert.match(seq, /\x07$/);
+  assert.equal((seq.match(/\x1b/g) || []).length, 1, "single well-formed ESC");
+  assert.equal((seq.match(/\x07/g) || []).length, 1, "single well-formed BEL");
+  // Message text is preserved, not discarded.
+  assert.ok(ts.includes("Injected"));
+});
+
+test("sanitizeOsc covers OSC 99 fields and passes clean text through", () => {
+  const title = sanitizeOsc("head\x1b\\er;evil");
+  const body = sanitizeOsc("line1;\x07line2\x7f");
+  // ESC is stripped; a lone `\` is inert without it (ST needs ESC+`\`) and passes through.
+  assert.equal(title, "head\\er,evil");
+  assert.equal(body, "line1,line2");
+  // Assembled 99 body payload: ESC only at the ST terminator, `;` count fixed.
+  const seq = `\x1b]99;i=1:p=body;${body}\x1b\\`;
+  assert.equal((seq.match(/\x1b/g) || []).length, 2, "only the two ESCs (OSC intro + ST)");
+  assert.ok(!/[\x00-\x1f\x7f]/.test(title) && !/[\x00-\x1f\x7f]/.test(body));
+  assert.equal(sanitizeOsc("plain text"), "plain text", "clean input unchanged");
 });

@@ -24,6 +24,7 @@
  */
 
 import { readFileSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
+import { resolve as pathResolve } from "node:path";
 import os from "node:os";
 
 /**
@@ -89,7 +90,8 @@ export function expandHome(pattern, home) {
   return pattern;
 }
 
-// Avoid importing node:path just for join — keep zero-dep. Variadic so nested
+// Hand-rolled join for settings-dir/~ concatenation only (zero-dep spirit;
+// path-boundary matching uses node:path resolve). Variadic so nested
 // paths (~/.pi/agent) resolve correctly (the old 2-arg version silently
 // dropped the third segment).
 function join(...parts) {
@@ -147,7 +149,10 @@ function toolSubject(toolName, input) {
 
 function resolve(p, cwd) {
   if (!p) return "";
-  return p.startsWith("/") ? p : join(cwd || "/", p);
+  // node:path resolve normalizes `..` — the old hand-rolled join left it in
+  // place ("../x" → "/proj/../x"), so the isExternal prefix check classified
+  // traversal paths as internal and they bypassed the deny gate.
+  return pathResolve(cwd || "/", p);
 }
 
 /**

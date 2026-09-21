@@ -43,7 +43,7 @@ Once logged in, models populate via catalog refresh and `/model` shows them:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `COMMAND_CODE_API_KEY` | — | API key (overrides `/login`; read by catalog refresh) |
+| `COMMAND_CODE_API_KEY` | — | API key used when no `/login` credential is resolved; read by catalog refresh |
 | `COMMAND_CODE_BASE_URL` | `https://api.commandcode.ai/provider/v1` | Override the base URL (must include `/v1`; chat completions POST to `<baseUrl>/chat/completions`) |
 
 ### settings.json (base URL)

@@ -436,6 +436,28 @@ describe("SerenaWorkerClient", () => {
       try { await p2; expect.fail(); } catch (e: any) { expect(e.message).to.include("Serena worker stopped"); }
     });
 
+    it("stop() rejects a request enqueued during the shutdown-ack wait", async () => {
+      const { worker, mockProcess, mockStdout } = createMockedWorker();
+      const p1 = worker.request({ action: "active" }, 5000);
+      p1.catch(() => {});
+      // Hold the shutdown ack open until we enqueue the second request.
+      let releaseAck: () => void = () => {};
+      mockProcess.stdin.write = (data: string) => {
+        if (data.includes("shutdown")) {
+          const parsed = JSON.parse(data);
+          releaseAck = () => mockStdout.emit("data", JSON.stringify({ id: parsed.id, ok: true, shutdown: true }) + "\n");
+        }
+        return true;
+      };
+      const stopPromise = worker.stop();
+      const p2 = worker.request({ action: "during-stop" }, 5000);
+      p2.catch(() => {});
+      releaseAck();
+      await stopPromise;
+      try { await p2; expect.fail("Should have been rejected"); }
+      catch (e: any) { expect(e.message).to.include("Serena worker stopped"); }
+    });
+
     it("stop() kills the process and clears state", async () => {
       const { worker, mockProcess } = createMockedWorker();
       // stop() sends "shutdown", waits 2000ms max, kills the process in finally block.

@@ -334,6 +334,40 @@ describe("panel kernel", () => {
     assert.isUndefined(cfg.entries.cancel);
   });
 
+  it("cancel detection: Esc during action prompt leaves dirty false (no spurious onSave)", () => {
+    const cfg = DEFAULTS();
+    const actions: Record<string, PanelAction> = {
+      addEntry: {
+        label: "Add entry",
+        run: (prompt) => {
+          prompt("Entry key", (key) => {
+            if (key) cfg.entries[key] = "x";
+          });
+        },
+      },
+    };
+    const model = new ConfigPanelModel(buildRows(cfg, actions), null);
+    let saves = 0;
+    model.onSave = () => { saves++; };
+    model.onAction = makeOnAction(model, cfg, buildRows, actions, () => {});
+    for (let i = 0; i < 4; i++) model.handleInput("\u001b[B");
+    model.handleInput("\r"); // activate → prompt opens
+    for (const ch of "ghost") model.handleInput(ch);
+    model.handleInput("\u001b"); // Esc cancels the prompt
+    assert.isUndefined(cfg.entries.ghost);
+    assert.isFalse(model.dirty, "cancelled action must not mark the model dirty");
+    model.handleInput("\u001b"); // panel Esc → onClose
+    assert.equal(saves, 0, "Esc-close after a cancelled action must not call onSave");
+    // Control: a successful action still marks dirty and applies.
+    model.onClose = null; // keep the panel open for the second pass
+    for (let i = 0; i < 4; i++) model.handleInput("\u001b[B");
+    model.handleInput("\r");
+    for (const ch of "keep") model.handleInput(ch);
+    model.handleInput("\r");
+    assert.equal(cfg.entries.keep, "x");
+    assert.isTrue(model.dirty, "applied action still marks the panel dirty");
+  });
+
   describe("kindValue", () => {
     it("parses numbers", () => {
       assert.equal(kindValue("number", "123"), 123);
@@ -519,6 +553,33 @@ describe("panel kernel", () => {
       model.handleInput("\x1b[B"); // ↓ highlight a/m2
       model.handleInput("\t"); // Tab replaces segment 1 with a/m2, keeps segment 2
       assert.equal(m.input.getValue(), "a/m2, b/fast", "first entry replaced, second preserved");
+    });
+
+    it("empty-head pick: cursor parks at end of picked value, no +2 overshoot", () => {
+      const cfg: TestCfg = DEFAULTS();
+      cfg.url = "m1, fast";
+      const group: PanelGroup[] = [{
+        key: "g", label: "g", rows: [
+          row("model", "Model", "string", cfg.url, (v) => { cfg.url = String(v ?? ""); }, { completions: () => models }),
+        ],
+      }];
+      const model = new ConfigPanelModel(group, null, "t");
+      model.handleInput("\r"); // prefill "m1, fast" (head-less segment 1), cursor at end
+      const m = model as unknown as { suggestions: { value: string }[]; input: { getValue(): string; cursor: number } };
+      m.input.cursor = 0; // cursor inside segment 1, head is empty
+      model.handleInput("\x1b[D"); // ← → cursor-only move, refilter opens full list
+      assert.ok(m.suggestions.length >= 1, "suggestions open for head-less segment 1");
+      model.handleInput("\x1b[B"); // ↓ highlight a/m2 (idx 0 is a/m1)
+      model.handleInput("\t"); // Tab replaces segment 1
+      assert.equal(m.input.getValue(), "a/m2, fast", "segment replaced, tail preserved");
+      assert.equal(m.input.cursor, "a/m2".length, "cursor parks at end of picked value (old code: +2 → landed inside 'fast')");
+      // The parked cursor must still target segment 1 — the old +2 landed
+      // inside 'fast' and retargeted the picker to the tail segment.
+      assert.deepEqual(
+        filterSuggestions(models, m.input.getValue(), m.input.cursor).map((o) => o.value),
+        ["a/m2"],
+        "parked cursor targets segment 1, not the tail",
+      );
     });
   });
 });

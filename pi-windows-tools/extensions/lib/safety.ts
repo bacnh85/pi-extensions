@@ -20,7 +20,8 @@ const DESTRUCTIVE_COMMANDS: { pattern: RegExp; reason: string }[] = [
   { pattern: /netsh\s+advfirewall\s+reset/i, reason: "Firewall reset" },
   { pattern: /git\s+clean\b(?=[^;&|\r\n]*\s(?:--force|-[a-z]*f[a-z]*)\b)(?=[^;&|\r\n]*\s(?:-d|-[a-z]*d[a-z]*)\b)(?=[^;&|\r\n]*\s(?:-x|-[a-z]*x[a-z]*)\b)/i, reason: "Force clean git ignored files" },
   { pattern: /git\s+reset\s+--hard/i, reason: "Hard git reset" },
-  { pattern: /git\s+push\b(?=[^;&|]*\s(?:--force|-f)\b)/i, reason: "Force git push" },
+  // --force-with-lease (± =value) is the SAFE force push; only bare --force/-f confirms.
+  { pattern: /git\s+push\b(?=[^;&|]*\s(?:--force(?![\w-])|-f)\b)/i, reason: "Force git push" },
   { pattern: /(?:npm|pnpm|yarn)\s+publish/i, reason: "Package publish" },
   { pattern: /stop-computer|restart-computer|(?:^|[;&|\r\n]\s*)shutdown\s+/i, reason: "Shutdown/restart computer" },
   { pattern: /takeown\s+\/f/i, reason: "Take ownership of file" },

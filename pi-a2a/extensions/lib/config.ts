@@ -479,11 +479,18 @@ export function loadConfig(opts: {
   cfg.server.agentName = String(srv.agentName ?? env.A2A_AGENT_NAME ?? "");
   cfg.server.publicUrl = String(srv.publicUrl ?? env.A2A_PUBLIC_URL ?? "");
   cfg.server.sharedToken = String(srv.sharedToken ?? env.A2A_BEARER_TOKEN ?? "");
-  cfg.server.peerTokens = parsePeerTokens(
-    typeof srv.peerTokens === "string"
-      ? srv.peerTokens
-      : env.A2A_PEER_TOKENS,
-  );
+  // Object form (README-documented: `"peerTokens": { "alice": "tok-a" }`) —
+  // keep only string-valued entries. String + env paths unchanged.
+  cfg.server.peerTokens =
+    srv.peerTokens && typeof srv.peerTokens === "object"
+      ? Object.entries(srv.peerTokens)
+          .filter(([, v]) => typeof v === "string" && v)
+          .reduce<Record<string, string>>((m, [k, v]) => ((m[k] = v as string), m), {})
+      : parsePeerTokens(
+          typeof srv.peerTokens === "string"
+            ? srv.peerTokens
+            : env.A2A_PEER_TOKENS,
+        );
   cfg.server.trustedPeers = Array.isArray(srv.trustedPeers)
     ? srv.trustedPeers.map(String)
     : (env.A2A_TRUSTED_PEERS || "").split(",").map((x) => x.trim()).filter(Boolean);

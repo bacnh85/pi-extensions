@@ -197,12 +197,17 @@ function cmdList() {
 }
 
 async function cmdAdd(refs, flags) {
+  let failed = 0;
   for (const ref of refs) {
     const source = resolveSource(ref);
     console.log(paint.cyan(`pi install ${source}${flags.local ? " -l" : ""}`));
     const code = pi(["install", source, ...(flags.local ? ["-l"] : [])]);
-    if (code !== 0) console.log(paint.red(`install failed: ${ref}`));
+    if (code !== 0) {
+      failed++;
+      console.log(paint.red(`install failed: ${ref}`));
+    }
   }
+  return failed ? 1 : undefined;
 }
 
 async function cmdInteractive(flags) {
@@ -235,11 +240,13 @@ async function cmdInteractive(flags) {
   if (!flags.yes) {
     console.log(`\nWill install:\n${sources.map((s) => `  ${s}`).join("\n")}`);
   }
+  let failed = 0;
   for (const source of sources) {
     console.log(paint.cyan(`pi install ${source}${flags.local ? " -l" : ""}`));
     const code = pi(["install", source, ...(flags.local ? ["-l"] : [])]);
-    if (code !== 0) console.log(paint.red(`install failed: ${source}`));
+    if (code !== 0) failed++;
   }
+  return failed ? 1 : undefined;
 }
 
 function cmdRemove(refs, flags) {
@@ -253,10 +260,12 @@ function cmdRemove(refs, flags) {
     if (!installed.length) return console.log(paint.dim("no npm pi packages to remove"));
     sources = installed;
   }
+  let failed = 0;
   for (const source of sources) {
     console.log(paint.yellow(`pi remove ${source}`));
-    pi(["remove", source]);
+    if (pi(["remove", source]) !== 0) failed++;
   }
+  return failed ? 1 : 0;
 }
 
 function usage(code = 0) {

@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.9 (2026-09-21)
+
+### Fixed
+
+- **Repo `.pi/settings.json` is now trust-gated.** `getSettings()` read the
+  repo-scope file with no trust check and its `router.baseUrl` beat the global
+  setting — an untrusted checkout could redirect the router endpoint to an
+  attacker host while the user's auth.json credential (or `ROUTER_API_KEY`) is
+  sent there as `Authorization: Bearer` for discovery and chat. Repo scope is
+  now ignored by default and only honored when the project is trusted
+  (`ctx.isProjectTrusted()`), re-evaluated at `session_start` with provider
+  re-registration when the trusted repo adds/changes the endpoint (same class
+  of fix as pi-munin).
+
 ## 1.1.8 (2026-09-20)
 
 ### Removed

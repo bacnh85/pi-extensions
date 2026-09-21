@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { readSettingsPackages, resolveSource, searchCatalog, mergeResults, main } from "../../cli.js";
@@ -75,6 +75,28 @@ test("readSettingsPackages: PI_CODING_AGENT_DIR wins over HOME/USERPROFILE", () 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("add: failed pi install resolves 1 and prints the failure", { skip: process.platform === "win32" }, async () => {
+  // PATH shim: fake `pi` that always exits 1
+  const shim = mkdtempSync(path.join(tmpdir(), "pi-hub-shim-"));
+  writeFileSync(path.join(shim, "pi"), "#!/bin/sh\nexit 1\n");
+  chmodSync(path.join(shim, "pi"), 0o755);
+  const realPath = process.env.PATH;
+  const logs = [];
+  const orig = console.log;
+  console.log = (msg) => logs.push(msg);
+  let code;
+  try {
+    process.env.PATH = `${shim}${path.delimiter}${realPath}`;
+    code = await main(["add", "definitely-not-real"]);
+  } finally {
+    process.env.PATH = realPath;
+    console.log = orig;
+    rmSync(shim, { recursive: true, force: true });
+  }
+  assert.equal(code, 1, "exit code 1 when pi install fails");
+  assert.ok(logs.some((l) => /install failed: definitely-not-real/.test(l)), "failure message printed");
 });
 
 test("remove rejects -l/--local — only valid with add", async () => {

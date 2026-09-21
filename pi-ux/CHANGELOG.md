@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.6.2] - 2026-09-21
+
+- Fixed: `scanStates` strips quoted strings before the interactive-element test — a quoted word `a` (e.g. `grid-template-areas: "a b"`) falsely marked CSS as interactive and failed the States gate on dialog-free stylesheets. Regression test added.
+
 ## [0.6.1] - 2026-09-20
 
 - Refactored: removed `normalizePersistedMode` — a pure alias of `normalizeMode`; callers updated.

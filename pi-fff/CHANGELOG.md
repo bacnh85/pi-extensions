@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.2 (2026-09-21)
+
+### Fixed
+
+- Autocomplete provider is now registered once per extension instance —
+  repeated `session_start` events no longer stack wrapper chains that
+  ran N lookups per keystroke.
+
+### Changed
+
+- README now cites FFF 0.10.6, matching the `@ff-labs/fff-node`
+  dependency version.
+
 ## 0.8.1 (2026-09-20)
 
 ### Changed

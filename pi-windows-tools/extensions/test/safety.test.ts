@@ -75,6 +75,20 @@ describe("safety", () => {
       expect(r.risk).to.equal("confirm");
     });
 
+    it("returns safe for git push --force-with-lease (with or without =value)", () => {
+      for (const command of ["git push --force-with-lease origin main", "git push --force-with-lease=abc origin main"]) {
+        const r = classifyCommand(command);
+        expect(r.risk, command).to.equal("safe");
+        expect(r.reasons, command).to.not.include("Force git push");
+      }
+    });
+
+    it("returns confirm for bare git push -f", () => {
+      const r = classifyCommand("git push -f origin main");
+      expect(r.risk).to.equal("confirm");
+      expect(r.reasons).to.include("Force git push");
+    });
+
     it("detects git clean flags in any bundled order", () => {
       for (const command of ["git clean -fdx", "git clean -xdf", "git clean -f -d -x"]) expect(classifyCommand(command).risk).to.equal("confirm");
     });

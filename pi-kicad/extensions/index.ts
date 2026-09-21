@@ -235,5 +235,4 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// Re-export the raw client for direct use / tests.
-export { callKonnect, mapContent } from "./lib/konnect-client.js";
+

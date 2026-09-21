@@ -1081,7 +1081,7 @@ function providerQuotaSection(text: string): string | undefined {
  *  is the first segment. Aliases normalize to the canonical provider id
  *  (`cmd` → `command-code`); generic router aliases carry no provider info —
  *  return undefined so the usage API picks the best snapshot. */
-function routerUpstreamPrefix(model: ModelLike): string | undefined {
+export function routerUpstreamPrefix(model: ModelLike): string | undefined {
   const id = model?.id ?? "";
   const first = id.split("/")[0]?.toLowerCase();
   if (!first) return undefined;
@@ -1272,7 +1272,7 @@ function pad(value: string, width: number): string {
 /** "46 tok/s (36 think + 10 answer)" — split shown only when the model
  *  reasoned. usage.reasoning is a subset of usage.output (Pi SDK contract),
  *  so answer speed = (output − reasoning)/s, never output + reasoning. */
-function tokPerSecLabel(output: number, thinking: number, elapsedMs: number): string {
+export function tokPerSecLabel(output: number, thinking: number, elapsedMs: number): string {
   const total = Math.round(output / (elapsedMs / 1000));
   if (thinking <= 0) return `${total} tok/s`;
   const secs = elapsedMs / 1000;

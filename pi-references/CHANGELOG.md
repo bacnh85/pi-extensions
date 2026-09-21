@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.4 (2026-09-21)
+
+### Security
+
+- **Project `.pi/settings.json` is now only read when the project is trusted**
+  (`ctx.isProjectTrusted()`). Previously, opening a session in an untrusted
+  checkout would auto-run `git clone` of attacker-controlled URLs at startup
+  and inject attacker-written reference descriptions into the system prompt.
+  The global config (`~/.pi/agent/settings.json`, `PI_CODING_AGENT_DIR`-aware)
+  is still read unconditionally. Tests: 30 → 33.
+
 ## 0.1.3 (2026-09-20)
 
 ### Fixed

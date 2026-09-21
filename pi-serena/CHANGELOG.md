@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.16 (2026-09-21)
+
+### Fixed
+
+- **All Serena tools now truncate oversized output.** `callWorkerAction` (the
+  path behind every registered Serena tool) returned `resultText(response)`
+  untruncated — only `serena_status` and `serena_list_tools` applied
+  `truncateText`, so oversized `serena_find_symbol` / search results entered
+  context unbounded. Output is now capped at 2,000 lines / 50KB on the main
+  tool path, as the README promises.
+- **`truncateText` now appends the truncation marker on the line-only path**
+  (input ≤50KB but >2,000 lines) — previously the output was silently cut
+  with no indication.
+- **Requests enqueued while `stop()` awaits the shutdown ack no longer hang.**
+  `processQueue` early-returns while `stopping`, so a request that arrived
+  during the up-to-2s shutdown-ack window sat in the queue forever;
+  `stop()` now drains the queue again in its `finally` block, rejecting such
+  requests with "Serena worker stopped".
+
 ## 0.9.15 (2026-09-12)
 
 ### Fixed — restart robustness

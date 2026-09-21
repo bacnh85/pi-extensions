@@ -5,11 +5,12 @@ description: Design KiCad schematics and PCB layouts via the Konnect bridge. Use
 
 # pi-kicad — KiCad CAD design via Konnect
 
-Drive KiCad 10 through the **Konnect** binary using two Pi tools:
+Drive KiCad 10 through the **Konnect** binary using three Pi tools:
 
 | Tool | Purpose |
 |---|---|
 | `kicad_call` | Invoke any Konnect tool by name (185 tools across 18 toolsets) |
+| `kicad_batch` | Run multiple Konnect tool calls SEQUENTIALLY in one shot (each awaits before the next, so same-file writes don't race) |
 | `kicad_status` | Wire up + health-check the bridge (binary, kicad-cli, IPC socket, daemon, version) |
 
 ## First move

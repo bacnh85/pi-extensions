@@ -246,7 +246,8 @@ export async function checkAgyConnectivity(cwd: string, signal?: AbortSignal): P
 // ---------------------------------------------------------------------------
 
 export function spawnAgy(options: AgyOptions, signal: AbortSignal): Promise<string> {
-  // ponytail: global lock, per-project locks if concurrent agy calls collide
+  // No serialization: concurrent agy_execute calls run in parallel — the
+  // quota-group guidance in promptGuidelines discourages same-group parallelism.
   const spawn = getSpawn();
   const args = buildAgyArgs(options);
 

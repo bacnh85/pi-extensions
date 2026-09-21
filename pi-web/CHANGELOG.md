@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.17.4 (2026-09-21)
+
+### Fixed
+
+- Docs: README fixes only — dropped the nonexistent Firecrawl v2→v1 fallback claim; `web_search` `count` cap corrected to backend-dependent (SearXNG 50, Firecrawl 100, Brave verbatim); library-structure table now lists all 19 modules (adds `chrome`, `cdp`, `chatapi`, `chatgpt`, `gemini`, `gemini-auth`, `gemini-dr`, `imageapi`).
 ## 0.17.3 (2026-09-20)
 
 ### Fixed

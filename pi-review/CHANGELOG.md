@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Tests: cover `buildReviewPrompt` preset-specific prompts and the fail-closed Git
+  evidence/range gates (primary git failure, unresolvable custom range). No
+  behavioral changes.
+
 ## 0.2.11 (2026-09-20)
 
 - Widened Pi SDK peer range to `<0.87.0` (devDeps to ^0.86.0); tested against Pi 0.86.0. No behavioral changes — the 0.86.0 audit found no affected code paths.

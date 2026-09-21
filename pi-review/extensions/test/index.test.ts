@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "mocha";
-import piReviewExtension, { isReadOnlyBash, parseReviewArgs, parseReviewResult, resolveGitRange } from "../index.ts";
+import piReviewExtension, { buildReviewPrompt, isReadOnlyBash, parseReviewArgs, parseReviewResult, resolveGitRange } from "../index.ts";
 
 /** Flush pending microtasks and async I/O so review promise chain settles. */
 async function flush(): Promise<void> {
@@ -17,7 +17,7 @@ const ACTIONABLE_REVIEW = JSON.stringify({
   }],
 });
 
-function harness(subagent = false, reviewOutput = '{"summary":"clean","findings":[]}', reviewEventResult?: unknown, subagentError?: string, abortError?: string) {
+function harness(subagent = false, reviewOutput = '{"summary":"clean","findings":[]}', reviewEventResult?: unknown, subagentError?: string, abortError?: string, execImpl?: (cmd: string, args: string[]) => Promise<any>) {
   const handlers: Record<string, Function[]> = {};
   const commands: Record<string, any> = {};
   const sent: any[] = [];
@@ -35,7 +35,7 @@ function harness(subagent = false, reviewOutput = '{"summary":"clean","findings"
     setThinkingLevel: (level: string) => { thinking = level; },
     sendUserMessage: (content: string, options: any) => sent.push({ content, options }),
     sendMessage: (message: any) => messages.push(message),
-    exec: async () => ({ code: 0, stdout: "", stderr: "", killed: false }),
+    exec: execImpl ?? (async () => ({ code: 0, stdout: "", stderr: "", killed: false })),
     events: {
       on(name: string, fn: Function) { const list = bus.get(name) ?? []; list.push(fn); bus.set(name, list); },
       emit(name: string, value: any) {
@@ -231,5 +231,47 @@ describe("review lifecycle", () => {
     await h.handlers.agent_settled[0]({}, h.ctx);
     assert.deepEqual(h.tools(), ["read", "edit", "ffgrep", "serena_find_symbol"]);
     assert.equal(h.thinking(), "medium");
+  });
+});
+
+describe("review prompt builder and git evidence gate", () => {
+  it("builds preset-specific prompts with the target embedded", () => {
+    assert.match(buildReviewPrompt("default", ""), /Inspect Git state with read-only tools/);
+    assert.match(buildReviewPrompt("branch", ""), /Compare against upstream\/base branch/);
+    assert.match(buildReviewPrompt("uncommitted", ""), /Staged, unstaged, and untracked changes only\./);
+    assert.match(buildReviewPrompt("custom", ""), /Review the target or focus area supplied by the user\./);
+    const targeted = buildReviewPrompt("custom", "auth module");
+    assert.match(targeted, /Target or additional instructions:\nauth module/);
+    assert.match(targeted, /structured JSON contract/);
+    assert.equal(buildReviewPrompt("uncommitted", "").includes("Compare against upstream/base branch"), false, "uncommitted has no branch range hint");
+  });
+
+  it("fails closed when primary git evidence collection fails", async () => {
+    const h = harness(false, undefined, undefined, undefined, undefined,
+      async () => ({ code: 1, stdout: "", stderr: "fatal: not a git repository", killed: false }));
+    let response: any;
+    h.emit("pi-review:run", {
+      id: "review-gitfail", cwd: process.cwd(), prompt: "Review this change",
+      accept: () => true, respond: (value: any) => { response = value; },
+    });
+    await flush();
+    assert.equal(response?.ok, false);
+    assert.equal(response?.error, "Reviewer Git evidence collection failed");
+  });
+
+  it("fails closed when a required custom range cannot be resolved", async () => {
+    const h = harness(false, undefined, undefined, undefined, undefined,
+      async (_cmd: string, args: string[]) => args[0] === "log"
+        ? { code: 128, stdout: "", stderr: "unknown revision", killed: false }
+        : { code: 0, stdout: "", stderr: "", killed: false });
+    let response: any;
+    h.emit("pi-review:run", {
+      id: "review-rangefail", cwd: process.cwd(), prompt: "Review this change",
+      gitRange: "main...feature", requireExactRange: true,
+      accept: () => true, respond: (value: any) => { response = value; },
+    });
+    await flush();
+    assert.equal(response?.ok, false);
+    assert.equal(response?.error, "Reviewer Git range could not be resolved");
   });
 });

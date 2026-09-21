@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.4 (2026-09-21)
+
+### Fixed
+
+- README env-var table no longer claims `COMMAND_CODE_API_KEY` overrides
+  `/login`; a resolved `/login` credential takes precedence and the env key
+  is used only when none is resolved (matches code and 0.2.2).
+
 ## 0.2.3 (2026-09-14)
 
 ### Fixed

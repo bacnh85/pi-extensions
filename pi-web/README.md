@@ -81,7 +81,7 @@ Parameters:
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `query` | string | — | Search query |
-| `count` | number | 5 | Number of results (max 20) |
+| `count` | number | 5 | Number of results (backend-dependent cap: SearXNG 50, Firecrawl 100; Brave passed through verbatim) |
 | `freshness` | string | — | Time filter: `pw`, `pm`, `py`, or `YYYY-MM-DDtoYYYY-MM-DD` |
 | `country` | string | `US` | Two-letter country code |
 | `backend` | string | `auto` | Force backend: `auto`, `searxng`, `brave`, `firecrawl` |
@@ -458,8 +458,16 @@ Smoke test: `npx tsx extensions/scripts/gemini-smoke.ts x chatgpt-auth`,
 | `lib/retry.ts` | Retry with exponential backoff for transient HTTP failures |
 | `lib/brave.ts` | Brave Search API fetch client (internal) |
 | `lib/searxng.ts` | SearXNG metasearch fetch client (internal) |
-| `lib/firecrawl.ts` | Firecrawl API fetch client with v2→v1 fallback (internal) |
+| `lib/firecrawl.ts` | Firecrawl API fetch client (internal) |
 | `lib/crawl4ai.ts` | Crawl4AI Docker API fetch client (internal) |
+| `lib/chrome.ts` | Local headless Chrome capture for localhost/private/file:// URLs the Crawl4AI daemon can't reach |
+| `lib/cdp.ts` | Minimal Chrome DevTools Protocol client over Node's native WebSocket — powers `web_interact` |
+| `lib/chatapi.ts` | Generic OpenAI-compatible chat client for `web_chat` (custom gateway endpoint) |
+| `lib/chatgpt.ts` | Direct ChatGPT web-tier client — chat + image generation via the Codex backend surface |
+| `lib/gemini.ts` | Gemini web-tier research backend, cookie-authed via `__Secure-1PSID` |
+| `lib/gemini-auth.ts` | Gemini web cookie auto-refresh — rotates `__Secure-1PSIDTS` on a 10-min keepalive |
+| `lib/gemini-dr.ts` | Pure-Node Deep Research client for gemini.google.com (plan → confirm → poll) |
+| `lib/imageapi.ts` | Generic OpenAI-compatible images client + fallback chain for `web_image` (zai, custom) |
 | `lib/agy.ts` | agy (Antigravity CLI) spawn helper — `read_url` extraction via Gemini/Claude |
 | `lib/search.ts` | Unified search orchestrator — probes backends, fallback chain |
 | `lib/extract.ts` | Unified extraction orchestrator — mode-based backend selection |

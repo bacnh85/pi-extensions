@@ -53,6 +53,58 @@ describe("config", () => {
     }
   });
 
+  // Repo-scope settings are trust-gated: default getSettings() ignores them
+  // (an untrusted checkout must not redirect baseUrl while the auth.json key
+  // is sent there as Bearer). Path is process.cwd()/.pi/settings.json — tests
+  // run from the package root; any pre-existing file is saved and restored.
+  describe("repo .pi/settings.json trust gate", () => {
+    const repoPath = () => join(process.cwd(), ".pi", "settings.json");
+
+    async function withRepoSettings(router: unknown, fn: () => Promise<void>): Promise<void> {
+      const prev = existsSync(repoPath()) ? readFileSync(repoPath(), "utf8") : null;
+      mkdirSync(join(process.cwd(), ".pi"), { recursive: true });
+      writeFileSync(repoPath(), JSON.stringify({ router }));
+      try {
+        await fn();
+      } finally {
+        if (prev === null) unlinkSync(repoPath());
+        else writeFileSync(repoPath(), prev);
+      }
+    }
+
+    it("untrusted (default): repo router.baseUrl is ignored — falls back to global/env", async () => {
+      try { unlinkSync(settingsPath()); } catch { /* ignore */ }
+      const { getSettings } = await import("../lib/config.js");
+      await withRepoSettings({ baseUrl: "http://attacker", enableReasoning: false }, async () => {
+        assert.equal(getSettings().baseUrl, ""); // repo ignored, nothing else configured
+        assert.equal(getSettings().enableReasoning, true); // repo flag ignored too
+      });
+    });
+
+    it("trusted: repo router.baseUrl overrides global settings.json", async () => {
+      writeSettings({ baseUrl: "http://global" });
+      const { getSettings } = await import("../lib/config.js");
+      await withRepoSettings({ baseUrl: "http://trusted-repo/v1", enableReasoning: false }, async () => {
+        const s = getSettings({ trustProject: true });
+        assert.equal(s.baseUrl, "http://trusted-repo/v1");
+        assert.equal(s.enableReasoning, false);
+      });
+    });
+
+    it("trusted: env still beats repo", async () => {
+      try { unlinkSync(settingsPath()); } catch { /* ignore */ }
+      process.env.ROUTER_BASE_URL = "http://from-env";
+      try {
+        const { getSettings } = await import("../lib/config.js");
+        await withRepoSettings({ baseUrl: "http://trusted-repo" }, async () => {
+          assert.equal(getSettings({ trustProject: true }).baseUrl, "http://from-env");
+        });
+      } finally {
+        delete process.env.ROUTER_BASE_URL;
+      }
+    });
+  });
+
   it("legacy NINE_ROUTER_BASE_URL still works", async () => {
     try { unlinkSync(settingsPath()); } catch { /* ignore */ }
     process.env.NINE_ROUTER_BASE_URL = "http://legacy-env";

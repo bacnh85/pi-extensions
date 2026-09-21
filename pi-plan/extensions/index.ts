@@ -1280,9 +1280,11 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     flow.reviewPass++;
     persistState();
     updateFooter(ctx);
+    const activeFlow = flow;
     const review = await requestFlowReview(ctx);
-    // Recheck — the workflow may have been stopped while we awaited the review
-    if (!flow || flow.phase !== "review") return;
+    // Recheck — the workflow may have been stopped, rewound, or replaced by a
+    // branch switch while we awaited the review (identity guard, as rewindFlow)
+    if (!flow || flow !== activeFlow || flow.phase !== "review") return;
     if (!review.ok) {
       flow.phase = "stopped";
       persistState();
@@ -2131,6 +2133,14 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     const preModel = prePlanModel;
     const preThinking = prePlanThinking;
     restoreStateFromBranch(ctx);
+    // ponytail: branch switch discards any in-flight review — abort its
+    // controller and clear the pending timer so the previous branch's review
+    // can't resolve or time out into this branch's restored flow (mirror of
+    // the enterPlanMode re-entry discard).
+    flowController?.abort();
+    flowController = undefined;
+    if (reviewTimer) clearTimeout(reviewTimer);
+    reviewTimer = undefined;
     if (planModeEnabled) {
       toolsBeforePlan ??= previousToolsBeforePlan ?? pi.getActiveTools();
       enablePlanTools();

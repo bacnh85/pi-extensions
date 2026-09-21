@@ -11,6 +11,32 @@ import {
 import { SERENA_FIRST_GUIDANCE, SERENA_MISS_GUIDANCE, shouldBlockSemanticMiss } from "./lib/guidance";
 import { normalizeTimeoutMs, stripControlParams } from "./lib/normalize";
 import { repairSymbolNameKey } from "./lib/symbol-key";
+import { truncateText, OUTPUT_MAX_LINES, OUTPUT_MAX_BYTES } from "./lib/truncate";
+
+describe("truncateText", () => {
+  it("passes short text through unchanged", () => {
+    expect(truncateText("short output")).to.equal("short output");
+  });
+
+  it("appends the marker when input exceeds the line cap", () => {
+    const text = Array.from({ length: OUTPUT_MAX_LINES + 1 }, (_, i) => `line ${i}`).join("\n");
+    const out = truncateText(text);
+    expect(out).to.include("[Serena output truncated to");
+    expect(out.split("\n").length).to.be.at.most(OUTPUT_MAX_LINES + 3);
+  });
+
+  it("appends the marker when input exceeds the byte cap, splitting on a multi-byte boundary without lone surrogates", () => {
+    // 3-byte chars: 51,200 % 3 ≠ 0, so the naive byte cut lands mid-character.
+    const text = Array.from({ length: OUTPUT_MAX_LINES + 500 }, () => "日".repeat(30)).join("\n");
+    const out = truncateText(text);
+    expect(out).to.include("[Serena output truncated to");
+    for (const ch of out) {
+      const cp = ch.codePointAt(0)!;
+      expect(cp).to.not.be.within(0xd800, 0xdfff);
+    }
+    expect(out).to.not.include("\uFFFD");
+  });
+});
 
 describe("Serena tool-selection guidance", () => {
   it("uses procedural Serena-first wording", () => {

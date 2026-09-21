@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.8] - 2026-09-21
+
+### Fixed
+
+- Completion picker cursor math: accepting a suggestion in the first segment
+  (empty head) no longer parks the cursor 2 chars past the picked value —
+  `", "` was counted even though no separator is inserted there.
+- Action rows: Esc during an action's inline prompt no longer marks the panel
+  dirty, so closing the panel after a cancelled action no longer fires a
+  spurious `onSave(true)`.
+
 ## [0.1.7] - 2026-09-20
 
 ### Fixed

@@ -289,6 +289,19 @@ test("external_directory deny does NOT block a path equal to the workspace root"
   assert.equal(result, undefined, "cwd itself is not external → no rule matched → allow");
 });
 
+test("external_directory deny catches `..` traversal (regression 0.2.4)", async () => {
+  // resolve() used a hand-rolled join that left `..` unnormalized: "../x"
+  // became "/proj/../x" and the isExternal prefix check classified it
+  // internal — bypassing the deny gate entirely.
+  const pi = harness({ rules: { external_directory: { "*": "deny" } } });
+  const r1 = await pi.handler({ toolName: "read", input: { path: "../outside/s.txt" } }, ctx());
+  assert.equal(r1.block, true, "../outside/s.txt resolves outside /proj");
+  assert.match(r1.reason, /external_directory/);
+  const r2 = await pi.handler({ toolName: "read", input: { path: "../../etc/passwd" } }, ctx());
+  assert.equal(r2.block, true, "../../etc/passwd resolves outside /proj");
+  assert.match(r2.reason, /external_directory/);
+});
+
 test("external_directory allow lets tool rules still apply", async () => {
   // Per OpenCode: external_directory is a gate. Once allowed through, tool rules
   // still apply. Here path is external but allowed; tool rule denies → deny.

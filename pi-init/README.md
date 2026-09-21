@@ -18,6 +18,9 @@ pi install npm:@bacnh85/pi-init
 | `/init force` | Regenerate `AGENTS.md` from scratch |
 | `/init check` | Report detected commands and what's missing, without writing |
 
+If the repo has no `AGENTS.md` but does have a `CLAUDE.md`, `/init` targets
+`CLAUDE.md` as its write target (since 0.1.2).
+
 ## What it does
 
 1. **Repo introspection** — reads `package.json` (scripts, deps, workspaces), detects package managers (npm/pnpm/yarn/bun), build systems (make/cargo/go/python/maven/gradle/cmake/elixir), CI configs (GitHub Actions, GitLab, CircleCI, etc.), and top-level directories.

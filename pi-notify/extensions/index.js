@@ -105,16 +105,24 @@ function run(cmd, args) {
   } catch { /* best-effort */ }
 }
 
+/** Sanitize a string for OSC embedding: title/body can be model-controlled
+ * (ui_prompt_start), so strip C0 controls + DEL (ESC/BEL could forge terminal
+ * escape sequences) and replace `;` (the OSC field separator). Exported for
+ * tests, same as toastScript. */
+export function sanitizeOsc(str) {
+  return String(str).replace(/[\x00-\x1f\x7f]/g, "").replace(/;/g, ",");
+}
+
 function notifyOSC777(title, body) {
   try {
-    process.stdout.write(`\x1b]777;notify;${title};${body}\x07`);
+    process.stdout.write(`\x1b]777;notify;${sanitizeOsc(title)};${sanitizeOsc(body)}\x07`);
   } catch { /* best-effort */ }
 }
 
 function notifyOSC99(title, body) {
   try {
-    process.stdout.write(`\x1b]99;i=1:d=0;${title}\x1b\\`);
-    process.stdout.write(`\x1b]99;i=1:p=body;${body}\x1b\\`);
+    process.stdout.write(`\x1b]99;i=1:d=0;${sanitizeOsc(title)}\x1b\\`);
+    process.stdout.write(`\x1b]99;i=1:p=body;${sanitizeOsc(body)}\x1b\\`);
   } catch { /* best-effort */ }
 }
 

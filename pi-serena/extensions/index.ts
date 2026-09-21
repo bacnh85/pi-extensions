@@ -14,8 +14,8 @@ const CONTEXT_PARAM = Type.Optional(Type.String({ description: "Serena context n
 const MAX_CHARS_PARAM = Type.Optional(Type.Number({ description: "Max response chars." }));
 const TIMEOUT_MS_PARAM = Type.Optional(Type.Number({ description: "Timeout in ms." }));
 
-const OUTPUT_MAX_BYTES = 50 * 1024;
-const OUTPUT_MAX_LINES = 2_000;
+import { truncateText } from "./lib/truncate";
+export { truncateText, OUTPUT_MAX_BYTES, OUTPUT_MAX_LINES } from "./lib/truncate";
 
 const controlSchema = {
   project: PROJECT_PARAM,
@@ -126,19 +126,6 @@ const replaceContentSchema = Type.Object({
   allow_multiple_occurrences: Type.Optional(Type.Boolean()),
 });
 
-function truncateText(text: string): string {
-  const lines = text.split("\n");
-  if (lines.length <= OUTPUT_MAX_LINES && Buffer.byteLength(text, "utf8") <= OUTPUT_MAX_BYTES) return text;
-  const truncatedLines = lines.slice(0, OUTPUT_MAX_LINES).join("\n");
-  const buf = Buffer.from(truncatedLines, "utf8");
-  if (buf.length <= OUTPUT_MAX_BYTES) return truncatedLines;
-  // Find a safe split point that doesn't break a multi-byte character
-  let byteLen = OUTPUT_MAX_BYTES;
-  while (byteLen > 0 && (buf[byteLen] & 0xc0) === 0x80) byteLen--;
-  const output = buf.subarray(0, byteLen).toString("utf8");
-  return output + `\n\n[Serena output truncated to ${OUTPUT_MAX_LINES} lines / ${OUTPUT_MAX_BYTES} bytes.]`;
-}
-
 const ERROR_HINTS: Record<string, (tool?: string) => string> = {
   language_server_error: () => " The language server may need a restart. Try serena_restart_language_server first.",
   missing_tool: (tool) => ` The tool '${tool ?? "unknown"}' is not available. Try serena_list_tools to see available tools for this project.`,
@@ -212,7 +199,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     const run = async (): Promise<{ content: { type: "text"; text: string }[]; details: SerenaWorkerResponse }> => {
       const response = await requestWithRetry();
       return {
-        content: [{ type: "text" as const, text: resultText(response) }],
+        content: [{ type: "text" as const, text: truncateText(resultText(response)) }],
         details: response,
       };
     };

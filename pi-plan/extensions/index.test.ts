@@ -3316,6 +3316,97 @@ describe("flow loop regression coverage", () => {
     assert.equal(lastEntry?.data?.lastPlanStatus, undefined, "plan status cleared on re-entry");
   });
 
+  it("session_tree branch switch aborts an in-flight review and leaves the restored flow untouched (0.14.4)", async () => {
+    const state = createFakePi(["read"], { plan: false });
+    let reviewSignal: AbortSignal | undefined;
+    // Accept the review but never respond — the review stays in flight with
+    // its idle timer armed.
+    state.onEmit = (event, data) => {
+      if (event === "pi-review:run") {
+        reviewSignal = data.signal;
+        assert.ok(data.accept());
+      }
+    };
+
+    const flowCwd = createGitRepo("pi-plan-flow-branch-switch-");
+    const planPath = path.join(flowCwd, "plan.md");
+    writeFileSync(planPath, "# Plan");
+
+    const branchA = [
+      {
+        type: "custom",
+        customType: "pi-plan",
+        data: {
+          enabled: false,
+          lastPlanPath: planPath,
+          lastPlanTitle: "Branch A Plan",
+          lastPlanStatus: "approved",
+          flow: {
+            phase: "implement",
+            reviewPass: 0,
+            baseline: "abc",
+            initialDirty: "none",
+            initialDirtyPatch: "",
+            initialUntrackedSnapshot: "[]",
+          },
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "We verified everything. [verification: pass]" }],
+        },
+      },
+    ];
+    // Branch B: a different workflow whose persisted phase is already review.
+    const branchB = [
+      {
+        type: "custom",
+        customType: "pi-plan",
+        data: {
+          enabled: false,
+          lastPlanPath: planPath,
+          lastPlanTitle: "Branch B Plan",
+          lastPlanStatus: "approved",
+          flow: {
+            phase: "review",
+            reviewPass: 1,
+            baseline: "def",
+            initialDirty: "none",
+            initialDirtyPatch: "",
+            initialUntrackedSnapshot: "[]",
+          },
+        },
+      },
+    ];
+
+    const ctx = fakeCtx({
+      cwd: flowCwd,
+      sessionManager: {
+        getBranch: () => branchA,
+      },
+    });
+
+    await state.handlers.session_tree?.[0]({}, ctx);
+    const settled = state.handlers.agent_settled?.[0];
+    assert.ok(settled);
+    const settledDone = settled({}, ctx); // branch A enters review, waits for pi-review
+    await new Promise((r) => setTimeout(r, 20));
+    assert.ok(reviewSignal, "branch A flow reached the review phase");
+
+    // Switch to branch B while branch A's review is in flight.
+    (ctx.sessionManager as any).getBranch = () => branchB;
+    await state.handlers.session_tree?.[0]({}, ctx);
+
+    assert.ok(reviewSignal!.aborted, "branch switch aborted the in-flight review");
+    await settledDone;
+    assert.equal(state.customMessages.length, 0, "stale review emits no result");
+    const lastEntry = state.entries[state.entries.length - 1];
+    assert.equal(lastEntry?.data?.flow?.phase, "review", "restored branch B flow left untouched (not stopped)");
+    assert.equal(lastEntry?.data?.lastPlanTitle, "Branch B Plan", "branch B state restored");
+  });
+
   it("stops when verification marker is absent", async () => {
     const state = createFakePi(["read"], { plan: false });
     const ctx = fakeCtx({

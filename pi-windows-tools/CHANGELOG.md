@@ -6,6 +6,10 @@
 
 - `executeCommand` now spawns with `windowsHide: true` — a console window no
   longer flashes on every command (the `stop()` taskkill path already had it).
+- The force-push safety rule no longer flags `git push --force-with-lease`
+  (with or without `=value`) — the safe lease-checked variant now classifies
+  as safe; bare `--force` / `-f` still require confirmation.
+- SKILL.md tool table now lists `windows_audit_log`.
 
 ### Removed
 

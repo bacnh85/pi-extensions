@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { commandCodeWindowToUsageWindow, parseEnvText, parseOmniUsageText } from "../index.ts";
+import {
+  commandCodeWindowToUsageWindow,
+  parseEnvText,
+  parseOmniUsageText,
+  routerUpstreamPrefix,
+  tokPerSecLabel,
+} from "../index.ts";
 
 // ── parseOmniUsageText — OmniRoute /api/usage/om-usage free-text report ──────
 
@@ -116,4 +122,33 @@ test("env: export prefix, quotes, comments, plain values", () => {
 test("env: CRLF files, non-assignment lines, `#` stays part of the value", () => {
   const parsed = parseEnvText("export A=1\r\nB=2\r\nnot an assignment\r\nKEY=value # note");
   assert.deepEqual(parsed, { A: "1", B: "2", KEY: "value # note" });
+});
+
+// ── routerUpstreamPrefix — router model id → upstream provider slug ─────────
+
+test("router: alias normalization maps to canonical upstream slugs", () => {
+  assert.equal(routerUpstreamPrefix({ id: "command-code/deepseek/deepseek-v4-flash" }), "command-code");
+  assert.equal(routerUpstreamPrefix({ id: "cmd/deepseek/deepseek-v4-flash" }), "command-code");
+  assert.equal(routerUpstreamPrefix({ id: "oc/gpt-5" }), "opencode-go");
+  assert.equal(routerUpstreamPrefix({ id: "ds/v4" }), "deepseek");
+  // glm-cn is OmniRoute's connection slug (not the Pi provider id zai-coding-cn).
+  assert.equal(routerUpstreamPrefix({ id: "glm-cn/glm-5.2" }), "glm-cn");
+  assert.equal(routerUpstreamPrefix({ id: "glmcn/glm-5.2" }), "glm-cn");
+  assert.equal(routerUpstreamPrefix({ id: "zai-coding/glm-5.2" }), "zai-coding");
+});
+
+test("router: generic aliases carry no provider info → undefined", () => {
+  assert.equal(routerUpstreamPrefix({ id: "auto/best" }), undefined);
+  assert.equal(routerUpstreamPrefix({ id: "openrouter/gpt-5" }), undefined);
+  assert.equal(routerUpstreamPrefix({ id: "nvidia/gpt-5" }), undefined);
+  assert.equal(routerUpstreamPrefix({ id: "" }), undefined);
+});
+
+// ── tokPerSecLabel — usage.reasoning ⊂ usage.output, never summed ────────────
+
+test("tok/s: think/answer split math (answer = output − reasoning)", () => {
+  assert.equal(tokPerSecLabel(3200, 2500, 70_000), "46 tok/s (36 think + 10 answer)");
+  assert.equal(tokPerSecLabel(200, 0, 10_000), "20 tok/s");
+  assert.equal(tokPerSecLabel(1000, 1000, 10_000), "100 tok/s (100 think + 0 answer)");
+  assert.equal(tokPerSecLabel(300, -1, 10_000), "30 tok/s");
 });

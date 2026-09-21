@@ -8,6 +8,8 @@ import checkpointExtension from "../index.js";
 
 // Regression tests for the 2026-09-12 nightly review fixes:
 // P0 redo order, P1 git-failure handling.
+// 2026-09-21: pi.exec RESOLVES non-zero exits with `.code` — the resolve path
+// must be treated as failure too, not just throws.
 
 function setup(execImpl) {
   const repo = mkdtempSync(join(tmpdir(), "ck-nightly-"));
@@ -111,6 +113,49 @@ test("snapshot is skipped when git update-ref fails", async () => {
   await undo.handler("1", ctx);
   assert.match(ctx.notifies[ctx.notifies.length - 1].m, /Nothing to undo/,
     "failed ref write must not push a checkpoint onto the stack");
+});
+
+test("stash create resolving with code 128 (no throw) is treated as failure — no bogus clean checkpoint", async () => {
+  const t = setup((args) => {
+    if (args[0] === "stash" && args[1] === "create")
+      return { code: 128, stdout: "", stderr: "fatal: not a git repository (resolved exit)" };
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const { pi, ctx, turnStart, undo } = t;
+
+  await turnStart({}, ctx);
+  assert.equal(pi.execCalls.filter((x) => x.args[0] === "update-ref").length, 0,
+    "resolved non-zero exit must not write a ref");
+  const last = ctx.notifies[ctx.notifies.length - 1];
+  assert.equal(last.t, "warning");
+  assert.match(last.m, /snapshot skipped/);
+  assert.match(last.m, /stash create failed/);
+  await undo.handler("1", ctx);
+  assert.match(ctx.notifies[ctx.notifies.length - 1].m, /Nothing to undo/,
+    "a resolved-failure stash must not be recorded as a clean checkpoint");
+});
+
+test("restore checkout resolving with code 1 (no throw) fails the undo and rolls the stack back", async () => {
+  const t = setup((args) => {
+    if (args[0] === "stash" && args[1] === "create") return { code: 0, stdout: "treeA\n", stderr: "" };
+    if (args[0] === "checkout") return { code: 1, stdout: "", stderr: "error: could not checkout (resolved exit)" };
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const { pi, ctx, turnStart, undo } = t;
+
+  await turnStart({}, ctx); // checkpoint 0
+  await turnStart({}, ctx); // checkpoint 1 — restore target after undoing 1
+  await undo.handler("1", ctx);
+  const last = ctx.notifies[ctx.notifies.length - 1];
+  assert.equal(last.t, "warning");
+  assert.match(last.m, /restore failed/);
+  assert.doesNotMatch(ctx.notifies.map((n) => n.m).join("\n"), /file state restored/,
+    "must not claim the restore succeeded");
+  // Stack rolled back: a retry hits checkout again instead of reporting "Nothing to undo".
+  await undo.handler("1", ctx);
+  const checkouts = pi.execCalls.filter((x) => x.args[0] === "checkout");
+  assert.equal(checkouts.length, 2, "undone checkpoint was rolled back onto the stack");
+  assert.match(ctx.notifies[ctx.notifies.length - 1].m, /restore failed/);
 });
 
 test("/undo reports honestly when the restore checkout fails (no false success)", async () => {

@@ -284,6 +284,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
   pi.on("tool_call", (event: any, ctx: any) => {
     const settings = readEvolveSettings(ctx?.cwd);
     if (!settings.enabled) return;
+    buffer.setCap(settings.bufferCap);
     const tool = String(event?.toolName ?? "unknown");
     const inputDigest = digestInput(event?.input, 200);
     buffer.record(tool, inputDigest, event?.toolCallId);

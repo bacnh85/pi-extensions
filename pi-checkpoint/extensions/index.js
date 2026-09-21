@@ -47,7 +47,11 @@ export default function checkpointExtension(pi) {
 
   async function git(args, ctx, opts = {}) {
     try {
-      return await pi.exec("git", args, { cwd: ctx?.cwd, ...opts });
+      const r = await pi.exec("git", args, { cwd: ctx?.cwd, ...opts });
+      // pi.exec RESOLVES non-zero exits with `.code` — treat that as failure too,
+      // else a failed `git stash create` looks like a clean tree (the 0.1.2 bug class).
+      if (r && typeof r.code === "number" && r.code !== 0) return { ...r, failed: true };
+      return r;
     } catch (e) {
       return { stdout: "", stderr: String(e?.message || e), failed: true };
     }

@@ -181,6 +181,23 @@ describe("agy_execute tool integration", function () {
       }
     });
 
+    it("issue #20 L3: rejects symlinked dir escaping the workspace root", async () => {
+      const os = _require("node:os");
+      const fs = _require("node:fs");
+      const ws = fs.mkdtempSync(path.join(os.tmpdir(), "agy-ws-"));
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), "agy-out-"));
+      fs.symlinkSync(outside, path.join(ws, "link"), "dir");
+      try {
+        await execute("test-id", { prompt: "ping", dir: "link" }, undefined, undefined, { cwd: ws });
+        expect.fail("should have thrown");
+      } catch (err) {
+        expect((err as Error).message).to.include("outside the workspace root");
+      } finally {
+        fs.rmSync(ws, { recursive: true, force: true });
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
     it("issue #20 L3: containment error mentions the opt-out env var", async () => {
       const outside = path.resolve(mockCtx.cwd, "..");
       try {

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.4 (2026-09-21)
+
+### Fixed
+
+- **`..` traversal bypassed the `external_directory` deny gate.** `resolve()`
+  used a hand-rolled join that left `..` unnormalized, so a path like
+  `../../etc/passwd` became `/proj/../../etc/passwd` and `isExternal()`'s
+  prefix check classified it as internal — the deny rule never fired. Path
+  resolution now uses `node:path` `resolve` (stdlib, still zero-dep), so both
+  sides normalize and traversal paths are correctly classified external.
+  Regression-tested.
+
 ## 0.2.3 (2026-09-18)
 
 ### Fixed

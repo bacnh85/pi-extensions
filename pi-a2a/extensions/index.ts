@@ -654,7 +654,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     promptSnippet: "delegate one task to multiple capable A2A peers in parallel",
     promptGuidelines: [
       "Peers advertise capabilities in a2a.peers.<name>.capabilities.",
-      "Use 'first' for speed, 'best' for quality.",
+      "All matching peers are contacted and awaited either way; 'first' returns the first-listed successful reply, 'best' the longest. Narrow `capabilities` to limit the fan-out.",
     ],
     parameters: Type.Object({
       capability: Type.String({
@@ -1116,7 +1116,6 @@ export default function a2aExtension(pi: ExtensionAPI): void {
 
   let lastA2aCtx: ExtensionContext | undefined;
   pi.on("session_start", async (_event, ctx) => {
-    lastA2aCtx = ctx;
     // Only HOST sessions serve inbound A2A. SDK-created child sessions (a2a
     // inbound tasks via makeSessionRunner, pi-subagent children) have
     // hasUI=false AND mode='print' — without this guard every child would
@@ -1124,8 +1123,10 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     // per task, and duplicate gateway registration. The host session is the
     // single inbound server; children only run the task. json-mode hosts are
     // long-lived headless HOSTS (mode='json'), not children — they keep the
-    // auto-start.
+    // auto-start. lastA2aCtx (completions/cfgFor context) is captured BELOW
+    // the guard so a child session can't overwrite the host's ctx.
     if (!ctx.hasUI && ctx.mode !== "json") return;
+    lastA2aCtx = ctx;
     const cfg = cfgFor(ctx);
     if (!cfg.server.enabled) return;
     try {

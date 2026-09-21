@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.6] - 2026-09-21
+
+- Fixed: removed stale comment in `spawnAgy` claiming a global lock — no serialization exists; concurrent `agy_execute` calls run in parallel (quota-group guidance discourages same-group parallelism).
+- Added: integration test for symlink-escape containment — a `dir` symlink pointing outside the workspace root is rejected (README-documented behavior, previously untested).
+
 ## [0.3.5] - 2026-09-20
 
 - Refactored: `checkAgyHealth` and `checkAgyConnectivity` share one parameterized spawn runner (`runAgyCheck`) — ~55 duplicated lines removed; both exported signatures, spawn args, and error messages unchanged.

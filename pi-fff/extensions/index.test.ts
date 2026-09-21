@@ -398,6 +398,29 @@ describe("pi-fff tools", () => {
     await Promise.all([initializing, first, second]);
   });
 
+  it("registers the autocomplete provider once across repeated session_start", async () => {
+    (FileFinder as any).create = () => ({ ok: true, value: fakeFinder({}) });
+    let sessionStart: Function | undefined;
+    const pi = {
+      getFlag: () => undefined,
+      registerFlag: () => {},
+      registerTool: () => {},
+      registerCommand: () => {},
+      on: (name: string, handler: Function) => {
+        if (name === "session_start") sessionStart = handler;
+      },
+    };
+    fffExtension(pi as any);
+    const autocompleteCalls: unknown[] = [];
+    const ctx = {
+      cwd: process.cwd(),
+      ui: { notify: () => {}, addAutocompleteProvider: (p: unknown) => autocompleteCalls.push(p) },
+    };
+    await sessionStart?.({}, ctx);
+    await sessionStart?.({}, ctx);
+    expect(autocompleteCalls.length).to.equal(1);
+  });
+
   it("fff-health awaits the shared in-flight finder instead of reporting not-initialized", async () => {
     let createCount = 0;
     let release!: () => void;

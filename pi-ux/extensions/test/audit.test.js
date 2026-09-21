@@ -210,6 +210,19 @@ test("scanStates: a commented-out prefers-reduced-motion block does not satisfy 
   assert.equal(r.missingReducedMotion.length, 1);
 });
 
+// FIX (v0.6.2): a quoted word 'a' (e.g. grid-template-areas: "a b") falsely
+// matched the interactive-element regex → dialog-free CSS failed the States
+// gate in strict mode.
+test("scanStates ignores quoted strings (grid-template-areas \"a b\")", () => {
+  const css = `:root{--x:#fff} .grid{grid-template-areas:"a b";color:var(--x)}`;
+  const states = scanStates(css);
+  assert.equal(states.hasInteractive, false);
+  assert.deepEqual(states.missingFocusVisible, []);
+  assert.deepEqual(states.missingDisabled, []);
+  const r = audit({ css, pairs: [{ fg: "#111", bg: "#fff", label: "body", min: 4.5 }] });
+  assert.equal(r.gates.states.pass, true);
+});
+
 test("slop tells: eyebrow label (tracked-out uppercase at ≤13px)", () => {
   const hit = scanSlopTells(`.eyebrow { text-transform: uppercase; font-size: 11px; letter-spacing: 0.1em; }`);
   assert.equal(hit.tells.length, 1);

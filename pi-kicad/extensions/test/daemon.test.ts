@@ -231,6 +231,40 @@ it("issue #20 L1: config file lands in a private mkdtemp dir (symlink-clobber ha
       assert.equal(spawnResult.calls.length, 0);
     });
 
+  it("respawn after crash removes the previous mkdtemp cfgDir (real fs)", async () => {
+    const alive = { value: true };
+    const dirs: string[] = [];
+    const spawnResult: SpawnResult = { child: makeChild(), calls: [] };
+    const d = new KonnectDaemon(
+      {
+        env: { KONNECT_BINARY: "/bin/konnect", KICAD_CLI: "/bin/kicad-cli" },
+        home: "/h", platform: "darwin", cwd: "/proj", exists: () => true,
+      },
+      {
+        fetchImpl: healthFetch(alive),
+        // Mirror makeDaemon: the fake daemon becomes responsive once spawned,
+        // else the readiness loop spins forever (now() never advances).
+        spawnImpl: ((b: string, args: string[]) => { spawnResult.calls.push({ binary: b, args }); alive.value = true; return makeChild(); }) as any,
+        writeFile: async () => {},
+        mkdir: async () => {},
+        tmpdir,
+        mkdtemp: async (prefix: string) => { const p = await mkdtemp(prefix); dirs.push(p); return p; },
+        now: () => 0,
+        sleep: async () => {},
+      },
+    );
+    await d.ensure();
+    assert.equal(dirs.length, 1);
+    assert.isTrue(existsSync(dirs[0]!), "first cfgDir exists while healthy");
+    alive.value = false; // daemon dies mid-session (health check fails)
+    await d.ensure(); // respawn
+    assert.equal(dirs.length, 2, "spawned a fresh cfgDir");
+    assert.isFalse(existsSync(dirs[0]!), "first cfgDir removed on respawn");
+    assert.isTrue(existsSync(dirs[1]!), "second cfgDir exists while healthy");
+    d.stop();
+    assert.isFalse(existsSync(dirs[1]!), "stop() removes the second cfgDir");
+  });
+
     it("is idempotent: second ensure reuses the running child", async () => {
       const alive = { value: false };
       const spawnResult: SpawnResult = { child: makeChild(), calls: [] };

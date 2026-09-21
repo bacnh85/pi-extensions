@@ -728,9 +728,24 @@ function propertyRename(from: string, to: string, filePath?: string, vault?: str
   return _out359;
 }
 
-function renameTag(from: string, to: string, preview: boolean, vault?: string, timeoutMs = 30_000): string {
+export function renameTag(
+  from: string,
+  to: string,
+  preview: boolean,
+  vault?: string,
+  timeoutMs = 30_000,
+  exec: (args: string[], formatJson?: boolean, timeoutMs?: number) => { stdout: string; stderr: string; parsed: unknown } = execObsidian
+): string {
+  if (!from) throw new Error("'from=' is required for tag-rename.");
+  // \b never matches against a non-word edge char: with from="#moc" a leading
+  // \b fails whenever the tag follows whitespace. Degrade to \B at any pattern
+  // edge that is a non-word char, so "  - #moc" matches but "x#moc" doesn't.
+  const ef = from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const lead = /^\w/.test(from) ? "\\b" : "\\B";
+  const trail = /\w$/.test(from) ? "\\b" : "\\B";
   const script = [
     `const ff=${JSON.stringify(from)},tt=${JSON.stringify(to)};`,
+    `const tagRe=new RegExp(${JSON.stringify(lead + ef + trail)},'g');`,
     `const preview=${preview ? "true" : "false"};`,
     `let u=0,s=0;`,
     `const results=[];`,
@@ -740,7 +755,8 @@ function renameTag(from: string, to: string, preview: boolean, vault?: string, t
     `let m=c.match(/^---\\s*\\n([\\s\\S]*?)\\n---/);`,
     `if(!m){s++;continue;}`,
     `let fm=m[1];`,
-    `let nfm=fm.replace(/\\btags\\b[^]*?(?=\\n---|$)/g,(tl)=>tl.replace(new RegExp('\\\\b'+ff.replace(/[.*+?^\x24{}()|[\\]\\\\]/g,'\\\\$&')+'\\\\b','g'),tt));`,
+    // Function replacement: a string tt would expand $&/$1 sequences in `to`.
+    `let nfm=fm.replace(/\\btags\\b[^]*?(?=\\n---|$)/g,(tl)=>tl.replace(tagRe,()=>tt));`,
     `if(nfm===fm){s++;continue;}`,
     `if(preview){`,
     `results.push('[DRY-RUN] '+f.path+': would update tag '+ff+' -> '+tt);`,
@@ -756,7 +772,7 @@ function renameTag(from: string, to: string, preview: boolean, vault?: string, t
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
   args.push("eval", `code=${wrapEval(script)}`);
-  const _out390 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
+  const _out390 = exec(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
   if (!_out390 || /^Error[:\s]/.test(_out390)) throw new Error(`renameTag failed: ${_out390 || "(no output)"}`);
   return _out390;
 }
@@ -1111,7 +1127,9 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
         throw new Error("This cwd is an Obsidian vault but it is not the focused vault. Supply vault=\"<vault name>\" to avoid operating on another vault.");
       }
       const cliArgs = () => parseCliString(raw).filter((arg) => !arg.startsWith("vault="));
-      const timeoutMs = (p.timeout_ms as number) ?? (flags.timeout_ms ? parseInt(flags.timeout_ms) : 30_000);
+      const rawTimeoutMs = (p.timeout_ms as number) ?? (flags.timeout_ms ? parseInt(flags.timeout_ms) : 30_000);
+      // Non-finite (NaN from a bad param or parseInt) would throw ERR_OUT_OF_RANGE inside spawnSync.
+      const timeoutMs = Number.isFinite(rawTimeoutMs) ? rawTimeoutMs : 30_000;
 
       // --- files: recursive, root, normal, missing-property, validate-tags ---
       if (cmd === "files") {

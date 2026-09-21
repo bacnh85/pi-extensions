@@ -224,7 +224,7 @@ export function validateMemoryKey(key: unknown): string {
     throw new Error("Memory key cannot be empty or whitespace only");
   }
   if (key.length > 200) {
-    throw new Error("Memory key must be less than 200 characters");
+    throw new Error("Memory key must be at most 200 characters");
   }
   // Models stamp version numbers into keys ("pi-a2a/gateway-token-0.6.2"),
   // which the server rejects. Normalize instead of throwing — only chars the

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.44] - 2026-09-21
+
+- Tests: exported `routerUpstreamPrefix` (alias normalization, generic-alias
+  filter) and `tokPerSecLabel` (think/answer tok/s split math) from
+  `extensions/index.ts` and covered both in `npm test` — previously only
+  asserted by the opt-in `PI_SUB_SELF_CHECK=1` module-load block.
+- Docs: completed the dangling Z.ai (CN) account-label sentence in the README.
+
 ## [0.1.43] - 2026-09-20
 
 - Widened Pi SDK peer range to `<0.87.0` (devDeps to ^0.86.0); tested against Pi 0.86.0. No behavioral changes — the 0.86.0 audit found no affected code paths.

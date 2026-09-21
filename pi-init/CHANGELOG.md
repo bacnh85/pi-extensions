@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3 (2026-09-21)
+
+### Docs
+
+- README now documents that `/init` targets `CLAUDE.md` when only
+  `CLAUDE.md` exists (behavior since 0.1.2).
+
 ## 0.1.2 (2026-09-14)
 
 ### Fixed

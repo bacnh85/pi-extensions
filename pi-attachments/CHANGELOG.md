@@ -1,5 +1,8 @@
 # Changelog
 
+## [0.3.4] - 2026-09-21
+
+- Fixed: keystroke prune no longer wipes the whole attachment tray on UIs without `getEditorText` — chips stay queued until submit resolves them.
 ## [0.3.3] - 2026-09-20
 
 - Widened Pi SDK peer range to `<0.87.0` (devDeps to ^0.86.0); tested against Pi 0.86.0. No behavioral changes — the 0.86.0 audit found no affected code paths.

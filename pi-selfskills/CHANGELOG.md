@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3 (2026-09-21)
+
+- **Cleanup: removed the unused `listDeletedSnapshots` import** from
+  `extensions/index.ts` (only `latestDeletedSnapshot` is used).
+
 ## 0.3.2 (2026-09-20)
 
 - **Fix: binary-safe backups (single-file AND batch paths)** — `write`, single-file `delete`, and batch `operations` snapshotted the current file via a UTF-8 string read, corrupting backups of binary bundled assets (unrestorable mangled bytes). `snapshot()`/`contentHash()` now accept `Buffer`; existing content is read and backed up without encoding on every path, and single-file restore round-trips bytes. SKILL.md paths keep text behavior (validation unchanged).

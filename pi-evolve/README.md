@@ -10,7 +10,7 @@ This is the **active half** of agent self-improvement. [pi-munin](../pi-munin) i
 
 ```
 CAPTURE (automatic, hooks)             REFLECT (agent tool)
-  tool_call  → record tool + input       evolve_reflect returns the sealed
+  tool_call  → record tool + input       evolve_reflect returns the live
   tool_result → mark ok/err + category    trajectory + a prompt skeleton;
   turn_end   → record usage               the model extracts 0-3 learnings.
   agent_end  → seal snapshot                          │
@@ -31,7 +31,7 @@ pi install npm:@bacnh85/pi-evolve
 
 | Tool | Description |
 |------|-------------|
-| `evolve_reflect` | Extract transferable learnings from the recent trajectory. Returns the sealed snapshot + a prompt skeleton for the model to produce 0-3 structured learnings (`strategy`/`recovery`/`optimization`). |
+| `evolve_reflect` | Extract transferable learnings from the recent trajectory. Returns the live current-buffer snapshot + a prompt skeleton for the model to produce 0-3 structured learnings (`strategy`/`recovery`/`optimization`). |
 | `evolve_save` | Persist a learning to Munin (tag `type:learning`) or local JSONL. |
 
 ## Commands

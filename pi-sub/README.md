@@ -188,7 +188,7 @@ Last response: 42 tok/s · Session avg: 39 tok/s
 * Z.ai key#1a2b3c4d  Pro   55%/2H        80%/3D            Now
 ```
 
-For Z.ai Coding Plan (China), the `/sub` detail is the same with a `Z.ai (CN)` provider/account label:
+For Z.ai Coding Plan (China), the `/sub` detail is the same, with the account rows showing the `Z.ai (CN)` provider label (e.g. `Z.ai (CN) key#1a2b3c4d` in the ACCOUNT column).
 
 ## Refresh behavior
 

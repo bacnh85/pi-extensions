@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.8] - 2026-09-21
+
+- Fixed: failed installs/removes now exit 1 — `add` and the interactive installer printed `install failed: <pkg>` but still exited 0 (so `pi-hub add x && …` chains proceeded on failure); both count failed installs and return 1. `remove` propagates the `pi remove` exit status like `update` already does.
+
 ## [0.1.7] - 2026-09-20
 
 - Fixed: interactive installer now checks each `pi install` exit status like `add` does — a failed install prints `install failed: <source>` instead of silence.

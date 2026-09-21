@@ -415,6 +415,7 @@ export default function fffExtension(pi: ExtensionAPI) {
   let historyDbPath: string | undefined;
   let enableFsRootScanning = false;
   let toolsRegistered = false;
+  let autocompleteRegistered = false;
 
   function resolveRuntimeConfig() {
     // Pi populates extension flag values only after loading extension factories.
@@ -878,6 +879,8 @@ export default function fffExtension(pi: ExtensionAPI) {
       ) => void;
     };
   }) {
+    if (autocompleteRegistered) return;
+    autocompleteRegistered = true;
     ctx.ui.addAutocompleteProvider((current) => {
       const mentionProvider = createFffMentionProvider(getMentionItems);
 

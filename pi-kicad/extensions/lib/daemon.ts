@@ -142,6 +142,12 @@ export class KonnectDaemon {
   }
 
   private async spawn(): Promise<number> {
+    // Respawn after a mid-session crash: drop the previous daemon's config dir
+    // before mkdtemp'ing a fresh one, or the old pi-kicad-daemon-* dir leaks.
+    if (this.cfgDir) {
+      try { rmSync(this.cfgDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      this.cfgDir = null;
+    }
     if (!this.config.konnectBinary) {
       throw new Error(
         "Konnect binary not found. Install it via the KiCad 10 Plugin and Content Manager " +
@@ -252,17 +258,6 @@ export class KonnectDaemon {
   private bindExitHandler(): void {
     if (this.exitHandlerBound) return;
     this.exitHandlerBound = true;
-    // 'exit' covers normal and host-managed shutdown paths. A once() SIGINT/
-    // SIGTERM handler REPLACES the default terminator, so when we are the only
-    // listener the handler must terminate explicitly after cleanup — otherwise
-    // the first Ctrl+C (print/RPC modes: pi's host registers no persistent
-    // SIGINT handler) leaves the host alive with a dead daemon and the handler
-    // disarmed. When another listener owns the signal (pi's interactive host
-    // prepends a SIGTERM shutdown handler and guards SIGINT while suspended),
-    // that handler's shutdown path fires 'exit' → cleanup, so exiting here
-    // would cut its graceful shutdown short — defer instead. 130/143 =
-    // 128+signal convention. killChild is idempotent, so signal-then-exit
-    // double-runs are harmless.
     // 'exit' covers normal and host-managed shutdown paths. A once() SIGINT/
     // SIGTERM handler REPLACES the default terminator, so when we are the only
     // listener the handler must terminate explicitly after cleanup — otherwise

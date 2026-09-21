@@ -6,8 +6,8 @@ and Super Power Mode, all in one extension. Currently supports **DeepSeek V4**
 and **GLM** (GLM-4.5 through GLM-5.3) from any provider.
 
 This is the **single source of tool-wrapping** for these families. It registers
-the 7 built-in Pi tools (read, write, edit, grep, find, ls, bash) exactly once
-and routes behavior by detected model family.
+the 8 built-in Pi tools (read, write, edit, grep, find, ls, bash,
+str_replace_editor) exactly once and routes behavior by detected model family.
 
 > **Merged package (v0.2.0).** This package now absorbs the former
 > `pi-deepseek-tools` and `pi-glm` extensions. Those packages are deprecated;
@@ -40,8 +40,10 @@ DeepSeek V4 matches any id containing `deepseek` plus either the word `v4`
 (any `deepseek-v4*`, incl. `v4.1`) or a `-flash` suffix segment (so the
 V4.1 Flash canonical id `deepseek-flash` and prefixed variants like
 `ds/deepseek-flash` are recognized). GLM matches
-any id containing `glm`. Non-matching models get repair + leak-clean only when
-a family is detected; everything degrades gracefully to a no-op otherwise.
+any id containing `glm`. Schema-driven argument repair is enabled for **all**
+models (it is deterministic and model-agnostic); leak-clean and steering stay
+family-gated — non-matching models get neither, and everything degrades
+gracefully to a no-op otherwise.
 
 ## Features
 
@@ -298,9 +300,10 @@ says…" instead of "we need…" is running a non-anchoring schema.
   need a fresh session).
 - Tools hallucinated during bootstrap (anything outside `bash`/`str_replace_editor`)
   are blocked with a clear reason.
-- `str_replace_editor` is registered whenever the anchor is enabled (default)
-  and also stays in the promoted catalog — it is a generally useful
-  view/create/replace/insert editor. Disable the anchor to remove it.
+- `str_replace_editor` is registered unconditionally (it is a generally useful
+  view/create/replace/insert editor, independent of the anchor) and stays in
+  the promoted catalog. If you don't want it, disable it per-session via
+  `/tools` — disabling the anchor does not remove it.
 - Everything fail-opens to the full catalog on surprise (no session access,
   malformed payload, missing `bash`/`str_replace_editor`) with a one-time warning.
 - Recommend `/thinking max` — the community recipe pairs minimal mode with max

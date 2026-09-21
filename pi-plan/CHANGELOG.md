@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.14.4 (2026-09-21)
+
+### Fixed
+
+- **A branch switch could leak the previous branch's in-flight workflow review
+  into the newly selected branch.** `session_tree` now aborts the review
+  controller and clears the pending review timer after restoring the branch's
+  state (mirroring the plan-mode re-entry discard from 0.13.1), and
+  `advanceFlow`'s post-review guard now checks flow identity in addition to
+  phase, so a stale resolution can no longer stop or complete the restored
+  branch's flow. Regression test added.
+
+### Changed
+
+- README clarified the size limits: workflow creation caps the initial
+  tracked dirty patch at 50 KB (`MAX_DIRTY_PATCH_BYTES`); the unbounded
+  external storage applies to `/rewind` checkpoints only.
+
 ## 0.14.3 (2026-09-20)
 
 - Widened Pi SDK peer range to `<0.87.0` (devDeps to ^0.86.0); tested against Pi 0.86.0. No behavioral changes — the 0.86.0 audit found no affected code paths.

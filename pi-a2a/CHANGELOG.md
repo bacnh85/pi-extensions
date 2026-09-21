@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.7.11] - 2026-09-21
+
+### Fixed
+
+- **`server.peerTokens` object form is now honored.** `loadConfig` only parsed
+  the comma-separated string form / `A2A_PEER_TOKENS` env path, silently
+  dropping the object form the README documents
+  (`"peerTokens": { "session-a": "<token>" }`) — documented per-peer identities
+  never activated (inbound 401s, outbound `selfIdentity` falling back to the
+  shared token). A non-null object in settings.json now builds the map from its
+  string-valued entries.
+- **Child sessions no longer overwrite `lastA2aCtx`.** The `session_start`
+  capture moved below the host-only guard, so SDK-created child sessions (a2a
+  inbound tasks, subagent children) can't replace the host context backing
+  argument completions and `cfgFor`.
+- **`a2a_orchestrate` guideline no longer claims `'first'` is faster.** All
+  matching peers are contacted and awaited either way — `'first'` returns the
+  first-listed successful reply; narrow `capabilities` to limit fan-out.
+
 ## [0.7.10] - 2026-09-20
 
 ### Fixed

@@ -78,6 +78,17 @@ describe("pi-evolve extension", () => {
     expect(result.content[0].text).to.include("extract"); // skeleton present
   });
 
+  it("applies evolve.bufferCap to the live buffer (was hardcoded 200)", async () => {
+    const { handlers, tools } = harness(cwd, { bufferCap: 3 });
+    for (let i = 0; i < 5; i++) {
+      handlers.tool_call[0]({ toolName: `tool${i}`, input: { n: i }, toolCallId: `c${i}` }, { cwd });
+    }
+    const result = await tools.evolve_reflect.execute("id", {}, undefined, undefined, { cwd });
+    expect(result.content[0].text).to.include("3 entries"); // buffer.size === 3
+    expect(result.content[0].text).to.include("tool4"); // newest kept
+    expect(result.content[0].text).to.not.include("tool0"); // oldest evicted
+  });
+
   it("marks the correct entry when parallel same-tool results arrive out of order", async () => {
     const { handlers, tools } = harness(cwd);
     // Two parallel reads: A (error) and B (ok). Results arrive in REVERSE order (B then A).

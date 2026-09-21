@@ -673,6 +673,10 @@ export class SerenaWorkerClient {
         this.processing = false;
         this.onStatus?.(undefined);
       }
+      // Requests enqueued while we awaited the shutdown ack never started
+      // (processQueue early-returns while stopping) — settle them instead of
+      // leaving them queued forever.
+      this.rejectQueued(new Error("Serena worker stopped"));
       this.stopping = false;
     }
   }

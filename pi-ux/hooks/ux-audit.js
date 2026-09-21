@@ -206,6 +206,7 @@ function scanOffSystem(css, tokens) {
 // .test() flake across calls, so use plain includes().
 function scanStates(css) {
   css = css.replace(/\/\*[\s\S]*?\*\//g, ' '); // dead code must not fail the gate
+  css = css.replace(/"[^"]*"|'[^']*'/g, ' '); // quoted words ("a b" in grid-template-areas) are not selectors
   const findings = { missingFocusVisible: [], missingDisabled: [], missingReducedMotion: [], hasInteractive: false };
 
   // Motion needs a reduced-motion fallback regardless of interactive elements

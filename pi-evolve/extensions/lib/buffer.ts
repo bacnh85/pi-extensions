@@ -15,10 +15,16 @@ export interface TrajectoryEntry {
 
 export class TrajectoryBuffer {
   private entries: TrajectoryEntry[] = [];
-  private readonly cap: number;
+  private cap: number;
 
   constructor(cap = 200) {
     this.cap = cap;
+  }
+
+  /** Change the cap (settings sync): clamps to >=1 and drops oldest entries beyond it. */
+  setCap(n: number): void {
+    this.cap = Math.max(1, Math.floor(n));
+    while (this.entries.length > this.cap) this.entries.shift();
   }
 
   /** Record a tool call. Returns the entry so callers can attach results. */

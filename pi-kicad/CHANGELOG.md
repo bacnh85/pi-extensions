@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.7] - 2026-09-21
+
+### Fixed
+
+- `spawn()` removes the previous daemon config dir before creating a new one —
+  a mid-session crash followed by a respawn no longer leaks the orphaned
+  `pi-kicad-daemon-*` tmpdir.
+
+### Removed
+
+- Dead `callKonnect`/`mapContent` re-export from the extension entrypoint
+  (tests import `lib/` directly).
+- Duplicated signal-handler comment block in `daemon.ts`.
+
 ## [0.1.6] - 2026-09-20
 
 ### Fixed

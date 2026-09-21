@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.4] - 2026-09-21
+
+### Fixed
+
+- `git()` now also treats resolved non-zero exits (`pi.exec` resolves with
+  `.code` instead of throwing) as failures. Previously a failed
+  `git stash create` with empty stdout was recorded as a clean tree, so a
+  later `/undo` ran `git checkout HEAD -- .` and silently discarded tracked
+  changes. Regression tests cover the resolve path for both snapshot and
+  restore.
+
 ## [0.1.3] - 2026-09-20
 
 ### Fixed

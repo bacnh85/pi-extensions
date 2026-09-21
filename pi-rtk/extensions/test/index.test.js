@@ -41,10 +41,14 @@ test("isEvalCommand detects inline-script interpreter invocations", () => {
   assert.equal(isEvalCommand("ruby -e 'puts 1'"), true);
   assert.equal(isEvalCommand("/usr/local/bin/node --print 1"), true);
   assert.equal(isEvalCommand("node -p process.version"), true);
+  assert.equal(isEvalCommand("php -r 'echo 1;'"), true);
+  assert.equal(isEvalCommand("perl -E 'say 1'"), true);
+  assert.equal(isEvalCommand("deno eval 'console.log(1)'"), true);
 });
 
 test("isEvalCommand does not flag plain script-file runs", () => {
   assert.equal(isEvalCommand("node script.js"), false);
   assert.equal(isEvalCommand("python manage.py migrate"), false);
   assert.equal(isEvalCommand("npm test"), false);
+  assert.equal(isEvalCommand("deno run script.ts"), false);
 });

@@ -10,7 +10,6 @@ import {
   isValidRelpath,
   latestDeletedSnapshot,
   listBackups,
-  listDeletedSnapshots,
   namedBackup,
   snapshot,
   snapshotDir,

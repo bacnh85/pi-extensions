@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.6 (2026-09-21)
+
+### Fixed
+
+- `validateMemoryKey` error message now says "at most 200 characters" —
+  the check (`key.length > 200`) allows exactly 200, so "less than" was
+  wrong.
+
 ## 0.5.5 (2026-09-20)
 
 ### Fixed

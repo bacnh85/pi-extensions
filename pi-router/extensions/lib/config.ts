@@ -35,12 +35,17 @@ const envReasoning = () => process.env.ROUTER_ENABLE_REASONING ?? process.env.NI
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/** Read `router` settings. Precedence: env var > repo `.pi/settings.json` >
- *  global `~/.pi/agent/settings.json` > defaults.
+/** Read `router` settings. Precedence (with trustProject: true): env var >
+ *  repo `.pi/settings.json` > global `~/.pi/agent/settings.json` > defaults.
+ *  Default (trustProject falsy): repo settings are ignored entirely — an
+ *  untrusted checkout must not redirect `router.baseUrl` to an attacker
+ *  endpoint while the auth.json credential is sent there as Bearer.
  *  Repo-scope `router.apiKey` is ignored (secrets must not come from a checked-in file). */
-export function getSettings(): RouterSettings {
+export function getSettings(opts: { trustProject?: boolean } = {}): RouterSettings {
   const saved = readRouterSection(readFileJson(globalSettingsPath())) ?? {};
-  const repo = readRouterSection(readFileJson(REPO_SETTINGS_PATH)) ?? {};
+  const repo = opts.trustProject
+    ? readRouterSection(readFileJson(REPO_SETTINGS_PATH)) ?? {}
+    : {};
   return {
     baseUrl: normalizeUrl(envBaseUrl() || repo.baseUrl || saved.baseUrl || ""),
     enableReasoning:

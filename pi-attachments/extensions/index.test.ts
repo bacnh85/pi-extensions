@@ -469,7 +469,7 @@ describe("input transform", () => {
 });
 
 describe("attachment removal flow", () => {
-  function fullHarness() {
+  function fullHarness(withEditorText = true) {
     const handlers: Record<string, Function> = {};
     let widget: string[] | null = null;
     let pasteHandler: Function | undefined;
@@ -477,7 +477,7 @@ describe("attachment removal flow", () => {
     const ui = {
       onTerminalInput: (fn: Function) => { pasteHandler = fn; },
       setWidget: (_key: string, lines: string[]) => { widget = lines; },
-      getEditorText: () => editorText,
+      ...(withEditorText ? { getEditorText: () => editorText } : {}),
     };
     piAttachments({ on: (e: string, h: Function) => { handlers[e] = h; }, registerShortcut: () => {} } as any);
     handlers["session_start"]({}, { ui });
@@ -488,6 +488,21 @@ describe("attachment removal flow", () => {
       get widget() { return widget; },
     };
   }
+
+  it("keystroke prune is skipped on UIs without getEditorText (chips survive)", async () => {
+    const file = path.join(TMP, "rm-c.png");
+    writeFileSync(file, PNG_BYTES);
+    const h = fullHarness(false); // UI lacking getEditorText (prune would see "")
+
+    const pasted: any = h.paste(`\x1b[200~${file}\x1b[201~`);
+    h.type(pasted.data); // fires onTerminalInput → the buggy prune ran here
+    assert.ok(h.widget![0].includes("rm-c.png"), "chip survives the keystroke");
+
+    // submit still attaches: the input hook falls back to event.text for prune
+    const result: any = await h.submit();
+    assert.equal(result.images.length, 1);
+    assert.ok(!result.text.includes("[[attach:"), "token resolved");
+  });
 
   it("deleting a token from the prompt removes its chip and its attachment", async () => {
     writeFileSync("/tmp/rm-a.png", PNG_BYTES);

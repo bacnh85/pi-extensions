@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.4 (2026-09-21)
+
+### Fixed — `evolve.bufferCap` now actually applies
+
+- **bufferCap wiring (P1):** `TrajectoryBuffer` was constructed with the
+  hardcoded default (200) at module load, so the parsed `evolve.bufferCap`
+  setting never reached the buffer while `/evolve` displayed it as live. The
+  buffer now has `setCap(n)` (clamps to >=1, drops oldest entries on shrink)
+  and the `tool_call` hook syncs it from settings before each record, so a
+  configured cap (including a mid-session change) takes effect.
+- README: `evolve_reflect` description corrected — it returns the **live
+  current-buffer** snapshot, not the sealed snapshot.
+- Tests: bufferCap respected end-to-end via the real `tool_call` handlers;
+  `setCap` unit tests.
+
 ## 0.3.3 (2026-09-12)
 
 ### Fixed — backend/trust mismatch + plan-mode gate

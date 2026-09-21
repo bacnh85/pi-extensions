@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.12 (2026-09-21)
+
+### Fixed
+
+- Removed the unreachable `NO_YES_SUPPORT` set from the destructive-command
+  gate. None of its members (auth.logout, skill.uninstall, history --clear,
+  clear) appear in `REQUIRES_YES`, so the check could never match; behavior
+  is unchanged — those commands keep using the explicit-confirm path.
+
 ## 0.1.11 (2026-09-20)
 
 ### Fixed

@@ -61,7 +61,10 @@ const DESTRUCTIVE_FLAGS: Record<string, string[]> = {
   history: ["--clear"],
 };
 
-// Command paths that need --yes/-y to avoid a hanging prompt
+// Command paths that need --yes/-y to avoid a hanging prompt.
+// Commands whose destructive action does not support --yes/-y in CLI v0.7.3
+// (auth.logout, skill.uninstall, history --clear, clear) are deliberately
+// absent — they are handled by the explicit-confirm path instead.
 const REQUIRES_YES = new Set([
   "delete",
   "source.delete",
@@ -73,9 +76,6 @@ const REQUIRES_YES = new Set([
   "share.remove",
   "ask", // for ask --new
 ]);
-
-// Command paths whose destructive action does NOT support --yes/-y in v0.7.3
-const NO_YES_SUPPORT = new Set(["auth.logout", "skill.uninstall", "history", "clear"]);
 
 // Command paths that overwrite workspace files when combined with --force/-f
 const FILE_OVERWRITE_PATTERNS: string[][] = [
@@ -198,15 +198,12 @@ export function isDestructive(args: string[]): boolean {
 
 /** Check if a destructive command is missing a required --yes/-y flag.
  *
- *  Does NOT require --yes for commands in NO_YES_SUPPORT (e.g. auth.logout
- *  in CLI v0.7.3 does not accept -y/--yes).
  *  Only scans for -y/--yes before the first `--` (end-of-options) marker.
  *  After `--`, flags are positional values, not CLI options.
  */
 export function requiresYesFlag(args: string[]): boolean {
   const { path } = extractCommandPath(args);
   const key = path.join(".");
-  if (NO_YES_SUPPORT.has(key)) return false;
   if (!REQUIRES_YES.has(key)) return false;
   if (key === "ask" && !hasRealFlag(args, ["--new"])) return false; // ask without --new
   return !hasRealFlag(args, ["-y", "--yes"]);

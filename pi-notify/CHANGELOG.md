@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4] - 2026-09-21
+
+- Security: OSC 777/99 terminal payloads (title/body) are now sanitized —
+  control characters (ESC/BEL/DEL) are stripped and `;` field separators are
+  replaced with `,`, so a model-controlled prompt title can no longer forge
+  terminal escape sequences. Covered by new `sanitizeOsc` tests.
+
 ## [0.1.3] - 2026-09-20
 
 - Docs: README now notes `volume` applies to Linux (`paplay`) only — macOS (`afplay`) and Windows (`beep`) ignore it.

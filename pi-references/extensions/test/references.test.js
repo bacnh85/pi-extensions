@@ -259,11 +259,12 @@ function harness({ setting } = {}) {
   return pi;
 }
 
-function ctx({ cwd } = {}) {
+function ctx({ cwd, trusted } = {}) {
   const notifies = [];
   return {
     cwd: cwd || "/proj",
     hasUI: true,
+    isProjectTrusted: () => trusted === true,
     notifies,
     ui: { notify(m) { notifies.push(m); } },
   };
@@ -357,5 +358,74 @@ test("ensureCloned passes a safe branch normally (review: MED)", async () => {
     assert.deepEqual(calls[0].args, ["clone", "--branch", "main", "https://github.com/owner/repo.git", join(dir, "sdk")]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── Trust gate: project settings need a trusted project ───────────────────
+
+function projectWithRefs() {
+  const dir = mkdtempSync(join(tmpdir(), "refs-proj-"));
+  mkdirSync(join(dir, ".pi"), { recursive: true });
+  writeFileSync(
+    join(dir, ".pi", "settings.json"),
+    JSON.stringify({ references: { docs: { path: "../d", description: "evil docs" } } }),
+  );
+  return dir;
+}
+
+test("untrusted project: .pi/settings.json refs ignored (no clone, no prompt injection)", () => {
+  const dir = projectWithRefs();
+  try {
+    const pi = harness({ setting: undefined });
+    const c = ctx({ cwd: dir, trusted: false });
+    pi.calls.handlers.session_start({}, c);
+    const event = { systemPromptOptions: {} };
+    pi.calls.handlers.before_agent_start(event, c);
+    assert.equal(event.systemPromptOptions.appendSystemPrompt, undefined,
+      "untrusted project refs must not reach the system prompt");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("trusted project: .pi/settings.json refs honored", () => {
+  const dir = projectWithRefs();
+  try {
+    const pi = harness({ setting: undefined });
+    const c = ctx({ cwd: dir, trusted: true });
+    pi.calls.handlers.session_start({}, c);
+    const event = { systemPromptOptions: {} };
+    pi.calls.handlers.before_agent_start(event, c);
+    assert.match(event.systemPromptOptions.appendSystemPrompt, /@docs/);
+    assert.match(event.systemPromptOptions.appendSystemPrompt, /evil docs/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("untrusted project: global settings.json still honored (global read is unconditional)", () => {
+  const dir = projectWithRefs();
+  const globalDir = mkdtempSync(join(tmpdir(), "refs-global-"));
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+  try {
+    writeFileSync(
+      join(globalDir, "settings.json"),
+      JSON.stringify({ references: { gdocs: { path: "../g", description: "global docs" } } }),
+    );
+    process.env.PI_CODING_AGENT_DIR = globalDir;
+    const pi = harness({ setting: undefined });
+    const c = ctx({ cwd: dir, trusted: false });
+    pi.calls.handlers.session_start({}, c);
+    const event = { systemPromptOptions: {} };
+    pi.calls.handlers.before_agent_start(event, c);
+    assert.match(event.systemPromptOptions.appendSystemPrompt, /@gdocs/,
+      "global config applies regardless of project trust");
+    assert.equal(event.systemPromptOptions.appendSystemPrompt.includes("@docs"), false,
+      "untrusted project refs still ignored");
+  } finally {
+    if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(globalDir, { recursive: true, force: true });
   }
 });

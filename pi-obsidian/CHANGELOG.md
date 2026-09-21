@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.17 (2026-09-21)
+
+### Fixed
+
+- **`tag-rename` with a `#`-prefixed `from=` now actually matches.** The
+  generated eval built `\b#tag\b`, but `\b` never matches against a non-word
+  edge character, so a tag preceded by whitespace (`  - #moc`,
+  `tags: #moc`) was never replaced and the command silently reported
+  "0 updated" — the README's own `tag-rename from="#moc"` example was a
+  no-op. The leading/trailing anchor now degrades to `\B` when the pattern
+  edge is a non-word character, so whitespace-preceded `#tags` match while
+  mid-word occurrences (`x#moc`) still don't; bare `from="moc"` behavior is
+  unchanged. The replacement is now a function replacement, so `$&`-style
+  sequences in `to=` are inserted literally instead of being expanded by
+  `String.replace`, and an empty `from=` is rejected up front.
+- **`timeout_ms=NaN` no longer crashes the command.** A non-numeric
+  `timeout_ms` produced `NaN`, which `spawnSync` rejects with
+  `ERR_OUT_OF_RANGE`. Non-finite values now fall back to the 30 s default.
+
 ## 0.8.16 (2026-09-20)
 
 ### Fixed

@@ -59,9 +59,9 @@ export default function piAttachments(pi: ExtensionAPI): void {
   //    list in sync for free: if the user deletes a [[attach:N]] token from
   //    the prompt, its chip disappears immediately (and the file is not sent).
   const onPaste: TerminalInputHandler = (data) => {
-    if (tray.size > 0) {
+    if (tray.size > 0 && editorText) {
       const before = tray.size;
-      tray.prune(editorText?.() ?? "");
+      tray.prune(editorText());
       if (tray.size !== before) updateWidget();
     }
     const m = data.match(BRACKETED_PASTE);

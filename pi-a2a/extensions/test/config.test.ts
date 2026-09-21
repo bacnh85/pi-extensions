@@ -347,6 +347,45 @@ childTranscripts: false,
     });
   });
 
+  describe("server.peerTokens", () => {
+    it("accepts the OBJECT form from the global settings.json (README parity)", () => {
+      withoutA2AEnv(() =>
+        withIsolatedPiDir((dir) => {
+          fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(
+            path.join(dir, "settings.json"),
+            JSON.stringify({ a2a: { server: { peerTokens: { alice: "tok-a" } } } }),
+          );
+          const cfg = loadConfig({ cwd: dir });
+          assert.deepEqual(cfg.server.peerTokens, { alice: "tok-a" });
+        }),
+      );
+    });
+
+    it("object form keeps only non-empty string entries; string + env paths unchanged", () => {
+      withoutA2AEnv(() =>
+        withIsolatedPiDir((dir) => {
+          fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(
+            path.join(dir, "settings.json"),
+            JSON.stringify({ a2a: { server: { peerTokens: { alice: "tok-a", bob: 42, carol: "" } } } }),
+          );
+          assert.deepEqual(loadConfig({ cwd: dir }).server.peerTokens, { alice: "tok-a" }, "non-string/empty entries dropped");
+          // String form in settings.json wins over env, as before.
+          fs.writeFileSync(
+            path.join(dir, "settings.json"),
+            JSON.stringify({ a2a: { server: { peerTokens: "erin:tok-e, :skip" } } }),
+          );
+          assert.deepEqual(loadConfig({ cwd: dir }).server.peerTokens, { erin: "tok-e" });
+          // Env fallback when settings.json has no peerTokens.
+          fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ a2a: { server: {} } }));
+          const cfg = loadConfig({ cwd: dir, env: { A2A_PEER_TOKENS: "dan:tok-d" } as any });
+          assert.deepEqual(cfg.server.peerTokens, { dan: "tok-d" });
+        }),
+      );
+    });
+  });
+
   it("reads A2A_* env vars", () => {
     withIsolatedPiDir((dir) => {
       // Mutate + restore individual keys — NEVER reassign `process.env = old`

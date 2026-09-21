@@ -145,16 +145,29 @@ export function makeOnAction<T>(
   onError: (msg: string) => void,
 ): (row: PanelRow) => Promise<void> {
   return async (row) => {
-    try {
-      await row.set((label: string, onDone: (v: string | undefined) => void) => {
-        model.prompt(label, onDone);
-      });
-      // Actions mutate config (add/remove entries) — always mark dirty so Esc
-      // triggers save, and rebuild the rows so added entries appear / removed
-      // entries disappear instead of stale rows lingering.
+    // Cancel detection: run() is typically sync — it returns BEFORE the inline
+    // prompt resolves — so dirty/rebuild is decided at prompt resolution, not
+    // after row.set resolves. Esc resolves onDone(undefined) → cancelled → no
+    // dirty, no rebuild, so Esc-close won't fire onSave(true). Promptless
+    // actions (no prompt() call) keep the old apply-on-return behavior.
+    let prompted = false;
+    const apply = () => {
       model.dirty = true;
       model.setGroups(build(cfg, actions));
       model.requestRender();
+    };
+    try {
+      await row.set((label: string, onDone: (v: string | undefined) => void) => {
+        prompted = true;
+        model.prompt(label, (v) => {
+          // Run the action's own callback first so the rebuild below sees the
+          // mutated config; "" (empty submit) is an applied change, only
+          // undefined is a cancel.
+          onDone(v);
+          if (v !== undefined) apply();
+        });
+      });
+      if (!prompted) apply();
     } catch (e: any) {
       onError(`Action failed: ${e?.message || e}`);
     }
@@ -693,8 +706,9 @@ export class ConfigPanelModel implements Component {
     // pi-tui Input.setValue clamps the cursor instead of moving it to the end
     // (stays at 0 on a fresh input). Park at the end of the REPLACED segment
     // (head + ", " + value) — with tail segments after the cursor's segment,
-    // joined.length would overshoot into the next entry.
-    (this.input as unknown as { cursor: number }).cursor = head.length + 2 + item.value.length;
+    // joined.length would overshoot into the next entry. Empty head joins
+    // WITHOUT the ", " separator, so don't count it.
+    (this.input as unknown as { cursor: number }).cursor = (head ? head.length + 2 : 0) + item.value.length;
     this.suggestionIdx = 0;
     // Close: sync lastFilteredValue so the next handleInput doesn't treat the
     // pick as a cursor-only move and "retarget" the list back open.
