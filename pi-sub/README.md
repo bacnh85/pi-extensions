@@ -2,7 +2,7 @@
 
 Pi extension that shows subscription usage for the currently selected supported model provider.
 
- Supports OpenAI Codex (`openai-codex`) with live usage windows from ChatGPT's usage endpoint, OpenCode Go (`opencode-go`) with session cost tracking, and Z.ai GLM Coding Plan — both the international (`zai`) and China (`zai-coding-cn`, `open.bigmodel.cn`) endpoints — with quota monitoring. Also tracks Router (pi-router, `router` provider) with response-speed tracking and usage windows via yardmaster's general `GET /v1/usage` API (with OmniRoute's om-usage as fallback), and Command Code (`commandcode`) 5-hour/weekly windows and monthly credit balance. Displays a subscription footer status after Pi's built-in status/token usage line.
+ Supports OpenAI Codex (`openai-codex`) with live usage windows from ChatGPT's usage endpoint, OpenCode Go (`opencode-go`) with rolling/weekly/monthly usage windows from Zen's `GET /zen/go/v1/usage` endpoint plus session cost tracking, and Z.ai GLM Coding Plan — both the international (`zai`) and China (`zai-coding-cn`, `open.bigmodel.cn`) endpoints — with quota monitoring. Also tracks Router (pi-router, `router` provider) with response-speed tracking and usage windows via yardmaster's general `GET /v1/usage` API (with OmniRoute's om-usage as fallback), and Command Code (`commandcode`) 5-hour/weekly windows and monthly credit balance. Displays a subscription footer status after Pi's built-in status/token usage line.
 
 ## Install
 
@@ -29,11 +29,13 @@ Example subscription line:
 
 ### OpenCode Go
 
-OpenCode Go does not expose a public usage-window API, so the footer shows the active account/key label, accumulated session cost, and last response speed:
+OpenCode Go reads the rolling (5-hour), weekly, and monthly usage windows from Zen's `GET /zen/go/v1/usage` endpoint using the stored API key. The footer shows the active account/key label, remaining quota per window, accumulated session cost, and last response speed:
 
 ```text
-OpenCode Go (OpenCode Go key#1a2b3c4d) $0.23 42 tok/s
+(OpenCode Go key#1a2b3c4d) R:97%/3H W:61%/2D M:20%/5D $0.23 42 tok/s
 ```
+
+If the auth entry has an `accountId` but no API `key`, the footer falls back to the account label, session cost, and speed (no usage API is called).
 
 ### Z.ai
 
@@ -165,18 +167,16 @@ ACCOUNT                 PLAN  ROLLING  WEEKLY  LAST ACTIVITY
 * user@example.com     Plus  15%/2H   20%/3D  Now
 ```
 
-For OpenCode Go, `/sub` shows the provider/model, active account/key label, session cost, and speed:
+For OpenCode Go, `/sub` shows the provider/model, active account/key label, rolling/weekly/monthly windows, session cost, and speed:
 
 ```text
 Provider: OpenCode Go · Model: kimi-k2.6 · Fetched: 14:23
 Session cost: $0.23
 Last response: 42 tok/s · Session avg: 39 tok/s
 
-  ACCOUNT                         PLAN  LAST ACTIVITY
-------------------------------------------------------
-* OpenCode Go key#1a2b3c4d        Go    Now
-
-OpenCode Go does not expose usage windows.
+  ACCOUNT                         PLAN  ROLLING   WEEKLY    MONTHLY   LAST ACTIVITY
+------------------------------------------------------------------------------
+* OpenCode Go key#1a2b3c4d        Go    97%/3H   61%/2D    20%/5D    Now
 ```
 
 For Command Code, `/sub` shows the provider/model, active account/key label, rolling windows, and speed:
@@ -224,7 +224,7 @@ Refreshes are cached briefly to avoid excessive usage endpoint calls.
 ## Requirements and troubleshooting
 
 - **OpenAI Codex**: Pi auth must contain an `openai-codex` OAuth entry in `~/.pi/agent/auth.json` or `$PI_CODING_AGENT_DIR/auth.json`. The entry must include `access` and `accountId` fields.
-- **OpenCode Go**: Pi auth must contain an `opencode-go` API key entry (via `/login` or env var). The entry must have a `key` field or an `accountId` field. OpenCode Go/Zen usage windows and Zen balance are not shown because no public API is currently documented for those values.
+- **OpenCode Go**: Pi auth must contain an `opencode-go` API key entry (via `/login` or env var). The entry must have a `key` field or an `accountId` field. Usage windows come from `https://opencode.ai/zen/go/v1/usage` with the stored key; with only an `accountId` (no key), the footer falls back to session cost. The Zen credit wallet balance is not exposed by the API.
 - **Command Code**: Pi auth must contain a `commandcode` API key entry in `~/.pi/agent/auth.json` (add it with `pi /login` → commandcode; there is no env-var fallback). The entry must have a `key` field or an `accountId` field. Usage is read from `https://api.commandcode.ai/alpha/billing/credits` with the same key; 5-hour and weekly windows plus the monthly credit balance are displayed.
 - **Z.ai**: Pi auth must contain a `zai` entry in `auth.json` with a `key` field (the same API key used for Z.ai model access via `@czottmann/pi-zai-api`). The Z.ai provider must be registered (e.g., `pi install npm:@czottmann/pi-zai-api`).
 - **Z.ai Coding Plan (China)**: The built-in `zai-coding-cn` provider targets `https://open.bigmodel.cn/api/coding/paas/v4`. Pi auth must contain a `zai-coding-cn` entry with a `key` field in `~/.pi/agent/auth.json` (add it with `pi /login`; there is no env-var fallback). Quota is read from the BigModel endpoint `https://open.bigmodel.cn/api/monitor/usage/quota/limit`.
@@ -237,4 +237,4 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Design notes
 
-The extension is named `pi-sub` rather than `pi-codex-usage` so future subscription providers can be added as separate adapters. Supports OpenAI Codex (live usage API), OpenCode Go (session cost only), the Z.ai GLM Coding Plan (international `zai` and China `zai-coding-cn`, which share a quota response format and are served by one parameterized adapter), and Command Code (live 5-hour/weekly windows + monthly balance via `/alpha/billing/credits`).
+The extension is named `pi-sub` rather than `pi-codex-usage` so future subscription providers can be added as separate adapters. Supports OpenAI Codex (live usage API), OpenCode Go (live rolling/weekly/monthly windows via `/zen/go/v1/usage`), the Z.ai GLM Coding Plan (international `zai` and China `zai-coding-cn`, which share a quota response format and are served by one parameterized adapter), and Command Code (live 5-hour/weekly windows + monthly balance via `/alpha/billing/credits`).

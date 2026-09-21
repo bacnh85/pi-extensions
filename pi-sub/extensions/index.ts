@@ -55,6 +55,7 @@ const REFRESH_TTL_MS = 30_000;
 export const REFRESH_DEBOUNCE_MS = 2_000;
 const CODEX_PROVIDER = "openai-codex";
 const OPC_PROVIDER = "opencode-go";
+const OPC_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
 const ZAI_PROVIDER = "zai";
 const ZAI_USAGE_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
 const ZAI_CODING_CN_PROVIDER = "zai-coding-cn";
@@ -87,6 +88,20 @@ type UsageApiSnapshot = {
   plan_type?: string;
 };
 
+type OpcUsageWindowApi = {
+  status?: string;
+  percent?: number;
+  resetsAt?: string;
+};
+
+type OpcUsageApiResponse = {
+  usage?: {
+    rolling?: OpcUsageWindowApi;
+    weekly?: OpcUsageWindowApi;
+    monthly?: OpcUsageWindowApi;
+  };
+};
+
 type PiAuthEntry = {
   type?: string;
   access?: string;
@@ -114,6 +129,7 @@ interface SubscriptionAccountSnapshot {
   plan?: string;
   fiveHour?: UsageWindow;
   weekly?: UsageWindow;
+  monthly?: UsageWindow; // OpenCode Go 30d window
   // Command Code-only: monthly credit balance in USD (not a rolling window).
   monthlyCredits?: number;
   // Z.ai-only extras surfaced in the /sub detail view.
@@ -356,10 +372,25 @@ async function readPiCodexAuth(): Promise<PiAuthEntry & { accountId: string }> {
   return { ...entry, accountId };
 }
 
-async function readOpenCodeGoAuth(): Promise<SubscriptionAccountSnapshot> {
+async function readOpenCodeGoAuth(): Promise<{ key?: string; account: SubscriptionAccountSnapshot }> {
   const entry = readStoredCredential(OPC_PROVIDER, piAuthPath()) as PiAuthEntry | undefined;
   if (!entry?.key && !entry?.accountId) throw new Error("Missing opencode-go API key or accountId in Pi auth");
-  return authAccountSnapshot("OpenCode Go", entry, { plan: "Go" });
+  return { key: entry.key, account: authAccountSnapshot("OpenCode Go", entry, { plan: "Go" }) };
+}
+
+// Zen Go returns percent (0-100, used) per window; resetsAt is ISO 8601
+// (fractional seconds fine for Date.parse). Helpers expect epoch seconds.
+// Undocumented API: percent is clamped to 0-100 both raw and post-derivation.
+export function opcWindowToUsageWindow(w: OpcUsageWindowApi | undefined): UsageWindow | undefined {
+  if (!w || typeof w.percent !== "number") return undefined;
+  const percent = Math.min(100, Math.max(0, Math.round(w.percent)));
+  const resetAtSec = w.resetsAt ? Date.parse(w.resetsAt) / 1000 : undefined;
+  return {
+    percent,
+    remaining: 100 - percent,
+    remainingLabel: formatRemainingTime(resetAtSec),
+    resetLabel: formatReset(resetAtSec),
+  };
 }
 
 async function readZaiAuth(providerId: string, label: string): Promise<{ key: string; account: SubscriptionAccountSnapshot }> {
@@ -646,13 +677,49 @@ async function fetchCodexUsage(signal?: AbortSignal): Promise<SubscriptionUsageS
   }
 }
 
-async function fetchOpenCodeGoUsage(_signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> {
+export async function fetchOpenCodeGoUsage(signal?: AbortSignal): Promise<SubscriptionUsageSnapshot> {
   try {
-    const account = await readOpenCodeGoAuth();
+    const { key, account } = await readOpenCodeGoAuth();
+    let windows: Pick<SubscriptionAccountSnapshot, "fiveHour" | "weekly" | "monthly"> = {};
+    if (key) {
+      let shapeError: Error | undefined;
+      try {
+        const timeoutSignal = AbortSignal.timeout(7_000);
+        const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+        const response = await fetch(OPC_USAGE_URL, {
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${key}`,
+            "User-Agent": `pi-sub/${PI_SUB_VERSION}`,
+          },
+          signal: combinedSignal,
+        });
+        if (!response.ok) throw new Error(`usage request failed with HTTP ${response.status}`);
+        const body = (await response.json()) as OpcUsageApiResponse;
+        const fiveHour = opcWindowToUsageWindow(body.usage?.rolling);
+        const weekly = opcWindowToUsageWindow(body.usage?.weekly);
+        const monthly = opcWindowToUsageWindow(body.usage?.monthly);
+        if (!fiveHour && !weekly && !monthly) {
+          // HTTP 200 but nothing parsed: structural (shape drift), not
+          // transient — surface it so the parser gets fixed.
+          shapeError = new Error("No usage windows in OpenCode Go response");
+        } else {
+          windows = { fiveHour, weekly, monthly };
+        }
+      } catch {
+        // ponytail: transport/API failures (offline, timeout, HTTP error) are
+        // transient — never degrade to the empty-error footer, the label,
+        // session cost, and tok/s would vanish (0.1.46 regression). Keep the
+        // 0.1.44 always-renders behavior and just skip the windows.
+      }
+      if (shapeError) throw shapeError;
+    }
+    // ponytail: keyless (accountId-only) setups keep the auth-only snapshot —
+    // session cost still renders, no usage API to call.
     return {
       providerDisplayName: "OpenCode Go",
-      accounts: [account],
-      activeAccount: account,
+      accounts: [{ ...account, ...windows }],
+      activeAccount: { ...account, ...windows },
       fetchedAt: Date.now(),
     };
   } catch (error) {
@@ -1222,6 +1289,7 @@ function minRemaining(account: SubscriptionAccountSnapshot | undefined): number 
   const values: number[] = [];
   if (account?.fiveHour?.remaining !== undefined) values.push(account.fiveHour.remaining);
   if (account?.weekly?.remaining !== undefined) values.push(account.weekly.remaining);
+  if (account?.monthly?.remaining !== undefined) values.push(account.monthly.remaining);
   if (values.length === 0) return 100;
   return Math.min(...values);
 }
@@ -1231,6 +1299,7 @@ function windowSegments(account: SubscriptionAccountSnapshot | undefined): strin
   const segments: string[] = [];
   if (account.fiveHour) segments.push(`R:${formatRemaining(account.fiveHour)}`);
   if (account.weekly) segments.push(`W:${formatRemaining(account.weekly)}`);
+  if (account.monthly) segments.push(`M:${formatRemaining(account.monthly)}`);
   return segments;
 }
 
@@ -1421,6 +1490,8 @@ function buildDetails(snapshot: SubscriptionUsageSnapshot | undefined, state: St
   const hasWeekly = snapshot.accounts.some((a) => a.weekly);
   if (hasFiveHour) columns.push({ key: "five", label: "ROLLING", get: (a) => formatRemaining(a.fiveHour) });
   if (hasWeekly) columns.push({ key: "weekly", label: "WEEKLY", get: (a) => formatRemaining(a.weekly) });
+  const hasMonthly = snapshot.accounts.some((a) => a.monthly);
+  if (hasMonthly) columns.push({ key: "monthly", label: "MONTHLY", get: (a) => formatRemaining(a.monthly) });
   const rows = snapshot.accounts.map((account) => ({
     active: account.isActive ? "*" : " ",
     snapshot: account,
@@ -1447,7 +1518,7 @@ function buildDetails(snapshot: SubscriptionUsageSnapshot | undefined, state: St
         : "")
     : "";
   const lines = [`Provider: ${snapshot.providerDisplayName} · Model: ${state.model?.id ?? "unknown-model"} · Fetched: ${new Date(snapshot.fetchedAt).toLocaleTimeString()}${costLine}${tokPerSecLine}`, "", header, sep, ...body];
-  if (!hasFiveHour && !hasWeekly) {
+  if (!hasFiveHour && !hasWeekly && !hasMonthly) {
     lines.push("", `${snapshot.providerDisplayName} does not expose usage windows.`);
   }
   // Z.ai extras: MCP/month allowance (from TIME_LIMIT) + per-model/per-tool breakdown.

@@ -35,7 +35,7 @@ into the Pi coding agent, each in its own npm package under `@bacnh85/`.
 | **pi-review** | 0.2.11 | Isolated read-only code review with corrected same-session fallback. |
 | **pi-rtk** | 0.2.4 | Bash command token rewriting through RTK. |
 | **pi-serena** | 0.9.16 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
-| **pi-sub** | 0.1.44 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
+| **pi-sub** | 0.1.46 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | **pi-themes** | 0.2.0 | Pi TUI theme collection — Ayu variants (dark, mirage, light) + Catppuccin Mocha; pure-themes package (no extension code). |
 | **pi-subagent** | 0.22.4 | Isolated in-process subagents with parallel/chain modes, inspectable threads, git worktree isolation (`sandbox: worktree`), live progress widget, background mode, role-based model routing (`@fast`/`@coder`/`@smart` + `subagent.roles`/`subagent.agentThinking` settings, `/subagent roles` editor), opt-in auto-review after coding turns (`subagent.autoReview`), and herdr pane delegation (`runner: "herdr"` + `herdr` control tool) when pi runs inside herdr. |
 | **pi-web** | 0.17.4 | Unified web tools — search (SearXNG, Brave, Firecrawl), extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, screenshots/PDFs with local headless-Chrome capture (inline PNGs for multimodal models; honest sub-500px device emulation + reduced-motion), real-browser interaction (`web_interact`: trusted click/type/evaluate/wait + scrollWidth probe via zero-dep CDP), Gemini web-tier research, image generation (ChatGPT web / Gemini web / Z.ai / custom), and one-off ChatGPT-web/gateway chat. |

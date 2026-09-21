@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.1.46] - 2026-09-21
+
+- OpenCode Go: fetch rolling (5-hour), weekly, and monthly usage windows
+  from Zen's `GET https://opencode.ai/zen/go/v1/usage` (Bearer = stored
+  `opencode-go` API key). Footer gains an `M:` monthly segment; `/sub`
+  gains a MONTHLY column; monthly remaining now drives the footer
+  warn/error color. Per-window defensive parsing — a window with no
+  numeric `percent` is skipped and percent is clamped to 0-100
+  (undocumented API). Transport/API failures (offline, timeout, HTTP
+  error) degrade to the 0.1.44 auth-only footer (label + session cost +
+  tok/s keep rendering) — only an HTTP 200 with zero parseable windows
+  errors the footer, as a shape-drift signal. accountId-only (keyless)
+  setups keep the previous auth-only display.
+- Tests: `opcWindowToUsageWindow` parser coverage (live shape, 0-100
+  clamp, non-numeric-percent skip) plus `fetchOpenCodeGoUsage` network
+  behaviors against a mocked fetch (auth header, live-shape mapping,
+  keyless fallback, fetch-failure/401 fallback, all-empty error).
+- Reviewer round on 0.1.46 draft: fixed footer regression where any
+  fetch failure emptied the snapshot (dropping account label, session
+  cost, and tok/s from the footer); footer examples corrected to actual
+  output (`97%/3H` format, provider prefix dropped when windows exist);
+  added upper clamp on `remaining` (percent < 0 previously rendered
+  `R:105%`).
+
 ## [0.1.44] - 2026-09-21
 
 - Tests: exported `routerUpstreamPrefix` (alias normalization, generic-alias
