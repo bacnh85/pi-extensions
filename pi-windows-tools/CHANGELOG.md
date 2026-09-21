@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.7 (2026-09-21)
+
+### Fixed
+
+- **First npm release since 0.5.4.** pi-windows-tools was missing from the CI
+  paths-filter and matrix, so 0.5.5 (session-allow keying security fix) and
+  0.5.6 (`windowsHide`, `--force-with-lease` safety rule, dead-code sweep,
+  SKILL.md audit-log row) shipped to git but never published. The CI matrix
+  now includes the package; this release carries all three versions.
+
 ## 0.5.6 (2026-09-20)
 
 ### Fixed
