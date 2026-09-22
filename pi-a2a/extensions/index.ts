@@ -18,6 +18,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import { terminalOutcomeError } from "./lib/outcome.js";
 import { buildA2ASettingsPatch, getGatewayPeers, loadConfig, setConfigOverrides, writeSettingsA2A, type A2AConfig } from "./lib/config";
 import {
   a2aCall,
@@ -185,6 +186,8 @@ function makeSessionRunner(ctx: ExtensionContext, cfg?: A2AConfig): SessionRunne
     // text — consumed by the stunted-reply check after the run completes.
     let terminalStopReason: string | undefined;
     let terminalHadText = false;
+    let terminalErrorMessage: string | undefined;
+    let sawAssistant = false;
     // Cheap progress marker for post-mortems (#256): assistant turns + tool
     // executions observed before the run ended.
     let stepCount = 0;
@@ -211,6 +214,8 @@ function makeSessionRunner(ctx: ExtensionContext, cfg?: A2AConfig): SessionRunne
         if (text) reply = text;
         terminalStopReason = event.message?.stopReason;
         terminalHadText = Boolean(text);
+        terminalErrorMessage = event.message?.errorMessage;
+        sawAssistant = true;
         if (/\[INPUT_REQUIRED\]/i.test(reply)) {
           inputRequired = true;
           reply = reply.replace(/\[INPUT_REQUIRED\]\s*/gi, "").trim();
@@ -299,16 +304,26 @@ function makeSessionRunner(ctx: ExtensionContext, cfg?: A2AConfig): SessionRunne
       throw err;
     }
 
-    if (terminalStopReason === "length" && !terminalHadText) {
-      // A length stop with no assistant text means the provider capped
-      // output before any usable content — typically max_tokens clamped
-      // against the context estimate. `reply` still holds the PREVIOUS
-      // turn's text, so returning normally would report the task COMPLETED
-      // with a stale mid-work answer. Throw so the task maps to FAILED —
-      // a dispatcher must not mistake this for a finished worker.
-      throw new Error(
-        "run ended on a length stop with no assistant text — no usable reply was produced (output capped before any content; context-clamped max_tokens?)",
-      );
+    // Endings with no usable answer map to FAILED, never COMPLETED with a
+    // stale/empty reply: a length stop with no text (#314), a final turn the
+    // provider failed (#425 — e.g. HTTP 503 "no available channel", which
+    // previously came back COMPLETED "(no reply)"), and a run that produced
+    // no assistant output at all. See lib/outcome.ts.
+    const outcomeError = terminalOutcomeError({
+      stopReason: terminalStopReason,
+      hadText: terminalHadText,
+      sawAssistant,
+      errorMessage: terminalErrorMessage,
+    });
+    if (outcomeError) {
+      const err = new Error(outcomeError);
+      try {
+        if (transcriptPath) (err as any).transcriptPath = transcriptPath;
+        (err as any).stepCount = stepCount;
+      } catch {
+        /* best-effort */
+      }
+      throw err;
     }
     return {
       reply: reply || "(no reply)",
