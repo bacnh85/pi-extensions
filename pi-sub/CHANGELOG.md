@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.49 (2026-09-22)
+
+- Review fixes for the 0.1.48 router-usage path: monthly-only reports
+  (`windows.monthly` alone) are now accepted instead of falling through to
+  the om-usage text path, and the footer `M:` balance segment is
+  currency-aware (`M:¥88.00 CNY` for deepseek, `M:$…` for USD) via the new
+  `formatMonthlyCredits` helper. Direct Command Code adapter unchanged
+  (upstream API is USD-only).
+
+## 0.1.48 (2026-09-22)
+
+- Router usage (`GET <baseUrl>/usage?provider=`): parse the new
+  `windows.monthly` pct window and render it as an `M:` footer segment
+  + a `Monthly …% left` breakdown line. OpenCode Go via yardmaster now
+  shows R/W/M like the direct adapter once the router emits monthly
+  (yardmaster usage_api.go this date).
+
 ## 0.1.47 (2026-09-21)
 
 - Widened Pi SDK peer range to `<0.88.0` (devDeps to `^0.87.0`); tested against Pi 0.87.0. No behavioral changes — the 0.87.0 audit found no affected code paths.

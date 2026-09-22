@@ -7,6 +7,7 @@ import {
   parseOmniUsageText,
   routerUpstreamPrefix,
   tokPerSecLabel,
+  formatMonthlyCredits,
 } from "../index.ts";
 
 // ── parseOmniUsageText — OmniRoute /api/usage/om-usage free-text report ──────
@@ -175,6 +176,36 @@ test("generic usage: windows + credits map to footer fields", () => {
   assert.equal(g.creditsCurrency, "USD");
   assert.ok(g.breakdown?.includes("Session 47% left"), g.breakdown);
   assert.ok(g.breakdown?.includes("🪙 Balance (USD) $42.50"), g.breakdown);
+});
+
+test("generic usage: opencode monthly pct window maps through", () => {
+  const g = parseGenericUsage({
+    provider: "ocg",
+    windows: {
+      session: { remaining_pct: 99, reset_at: Date.now() + 5 * 3600_000 },
+      weekly: { remaining_pct: 100, reset_at: Date.now() + 6 * 24 * 3600_000 },
+      monthly: { remaining_pct: 20, reset_at: Date.now() + 4 * 24 * 3600_000 },
+    },
+    providers: ["ocg"],
+  });
+  assert.equal(g.monthly?.remaining, 20);
+  assert.ok(g.monthly?.remainingLabel === "4D", `monthly label ${g.monthly?.remainingLabel}`);
+  assert.ok(g.breakdown?.includes("Monthly 20% left"), g.breakdown);
+  // absent monthly stays absent
+  const none = parseGenericUsage({ windows: { session: { remaining_pct: 1 } } });
+  assert.equal(none.monthly, undefined);
+});
+
+test("generic usage: CNY balance keeps currency; monthly-only report accepted", () => {
+  const cny = parseGenericUsage({ credits: { currency: "CNY", balance: 88 } });
+  assert.equal(cny.creditsCurrency, "CNY");
+  assert.equal(formatMonthlyCredits(88, "CNY"), "¥88.00 CNY");
+  assert.equal(formatMonthlyCredits(69.99), "$69.99");
+  assert.equal(formatMonthlyCredits(42.5, "USD"), "$42.50");
+  // monthly-only report (router emits windows.monthly alone) parses
+  const mo = parseGenericUsage({ windows: { monthly: { remaining_pct: 20 } } });
+  assert.equal(mo.monthly?.remaining, 20);
+  assert.equal(mo.fiveHour, undefined);
 });
 
 test("generic usage: deepseek balance-only report (no windows), CNY currency", () => {

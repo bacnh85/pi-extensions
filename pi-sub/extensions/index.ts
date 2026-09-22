@@ -130,8 +130,10 @@ interface SubscriptionAccountSnapshot {
   fiveHour?: UsageWindow;
   weekly?: UsageWindow;
   monthly?: UsageWindow; // OpenCode Go 30d window
-  // Command Code-only: monthly credit balance in USD (not a rolling window).
+  // Command Code-only: monthly credit balance (not a rolling window).
   monthlyCredits?: number;
+  // Balance currency — only "CNY" is special-cased (¥); undefined = USD ($).
+  creditsCurrency?: string;
   // Z.ai-only extras surfaced in the /sub detail view.
   mcpMonthly?: UsageWindow; // from TIME_LIMIT already present in the quota response
   usageBreakdown?: string; // per-model / per-tool summary line(s)
@@ -464,13 +466,14 @@ export function msCountdown(resetAtMs: number | undefined): string | undefined {
 interface GenericUsage {
   fiveHour?: UsageWindow;
   weekly?: UsageWindow;
+  monthly?: UsageWindow; // OpenCode Go 30d pct window (router /v1/usage windows.monthly)
   monthlyCredits?: number;
   creditsCurrency?: string;
   breakdown?: string;
 }
 
 /** Parse the general router usage API (GET <baseUrl>/usage, JSON —
- *  yardmaster) into windows + credits: `{windows: {session, weekly}:
+ *  yardmaster) into windows + credits: `{windows: {session, weekly, monthly}:
  *  {remaining_pct, reset_at}, credits: {currency, balance}, providers: []}`.
  *  Robust to missing sections; `{}` when nothing usable is present. */
 export function parseGenericUsage(data: unknown): GenericUsage {
@@ -490,12 +493,14 @@ export function parseGenericUsage(data: unknown): GenericUsage {
   };
   const fiveHour = toWindow(body.windows?.session);
   const weekly = toWindow(body.windows?.weekly);
+  const monthly = toWindow(body.windows?.monthly);
   const monthlyCredits = typeof body.credits?.balance === "number" && Number.isFinite(body.credits.balance)
     ? body.credits.balance : undefined;
   const creditsCurrency = body.credits?.currency ?? "USD";
   const lines: string[] = [];
   if (fiveHour) lines.push(`Session ${fiveHour.remaining}% left${fiveHour.resetLabel ? ` ${fiveHour.resetLabel}` : ""}`);
   if (weekly) lines.push(`Weekly ${weekly.remaining}% left${weekly.resetLabel ? ` ${weekly.resetLabel}` : ""}`);
+  if (monthly) lines.push(`Monthly ${monthly.remaining}% left${monthly.resetLabel ? ` ${monthly.resetLabel}` : ""}`);
   if (monthlyCredits !== undefined) {
     const amt = creditsCurrency === "CNY" ? `¥${monthlyCredits.toFixed(2)} CNY` : `$${monthlyCredits.toFixed(2)}`;
     lines.push(`🪙 Balance (${creditsCurrency}) ${amt}`);
@@ -503,6 +508,7 @@ export function parseGenericUsage(data: unknown): GenericUsage {
   const out: GenericUsage = {};
   if (fiveHour) out.fiveHour = fiveHour;
   if (weekly) out.weekly = weekly;
+  if (monthly) out.monthly = monthly;
   if (monthlyCredits !== undefined) {
     out.monthlyCredits = monthlyCredits;
     out.creditsCurrency = creditsCurrency;
@@ -775,13 +781,15 @@ async function fetchRouterUsage(signal?: AbortSignal, provider?: string): Promis
       const ct = response.headers.get("content-type") ?? "";
       if (response.ok && ct.includes("application/json")) {
         const g = parseGenericUsage(await response.json());
-        if (g.fiveHour || g.weekly || g.monthlyCredits !== undefined) {
+        if (g.fiveHour || g.weekly || g.monthly || g.monthlyCredits !== undefined) {
           const account: SubscriptionAccountSnapshot = {
             ...baseAccount,
             plan: provider ? `Router · ${provider}` : "Router usage",
             fiveHour: g.fiveHour,
             weekly: g.weekly,
+            monthly: g.monthly,
             monthlyCredits: g.monthlyCredits,
+            creditsCurrency: g.creditsCurrency,
             usageBreakdown: g.breakdown,
           };
           return {
@@ -1278,6 +1286,13 @@ export function routerUpstreamPrefix(model: ModelLike): string | undefined {
   return generic.has(first) ? undefined : first;
 }
 
+/** Currency-aware monthly-balance figure for footer/detail segments:
+ *  CNY → ¥88.00 CNY, anything else (incl. undefined) → $88.00. Mirrors the
+ *  breakdown formatting in parseGenericUsage. */
+export function formatMonthlyCredits(amount: number, currency?: string): string {
+  return currency === "CNY" ? `¥${amount.toFixed(2)} CNY` : `$${amount.toFixed(2)}`;
+}
+
 function formatRemaining(window: UsageWindow | undefined): string {
   if (!window) return "?";
   if (window.remainingLabel) return `${window.remaining}%/${window.remainingLabel}`;
@@ -1332,8 +1347,11 @@ export function renderSubscriptionLine(state: State): void {
     const segments = accountPart ? [accountPart, ...windowParts] : [...windowParts];
     const cost = state.cumulativeCost;
     const hasWindows = windowParts.length > 0;
-    // Command Code monthly balance: compact USD figure, e.g. M:$69.99.
-    if (typeof account?.monthlyCredits === "number") segments.push(`M:$${account.monthlyCredits.toFixed(2)}`);
+    // Monthly balance (Command Code credits, router-reported balances):
+    // currency-aware compact figure — e.g. M:$69.99 / M:¥88.00 CNY.
+    if (typeof account?.monthlyCredits === "number") {
+      segments.push(`M:${formatMonthlyCredits(account.monthlyCredits, account.creditsCurrency)}`);
+    }
     if (cost > 0) segments.push(`$${cost.toFixed(2)}`);
     if (state.lastTokPerSec !== undefined) segments.push(`${state.lastTokPerSec} tok/s`);
     if (segments.length === 0) {

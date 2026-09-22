@@ -32,6 +32,7 @@ export type PiModel = {
     supportsReasoningEffort: boolean;
     maxTokensField: "max_tokens";
     thinkingFormat: "openai";
+    requiresReasoningContentOnAssistantMessages: boolean;
   };
 };
 
@@ -66,6 +67,17 @@ export async function fetchModels(
 
   const payload = (await response.json()) as RouterModelsResponse;
   return payload.data ?? [];
+}
+
+/** Upstreams that reject assistant turns without reasoning_content while
+ *  thinking mode is on (400 "The `reasoning_content` in the thinking mode must
+ *  be passed back to the API"). Verified ONLY for the ocg/ wire — pi's native
+ *  opencode-go catalog sets compat.requiresReasoningContentOnAssistantMessages
+ *  on deepseek-v4*, glm-5.1 and kimi-k2.7-code. The same model ids served via
+ *  zai//cmd//ds/ have no such verified contract, so the flag is scoped to the
+ *  ocg/ prefix. Unprefixed opencode-go deployments would need a bare-id row. */
+function isOcgReasoningPassback(id: string): boolean {
+  return /^ocg\/(deepseek|glm-5\.1|kimi-k2\.7-code)/i.test(id);
 }
 
 /** Detect 9router thinkingFormat from model ID, matching the same patterns
@@ -327,6 +339,7 @@ export function mapModel(raw: RouterModelRaw, enableReasoning: boolean): PiModel
     supportsReasoningEffort: enableReasoning,
     maxTokensField: "max_tokens" as const,
     thinkingFormat: "openai" as const,
+    requiresReasoningContentOnAssistantMessages: isOcgReasoningPassback(raw.id),
   };
 
   return {

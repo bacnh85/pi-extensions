@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.10 (2026-09-22)
+
+### Fixed
+
+- **ocg/ reasoning models no longer 400 on follow-up turns.** Mapped router
+  models now carry `compat.requiresReasoningContentOnAssistantMessages` on
+  `ocg/(deepseek*, glm-5.1, kimi-k2.7-code)` — matching pi's native
+  opencode-go catalog — so pi re-attaches `reasoning_content` (or fills `""`)
+  on every assistant message. Without it, a thinking-mode follow-up turn with
+  no reasoning text went upstream bare and Zen rejected the whole request:
+  `400 The reasoning_content in the thinking mode must be passed back to the API`.
+  Scoped to the `ocg/` prefix: the same ids on zai/cmd/ds wires keep no flag
+  (no verified contract there).
+
 ## 1.1.9 (2026-09-21)
 
 ### Fixed

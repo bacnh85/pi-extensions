@@ -286,6 +286,22 @@ describe("client", () => {
     assert.equal(m.compat?.supportsReasoningEffort, false);
   });
 
+  it("requiresReasoningContentOnAssistantMessages: ocg-scoped passback flag", async () => {
+    const { mapModel } = await import("../lib/client.js");
+    // ocg/ wire: DeepSeek family + glm-5.1 + kimi-k2.7-code (pi native opencode-go compat)
+    for (const id of ["ocg/deepseek-v4.1-flash", "ocg/deepseek-v4-pro", "ocg/glm-5.1", "ocg/kimi-k2.7-code"]) {
+      const m = mapModel({ id }, true);
+      assert.equal(m.compat?.requiresReasoningContentOnAssistantMessages, true, id);
+    }
+    // other ocg models are false natively
+    assert.equal(mapModel({ id: "ocg/glm-5.3-flash" }, true).compat?.requiresReasoningContentOnAssistantMessages, false);
+    // scoping: same family ids on other wires stay flagless (no verified contract)
+    for (const id of ["zai/glm-5.3", "cmd/deepseek/deepseek-v4-flash-vision-exp", "ds/deepseek-v4.1-flash", "glm-cn/glm-5.1", "deepseek-v4.1-flash"]) {
+      const m = mapModel({ id }, true);
+      assert.equal(m.compat?.requiresReasoningContentOnAssistantMessages, false, id);
+    }
+  });
+
   it("mapModel vision: probe-verified routes gain image input, verified strips lose it", async () => {
     const { mapModel } = await import("../lib/client.js");
     // VISION_OVERRIDES: probe-verified PASS route, no router vision flag
