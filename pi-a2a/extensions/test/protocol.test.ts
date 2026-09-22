@@ -75,7 +75,10 @@ describe("protocol", () => {
 
     it("advertises bearer auth when required", () => {
       const card = buildAgentCard({ name: "pi", url: "http://x/", authRequired: true });
-      assert.deepEqual(card.securitySchemes, { bearer: { type: "http", scheme: "bearer" } });
+      // A2A v1.0 shape (fleet task #427): oneof-wrapped scheme + securityRequirements with StringList scopes.
+      assert.deepEqual(card.securitySchemes, { bearer: { httpAuthSecurityScheme: { scheme: "bearer" } } });
+      assert.deepEqual(card.securityRequirements, [{ schemes: { bearer: { list: [] } } }]);
+      // v0.3 alias kept for hermes a2a_discover (eaef8e95).
       assert.deepEqual(card.security, [{ bearer: [] }]);
     });
 
