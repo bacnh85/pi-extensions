@@ -45,6 +45,33 @@ jobs:
           print(f"All lockfile entries carry integrity hashes.")
           EOF
 
+      # Hardening round 6: every pi-* directory must appear in BOTH the
+      # paths-filter map and the matrix — a package missing from either is
+      # silently never tested/published (pi-windows-tools drifted out this way;
+      # fixed in c13fa72). Fails the changes job on any future drift.
+      - name: Verify matrix/paths-filter parity with package dirs
+        run: |
+          python3 - <<'EOF'
+          import os, re, sys
+          yml = open('.github/workflows/ci.yml').read()
+          filters = set(re.findall(r"^\s+(pi-[a-z0-9-]+): pi-[a-z0-9-]+/\*\*$", yml, re.M))
+          matrix = set(re.findall(r"\{ pkg: '(pi-[a-z0-9-]+)'", yml))
+          dirs = set(d for d in os.listdir('.') if d.startswith('pi-') and os.path.isdir(d))
+          problems = []
+          if dirs - filters:
+              problems.append(f"package dirs missing from paths-filter: {sorted(dirs - filters)}")
+          if filters - matrix:
+              problems.append(f"filters missing from matrix: {sorted(filters - matrix)}")
+          if matrix - dirs:
+              problems.append(f"matrix entries without a package dir: {sorted(matrix - dirs)}")
+          if problems:
+              print("CI matrix drift detected:")
+              for p in problems:
+                  print(" -", p)
+              sys.exit(1)
+          print(f"Matrix parity OK: {len(dirs)} packages covered by filter + matrix.")
+          EOF
+
       - uses: dorny/paths-filter@9d7afb8d214ad99e78fbd4247752c4caed2b6e4c # v4.0.0
         id: filter
         with:
@@ -99,12 +126,12 @@ jobs:
               { pkg: 'pi-advisor', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-subagent', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-review', cmd: 'npm ci && npm test && npm run typecheck' },
-              { pkg: 'pi-fff', cmd: 'npm ci && npm test' },
-              { pkg: 'pi-notebooklm', cmd: 'npm ci && npm test' },
-              { pkg: 'pi-rtk', cmd: 'npm test && npm pack --dry-run' },
+              { pkg: 'pi-fff', cmd: 'npm ci && npm test && npm run typecheck' },
+              { pkg: 'pi-notebooklm', cmd: 'npm ci && npm test && npm run typecheck' },
+              { pkg: 'pi-rtk', cmd: 'npm ci && npm test && npm run typecheck && npm pack --dry-run' },
               { pkg: 'pi-sub', cmd: 'npm ci && npm test' },
               { pkg: 'pi-model-tools', cmd: 'npm ci && npm test && npm run typecheck' },
-              { pkg: 'pi-obsidian', cmd: 'npm ci && npm test' },
+              { pkg: 'pi-obsidian', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-router', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-commandcode', cmd: 'npm ci && npm test && npm run typecheck' },
               { pkg: 'pi-kicad', cmd: 'npm ci && npm test && npm run typecheck' },
