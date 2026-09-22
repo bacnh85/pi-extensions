@@ -142,7 +142,16 @@ function makeSessionRunner(ctx: ExtensionContext, cfg?: A2AConfig): SessionRunne
         sessionManager = undefined; // fall back to stock in-memory
       }
     }
-    if (!sessionManager) sessionManager = SessionManager.inMemory(cwd);
+    // Fallback (transcripts off or persistence failed): the in-memory child
+    // inherits the HOST session's id (fleet task #238) so its MCP calls
+    // (pi-mcp-extension stamps getSessionId() as pi/session) and outbound A2A
+    // attribute to the host conversation instead of an ephemeral id nobody
+    // can map back. The persisted path above keys the child on the taskId
+    // and records hostSessionId in its a2a/dispatch entry instead.
+    if (!sessionManager) {
+      const hostSessionId = (ctx as any).sessionManager?.getSessionId?.();
+      sessionManager = SessionManager.inMemory(cwd, hostSessionId ? { id: hostSessionId } : undefined);
+    }
     const created = await createAgentSession({
       cwd,
       model,
@@ -518,6 +527,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
               message: String(args.message ?? ""),
               contextId: args.context_id ? String(args.context_id) : undefined,
               asyncDispatch: args.async_dispatch === true,
+              sessionId: (ctx as any).sessionManager?.getSessionId?.(),
               discoveredPeers: listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "", gatewayPeers: getGatewayPeers() }),
             }),
           },
@@ -681,6 +691,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
               capability: String(args.capability ?? ""),
               message: String(args.message ?? ""),
               mode: args.mode === "first" || args.mode === "best" ? args.mode : "all",
+              sessionId: (ctx as any).sessionManager?.getSessionId?.(),
             }),
           },
         ],

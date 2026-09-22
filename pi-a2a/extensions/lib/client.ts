@@ -372,6 +372,10 @@ async function sendTask(opts: {
    *  acks with an in-progress Task and runs the work detached from this
    *  call — the reply arrives later via GetTask (a2a_status). */
   asyncDispatch?: boolean;
+  /** Sender's pi session id — stamped on the outbound message metadata
+   *  ("pi/session") so the receiving peer can join this dispatch to its own
+   *  ledger rows and records (fleet task #238). */
+  sessionId?: string;
 }): Promise<SendResult> {
   const { cfg, piDir, peer, agentLabel, message } = opts;
   const headers = peerRequestHeaders(cfg, peer);
@@ -416,12 +420,21 @@ async function sendTask(opts: {
 
   const ctx = opts.contextId || newContextId();
   const safe = redactOutbound(message);
+  const outbound = textMessage(ROLE_USER, safe, ctx);
+  // Sender attribution (A2A v1.0 permits metadata on Message). "pi/session"
+  // is the pi session id; "pi/self" the configured identity. Both are
+  // advisory display/join data — receiving peers must not authenticate on
+  // them.
+  const senderMeta: Record<string, unknown> = {};
+  if (opts.sessionId) senderMeta["pi/session"] = opts.sessionId;
+  if (cfg.selfIdentity) senderMeta["pi/self"] = cfg.selfIdentity;
+  if (Object.keys(senderMeta).length > 0) outbound.metadata = senderMeta;
   const rpcBody: JsonRpcRequest = {
     jsonrpc: "2.0",
     id: newTaskId(),
     method: "SendMessage",
     params: {
-      message: textMessage(ROLE_USER, safe, ctx),
+      message: outbound,
       ...(opts.asyncDispatch ? { configuration: { returnImmediately: true } } : {}),
     },
   };
@@ -577,6 +590,7 @@ export async function a2aCall(opts: {
   agent: string;
   message: string;
   contextId?: string;
+  sessionId?: string;
   /** Live discovered peers (listPeers output) — lets local/mDNS peers be called by name. */
   discoveredPeers?: DiscoveredPeer[];
   /** Non-blocking dispatch (A2A v1.0 §3.2.2 returnImmediately): return an
@@ -606,6 +620,7 @@ export async function a2aCall(opts: {
       message,
       contextId: opts.contextId,
       asyncDispatch: opts.asyncDispatch,
+      sessionId: opts.sessionId,
     });
   } catch (e: any) {
     const msg = e?.message || String(e);
@@ -933,6 +948,7 @@ export async function a2aOrchestrate(opts: {
   capability: string;
   message: string;
   mode?: "all" | "first" | "best";
+  sessionId?: string;
 }): Promise<string> {
   const mode = opts.mode || "all";
   // Configured peers + gateway overlay (read-only). Dedupe: a configured peer
@@ -961,6 +977,7 @@ export async function a2aOrchestrate(opts: {
         peer,
         agentLabel: name,
         message: opts.message,
+        sessionId: opts.sessionId,
       });
       return { name, ok: true as const, reply: r.reply, ctx: r.contextId, state: r.state };
     } catch (e: any) {
