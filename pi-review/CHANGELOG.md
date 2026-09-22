@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.12 (2026-09-21)
+
+- Widened Pi SDK peer range to `<0.88.0` (devDeps to `^0.87.0`); tested against Pi 0.87.0. No behavioral changes — the 0.87.0 audit found no affected code paths.
+
 ## Unreleased
 
 - Tests: cover `buildReviewPrompt` preset-specific prompts and the fail-closed Git

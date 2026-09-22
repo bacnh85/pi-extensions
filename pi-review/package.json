@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-review",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "description": "Pi extension for isolated or local read-only code review.",
   "type": "module",
   "license": "MIT",
@@ -38,10 +38,10 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.84.3 <0.87.0"
+    "@earendil-works/pi-coding-agent": ">=0.84.3 <0.88.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.86.0",
+    "@earendil-works/pi-coding-agent": "^0.87.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.43",
     "mocha": "^11.8.0",

@@ -377,10 +377,10 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Compatibility
 
-- Requires `@earendil-works/pi-coding-agent >=0.80.0 <0.87.0`
-- Requires `@earendil-works/pi-ai >=0.80.0 <0.87.0`
-- Requires `@earendil-works/pi-agent-core >=0.80.0 <0.87.0`
-- Requires `@earendil-works/pi-tui >=0.80.0 <0.87.0`
+- Requires `@earendil-works/pi-coding-agent >=0.80.0 <0.88.0`
+- Requires `@earendil-works/pi-ai >=0.80.0 <0.88.0`
+- Requires `@earendil-works/pi-agent-core >=0.80.0 <0.88.0`
+- Requires `@earendil-works/pi-tui >=0.80.0 <0.88.0`
 - Requires `typebox >=1.3.0 <2.0.0`
 - Requires Node.js >= 20.18
 
