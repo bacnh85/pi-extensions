@@ -359,6 +359,11 @@ export interface Message {
   messageId: string;
   contextId?: string;
   taskId?: string;
+  /** Implementation-defined metadata (A2A v1.0 — permitted on core structures).
+   *  pi-a2a stamps the SENDER's session id under "pi/session" (and the
+   *  configured selfIdentity under "pi/self") so receiving peers can join
+   * dispatches to ledger rows and records on one key (fleet task #238). */
+  metadata?: Record<string, unknown>;
 }
 
 export function textMessage(role: string, text: string, contextId = ""): Message {

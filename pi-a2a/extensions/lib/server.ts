@@ -49,14 +49,17 @@ import { setGatewayRegistrationName, updateGatewayPeers, cleanHostName } from ".
 import {
   AntiLoop,
   audit,
-  authenticate,
+  authenticateInfo,
+  IDENTITY_HEADER,
   isTrustedPeer,
   LOOPBACK,
   localhostOnly,
   maxPingpongTurns,
   redactOutbound,
   resolveBindHost,
+  transportName,
   wrapInbound,
+  type InboundFraming,
 } from "./security";
 import { metrics } from "./client";
 import { childTranscriptDir, sweepChildTranscripts } from "./persistence";
@@ -223,6 +226,10 @@ export interface SessionRunner {
 export class A2AServer {
   private http: Server | null = null;
   private boundPort: number | null = null;
+  /** True once the listening socket bound a loopback host — the gate for
+   *  honoring X-A2A-Identity asserted names (fleet task #322). Defaults
+   *  false: until the server knows it bound loopback, no header trust. */
+  private loopbackBind = false;
   private store = new TaskStore();
   /** Per-session minted inbound tokens (peer name → agw-* token) registered
    *  as upstream_token with gateways. Kept OUT of cfg.server.peerTokens. */
@@ -352,6 +359,7 @@ export class A2AServer {
       model: d.model,
       tools: d.tools,
       sessionName: d.sessionName,
+      sessionId: d.sessionId,
       selfIdentity: d.selfIdentity,
       agentName: d.agentName,
       startedAt: d.startedAt,
@@ -376,6 +384,7 @@ export class A2AServer {
       model,
       agentName: this.sessionName(),
       sessionName: this.ctx ? (this.ctx as any).getSessionName?.() : undefined,
+      sessionId: this.ctx ? (this.ctx as any).sessionManager?.getSessionId?.() : undefined,
       selfIdentity: this.cfg.selfIdentity || undefined,
       tools: this.activeTools(),
       skills: this.activeSkills(),
@@ -630,6 +639,7 @@ export class A2AServer {
       /* best-effort */
     }
     const host = resolveBindHost(this.cfg);
+    this.loopbackBind = LOOPBACK.has(host);
     const configuredPort = this.cfg.server.port;
     const fallback = Math.max(0, this.cfg.server.portFallback);
 
@@ -795,13 +805,15 @@ export class A2AServer {
    * a token is REQUIRED and not presented; the plain card still goes out
    * anonymously so discovery keeps working. /metrics requires auth. */
   private getIdentity(req: IncomingMessage): string | null {
-    return authenticate({
+    return authenticateInfo({
       authHeader: req.headers["authorization"],
       clientIp: (req.socket.remoteAddress || "").replace(/^::ffff:/, ""),
       peerTokens: this.cfg.server.peerTokens,
       sharedToken: this.cfg.server.sharedToken,
       extraTokens: this.mintedInboundTokens,
-    });
+      identityHeader: req.headers[IDENTITY_HEADER],
+      loopbackBind: this.loopbackBind,
+    }).identity;
   }
 
   private handleGet(url: string, req: IncomingMessage, res: ServerResponse): void {
@@ -823,13 +835,16 @@ export class A2AServer {
 
   private async handlePost(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const clientIp = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
-    const identity = authenticate({
+    const auth = authenticateInfo({
       authHeader: req.headers["authorization"],
       clientIp,
       peerTokens: this.cfg.server.peerTokens,
       sharedToken: this.cfg.server.sharedToken,
       extraTokens: this.mintedInboundTokens,
+      identityHeader: req.headers[IDENTITY_HEADER],
+      loopbackBind: this.loopbackBind,
     });
+    const identity = auth.identity;
     if (identity === null) {
       return this.send(res, 401, jsonrpcError(null, -32050, "unauthorized"));
     }
@@ -840,6 +855,12 @@ export class A2AServer {
       metrics.rateLimited += 1;
       return this.send(res, 429, jsonrpcError(null, -32051, "rate limited"));
     }
+    // Framing context for the inbound wrapper (fleet task #322): how the
+    // caller connected and how its identity was derived.
+    const framing: InboundFraming = {
+      transport: transportName(clientIp),
+      provenance: auth.provenance ?? "address",
+    };
 
     const body = await this.readBody(req);
     let rpc: any;
@@ -869,13 +890,13 @@ export class A2AServer {
           jsonrpcError(id, -32053, `server busy: max ${this.cfg.server.maxConcurrent} concurrent tasks`),
         );
       }
-      const r = await this.messageSend(params, identity);
+      const r = await this.messageSend(params, identity, undefined, framing);
       // A2A v1.0: the SendMessage result is the oneof {"task": …} | {"message": …},
       // never a bare Task; the pre-1.0 alias keeps returning the bare Task.
       return this.send(res, 200, jsonrpcResult(id, isV1("sendmessage") ? sendTaskResponse(r) : r));
     }
     if (norm === "messagestream" || norm === "sendstreamingmessage") {
-      return this.messageStream(params, identity, res, id, isV1("sendstreamingmessage"));
+      return this.messageStream(params, identity, res, id, isV1("sendstreamingmessage"), framing);
     }
     if (norm === "tasksget" || norm === "gettask") {
       const st = this.store.get(String(params.id ?? ""));
@@ -919,6 +940,7 @@ export class A2AServer {
     params: any,
     identity: string,
     externalSignal?: AbortSignal,
+    framing?: InboundFraming,
   ): Promise<any> {
     const msg: Message = params.message ?? params;
     const inboundText = extractText(params);
@@ -962,7 +984,7 @@ export class A2AServer {
     // — the caller polls GetTask / subscribes / cancels by task id, and the
     // session is no longer bounded by the caller's reply window (detached
     // runs are supervised by server.asyncTimeoutSec instead).
-    const execution = this.executeTask(st, identity, inboundText, returnImmediately);
+    const execution = this.executeTask(st, identity, inboundText, returnImmediately, framing);
     if (returnImmediately) {
       // The detached run continues after this reply returns; nothing else
       // will ever await `execution`. executeTask never rejects by contract
@@ -1007,6 +1029,7 @@ export class A2AServer {
     identity: string,
     inboundText: string,
     detached: boolean,
+    framing?: InboundFraming,
   ): Promise<any> {
     const taskId = st.task.id;
     const controller = st.controller!;
@@ -1049,7 +1072,7 @@ export class A2AServer {
         // settles must not hold the process alive until the timer fires.
         controller.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
       }
-      const wrapped = wrapInbound(identity, inboundText);
+      const wrapped = wrapInbound(identity, inboundText, framing);
       const runner = this.requireRunner();
       const out = await runner({
         message: wrapped,
@@ -1157,7 +1180,14 @@ export class A2AServer {
     }
   }
 
-  private messageStream(params: any, identity: string, res: ServerResponse, id: any, v1 = false): void {
+  private messageStream(
+    params: any,
+    identity: string,
+    res: ServerResponse,
+    id: any,
+    v1 = false,
+    framing?: InboundFraming,
+  ): void {
     // Concurrency cap: same gate as message/send. Streaming has already sent
     // 200 + headers, so we emit a JSON-RPC error frame and close the stream.
     if (this.running >= this.cfg.server.maxConcurrent) {
@@ -1214,7 +1244,7 @@ export class A2AServer {
       };
     }
 
-    this.messageSend(params, identity, disconnect.signal)
+    this.messageSend(params, identity, disconnect.signal, framing)
       .then((task) => {
         if (v1) {
           // A2A v1.0: TaskArtifactUpdateEvents deliver the content, then the

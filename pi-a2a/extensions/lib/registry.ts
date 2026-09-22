@@ -25,6 +25,11 @@ export interface SessionDescriptor {
   model: { provider: string; id: string; name?: string } | null;
   agentName: string; // display name (hostname fallback)
   sessionName?: string; // pi.getSessionName()
+  /** The host pi session's session id (ctx.sessionManager.getSessionId()) —
+   *  the per-session identity peers dispatch to and join receipts on
+   *  (fleet task #238). Distinct live pi sessions share agentName but never
+   *  this id. */
+  sessionId?: string;
   /** Outbound caller identity (matches a key in server.peerTokens). Other
    *  sessions present this name's token when calling THIS session. */
   selfIdentity?: string;
