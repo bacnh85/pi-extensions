@@ -19,6 +19,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 
 import { terminalOutcomeError } from "./lib/outcome.js";
+import { childRetrySettings, isTransientChannelError } from "./lib/retry.js";
 import { buildA2ASettingsPatch, getGatewayPeers, loadConfig, setConfigOverrides, writeSettingsA2A, type A2AConfig } from "./lib/config";
 import {
   a2aCall,
@@ -79,9 +80,18 @@ function makeSessionRunner(ctx: ExtensionContext, cfg?: A2AConfig): SessionRunne
       20_000,
       Math.floor((model.contextWindow ?? 128_000) / 5),
     );
+    // retry: the SDK agent loop retries a failed model turn IN PLACE (removes
+    // the errored assistant message, re-runs the same turn with backoff) and
+    // already narrows to the transient class (503/429/5xx/network, never
+    // quota/billing/4xx). The stock child budget was maxRetries:1 — a single
+    // 2s retry — so a transient distributor 503 ("no available channel") on
+    // the FINAL turn killed the run and left the dispatched task silently open
+    // (task #470, incident f4b6578c). childRetrySettings() lifts it to a
+    // bounded 3 retries / short backoff (~7s of coverage), converting the
+    // channel blip into a blip. See lib/retry.ts.
     const settingsManager = SettingsManager.inMemory({
       compaction: { enabled: true, keepRecentTokens },
-      retry: { enabled: true, maxRetries: 1 },
+      retry: childRetrySettings(),
     });
     // The loader must NOT receive the inMemory settingsManager: it would then
     // resolve zero extension packages and the child session would run without
@@ -309,13 +319,20 @@ function makeSessionRunner(ctx: ExtensionContext, cfg?: A2AConfig): SessionRunne
     // provider failed (#425 — e.g. HTTP 503 "no available channel", which
     // previously came back COMPLETED "(no reply)"), and a run that produced
     // no assistant output at all. See lib/outcome.ts.
-    const outcomeError = terminalOutcomeError({
+    let outcomeError = terminalOutcomeError({
       stopReason: terminalStopReason,
       hadText: terminalHadText,
       sawAssistant,
       errorMessage: terminalErrorMessage,
     });
     if (outcomeError) {
+      // If the final turn died on a transient provider/channel error, the SDK
+      // already retried it within the bounded budget above and still failed —
+      // say so, so a post-mortem does not chase a phantom permanent fault
+      // (task #470).
+      if (terminalStopReason === "error" && isTransientChannelError(terminalErrorMessage)) {
+        outcomeError += " (transient provider/channel error — bounded retries exhausted)";
+      }
       const err = new Error(outcomeError);
       try {
         if (transcriptPath) (err as any).transcriptPath = transcriptPath;
