@@ -346,6 +346,44 @@ header lets a receiving peer's audit log attribute the call to a name
   identity. Receivers that don't know the header simply ignore it.
 - The header is omitted when no identity is configured (both empty).
 
+### Inbound asserted identity (0.7.12)
+
+The receiving side honors that same `X-A2A-Identity` header — but only as
+attribution, and only inside a hard boundary:
+
+- **Loopback client of a loopback-bound server only.** The asserted name is
+  read only when the request arrives on `127.0.0.1`/`::1` AND the server's
+  listening socket actually bound a loopback host. A wider bind never trusts
+  the header, whatever address the client claims — remote callers must
+  authenticate with a token.
+- **Refines a name, never grants admission.** It applies only to the two
+  identity-less admissions (anonymous loopback, shared-bearer), never borrows a
+  name that a per-peer token could produce, and never turns a 401 into an
+  admit. A token-authenticated identity is never overridden.
+- **Sanitized before use.** 1–64 chars of `[A-Za-z0-9._-]` with an
+  alphanumeric first char; anything else is ignored and the caller falls back
+  to `ip:<addr>`. The name flows into audit logs, task-ownership keys, and
+  rate-limiter buckets, so it is bounded hard.
+- **Honest framing.** The inbound wrapper injected into the agent now states
+  how the peer connected (loopback / tailnet / remote) and how its identity was
+  derived (token-verified / asserted / address-only) — an asserted name is
+  labeled self-reported, not authenticated.
+
+Use case: when local pi sessions call each other through a loopback proxy,
+every caller lands as `ip:127.0.0.1`; the header lets the receiver attribute
+the dispatch to a name (`pi-kimchi`, `librarian-bingsu`, …) without weakening
+the token boundary for anyone off loopback.
+
+### Session identity (0.7.12)
+
+Outbound messages stamp two advisory fields as A2A v1.0 message metadata:
+`pi/session` (the sender's pi session id) and `pi/self` (the configured
+`selfIdentity`). The local registry and agent card also advertise the host
+`sessionId`. Distinct live pi sessions share an agent name but never a session
+id, so a receiving peer can join a dispatch to its own ledger rows and records
+on one stable key. All display/join data — receivers must never authenticate
+on it.
+
 ### Inbound activity in the host TUI (0.3.0)
 
 When a remote peer sends Pi an A2A task, the **host session** now shows what's
