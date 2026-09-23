@@ -419,6 +419,9 @@ describe("git worktree isolation", () => {
     execFileSync("git", ["init", "--quiet"], { cwd: repo });
     execFileSync("git", ["config", "user.email", "test@test"], { cwd: repo });
     execFileSync("git", ["config", "user.name", "Test"], { cwd: repo });
+    // The dev machine's global config signs commits via an agent that is not
+    // always reachable in tests — sign nothing here (same guard as pi-plan).
+    execFileSync("git", ["config", "commit.gpgsign", "false"], { cwd: repo });
     execFileSync("git", ["add", "a.txt"], { cwd: repo });
     execFileSync("git", ["commit", "--quiet", "-m", "init"], { cwd: repo });
     return repo;
@@ -542,6 +545,9 @@ describe("worktree merge 3way + patch delivery (OMP-informed, 0.18.0)", () => {
     execFileSync("git", ["init", "--quiet"], { cwd: repo });
     execFileSync("git", ["config", "user.email", "test@test"], { cwd: repo });
     execFileSync("git", ["config", "user.name", "Test"], { cwd: repo });
+    // The dev machine's global config signs commits via an agent that is not
+    // always reachable in tests — sign nothing here (same guard as pi-plan).
+    execFileSync("git", ["config", "commit.gpgsign", "false"], { cwd: repo });
     execFileSync("git", ["add", "a.txt"], { cwd: repo });
     execFileSync("git", ["commit", "--quiet", "-m", "init"], { cwd: repo });
     return repo;

@@ -3248,6 +3248,20 @@ describe("ask_user_question interactive list flow", () => {
   });
 });
 
+/** The review emission crosses a long async chain (settled handler → git
+ *  snapshots → emit); poll for the signal instead of a fixed sleep so the test
+ *  stays fast AND load-tolerant (a fixed 20 ms sleep flaked under parallel CI). */
+async function waitFor<T>(probe: () => T, what: string): Promise<NonNullable<T>> {
+  const deadline = Date.now() + 5_000;
+  let value = probe();
+  while (!value && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 5));
+    value = probe();
+  }
+  assert.ok(value, what);
+  return value!;
+}
+
 describe("flow loop regression coverage", () => {
   it("plan-mode re-entry aborts an in-flight flow's review timer (0.13.1)", async () => {
     const state = createFakePi(["read"], { plan: false });
@@ -3302,13 +3316,12 @@ describe("flow loop regression coverage", () => {
     const settled = state.handlers.agent_settled?.[0];
     assert.ok(settled);
     const settledDone = settled({}, ctx); // enters review, waits for pi-review
-    await new Promise((r) => setTimeout(r, 20));
-    assert.ok(reviewSignal, "flow reached the review phase");
+    const signal = await waitFor(() => reviewSignal, "flow reached the review phase");
 
     // Re-enter plan mode while the review is in flight.
     await state.commands["plan"].handler("", ctx);
 
-    assert.ok(reviewSignal.aborted, "re-entry aborted the in-flight review");
+    assert.ok(signal.aborted, "re-entry aborted the in-flight review");
     await settledDone;
     assert.equal(state.customMessages.length, 0, "discarded flow emits no result");
     const lastEntry = state.entries[state.entries.length - 1];
@@ -3392,14 +3405,13 @@ describe("flow loop regression coverage", () => {
     const settled = state.handlers.agent_settled?.[0];
     assert.ok(settled);
     const settledDone = settled({}, ctx); // branch A enters review, waits for pi-review
-    await new Promise((r) => setTimeout(r, 20));
-    assert.ok(reviewSignal, "branch A flow reached the review phase");
+    const signal = await waitFor(() => reviewSignal, "branch A flow reached the review phase");
 
     // Switch to branch B while branch A's review is in flight.
     (ctx.sessionManager as any).getBranch = () => branchB;
     await state.handlers.session_tree?.[0]({}, ctx);
 
-    assert.ok(reviewSignal!.aborted, "branch switch aborted the in-flight review");
+    assert.ok(signal.aborted, "branch switch aborted the in-flight review");
     await settledDone;
     assert.equal(state.customMessages.length, 0, "stale review emits no result");
     const lastEntry = state.entries[state.entries.length - 1];
