@@ -92,19 +92,18 @@ export function registerProvider(pi: ExtensionAPI, settings: CommandCodeSettings
 /** Background model discovery with a short timeout. Used only at startup so
  *  the disk cache stays current; /login and catalog refresh handle the rest. */
 async function startBackgroundDiscovery(settings: CommandCodeSettings): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), STARTUP_DISCOVERY_TIMEOUT_MS);
+  timer.unref?.();
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), STARTUP_DISCOVERY_TIMEOUT_MS);
-    timer.unref?.();
-
     const raw = await fetchModels(settings.baseUrl, envApiKey(), controller.signal);
-    clearTimeout(timer);
-
     writeModelCache(raw);
     // Catalog refresh (via refreshModels) is the canonical path; this fetch
     // just keeps the cache warm. No re-registration needed here.
   } catch {
     // Discovery failed — keep whatever is cached. User runs /login to refresh.
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -126,7 +125,7 @@ function configSummary(s: CommandCodeSettings): string {
   ].join("\n");
 }
 
-export function registerConfigCommand(pi: ExtensionAPI): void {
+function registerConfigCommand(pi: ExtensionAPI): void {
   pi.registerCommand("commandcode-config", {
     description: "Configure Command Code endpoint interactively (TUI) or show config",
     handler: async (args, ctx) => {

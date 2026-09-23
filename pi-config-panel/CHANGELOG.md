@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.9] - 2026-09-22
+
+### Fixed
+
+- Removed the dead `ConfigPanelModel.width` field (declared, never read —
+  `render()` takes width as a parameter).
+- CHANGELOG housekeeping: removed a stray trailing HTML comment artifact and
+  normalized the 0.1.6 heading style to `## [0.1.6] - YYYY-MM-DD`.
+
 ## [0.1.8] - 2026-09-21
 
 ### Fixed
@@ -25,7 +34,7 @@
   SDK's `Component` interface) is now documented with that contract role and
   also requests a render after replaying the flat model.
 
-## 0.1.6 (2026-09-12)
+## [0.1.6] - 2026-09-12
 
 ### Fixed
 
@@ -96,4 +105,3 @@
 - `BuildRows<T>` generic row builder replaces pi-a2a's hardcoded `buildRows`; `title` option replaces the hardcoded "A2A Configuration" header.
 - Kernel tests ported from pi-a2a against a generic fixture config.
 
-<!-- published 2026-08-22 -->

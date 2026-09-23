@@ -49,7 +49,7 @@ read → error(ENOENT)
   📚 Prior fix for similar issue: use fffind before read for fuzzy paths.
 ```
 
-- **Static hint** — 9 error categories with action-oriented hints (adapted from
+- **Static hint** — 8 error categories with action-oriented hints (adapted from
   pi-model-tools' `categorizeToolError`).
 - **Stored-fix recall** — searches recovery learnings by the error text
   (Munin search or local keyword rank), best-effort within 3s
@@ -106,7 +106,7 @@ Mirrors pi-munin's guards so a Munin credential can never be redirected:
 
 ## Safety
 
-- Input digests are **truncated to 200 chars and redacted** (API keys, tokens, Bearer headers, long base64 blobs → `[REDACTED]`) before reaching the buffer.
+- Input digests are **truncated to 200 chars and redacted** (API keys, tokens, Bearer headers → `[REDACTED]`) before reaching the buffer.
 - The trajectory buffer is **in-memory only**; sealed snapshots are short-lived.
 - Injection is **best-effort** — a read failure never breaks a session.
 

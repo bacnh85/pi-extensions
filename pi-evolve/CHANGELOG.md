@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.5 (2026-09-22)
+
+### Fixed
+
+- **Docs (P2):** README/SKILL.md now say **8** error categories (matches code);
+  dropped the "long base64 blobs → `[REDACTED]`" claim (digestInput only redacts
+  key=value secrets + Bearer headers); SKILL.md says the reflect tool returns the
+  **live** trajectory (not "sealed") and **0-3** learnings — tool description at
+  index.ts synced to 0-3.
+- **Robustness (P2):** `categorizeError` no longer throws on circular/
+  unserializable tool_result content — JSON.stringify is wrapped in try/catch and
+  falls back to a generic `unknown` category, with a circular-fixture test.
+
 ## 0.3.4 (2026-09-21)
 
 ### Fixed — `evolve.bufferCap` now actually applies

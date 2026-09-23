@@ -28,6 +28,22 @@ test("isSafeRewrite rejects shell operators in the rewrite", () => {
   assert.equal(isSafeRewrite("cat a", "rtk cat `whoami`"), false);
 });
 
+test("isSafeRewrite rejects shell-injection constructs", () => {
+  // command substitution executes even though there is no operator char
+  assert.equal(isSafeRewrite("cat a", "rtk cat a $(rm -rf /)"), false);
+  assert.equal(isSafeRewrite("cat a", 'rtk cat a "$(rm -rf /)"'), false); // executes inside double quotes too
+  // subshell parens
+  assert.equal(isSafeRewrite("cat a", "rtk cat a (rm -rf /)"), false);
+  assert.equal(isSafeRewrite("cat a", "rtk (cat a)"), false);
+  // newline splits into a second command
+  assert.equal(isSafeRewrite("cat a", "rtk cat a\nrm -rf /"), false);
+  assert.equal(isSafeRewrite("cat a", "rtk cat a\rrm -rf /"), false);
+});
+
+test("isSafeRewrite still allows quoted parens and escaped chars", () => {
+  assert.equal(isSafeRewrite('git commit -m "fix (bug)"', 'rtk git commit -m "fix (bug)"'), true);
+});
+
 test("isSafeRewrite rejects rewriting eval/script commands", () => {
   assert.equal(isSafeRewrite("node -e 'console.log(1)'", "rtk node -e 'console.log(1)'"), false);
   assert.equal(isSafeRewrite("python -c 'print(1)'", "rtk python -c 'print(1)'"), false);

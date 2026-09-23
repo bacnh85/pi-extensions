@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { tmpdir } from "node:os";
 
-import permissionExtension, { wildcardToRegex, resolveRule, expandHome, readSettingsKey, persistAllowlistRule } from "../index.js";
+import permissionExtension, { wildcardToRegex, resolveRule, expandHome, readSettingsKey, persistAllowlistRule, isExternal } from "../index.js";
 
 test("readSettingsKey reads .pi/settings.json from cwd (production path)", () => {
   const dir = mkdtempSync(join(tmpdir(), "perm-settings-"));
@@ -104,6 +104,37 @@ test("expandHome: empty home leaves the pattern unchanged", () => {
   assert.equal(expandHome("~", ""), "~");
   assert.equal(expandHome("$HOME/x", ""), "$HOME/x");
   assert.equal(expandHome("/abs/path", ""), "/abs/path");
+});
+
+// ── win32 containment (regression 0.2.5) ─────────────────────────────────
+// isExternal used `abs.startsWith(root + "/")`. On win32, node:path resolve
+// yields backslash separators, so the check classified EVERY path as
+// external and external_directory deny blocked all path tools.
+
+test("isExternal: win32-style backslash paths classified correctly", () => {
+  // Simulated win32 fixtures via path.win32: node:path resolve on win32
+  // yields backslash separators — exactly what production Windows produces.
+  const w = isExternal("C:\\proj\\src\\a.ts", "C:\\proj", win32);
+  assert.equal(w, false, "inside root, backslash sep");
+  assert.equal(isExternal("src\\a.ts", "C:\\proj", win32), false, "relative backslash path resolves inside");
+  assert.equal(isExternal("C:\\proj", "C:\\proj", win32), false, "root itself is not external");
+  assert.equal(isExternal("..\\other\\s.txt", "C:\\proj", win32), true, "traversal resolves outside");
+  assert.equal(isExternal("C:\\Windows\\system32", "C:\\proj", win32), true, "sibling dir is external");
+  assert.equal(isExternal("D:\\proj\\x", "C:\\proj", win32), true, "different drive is external");
+});
+
+test("isExternal: posix-style forward-slash paths still classified correctly", () => {
+  assert.equal(isExternal("/proj/src/a.ts", "/proj"), false);
+  assert.equal(isExternal("/etc/passwd", "/proj"), true);
+  assert.equal(isExternal("/proj2/file", "/proj"), true, "sibling dir (prefix-string of root) is external");
+});
+
+test("isExternal: dot-dot-prefixed filenames inside the workspace are NOT external", () => {
+  // `path.relative('/proj', '/proj/..env')` returns '..env' — a naive
+  // startsWith('..') check classifies a legal workspace file as external.
+  assert.equal(isExternal("/proj/..env", "/proj"), false, "..env file inside root is internal");
+  assert.equal(isExternal("..env", "/proj"), false, "relative ..env resolves inside");
+  assert.equal(isExternal("../..env", "/proj"), true, "parent-dir ..env is external");
 });
 
 // ── Extension wiring (tool_call handler) ──────────────────────────────────

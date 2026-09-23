@@ -240,6 +240,30 @@ test("cost is idempotent per message id (review: LOW)", () => {
   assert.equal(ctx.notifyCalls[0].message.includes("1.10"), true, "cost is 0.6+0.5, not double-counted");
 });
 
+test("dedupe set clears at cap of 1000, opening a replay window (documented trade-off)", () => {
+  const statusCalls = [];
+  const { events } = createPiHarness("1.00");
+  const ctx = createCtx({ setStatus: (key, text) => statusCalls.push({ key, text }) });
+  events.get("session_start")({}, ctx);
+
+  // Fill the dedupe set to exactly the cap (MAX_COUNTED_MESSAGE_IDS = 1000).
+  for (let i = 0; i < 1000; i++) {
+    events.get("message_end")({ message: assistantMsg(0.0001, `m${i}`) }, ctx);
+  }
+  assert.equal(ctx.aborted(), false, "still below cap");
+
+  // The set is now full; counting one more message clears it first.
+  events.get("message_end")({ message: assistantMsg(0.0001, "m-new") }, ctx);
+
+  // m0 was in the cleared set — replaying it now re-counts (the documented
+  // replay window) instead of being deduped.
+  events.get("message_end")({ message: assistantMsg(0.0001, "m0") }, ctx);
+  assert.equal(ctx.notifyCalls.length, 0);
+  // 1002 × 0.0001 = 0.1002: m0 was re-counted on replay. A live dedupe set
+  // would have shown $0.09.
+  assert.match(statusCalls[statusCalls.length - 1].text, /Budget \$0\.10 \/ \$1\.00/);
+});
+
 test("enforces even when message_end fires before session_start (review: LOW)", () => {
   const { events } = createPiHarness("0.50");
   const ctx = createCtx();

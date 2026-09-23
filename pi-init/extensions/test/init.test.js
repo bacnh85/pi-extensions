@@ -242,6 +242,9 @@ test("check findings: non-Node repo not flagged for missing package.json", () =>
   try {
     const { missing } = checkFindings(scanProject(dir));
     assert.ok(!missing.includes("package.json"), `should not flag package.json, got: ${missing.join(", ")}`);
+    for (const cmd of ["test command", "lint command", "build command"]) {
+      assert.ok(!missing.includes(cmd), `should not flag ${cmd} on a non-Node repo, got: ${missing.join(", ")}`);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

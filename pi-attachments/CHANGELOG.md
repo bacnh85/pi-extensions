@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.6 (2026-09-22)
+
+- Fixed: submitting text whose `[[attach:]]` tokens were all hand-deleted now
+  clears the attachment tray — stale chips no longer linger when expansion
+  produced no references (previously the tray only cleared when expansion ran).
+- Documentation: install command uses the `npm:` prefix, consistent with the
+  sibling packages.
+
 ## 0.3.5 (2026-09-21)
 
 - Widened Pi SDK peer range to `<0.88.0` (devDeps to `^0.87.0`); tested against Pi 0.87.0. No behavioral changes — the 0.87.0 audit found no affected code paths.

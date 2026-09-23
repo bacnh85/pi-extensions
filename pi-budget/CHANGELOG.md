@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.4 (2026-09-22)
+
+### Added
+
+- Test locking the dedupe-set cap behavior (documented in 0.1.3, previously
+  untested): `countedMessageIds` is cleared once it reaches 1000 ids, so an
+  old message id replayed afterwards is re-counted — the accepted replay
+  window vs. unbounded set growth. No production changes.
+
 ## 0.1.3 - 2026-09-12
 
 ### Fixed

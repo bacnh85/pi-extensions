@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect } from "chai";
+import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import selfskillsExtension, { _resetForTest } from "../index";
 import { agentDir } from "../lib/config";
 import { defaultSkillsDir } from "../lib/paths";
@@ -438,6 +439,34 @@ describe("pi-selfskills extension", () => {
     expect(res.content[0].text).to.include("Batch applied");
     expect(readFileSync(file, "utf8")).to.include("Rule kept.");
     expect(existsSync(join(defaultSkillsDir(), "alpha", "references", "tmp.md"))).to.equal(false);
+  });
+
+  it("batch commit re-verifies disk hash in-queue: external write between plan and commit refuses without clobbering", async () => {
+    const file = writeSkill(defaultSkillsDir(), "alpha", "Rule one.\n");
+    const { tools, ctx } = harness(cwd);
+    await tools.skill_manage.execute("id", { action: "read", skill: "alpha" }, undefined, undefined, ctx);
+    const external = '---\nname: alpha\ndescription: "Use when testing. One-line behavior."\n---\n\nExternally changed.\n';
+    // Deterministic plan→commit race: enqueue a gated op on the SAME queue key
+    // ahead of the batch. The batch plans against pre-write disk, then blocks
+    // behind the gate; the gated op applies the external write before the
+    // batch's own queued mutation runs — the commit-time re-check must refuse
+    // it instead of clobbering.
+    const gatedWrite = withFileMutationQueue(realpathSync(file), async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      writeFileSync(file, external, "utf8");
+    });
+    const batch = tools.skill_manage.execute(
+      "id",
+      { operations: [{ action: "patch", skill: "alpha", old_string: "Rule one.", new_string: "Rule patched." }] },
+      undefined,
+      undefined,
+      ctx,
+    );
+    await gatedWrite;
+    const res = await batch;
+    expect(res.details.error).to.equal(true);
+    expect(res.content[0].text).to.include("hash mismatch");
+    expect(readFileSync(file, "utf8")).to.equal(external); // NOT clobbered
   });
 
   it("restore of a deleted skill tolerates a backup key that differs from frontmatter name", async () => {

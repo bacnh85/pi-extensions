@@ -156,7 +156,7 @@ describe("digestInput", () => {
 });
 
 describe("categorizeError", () => {
-  it("classifies into the 9 buckets with action hints", () => {
+  it("classifies into the 8 buckets with action hints", () => {
     const cases: Array<[string, string, string]> = [
       // [input, toolName, expected category]
       ["Operation timed out", "bash", "timeout"],
@@ -180,6 +180,16 @@ describe("categorizeError", () => {
     const text = "Could not find the exact text\nconst timeout = 5000; // if (status === 429)";
     const info = categorizeError("edit", text);
     expect(info!.category).to.equal("edit_mismatch");
+  });
+
+  it("returns unknown for circular/unserializable tool_result content", () => {
+    const obj: any = { status: "error" };
+    obj.self = obj; // JSON.stringify throws
+    const info = categorizeError("edit", obj);
+    expect(info).to.deep.equal({
+      category: "unknown",
+      hint: "Previous tool call(s) had errors. Use simpler inputs.",
+    });
   });
 
   it("returns undefined for empty/no result", () => {

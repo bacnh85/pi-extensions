@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.8.18 (2026-09-22)
+
+### Fixed
+
+- **`files folder=` no longer matches substring folder names.** The recursive
+  listing used `f.path.startsWith(folder)`, so `folder="01"` also listed files
+  from `012 Notes/`. Matching is now on path-segment boundaries (the folder
+  itself or paths strictly under `folder/`); a trailing `/` is trimmed so
+  `folder="Notes/"` behaves identically to `folder="Notes"`.
+- **Tolerant write-step retry is now mode-aware.** A dropped echo or transient
+  `Error:` on an eval step triggered a blind re-execution of the same script.
+  For `append`/`prepend` steps a succeeded-but-lost-echo first execution got
+  DUPLICATED by the retry, and tail/prefix verification cannot detect the extra
+  copy (appending `abc` twice still tail-matches `abc`). The step-level retry is
+  now skipped for `append`/`prepend` — mirroring the whole-write retry policy
+  that already excluded those modes — and the read-back verify step judges the
+  real file state. Create/overwrite steps keep the retry (writes are
+  idempotent).
+- **`search` regex-mode preview shows the regex match context.** The preview
+  snippet located its window with `c.indexOf(q)` even in regex mode, showing
+  the position of the raw pattern text (often `-1`) instead of the first regex
+  match. The preview now uses the regex match's index and length.
+
+### Tests
+
+- Unit tests for `redirectionDestination` (quote tracking, `>` vs `>>`,
+  redirects inside quoted strings, no-redirect cases).
+- Segment-boundary tests for `files folder=` recursive listing.
+- Regression test: a tolerant `append` step with a dropped echo must NOT
+  re-execute the write (duplicate-content guard).
+
 ## 0.8.17 (2026-09-21)
 
 ### Fixed

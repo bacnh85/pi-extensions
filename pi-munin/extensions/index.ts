@@ -171,16 +171,19 @@ export async function callMunin(
       const version = ack!.payload.version;
       // Server directs the action name (default acknowledge_setup if absent).
       const ackAction = ack!.action || "acknowledge_setup";
+      // Some servers return a non-throwing failure ({ok:false} etc.) that the
+      // SDK does not throw on — detect it via a flag instead of throwing inside
+      // the try (which the catch would re-wrap).
+      let ackFailed = false;
       try {
         // ack is a real action even when not advertised in capabilities.
-        // Inspect the result: some servers return a non-throwing failure
-        // (e.g. {ok:false} or {acknowledged:false}) that the SDK does not throw on.
         const ackResult = await client.invoke(projectId, ackAction, { version }, { ensureCapability: false });
-        if (ackResult && typeof ackResult === "object" &&
-            ((ackResult as any).ok === false || (ackResult as any).success === false || (ackResult as any).acknowledged === false)) {
-          throw remediatedError(err, remediation);
-        }
+        ackFailed = !!ackResult && typeof ackResult === "object" &&
+          ((ackResult as any).ok === false || (ackResult as any).success === false || (ackResult as any).acknowledged === false);
       } catch {
+        ackFailed = true;
+      }
+      if (ackFailed) {
         // ack failed (thrown or resolved-failure) → surface remediation, do NOT retry (no infinite loop).
         throw remediatedError(err, remediation);
       }

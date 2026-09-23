@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.4 (2026-09-22)
+
+### Fixed
+
+- **`/init check` no longer flags missing test/lint/build commands on
+  non-Node repos.** Those findings only ever come from package.json scripts;
+  cargo/go/python projects were told their test command was missing. They are
+  now gated on JS/TS detection, matching what the generation prompt already
+  did (it omits those lines when the scripts are absent).
+- `/init` reports a prompt-dispatch failure via notify (or console.error when
+  no UI) instead of crashing — `pi.sendUserMessage` is now guarded.
+
+### Changed
+
+- README: Pi link now points to github.com/earendil-works/pi (sibling packages).
+- Dropped the write-only `scan.root` field.
+
 ## 0.1.3 (2026-09-21)
 
 ### Docs

@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-advisor",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Pi extension for an automatic advisor: a second model that reviews each settled turn and injects severity-routed notes, plus an on-demand consult tool.",
   "type": "module",
   "license": "MIT",
@@ -48,7 +48,7 @@
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.87.0",
-    "@earendil-works/pi-coding-agent": "^0.87.0",
+    "@earendil-works/pi-coding-agent": "^0.87.1",
     "@earendil-works/pi-tui": "^0.87.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.43",

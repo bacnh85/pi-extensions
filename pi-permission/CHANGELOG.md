@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.5 (2026-09-22)
+
+### Fixed
+
+- **Windows: `external_directory` deny blocked ALL path tool calls.**
+  `isExternal()` used an `abs.startsWith(root + "/")` prefix check, but win32
+  `node:path` resolve yields backslash separators — every path was classified
+  external and the deny gate fired on everything. Containment now uses
+  `path.relative()` with the canonical `..`+separator boundary check, so a
+  legal workspace file named `..env` (whose relative path string also starts
+  with `..`) is not misclassified as external. Exported for unit testing;
+  regression tests run the containment logic against `path.win32` fixtures,
+  exercising the exact code path production Windows takes.
+- Hand-rolled `join()` with `/` replaced by `node:path.join` throughout
+  (settings-dir and `~` expansion paths) — no more mixed separators on win32.
+
 ## 0.2.4 (2026-09-21)
 
 ### Fixed

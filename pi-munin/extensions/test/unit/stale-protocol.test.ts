@@ -376,6 +376,59 @@ describe("callMunin ERR_STALE_PROTOCOL auto-recovery", () => {
   });
 });
 
+describe("callMunin direct-method dispatch", () => {
+  // When the client exposes the action as a method (and it's not share()),
+  // invokeMuninAction must call it directly with (projectId, payload) — not via invoke.
+  function makeDirectClient(actions: string[]) {
+    const directCalls: { action: string; args: unknown[] }[] = [];
+    const invokeCalls: unknown[] = [];
+    const client: any = {
+      invoke: (...args: unknown[]) => {
+        invokeCalls.push(args);
+        return { via: "invoke" };
+      },
+      capabilities: () => ({ actions: [] }),
+    };
+    for (const action of actions) {
+      client[action] = (projectId: string, payload: Record<string, unknown>) => {
+        directCalls.push({ action, args: [projectId, payload] });
+        return { via: action };
+      };
+    }
+    return { directCalls, invokeCalls, client };
+  }
+
+  it("dispatches search/get(store)/list/recent as direct methods with (projectId, payload)", async () => {
+    const { directCalls, invokeCalls, client } = makeDirectClient(["search", "retrieve", "store", "list", "recent"]);
+
+    const search = await callMunin(client, "proj_x", "search", { query: "q" });
+    expect(search).to.deep.equal({ via: "search" });
+    const got = await callMunin(client, "proj_x", "get", { key: "k" });
+    expect(got).to.deep.equal({ via: "retrieve" });
+    const stored = await callMunin(client, "proj_x", "store", { key: "k", title: "t", content: "c", tags: "type:f" });
+    expect(stored).to.deep.equal({ via: "store" });
+    await callMunin(client, "proj_x", "list", { limit: 5 });
+    await callMunin(client, "proj_x", "recent", { limit: 3 });
+
+    expect(directCalls.map((c) => c.action)).to.deep.equal(["search", "retrieve", "store", "list", "recent"]);
+    for (const c of directCalls) {
+      // Exactly two args: (projectId, payload) — catches arity regressions.
+      expect(c.args, `arity for ${c.action}`).to.have.lengthOf(2);
+      expect(c.args[0]).to.equal("proj_x");
+      expect(c.args[1]).to.be.an("object");
+    }
+    expect(invokeCalls).to.have.lengthOf(0);
+  });
+
+  it("falls back to invoke when the client lacks the direct method", async () => {
+    const { directCalls, invokeCalls, client } = makeDirectClient([]);
+    const result = await callMunin(client, "proj_x", "search", { query: "q" });
+    expect(result).to.deep.equal({ via: "invoke" });
+    expect(directCalls).to.have.lengthOf(0);
+    expect(invokeCalls).to.have.lengthOf(1);
+  });
+});
+
 describe("remediation helpers", () => {
   it("classifyError carries remediation for ERR_STALE_PROTOCOL with details", () => {
     const remediation = { version_to: "2026-04-17", url: "https://example.com/setup" };

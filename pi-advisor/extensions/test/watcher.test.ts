@@ -329,3 +329,46 @@ describe("buildEvidence model-ref parsing", () => {
       "unresolvable refs fall back to the default budget — the pin must not land there");
   });
 });
+
+describe("buildEvidence bounded transcript", () => {
+  // Minimal ctx: find resolves the window, getSystemPrompt feeds the reserve.
+  function evCtx(contextWindow = 32_768): any {
+    return {
+      modelRegistry: { find: () => ({ contextWindow }) },
+      getSystemPrompt: () => "",
+    };
+  }
+
+  const msg = (role: string, text: string): any => ({ role, content: [{ type: "text", text }] });
+
+  it("truncates entries serialized above the entry limit (role preserved, marker added)", () => {
+    const big = msg("user", "x".repeat(30_000)); // 32k window → entryLimit 24576 < serialized
+    const out = JSON.parse(buildEvidence(evCtx(), undefined, [big], ""));
+    assert.equal(out.messages.length, 1, "first entry always kept");
+    assert.equal(out.omitted, 0);
+    assert.equal(out.messages[0].role, "user", "role survives truncation");
+    assert.ok(out.messages[0].content.startsWith("[Transcript entry truncated]\n"), "truncation marker present");
+    assert.ok(out.messages[0].content.length < 30_000, "content bounded below the original");
+  });
+
+  it("recent window skips over-budget entries but keeps scanning older smaller ones", () => {
+    // 8k window → maxBytes 16384: two 6000-char entries fit, the third is
+    // skipped, and the small entry below it (older = later in reverse scan)
+    // still fits (continue, not break).
+    const messages = [
+      msg("user", "start"),
+      msg("user", "kept-after-skip"),
+      msg("assistant", "b".repeat(6_000)), // oldest big — skipped once budget is spent
+      msg("user", "c".repeat(6_000)),
+      msg("assistant", "d".repeat(6_000)), // pushes the window over budget
+    ];
+    const out = JSON.parse(buildEvidence(evCtx(8_192), ["prov/m"], messages, ""));
+    assert.equal(out.messages.length, 4, "first + two big + small-after-skip");
+    assert.equal(out.omitted, 1, "exactly the over-budget entry is omitted");
+    const texts = out.messages.map((m: any) => m.content[0].text);
+    assert.ok(texts.includes("c".repeat(6_000)) && texts.includes("d".repeat(6_000)), "recent big entries kept");
+    assert.ok(texts.includes("kept-after-skip"), "loop continues past a skipped entry");
+    assert.ok(!texts.some((t: string) => t.includes("b".repeat(6_000))), "the over-budget entry is the omitted one");
+    assert.equal(out.messages[0].content[0].text, "start", "first entry always kept");
+  });
+});

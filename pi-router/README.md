@@ -18,7 +18,7 @@ Two pieces, matching Pi conventions:
 
 | What | Where |
 |------|-------|
-| **Endpoint URL** | `~/.pi/agent/settings.json` → `router.baseUrl` (or `ROUTER_BASE_URL` env; repo `.pi/settings.json` also read, `router.apiKey` there is ignored) |
+| **Endpoint URL** | `~/.pi/agent/settings.json` → `router.baseUrl` (or `ROUTER_BASE_URL` env; repo `.pi/settings.json` also read for trusted projects, `router.apiKey` there is ignored) |
 | **API key** | Pi's built-in `/login router` → stored in `~/.pi/agent/auth.json` (or `ROUTER_API_KEY` env) |
 
 ```jsonc
@@ -42,6 +42,17 @@ The auth.json credential wins over `ROUTER_API_KEY` when both exist.
 Legacy `NINE_ROUTER_BASE_URL` still works for the URL. For the key, prefer
 `ROUTER_API_KEY` (or `/login router` — recommended); discovery requests also
 fall back to `NINE_ROUTER_API_KEY` if that's all you have set.
+
+**Repo-scope trust gate.** Repo `.pi/settings.json` `router` values are only
+read when the project is trusted (Pi's `trustProject`); untrusted checkouts
+ignore them entirely, and `router.apiKey` from a repo file is never read —
+credentials must come from auth.json or the env. An untrusted checkout thus
+cannot redirect `router.baseUrl` to an attacker endpoint.
+
+**`ROUTER_ENABLE_REASONING` env var** (legacy alias
+`NINE_ROUTER_ENABLE_REASONING`): set to `true`/`false` to override the
+persisted `router.enableReasoning` flag — it wins over both settings files
+and shadows what `/router-reasoning` saves (the command reports this).
 
 ## Model discovery (cached)
 

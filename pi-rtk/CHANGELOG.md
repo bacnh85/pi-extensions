@@ -1,5 +1,15 @@
 # Changelog
 
+All notable changes to `pi-rtk` will be documented in this file.
+
+## [0.2.5] - 2026-09-22
+
+- Fix: `isSafeRewrite` now rejects command substitution (`$(…)`), subshell
+  parens, and newlines in rewrites — previously only `[|><;&\`]` was blocked,
+  so `rtk cat a $(rm -rf /)` passed the safety gate. Quote-aware: single-quoted
+  and backslash-escaped characters stay allowed, and parens inside double
+  quotes are literal and stay allowed (e.g. `git commit -m "fix (bug)"`).
+
 ## [0.2.4] - 2026-09-21
 
 - Fix: `isEvalCommand` now flags `php -r`, `perl -E`, and `deno eval` inline
@@ -75,8 +85,6 @@
 ### Improvements
 
 - Patch version bump for release sync and package documentation update.
-
-All notable changes to `pi-rtk` will be documented in this file.
 
 ## 0.1.11 (2026-07-30)
 

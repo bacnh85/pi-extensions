@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-attachments",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Image and file attachments for Pi — converts pasted/dropped file paths into real image attachments, collapses large text pastes into readable file references, inlines text files, and pastes clipboard file references.",
   "license": "MIT",
   "publishConfig": {
@@ -43,7 +43,7 @@
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.87.0",
-    "@earendil-works/pi-coding-agent": "^0.87.0",
+    "@earendil-works/pi-coding-agent": "^0.87.1",
     "@earendil-works/pi-tui": "^0.87.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.43",

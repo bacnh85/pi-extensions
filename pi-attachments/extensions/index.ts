@@ -222,8 +222,10 @@ export default function piAttachments(pi: ExtensionAPI): void {
       }
     }
 
-    // Message sent — the chip list is consumed; hide the widget.
-    if (tray.size > 0 && tray.expand(raw) !== raw) tray.clear();
+    // Message sent — chips are consumed; hide the widget. Also clear when no
+    // token survived into the submitted text (all hand-deleted): expansion
+    // produced no references, so keeping the tray would leave stale chips.
+    if (tray.size > 0 && (tray.expand(raw) !== raw || trayItems.length === 0)) tray.clear();
     updateWidget();
 
     if (text === raw && images.length === (event.images?.length ?? 0)) return;

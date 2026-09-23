@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.5] - 2026-09-22
+
+- Docs: `readSettingsKey` docstring now describes the actual behavior — files
+  without a valid `notify` object are skipped and the search continues, rather
+  than "first existing file wins".
+- Tests: spy test asserting `onComplete:false` suppresses the completion
+  notification while `onError`/`onQuestion` still fire.
+
 ## [0.1.4] - 2026-09-21
 
 - Security: OSC 777/99 terminal payloads (title/body) are now sanitized —

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.8] - 2026-09-22
+
+### Fixed
+
+- `ensure()` is now concurrency-safe: the in-flight spawn is memoized, so two
+  parallel `kicad_calls` at session start share one daemon instead of each
+  spawning one and orphaning the first. The memo is cleared on `stop()` and
+  teardown paths (via `killChild()`) so a later `ensure()` can respawn.
+
+### Tests
+
+- Two concurrent `ensure()` calls spawn exactly once and return the same port.
+- `pickFreePort` falls back to a different port when the preferred one is
+  occupied (EADDRINUSE).
+
 ## [0.1.7] - 2026-09-21
 
 ### Fixed

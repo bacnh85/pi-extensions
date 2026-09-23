@@ -7,9 +7,11 @@
  * on the next tick (Hermes semantics). `export` prints crontab lines so jobs
  * can also run via system cron while pi is closed.
  *
- * Loop guard: while a cron-fired turn is in flight, mutating actions
- * (add/remove/run) are refused — a fired job can never schedule more jobs
- * (Hermes disables cron tools in fired runs for the same reason).
+ * Loop guard: for 30s after the last armed fire, mutating actions
+ * (add/remove/run/enable/disable) are refused. This is a time window, not
+ * in-flight immunity — a fired turn running longer than the window CAN
+ * mutate (Hermes disables cron tools in fired runs for the same reason this
+ * exists at all).
  *
  * No ExtensionContext is captured across time — the timer never touches ctx,
  * so the stale-ctx crash class (pi-sub) cannot happen here.
@@ -250,8 +252,9 @@ export function runHeadless(job: CronJob, deps: HeadlessDeps): void {
       : `${label} finished (exit ${code ?? "signal"}).\nOutput (tail):\n${out.slice(-4000) || "(none)"}\nLog: ${logPath}`;
     deliverFire(send, state, { ...job, prompt: body });
   };
-  // ponytail: hard 10-min cap — SIGTERM, then SIGKILL after the grace window;
-  // finish() is called at cap time so result/status happen even if close lags.
+  // ponytail: timeoutMs cap (default 10min, cron.timeoutMs-configurable) —
+  // SIGTERM, then SIGKILL after the grace window; finish() is called at cap
+  // time so result/status happen even if close lags.
   const timeoutMs = deps.timeoutMs ?? 600_000;
   const escalateMs = deps.escalateMs ?? 5_000;
   let escalate: NodeJS.Timeout | undefined;
@@ -301,8 +304,13 @@ export function latestLog(logsDir: string, name: string): string | undefined {
   let newestMs = -1;
   try {
     for (const f of readdirSync(logsDir)) {
-      // `${name}-<ts>.log` = in-process headless runs; `${name}.log` = export-installed crontab runs
-      if (f !== `${name}.log` && (!f.startsWith(`${name}-`) || !f.endsWith(".log"))) continue;
+      // `${name}-<ts>.log` = in-process headless runs; `${name}.log` = export-installed crontab runs.
+      // Require a digit right after `${name}-` so job "a" doesn't match job "a-b"'s logs.
+      if (
+        f !== `${name}.log` &&
+        (!f.startsWith(`${name}-`) || !/^\d/.test(f.slice(name.length + 1)) || !f.endsWith(".log"))
+      )
+        continue;
       const p = join(logsDir, f);
       const ms = statSync(p).mtimeMs;
       if (ms > newestMs) {
@@ -541,6 +549,7 @@ export default function cronExtension(pi: ExtensionAPI) {
           cwd?: string;
           model?: string;
           thinking?: string;
+          enabled?: boolean;
         },
         cwd: ctx.cwd,
       });

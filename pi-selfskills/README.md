@@ -20,13 +20,13 @@ uses at startup, with an automatic backup and a one-step restore.
 | Action | Params | What it does |
 |---|---|---|
 | `list` | `skill?` (filter) | Discovered skills: name — description (first 100 chars) — path — patchable yes/no |
-| `read` | `skill` \| `path`, `file?` | SKILL.md (default) or a bundled file; truncated at 30k chars; records the SKILL.md as read. Scoped to discovered skill dirs — no arbitrary-file reads |
+| `read` | `skill` \| `path`, `file?` | SKILL.md (default) or a bundled file; truncated at 30k chars; records THAT file as read — reading a bundled file does not unlock patch/write/delete (those gate on the SKILL.md read state). Scoped to discovered skill dirs — no arbitrary-file reads |
 | `patch` | `skill`\|`path`, `old_string`, `new_string` | Targeted replacement; backup first; refuses non-unique matches and invalid results |
 | `create` | `name`, `description`, `body` | New skill `<skillsDir>/<name>/SKILL.md`, SDK-validated |
 | `write` | `skill`\|`path`, `file`, `content` | Create/overwrite a bundled file (`references/*.md`, `scripts/…`); SKILL.md is patch-only; overwrites backed up |
 | `delete` | `skill`\|`path`, `file?` | Delete a bundled file — or the whole skill (omit `file`): full snapshot first, always restorable |
 | `restore` | `skill`\|`path`, `file?`, `backup?` | Revert SKILL.md or a bundled file to latest/named backup; recreate a deleted skill from its deletion snapshot; current content backed up first |
-| `operations` | `[{action: patch\|write\|delete, …}]` | All-or-nothing batch: planned on an in-memory overlay, fully validated, committed together — any failure writes NOTHING |
+| `operations` | `[{action: patch\|write\|delete, …}]` | All-or-nothing batch: planned on an in-memory overlay, fully validated, committed together — any PLANNING failure writes NOTHING. A commit-time filesystem failure (hash re-check against a file changed on disk mid-flight, unreadable target) may partially apply and is reported with what landed |
 
 ```text
 skill_manage { "action": "list" }

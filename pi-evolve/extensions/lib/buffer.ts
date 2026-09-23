@@ -125,13 +125,20 @@ export interface ErrorInfo {
 }
 
 /**
- * Error categorizer with actionable hints — 9 buckets, no deps.
+ * Error categorizer with actionable hints — 8 buckets, no deps.
  * adapted from pi-model-tools categorizeToolError (shell-helpers.ts:196-211);
  * sync categories/hints there if behavior diverges.
  */
 export function categorizeError(toolName: string, result: unknown): ErrorInfo | undefined {
   if (!result) return undefined;
-  const text = typeof result === "string" ? result.toLowerCase() : JSON.stringify(result).toLowerCase();
+  let text: string;
+  try {
+    text = typeof result === "string" ? result : JSON.stringify(result);
+  } catch {
+    // circular/unserializable tool_result content — fall back to a generic unknown.
+    return { category: "unknown", hint: "Previous tool call(s) had errors. Use simpler inputs." };
+  }
+  text = text.toLowerCase();
   // Edit mismatch is checked before rate_limit/timeout because an enriched edit error may
   // append a nearest-region file snippet containing 'timeout'/'429'/'rate limit' strings
   // (e.g. `const timeout = 5000;`), which would otherwise misclassify and give the wrong hint.

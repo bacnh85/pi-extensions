@@ -1,6 +1,6 @@
 ---
 name: selfskills
-description: "Use when improving pi skills with skill_manage (list/read/patch/create/restore). Patch gaps same-turn with minimal diffs; create only recurring procedures."
+description: "Use when improving pi skills with skill_manage (list/read/patch/create/write/delete/restore). Patch gaps same-turn with minimal diffs; create only recurring procedures."
 ---
 
 # Skill self-improvement discipline
@@ -75,4 +75,6 @@ rule per lesson, no incident narration, never secrets.
 - `list` marks each skill patchable or read-only. Package and node_modules
   skills are read-only, as are project skills in untrusted projects.
 - Writable roots: `<agentDir>/skills`, `<cwd>/.pi/skills` (trusted projects),
-  plus the `selfskills.skillsDir` override. Everything else is refused.
+  project `.agents/skills` (trusted projects, within the git boundary), local
+  (repo-checkout) package skills, plus the `selfskills.skillsDir` override.
+  Everything else is refused.

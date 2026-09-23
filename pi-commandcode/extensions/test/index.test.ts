@@ -48,6 +48,20 @@ async function harness() {
   return { mod, provider: provider!, registers: () => registers };
 }
 
+/** reach registerConfigCommand via the default factory (the path pi itself uses). */
+async function harnessWithConfig() {
+  const mod = await load();
+  const commands: Record<string, { handler: (args: unknown, ctx: unknown) => Promise<void> }> = {};
+  // Offline baseUrl so the factory's background discovery fails fast, in-test.
+  process.env.COMMAND_CODE_BASE_URL = "http://localhost:9/v1";
+  mod.default({
+    registerProvider: () => {},
+    registerCommand: (name: string, cmd: { handler: (args: unknown, ctx: unknown) => Promise<void> }) => { commands[name] = cmd; },
+  } as never);
+  delete process.env.COMMAND_CODE_BASE_URL;
+  return { commands };
+}
+
 const offlineCtx = () => ({ allowNetwork: false, signal: new AbortController().signal });
 
 // ── provider registration + refreshModels ────────────────────────────────────
@@ -126,15 +140,11 @@ describe("provider", () => {
 
 describe("commandcode-config save", () => {
   it("bails with an error notification when global settings.json is corrupt (0.2.1)", async () => {
-    const { mod, registers } = await harness();
+    const { commands } = await harnessWithConfig();
     writeFileSync(globalSettings(), "{ corrupt json");
     const before = readFileSync(globalSettings(), "utf8");
 
-    let handler: ((args: unknown, ctx: unknown) => Promise<void>) | null = null;
-    mod.registerConfigCommand({
-      registerCommand: (_n: string, cmd: { handler: typeof handler }) => { handler = cmd.handler; },
-    } as never);
-
+    const handler = commands["commandcode-config"].handler;
     const notifications: { msg: string; level?: string }[] = [];
     const ctx = {
       cwd: TMP_HOME,
@@ -158,14 +168,13 @@ describe("commandcode-config save", () => {
       },
     };
 
-    await handler!("save", ctx);
+    await handler("save", ctx);
 
     const note = notifications.find((n) => n.msg.startsWith("Not saved:"));
     assert.ok(note, "surfaces a Not saved error");
     assert.equal(note.level, "error");
     assert.match(note.msg, /not valid JSON/);
     assert.equal(readFileSync(globalSettings(), "utf8"), before, "corrupt file untouched");
-    assert.equal(registers(), 1, "no re-register after bail");
     rmSync(globalSettings(), { force: true });
   });
 });

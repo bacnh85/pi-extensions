@@ -46,9 +46,10 @@ off inside them (no parent/child races on `jobs.json`) and job mutations
 (`add`/`remove`/`run`/`enable`/`disable`) are refused — a fired run can never
 schedule more jobs.
 
-**Loop guard:** while a cron-fired turn is in flight (and for 30s after the
-last fire), `add`/`remove`/`run`/`enable`/`disable` are refused — fired jobs
-can never schedule further jobs.
+**Loop guard:** for 30s after a fire is armed, `add`/`remove`/`run`/`enable`/`disable`
+are refused. This is a time window, not in-flight immunity — a fired turn running
+longer than 30s can still mutate. Treat fired prompts as trusted inputs, same as
+any tool call the session makes.
 
 **Single session per agent dir:** the jobs store has no cross-process lock.
 Running multiple pi sessions that share an agent dir can double-fire jobs or

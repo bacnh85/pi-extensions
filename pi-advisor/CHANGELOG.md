@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.5 (2026-09-22)
+
+- Extracted shared `renderNoteCard` helper used by both the entry renderer and the message-renderer fallback (~20 duplicated lines removed); behavior unchanged.
+- Added unit coverage for `buildEvidence` bounded-transcript logic: entry truncation and the recent-window skip loop.
+
 ## 0.3.4 (2026-09-21)
 
 - Widened Pi SDK peer range to `<0.88.0` (devDeps to `^0.87.0`); tested against Pi 0.87.0. No behavioral changes — the 0.87.0 audit found no affected code paths.

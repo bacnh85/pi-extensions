@@ -215,6 +215,9 @@ export const TRUNCATION_DIRS: string[] = [];
 const TRUNCATION_DIRS_CAP = 20;
 const TRUNCATION_DIR_MAX_AGE_MS = 10 * 60 * 1000;
 
+// Injectable fs seam for tests (swap to simulate tmpdir failures).
+export const fsOps = { mkdtempSync, writeFileSync };
+
 /** Delete truncation temp dirs older than 10 minutes. Best-effort: any error
  *  (ENOENT on a concurrently-removed dir, etc.) is swallowed — cleanup must
  *  never break the tool result. */
@@ -229,6 +232,8 @@ function sweepOldTruncationDirs(): void {
       }
     } catch {
       // best-effort — a stray temp dir is never worth failing the call over
+      // (the entry is dead — drop it so the registry doesn't keep stale paths)
+      TRUNCATION_DIRS.splice(i, 1);
     }
   }
 }
@@ -282,49 +287,56 @@ export function truncateOutput(text: string): { text: string; truncated: boolean
   // Age-gated cleanup: remove truncation dirs older than 10 minutes so recent
   // output (possibly from parallel tool calls in the same turn) survives.
   sweepOldTruncationDirs();
-  const dir = mkdtempSync(join(tmpdir(), "pi-notebooklm-"));
-  TRUNCATION_DIRS.push(dir);
-  if (TRUNCATION_DIRS.length > TRUNCATION_DIRS_CAP) {
-    const evicted = TRUNCATION_DIRS.shift();
-    // The sweeper can never see an evicted entry again — schedule its deletion
-    // here, with the same age gate as the sweeper: a young dir's path may
-    // already have been handed to the model, so deleting it now would ENOENT
-    // a later read. Delete immediately only if already old enough; otherwise
-    // defer by the remaining age.
-    if (evicted) {
-      let age = Number.MAX_SAFE_INTEGER;
-      try {
-        age = Date.now() - statSync(evicted).mtimeMs;
-      } catch {
-        /* treat unreadable/missing as ancient */
-      }
-      const remaining = Math.max(0, TRUNCATION_DIR_MAX_AGE_MS - age);
-      const del = () => {
+  let tempPath: string | undefined;
+  try {
+    const dir = fsOps.mkdtempSync(join(tmpdir(), "pi-notebooklm-"));
+    TRUNCATION_DIRS.push(dir);
+    if (TRUNCATION_DIRS.length > TRUNCATION_DIRS_CAP) {
+      const evicted = TRUNCATION_DIRS.shift();
+      // The sweeper can never see an evicted entry again — schedule its deletion
+      // here, with the same age gate as the sweeper: a young dir's path may
+      // already have been handed to the model, so deleting it now would ENOENT
+      // a later read. Delete immediately only if already old enough; otherwise
+      // defer by the remaining age.
+      if (evicted) {
+        let age = Number.MAX_SAFE_INTEGER;
         try {
-          rmSync(evicted, { recursive: true, force: true });
+          age = Date.now() - statSync(evicted).mtimeMs;
         } catch {
-          /* best-effort */
+          /* treat unreadable/missing as ancient */
         }
-      };
-      if (remaining === 0) del();
-      else setTimeout(del, remaining).unref();
+        const remaining = Math.max(0, TRUNCATION_DIR_MAX_AGE_MS - age);
+        const del = () => {
+          try {
+            rmSync(evicted, { recursive: true, force: true });
+          } catch {
+            /* best-effort */
+          }
+        };
+        if (remaining === 0) del();
+        else setTimeout(del, remaining).unref();
+      }
     }
+    const path = join(dir, "full-output.txt");
+    fsOps.writeFileSync(path, text, "utf8");
+    tempPath = path;
+  } catch {
+    // Persistence is best-effort: a tmpdir failure after a successful CLI run
+    // must never break the tool result — fall back to plain in-memory
+    // truncation without a full-output file.
   }
-  const tempPath = join(dir, "full-output.txt");
-  writeFileSync(tempPath, text, "utf8");
 
   // Build suffix notices to determine actual byte/line cost
   const needByteNotice = Buffer.byteLength(text, "utf8") > MAX_OUTPUT_BYTES;
   const needLineNotice = lines.length > MAX_OUTPUT_LINES;
   const byteNotice = "\n\n… [truncated at 50 KB]";
   const lineNotice = `\n\n… [truncated at ${MAX_OUTPUT_LINES} lines]`;
-  const pathNotice = `\n\nFull output saved to: ${tempPath}`;
 
   // Compose the suffix we would append, to measure its actual byte/line cost
   const suffixPieces: string[] = [];
   if (needByteNotice) suffixPieces.push(byteNotice);
   if (needLineNotice) suffixPieces.push(lineNotice);
-  suffixPieces.push(pathNotice);
+  if (tempPath) suffixPieces.push(`\n\nFull output saved to: ${tempPath}`);
   const fullSuffix = suffixPieces.join("");
   const suffixBytes = Buffer.byteLength(fullSuffix, "utf8");
   const suffixLineCount = fullSuffix.split("\n").length;

@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { dirname } from "node:path";
 import { join } from "node:path";
 
 /** One-shot migration: pi-9router's `9router-config.json` →
@@ -45,7 +46,7 @@ export function migrateLegacyConfig(): boolean {
   }
   if (Object.keys(router).length > 0) {
     settings.router = router;
-    writeFileSync(settingsPath(), JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
+    atomicWriteJson(settingsPath(), settings);
   }
 
   // auth.json: add `router` credential if absent and legacy key exists.
@@ -53,12 +54,22 @@ export function migrateLegacyConfig(): boolean {
     const auth = readFileJson(authPath());
     if (auth !== null && !auth.router) { // unparseable auth.json — never overwrite
       auth.router = { type: "api_key", key: legacy.apiKey };
-      writeFileSync(authPath(), JSON.stringify(auth, null, 2) + "\n", { mode: 0o600 });
+      atomicWriteJson(authPath(), auth);
     }
   }
 
   safeRename(LEGACY_CONFIG_PATH);
   return true;
+}
+
+/** Write settings/auth atomically: tmp file in the same dir, then rename —
+ *  a crash mid-write can never leave a truncated settings.json/auth.json
+ *  (same pattern as writeRouterSection in commands/commands.ts). */
+function atomicWriteJson(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = path + ".tmp";
+  writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
+  renameSync(tmp, path);
 }
 
 /** Rename the legacy file out of the way; tolerate losing a race with

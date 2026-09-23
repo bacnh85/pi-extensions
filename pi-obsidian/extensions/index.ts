@@ -111,7 +111,7 @@ function allVaultRoots(): string[] {
   return info ? [info.path] : [];
 }
 
-function redirectionDestination(command: string): string | undefined {
+export function redirectionDestination(command: string): string | undefined {
   let quote = "";
   for (let i = 0; i < command.length; i++) {
     const char = command[i];
@@ -394,7 +394,7 @@ export function vaultWrite(
     _lastEvalAt = Date.now();
   };
 
-  const run = (script: string, label: string, tolerant = false): string => {
+  const run = (script: string, label: string, tolerant = false, mode?: "create" | "overwrite" | "append" | "prepend"): string => {
     // ponytail: hard guard against transport truncation. Obsidian 1.13.x hangs
     // (~3200-3900 chars, wedging the app) or fails (≥4000) eval scripts, so
     // this backstop fires at 3100 — before the hang zone — with a clear error.
@@ -420,7 +420,12 @@ export function vaultWrite(
     // errors, do NOT fail here for tolerant steps — the write may have
     // succeeded anyway (e.g. create → "File already exists" means chunk 0
     // landed); the read-back verify step is the real gate.
-    if (tolerant && (/^Error[:\s]/.test(out) || (!out && !stderr))) {
+    // append/prepend are non-idempotent: re-executing a step whose echo was
+    // merely lost duplicates a write that already landed, and tail/prefix
+    // verification cannot detect the extra copy — mirror the whole-write
+    // retry policy below (idempotent modes only) and let the read-back
+    // verify step judge the real file state instead.
+    if (tolerant && mode !== "append" && mode !== "prepend" && (/^Error[:\s]/.test(out) || (!out && !stderr))) {
       const firstOut = out;
       result = exec(args, false, timeoutMs);
       out = result.stdout.trim().replace(/^=>\s?/, "");
@@ -465,7 +470,7 @@ export function vaultWrite(
     const effectiveMode = attempts > 1 && mode === "create" ? "overwrite" : mode;
 
     // --- first chunk: mode-specific initial write (tolerant: 1.13.x write echo can be empty; verify step is the real gate) ---
-    const firstOut = run(buildFirstScript(notePath, effectiveMode, b64Chunks[0]), effectiveMode, true);
+    const firstOut = run(buildFirstScript(notePath, effectiveMode, b64Chunks[0]), effectiveMode, true, effectiveMode);
     // Create on an existing file: surface the clear error instead of letting
     // it degrade into an opaque verification mismatch.
     if (effectiveMode === "create" && /File already exists/.test(firstOut)) {
@@ -478,10 +483,10 @@ export function vaultWrite(
     let prependOffset = effectiveMode === "prepend" ? Buffer.from(b64Chunks[0], "base64").toString("utf8").length : 0;
     for (let i = 1; i < b64Chunks.length; i++) {
       if (effectiveMode === "prepend") {
-        run(buildPrependChunkScript(notePath, b64Chunks[i], prependOffset), `chunk ${i}`, true);
+        run(buildPrependChunkScript(notePath, b64Chunks[i], prependOffset), `chunk ${i}`, true, effectiveMode);
         prependOffset += Buffer.from(b64Chunks[i], "base64").toString("utf8").length;
       } else {
-        run(buildChunkScript(notePath, b64Chunks[i]), `chunk ${i}`, true);
+        run(buildChunkScript(notePath, b64Chunks[i]), `chunk ${i}`, true, effectiveMode);
       }
     }
 
@@ -618,11 +623,21 @@ export function vaultWrite(
 // Higher-level operations via single eval calls
 // ---------------------------------------------------------------------------
 
-function listFilesRecursive(folder: string, vault?: string, timeoutMs = 30_000): string {
+export function listFilesRecursive(
+  folder: string,
+  vault?: string,
+  timeoutMs = 30_000,
+  exec: (args: string[], formatJson?: boolean, timeoutMs?: number) => { stdout: string; stderr: string; parsed: unknown } = execObsidian
+): string {
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
-  args.push("eval", `code=app.vault.getFiles().filter(f=>f.path.startsWith(${JSON.stringify(folder)})).map(f=>f.path).sort().join('\\n')`);
-  const out = execObsidian(args, false, timeoutMs).stdout.trim();
+  // Segment-boundary match: a plain startsWith(folder) makes folder "01" also
+  // match "012 Notes/…". Match the empty folder (root), the folder itself, or
+  // paths strictly under folder+"/". (Trailing "/" is trimmed so both
+  // "Notes" and "Notes/" behave identically.)
+  const f = JSON.stringify(folder.replace(/\/+$/, ""));
+  args.push("eval", `code=app.vault.getFiles().filter(p=>!${f}||p.path===${f}||p.path.startsWith(${f}+'/')).map(p=>p.path).sort().join('\\n')`);
+  const out = exec(args, false, timeoutMs).stdout.trim();
   return out || "No files found.";
 }
 
@@ -777,12 +792,13 @@ export function renameTag(
   return _out390;
 }
 
-function searchReplace(
+export function searchReplace(
   query: string,
   replace: string,
   flags: { regex?: boolean; preview?: boolean },
   vault?: string,
-  timeoutMs = 30_000
+  timeoutMs = 30_000,
+  exec: (args: string[], formatJson?: boolean, timeoutMs?: number) => { stdout: string; stderr: string; parsed: unknown } = execObsidian
 ): string {
   const j = JSON.stringify;
   const useRegex = flags.regex ?? false;
@@ -795,17 +811,18 @@ function searchReplace(
     `for(const f of app.vault.getMarkdownFiles()){`,
     `let c=await app.vault.adapter.read(f.path);`,
     `let nc=c;`,
+    `let idx=-1,mlen=0;`,
     `if(useRegex){`,
-    `try{const re=new RegExp(q,'g');nc=c.replace(re,r);}`,
+    `try{const re=new RegExp(q,'g');const m=re.exec(c);if(m){idx=m.index;mlen=m[0].length;}nc=c.replace(re,r);}`,
     `catch(e){results.push(f.path+': regex error: '+e.message);continue;}`,
     `}else{`,
+    `idx=c.indexOf(q);mlen=q.length;`,
     `nc=c.split(q).join(r);`,
     `}`,
     `if(nc!==c){`,
     `if(preview){`,
-    `const idx=c.indexOf(q);`,
     `const start=Math.max(0,idx-40);`,
-    `const end=Math.min(c.length,idx+q.length+40);`,
+    `const end=Math.min(c.length,idx+mlen+40);`,
     `results.push(f.path+': '+JSON.stringify(c.slice(start,end)));`,
     `}else{`,
     `await app.vault.adapter.write(f.path,nc);`,
@@ -818,7 +835,7 @@ function searchReplace(
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
   args.push("eval", `code=${wrapEval(script)}`);
-  const _out434 = execObsidian(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
+  const _out434 = exec(args, false, timeoutMs).stdout.trim().replace(/^=>\s?/, "");
   if (!_out434 || /^Error[:\s]/.test(_out434)) throw new Error(`searchReplace failed: ${_out434 || "(no output)"}`);
   return _out434;
 }

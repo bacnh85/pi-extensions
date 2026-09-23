@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.1.11 (2026-09-22)
+
+### Fixed
+
+- **Migration writes are atomic.** `migrateLegacyConfig` now writes
+  `settings.json`/`auth.json` to a `.tmp` file and renames it (same pattern as
+  `writeRouterSection`), so a crash mid-migration can no longer leave a
+  truncated file. Removes the last non-atomic write of the data-loss class
+  1.1.7 fixed elsewhere.
+- Removed dead `hasTopLevel` variable; rewrote the stale per-field comment on
+  the context/max-output override to describe the actual all-or-nothing
+  `pairFloorPoisoned` gate.
+
+### Changed
+
+- Published tarball now includes `extensions/package.json` (module-type
+  resolution for extension loading).
+
+### Documented
+
+- README: repo-scope `.pi/settings.json` trust gate (repo settings are only
+  read for trusted projects) and the `ROUTER_ENABLE_REASONING` env var.
+
 ## 1.1.10 (2026-09-22)
 
 ### Fixed

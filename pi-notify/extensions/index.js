@@ -31,10 +31,11 @@ const DEFAULTS = {
 };
 
 /**
- * Read the `notify` settings key from settings.json (first existing file
- * wins: <cwd>/.pi/settings.json → ~/.pi/agent/settings.json →
- * ~/.pi/agents/settings.json). Same pattern as pi-references/pi-permission.
- * Returns undefined when unset/unreadable.
+ * Read the `notify` settings key from settings.json, searching <cwd>/.pi →
+ * ~/.pi/agent → ~/.pi/agents (same pattern as pi-references/pi-permission).
+ * A settings.json that is missing, unreadable, or has no object value for the
+ * key is skipped and the search continues; the first file WITH a valid object
+ * wins. Returns undefined when no file provides one.
  */
 export function readSettingsKey(cwd, key) {
   const home = os.homedir();

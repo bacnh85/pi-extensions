@@ -1,6 +1,6 @@
 # pi-init
 
-Guided `AGENTS.md` generation for [Pi](https://pi.dev).
+Guided `AGENTS.md` generation for [Pi](https://github.com/earendil-works/pi).
 
 `/init` scans your repo (package.json, build configs, CI, directory structure), detects what's there, and generates or updates `AGENTS.md` with concise project-specific guidance: build/test/lint commands, tech stack, repository structure, and conventions. Inspired by OpenCode's `/init`. Zero dependencies, plain JS.
 

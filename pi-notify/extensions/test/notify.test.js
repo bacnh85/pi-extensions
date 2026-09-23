@@ -160,6 +160,22 @@ test("onQuestion config=false suppresses question notification", () => {
   assert.equal(notifyCalls.length, 0, "onQuestion:false must suppress the notification");
 });
 
+test("onComplete config=false suppresses completion notification; error/question still fire", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-notify-"));
+  mkdirSync(join(dir, ".pi"), { recursive: true });
+  writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ notify: { onComplete: false } }));
+  const notifyCalls = [];
+  const pi = harness({ notifySpy: (...a) => notifyCalls.push(a), soundSpy: () => {} });
+  pi.handlers.session_start({}, { cwd: dir });
+  pi.handlers.agent_settled({}, {});
+  assert.equal(notifyCalls.length, 0, "onComplete:false must suppress the completion notification");
+  // The other gates are independent — they must not be affected by onComplete:false.
+  pi.handlers.turn_start({}, {});
+  pi.handlers.tool_result({ isError: true }, {});
+  pi.handlers.ui_prompt_start({ kind: "confirm", title: "Sure?" }, {});
+  assert.equal(notifyCalls.length, 2, "onError and onQuestion notifications still fire");
+});
+
 test("detectBackend falls back to terminal when the platform binary is absent", () => {
   const empty = mkdtempSync(join(tmpdir(), "pi-notify-path-"));
   const prev = process.env.PATH;

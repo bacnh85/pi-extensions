@@ -10,7 +10,10 @@ import {
   buildFirstScript,
   djb2Utf8,
   filesMissingProperty,
+  listFilesRecursive,
   readQuotedContent,
+  redirectionDestination,
+  searchReplace,
   parseCliString,
   parseFlags,
   isObsidianVaultCwd,
@@ -129,6 +132,189 @@ function filterStdout(raw: string): string {
 
 // Separator for building platform-shaped paths in tests.
 const sepOf = () => sep;
+
+describe("redirectionDestination", () => {
+  const cases: Array<{ cmd: string; want: string | undefined }> = [
+    // plain and append redirects
+    { cmd: "echo hello > Notes/note.md", want: "Notes/note.md" },
+    { cmd: "echo hello >> Notes/note.md", want: "Notes/note.md" },
+    { cmd: "printf 'x' > note.md", want: "note.md" },
+    // no redirect at all
+    { cmd: "echo hello", want: undefined },
+    { cmd: "echo", want: undefined },
+    { cmd: "", want: undefined },
+    // redirect target inside quotes is still extracted (parser runs after `>`)
+    { cmd: 'echo hi > "My Notes/note.md"', want: "My Notes/note.md" },
+    { cmd: "echo hi > 'My Notes/note.md'", want: "My Notes/note.md" },
+    // `>` inside a quoted argument is NOT a redirect
+    { cmd: 'echo "a > b"', want: undefined },
+    { cmd: "echo 'a > b'", want: undefined },
+    { cmd: 'echo "she said \\"hi > there\\""', want: undefined },
+    // text before the redirect contains quotes: quote state must reset before `>`
+    { cmd: 'echo "a > b" > out.md', want: "out.md" },
+    { cmd: "echo 'a > b' >> out.md", want: "out.md" },
+    // only whitespace after `>` → no target token
+    { cmd: "echo hi > ", want: undefined },
+  ];
+  for (const { cmd, want } of cases) {
+    it(`redirectionDestination(${JSON.stringify(cmd)}) → ${JSON.stringify(want)}`, () => {
+      expect(redirectionDestination(cmd)).to.equal(want);
+    });
+  }
+
+  it("escaped quote inside double quotes does not close the quote state", () => {
+    expect(redirectionDestination('echo \\"a > b\\"')).to.equal(undefined);
+  });
+});
+
+describe("listFilesRecursive folder segment matching", () => {
+  const vaultFiles = ["01.md", "01/a.md", "01/b.md", "012 Notes/c.md", "012 Notes/deep/d.md", "Notes/e.md"];
+
+  function fakeExecFor(stdout: string) {
+    return (_args: string[], _fmt?: boolean, _ms?: number) => ({ stdout, stderr: "", parsed: "" });
+  }
+
+  function captureListCode() {
+    let code = "";
+    return {
+      fake: (args: string[], _fmt?: boolean, _ms?: number) => {
+        code = (args.find((a) => a.startsWith("code=")) || "").slice(5);
+        return { stdout: "", stderr: "", parsed: "" };
+      },
+      code: () => code,
+    };
+  }
+
+  // Run the captured eval body against a stubbed app.vault (mirrors the
+  // in-app environment) and return the joined file list.
+  function runCapturedListEval(code: string): string {
+    const app = { vault: { getFiles: () => vaultFiles.map((path) => ({ path })) } };
+    return new Function("app", `return ${code}`)(app) as string;
+  }
+
+  it("folder='01' matches only the 01 segment, not '012 Notes' (substring regression)", () => {
+    const cap = captureListCode();
+    listFilesRecursive("01", undefined, 100, cap.fake as any);
+    expect(runCapturedListEval(cap.code())).to.equal("01/a.md\n01/b.md");
+  });
+
+  it("folder='Notes' excludes '012 Notes' and its children", () => {
+    const cap = captureListCode();
+    listFilesRecursive("Notes", undefined, 100, cap.fake as any);
+    expect(runCapturedListEval(cap.code())).to.equal("Notes/e.md");
+  });
+
+  it("empty folder (root) lists everything", () => {
+    const cap = captureListCode();
+    listFilesRecursive("", undefined, 100, cap.fake as any);
+    expect(runCapturedListEval(cap.code()).split("\n")).to.deep.equal([...vaultFiles].sort());
+  });
+
+  it("trailing slash in folder= is trimmed (Notes/ behaves like Notes)", () => {
+    const cap = captureListCode();
+    listFilesRecursive("Notes/", undefined, 100, cap.fake as any);
+    expect(cap.code()).to.include('"Notes"');
+    expect(cap.code()).to.not.include('"Notes/"');
+  });
+
+  it("returns 'No files found.' on empty output", () => {
+    const r = listFilesRecursive("01", undefined, 100, fakeExecFor(""));
+    expect(r).to.equal("No files found.");
+  });
+});
+
+describe("vaultWrite append/prepend blind-retry guard", () => {
+  it("tolerant append step with dropped echo does NOT re-exec the write (duplicate guard)", () => {
+    // Echo dropped on the append's chunk-0 write. The old blind retry would
+    // re-execute the append script; since the first execution already landed,
+    // that duplicates the content — and tail verification cannot tell.
+    const fake = makeVaultFake({ initialFile: "OLD\n", writeEcho: "" });
+    const result = vaultWrite("note.md", "Appended content", "append", undefined, 100, fake.exec);
+    expect(result).to.equal("Appended to: note.md");
+    expect(fake.state().file).to.equal("OLD\nAppended content");
+    expect(fake.state().writeCalls).to.equal(1); // exactly one exec: no blind re-exec
+  });
+
+  it("tolerant prepend step with dropped echo does NOT re-exec the write (duplicate guard)", () => {
+    const fake = makeVaultFake({ initialFile: "OLD", writeEcho: "" });
+    const result = vaultWrite("note.md", "Prepended content", "prepend", undefined, 100, fake.exec);
+    expect(result).to.equal("Prepended to: note.md");
+    expect(fake.state().file).to.equal("Prepended contentOLD");
+    expect(fake.state().writeCalls).to.equal(1);
+  });
+
+  it("tolerant overwrite step with dropped echo still retries (idempotent modes keep the retry)", () => {
+    // overwrite IS idempotent: the blind retry is harmless and stays enabled.
+    // The fake dedupes identical re-executed scripts, so state stays correct;
+    // assert the retry happened via the extra write call.
+    const fake = makeVaultFake({ writeEcho: "" });
+    const result = vaultWrite("note.md", "Hello", "overwrite", undefined, 100, fake.exec);
+    expect(result).to.equal("Updated: note.md");
+    expect(fake.state().writeCalls).to.equal(2); // 1 initial + 1 blind retry
+    expect(fake.state().file).to.equal("Hello");
+  });
+});
+
+describe("searchReplace preview", () => {
+  // Execute the captured eval body against a stubbed app.vault (mirrors the
+  // in-app adapter), returning the results string.
+  async function runCapturedSearchEval(code: string, files: Record<string, string>): Promise<string> {
+    const app = {
+      vault: {
+        getMarkdownFiles: () => Object.keys(files).map((path) => ({ path })),
+        adapter: {
+          read: async (path: string) => files[path],
+          write: async () => {},
+        },
+      },
+    };
+    return (await new Function("app", `return ${code}`)(app)) as string;
+  }
+
+  function captureCode() {
+    let code = "";
+    return {
+      fake: (args: string[], _fmt?: boolean, _ms?: number) => {
+        code = (args.find((a) => a.startsWith("code=")) || "").slice(5);
+        return { stdout: "=> ok", stderr: "", parsed: "" };
+      },
+      code: () => code,
+    };
+  }
+
+  it("regex-mode preview shows context around the regex MATCH, not the pattern text", async () => {
+    // Pattern "." (as regex) matches "H" at index 0; the raw string "."
+    // first occurs at index 14 ("content"). Old code previewed around the
+    // wrong position (indexOf returns 14) or -1 for patterns absent literally.
+    const files = { "a.md": "Hello content" };
+    const cap = captureCode();
+    searchReplace("H..", "XXX", { regex: true, preview: true }, undefined, 100, cap.fake);
+    const out = await runCapturedSearchEval(cap.code(), files);
+    // match at index 0, window = [max(0,-40), 0+3+40] → whole string
+    expect(out).to.include('a.md: "Hello content"');
+  });
+
+  it("regex-mode preview window centers on the match when the literal pattern is absent", async () => {
+    // Literal indexOf would return -1 → preview window at end-of-string, and
+    // idx+q.length+40 slice from -41 shows the TAIL, not the match area.
+    const filler = "x".repeat(100);
+    const files = { "b.md": filler + "MATCHHERE" + filler };
+    const cap = captureCode();
+    searchReplace("M[A-Z]{8}", "Y", { regex: true, preview: true }, undefined, 100, cap.fake);
+    const out = await runCapturedSearchEval(cap.code(), files);
+    // match starts at 100; window [60, 100+9+40=149] → contains MATCHHERE
+    const idx = out.indexOf("MATCHHERE");
+    expect(idx).to.be.above(0); // preview includes the matched text
+  });
+
+  it("plain-mode preview is unchanged (indexOf window)", async () => {
+    const files = { "c.md": "abc TARGET abc" };
+    const cap = captureCode();
+    searchReplace("TARGET", "REPL", { preview: true }, undefined, 100, cap.fake);
+    const out = await runCapturedSearchEval(cap.code(), files);
+    expect(out).to.include('c.md: "abc TARGET abc"');
+  });
+});
 
 describe("readQuotedContent", () => {
   it("reads simple content", () => {

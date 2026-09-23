@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.5 (2026-09-22)
+
+### Fixed
+
+- `startBackgroundDiscovery` now clears its discovery timer in a `finally`
+  block, so a failed (rejected) model fetch no longer leaves the unref'd
+  abort timer armed against an already-settled request.
+
+### Changed
+
+- `registerConfigCommand` is no longer exported; it is module-internal, with
+  tests exercising it through the default extension factory.
+
 ## 0.2.4 (2026-09-21)
 
 ### Fixed

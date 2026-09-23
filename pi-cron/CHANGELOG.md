@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.5 (2026-09-22)
+
+- **Bug fix:** `latestLog` prefix collision — job `a` could read sibling job
+  `a-b`'s logs (both start with `a-`). The job-name prefix match now requires
+  a digit after the dash, so only `a-<timestamp>.log` files count.
+- Docs: loop-guard wording corrected in header, README, and skill — it's a 30s
+  window after arming, not in-flight immunity (a fired turn running >30s can
+  mutate). `enable`/`disable` added to the mutating-actions list in the skill.
+- Housekeeping: stale "hard 10-min cap" ponytail comment refreshed (timeoutMs
 ## 0.3.4 (2026-09-21)
 
 - Widened Pi SDK peer range to `<0.88.0` (devDeps to `^0.87.0`); tested against Pi 0.87.0. No behavioral changes — the 0.87.0 audit found no affected code paths.

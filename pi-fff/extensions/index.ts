@@ -1387,12 +1387,18 @@ export default function fffExtension(pi: ExtensionAPI) {
       }
 
       if (override) {
-        return searchOverrideFind(
-          f,
-          params.pattern,
-          params.path,
-          Math.max(1, Math.floor(params.limit ?? 1000)),
-        );
+        try {
+          return await searchOverrideFind(
+            f,
+            params.pattern,
+            params.path,
+            Math.max(1, Math.floor(params.limit ?? 1000)),
+          );
+        } catch (e) {
+          return {
+            content: [{ type: "text", text: `Invalid path constraint: ${(e as Error).message}. Try without path/exclude constraints.` }],
+          };
+        }
       }
 
       // Resume from a prior cursor if supplied — cursor owns query+pageSize so

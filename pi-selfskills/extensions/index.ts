@@ -819,6 +819,10 @@ async function executeBatch(ops: any[], cwd: string, settings: ReturnType<typeof
   if (ops.length === 0) return err("operations array is empty.");
   const overlay = new Map<string, string | null>();
   const meta = new Map<string, { skillName: string; baseDir: string; relpath: string }>();
+  // SKILL.md patch targets: disk hash as of plan time. Re-verified in-queue at
+  // commit so an external write landing in between fails the op instead of
+  // clobbering the file (mirrors patchAction's authoritative check).
+  const planDiskHash = new Map<string, string>();
   const errors: string[] = [];
 
   for (let i = 0; i < ops.length; i++) {
@@ -867,6 +871,7 @@ async function executeBatch(ops: any[], cwd: string, settings: ReturnType<typeof
           continue;
         }
         overlay.set(real, disk);
+        planDiskHash.set(real, readHash);
       }
       const applied = applyPatch(overlay.get(real)!, op.old_string, op.new_string);
       if (!applied.ok) {
@@ -943,10 +948,21 @@ async function executeBatch(ops: any[], cwd: string, settings: ReturnType<typeof
       await withFileMutationQueue(p, async () => {
         const existed = existsSync(p);
         let backup: string | null = null;
-        try {
-          backup = existed ? snapshot(m.skillName, readFileSync(p), settings.backupCap, agentDir(), m.relpath).file : null;
-        } catch (e: any) {
-          throw new Error(`existing file unreadable: ${p} (${e?.message ?? e})`);
+        if (existed) {
+          let current: Buffer;
+          try {
+            current = readFileSync(p);
+          } catch (e: any) {
+            throw new Error(`existing file unreadable: ${p} (${e?.message ?? e})`);
+          }
+          const expected = planDiskHash.get(p);
+          if (expected !== undefined && contentHash(current) !== expected) {
+            throw new Error("file changed on disk since it was read (hash mismatch) — re-read and retry");
+          }
+          backup = snapshot(m.skillName, current, settings.backupCap, agentDir(), m.relpath).file;
+        } else if (planDiskHash.has(p)) {
+          // Patch target vanished between planning and commit — same refusal.
+          throw new Error("file changed on disk since it was read (hash mismatch) — re-read and retry");
         }
         if (content === null) {
           rmSync(p, { force: true });
@@ -961,7 +977,9 @@ async function executeBatch(ops: any[], cwd: string, settings: ReturnType<typeof
       });
     } catch (e: any) {
       return err(
-        `Batch partially applied before failure at ${p}: ${e?.message ?? e}. Applied so far:\n${lines.map((l) => `- ${l}`).join("\n")}`,
+        lines.length > 0
+          ? `Batch partially applied before failure at ${p}: ${e?.message ?? e}. Applied so far:\n${lines.map((l) => `- ${l}`).join("\n")}`
+          : `Batch failed before any write (${p}): ${e?.message ?? e}`,
       );
     }
   }

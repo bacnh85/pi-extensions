@@ -77,13 +77,14 @@ notebooklm args=["download", "audio", "-a", "<artifact-id>", "output.mp3"]
 | Delete notebook (destructive) | `args=["delete", "-n", "<id>", "-y"], confirm: true` |
 | Auth logout (destructive) | `args=["auth", "logout"], confirm: true` (no `-y` needed) |
 | Clear context (destructive) | `args=["clear"], confirm: true` (no `-y` needed) |
+| Share privacy change (destructive) | `args=["share", "public", "<id>"], confirm: true` (no `-y` needed; same for `share add`, `share update`, `share view-level`) |
 
 ### Parameters
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `args` | `string[]` | Yes | CLI arguments (excluding `notebooklm` executable) |
-| `confirm` | `boolean` | No | Confirm destructive operations (delete, clean, remove, logout, new conversation, file overwrite) |
+| `confirm` | `boolean` | No | Confirm destructive operations (delete, clean, remove, logout, new conversation, share privacy changes, file overwrite) |
 | `timeout_ms` | `number` | No | Timeout in ms (default 60000, max 600000) |
 
 ### Rules
@@ -92,7 +93,7 @@ notebooklm args=["download", "audio", "-a", "<artifact-id>", "output.mp3"]
 - **Request `--json`** on supported commands for structured output.
 - **Wait for source readiness** before chat or generation (`source wait -n <id>` / `source list -n <id>`).
 - **Async generation**: start `generate <type>` → get task ID → poll with `artifact poll` or block with `artifact wait`.
-- **Destructive operations** require `confirm: true`. Most also need `-y`/`--yes` in args. Exceptions: `auth logout`, `clear`, `skill uninstall`, `history --clear` (CLI v0.7.3 does not support -y/--yes for these).
+- **Destructive operations** require `confirm: true`. Most also need `-y`/`--yes` in args. Exceptions (no -y support in CLI v0.7.3, confirm-only): `auth logout`, `clear`, `skill uninstall`, `history --clear`, `share public`, `share add`, `share update`, `share view-level`.
 - **File overwrites**: `download`, `source fulltext`, or `skill install` with `--force` overwrites workspace files — requires `confirm: true`.
 
 ### Blocked commands (run directly in terminal)

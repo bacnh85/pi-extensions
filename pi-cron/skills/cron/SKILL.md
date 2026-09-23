@@ -29,8 +29,9 @@ The prompt becomes a **standalone turn** — no conversation context. Write it
 self-contained and short: what to do, where, and what to report. Bad: `"check
 it again"`; good: `"Run npm test in this repo and summarize failures"`.
 
-**Loop guard:** a fired turn cannot `add`, `remove`, or `run` jobs. Never
-write job prompts that schedule further jobs.
+**Loop guard:** for 30s after a fire, `add`, `remove`, `run`, `enable`, and
+`disable` are refused. A fired turn running longer than 30s can still mutate —
+never write job prompts that schedule further jobs.
 
 ## Managing
 

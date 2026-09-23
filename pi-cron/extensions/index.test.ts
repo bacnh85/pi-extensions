@@ -357,6 +357,22 @@ describe("guards and rendering", () => {
     assert.equal(latestLog(logsDir, "daily")?.endsWith("daily.log"), true);
   });
 
+  it("latestLog prefix collision: job 'a' never sees job 'a-b' logs", () => {
+    const logsDir = join(tmpAgentDir(), "logs");
+    mkdirSync(logsDir, { recursive: true });
+    writeFileSync(join(logsDir, "a-1.log"), "a's own");
+    writeFileSync(join(logsDir, "a-b-2.log"), "sibling's");
+    const oldMs = new Date("2026-01-01").getTime();
+    const newMs = new Date("2026-01-02").getTime();
+    utimesSync(join(logsDir, "a-1.log"), new Date(oldMs), new Date(oldMs));
+    utimesSync(join(logsDir, "a-b-2.log"), new Date(newMs), new Date(newMs));
+    // a-b's log is NEWER — if the prefix check leaked, latestLog("a") would pick it.
+    assert.equal(latestLog(logsDir, "a")?.endsWith("a-1.log"), true);
+    // no own log → no match at all, not the sibling's
+    writeFileSync(join(logsDir, "b-9.log"), "x");
+    assert.equal(latestLog(logsDir, "c"), undefined);
+  });
+
   it("runHeadless survives jobs.json write failures (no host crash)", async () => {
     const { chmodSync } = await import("node:fs");
     const logsDir = join(tmpAgentDir(), "logs");

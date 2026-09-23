@@ -26,7 +26,6 @@ import { join, basename } from "node:path";
  */
 export function scanProject(cwd) {
   const out = {
-    root: cwd,
     projectName: basename(cwd),
     packageManager: null,
     packageJson: null,
@@ -201,12 +200,15 @@ export function checkFindings(scan) {
   const nodeRepo = scan.languages.has("JavaScript") || scan.languages.has("TypeScript");
   if (scan.packageManager) present.push(`pkg manager: ${scan.packageManager}`);
   else if (nodeRepo) missing.push("package.json");
+  // test/lint/build only ever come from package.json scripts — flagging them
+  // "missing" on a cargo/go repo is noise. Gate on nodeRepo like the prompt
+  // builder does (it omits these lines when the scripts are absent).
   if (scan.testCommand) present.push(`test: ${scan.testCommand}`);
-  else missing.push("test command");
+  else if (nodeRepo) missing.push("test command");
   if (scan.lintCommand) present.push(`lint: ${scan.lintCommand}`);
-  else missing.push("lint command");
+  else if (nodeRepo) missing.push("lint command");
   if (scan.buildCommand) present.push(`build: ${scan.buildCommand}`);
-  else missing.push("build command");
+  else if (nodeRepo) missing.push("build command");
   if (scan.hasAgentsMd) present.push(`${scan.agentsFile} exists`);
   else missing.push("AGENTS.md");
   if (scan.ci.length) present.push(`CI: ${scan.ci.join(", ")}`);
@@ -251,7 +253,13 @@ export default function initExtension(pi) {
       }
 
       const prompt = buildInitPrompt(scan, mode);
-      pi.sendUserMessage(prompt);
+      try {
+        pi.sendUserMessage(prompt);
+      } catch (err) {
+        const msg = `/init failed to dispatch the prompt: ${err?.message || err}`;
+        if (ctx?.ui?.notify) ctx.ui.notify(msg, "error");
+        else console.error(msg);
+      }
     },
   });
 }

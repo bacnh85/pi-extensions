@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import { EventEmitter } from "node:events";
+import { createServer } from "node:net";
 import { existsSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -102,6 +103,20 @@ describe("daemon", () => {
   });
 
   describe("pickFreePort", () => {
+    it("pickFreePort falls back when the preferred port is occupied (EADDRINUSE)", async () => {
+      const blocker = createServer();
+      await new Promise<void>((resolve) => blocker.listen(0, "127.0.0.1", resolve));
+      const addr = blocker.address();
+      const occupied = addr && typeof addr === "object" ? addr.port : 0;
+      try {
+        const got = await pickFreePort(occupied);
+        assert.isAbove(got, 0);
+        assert.notEqual(got, occupied, "fell back to a different port");
+      } finally {
+        await new Promise<void>((resolve) => blocker.close(() => resolve()));
+      }
+    });
+
     it("returns a usable port number", async () => {
       const p = await pickFreePort(0); // 0 = OS-assigned, always free
       assert.isAbove(p, 0);
@@ -264,6 +279,16 @@ it("issue #20 L1: config file lands in a private mkdtemp dir (symlink-clobber ha
     d.stop();
     assert.isFalse(existsSync(dirs[1]!), "stop() removes the second cfgDir");
   });
+
+    it("is idempotent: two concurrent ensure() calls spawn exactly once", async () => {
+      const alive = { value: false };
+      const spawnResult: SpawnResult = { child: makeChild(), calls: [] };
+      const d = makeDaemon({ alive, spawnResult });
+      const [p1, p2] = await Promise.all([d.ensure(), d.ensure()]);
+      assert.equal(spawnResult.calls.length, 1, "shared one spawn across two parallel ensures");
+      assert.equal(p1, p2, "both callers got the same port");
+      await d.stop();
+    });
 
     it("is idempotent: second ensure reuses the running child", async () => {
       const alive = { value: false };

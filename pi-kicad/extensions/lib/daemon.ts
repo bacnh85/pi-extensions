@@ -94,6 +94,7 @@ export class KonnectDaemon {
   private deps: Required<DaemonDeps>;
   private child: ChildProcess | null = null;
   private port: number | null = null;
+  private ensureP: Promise<number> | null = null;
   private startedAt: number | null = null;
   private stderrTail = "";
   private cfgDir: string | null = null;
@@ -138,7 +139,18 @@ export class KonnectDaemon {
     if (this.child && this.port !== null && (await this.isHealthy())) {
       return this.port;
     }
-    return this.spawn();
+    // Memoize the in-flight spawn so two parallel ensure() calls (e.g. two
+    // kicad_calls at session start) share one daemon instead of both passing
+    // the falsy-child check above and orphaning the first spawn.
+    this.ensureP ??= this.spawn();
+    try {
+      const port = await this.ensureP;
+      this.ensureP = null; // memo covers only the in-flight window
+      return port;
+    } catch (err) {
+      this.ensureP = null;
+      throw err;
+    }
   }
 
   private async spawn(): Promise<number> {
@@ -237,6 +249,10 @@ export class KonnectDaemon {
   }
 
   private killChild(): void {
+    // Allow a later ensure() to respawn: any in-flight spawn memo is stale
+    // once we tear the child down. stop()/restart()/crash paths all route
+    // through here.
+    this.ensureP = null;
     if (this.child) {
       try {
         this.child.kill();

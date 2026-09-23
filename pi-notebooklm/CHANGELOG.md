@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.13 (2026-09-22)
+
+### Fixed
+
+- `truncateOutput` no longer fails the whole tool result when temp-dir
+  persistence breaks (mkdtemp/write errors, e.g. ENOSPC). Persistence is
+  now best-effort: on failure the output falls back to plain in-memory
+  truncation without the "Full output saved to" suffix, honoring the
+  invariant that cleanup must never break the tool result.
+- The truncation-dir sweeper now removes registry entries whose dirs are
+  unreadable/missing instead of keeping stale paths until cap eviction.
+
+### Changed
+
+- README: `share public`, `share add`, `share update`, and `share
+  view-level` are documented as confirm-only destructive commands (no
+  `-y`/`--yes` support), matching `DESTRUCTIVE_PATHS`.
+
 ## 0.1.12 (2026-09-21)
 
 ### Fixed

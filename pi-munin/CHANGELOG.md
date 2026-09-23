@@ -1,5 +1,24 @@
 # Changelog
 
+All notable changes to `pi-munin` will be documented in this file.
+
+## 0.5.7 (2026-09-22)
+
+### Fixed
+
+- Ack resolved-failure path no longer double-wraps the error: the
+  non-throwing ack failure is now detected via a flag instead of throwing
+  inside the `try` that the immediately-following `catch` re-wraps
+  (previously double `remediatedError` + misleading `cause` chain).
+- `formatMemories` ponytail comment now describes the actual coercion
+  behavior (unknown shapes are coerced, not thrown).
+
+### Tests
+
+- Direct-method dispatch path (`client[directAction](projectId, payload)`
+  for search/get/store/list/recent) is now exercised with a stub client,
+  asserting the direct call, argument arity, and the `invoke` fallback.
+
 ## 0.5.6 (2026-09-21)
 
 ### Fixed
@@ -45,8 +64,6 @@
 ### Improvements
 
 - Patch version bump for release sync and package documentation update.
-
-All notable changes to `pi-munin` will be documented in this file.
 
 ## 0.5.0 (2026-08-01)
 

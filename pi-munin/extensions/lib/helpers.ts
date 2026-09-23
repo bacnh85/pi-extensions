@@ -138,7 +138,7 @@ export function formatMemory(memory: Record<string, unknown>): string {
   return parts.join("\n");
 }
 
-// ponytail: handles { data: [...] }, { data: { memories: [...] } }, and raw arrays — 3 shapes the SDK actually returns. Throw for unknown.
+// ponytail: handles { data: [...] }, { data: { memories: [...] } }, and raw arrays — 3 shapes the SDK actually returns. Unknown shapes are coerced (object → single-item list, primitives → String()).
 export function formatMemories(result: unknown): string {
   if (!result || typeof result !== "object") return String(result);
   const container = result as Record<string, unknown>;

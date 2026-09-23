@@ -12,6 +12,7 @@ import {
   extractCommandPath,
   extractOutputPaths,
   TRUNCATION_DIRS,
+  fsOps,
 } from "../index.js";
 
 // ---------------------------------------------------------------------------
@@ -491,6 +492,35 @@ describe("truncateOutput", () => {
     const r = truncateOutput("");
     expect(r.text).to.equal("");
     expect(r.truncated).to.be.false;
+  });
+
+  it("falls back to in-memory truncation when the temp-dir write fails", () => {
+    const realMkdtemp = fsOps.mkdtempSync;
+    fsOps.mkdtempSync = () => { throw new Error("ENOSPC: no space left on device"); };
+    try {
+      const r = truncateOutput("x".repeat(60 * 1024));
+      expect(r.truncated).to.be.true;
+      expect(r.tempPath).to.be.undefined;
+      expect(r.text).to.include("[truncated at 50 KB]");
+      expect(r.text).to.not.include("Full output saved to:");
+      expect(Buffer.byteLength(r.text, "utf8")).to.be.at.most(50 * 1024);
+    } finally {
+      fsOps.mkdtempSync = realMkdtemp;
+    }
+  });
+
+  it("falls back to in-memory truncation when writing the temp file fails", () => {
+    const realWrite = fsOps.writeFileSync;
+    fsOps.writeFileSync = () => { throw new Error("EACCES: permission denied"); };
+    try {
+      const r = truncateOutput("y".repeat(60 * 1024));
+      expect(r.truncated).to.be.true;
+      expect(r.tempPath).to.be.undefined;
+      expect(r.text).to.include("[truncated at 50 KB]");
+      expect(r.text).to.not.include("Full output saved to:");
+    } finally {
+      fsOps.writeFileSync = realWrite;
+    }
   });
 
   it("final output with suffix does not exceed 50 KB for dynamic temp path", () => {

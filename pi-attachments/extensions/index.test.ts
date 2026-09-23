@@ -484,7 +484,8 @@ describe("attachment removal flow", () => {
     return {
       paste: (data: string) => pasteHandler?.(data),
       type: (t: string) => { editorText = t; pasteHandler?.("x"); }, // any keystroke syncs
-      submit: () => handlers["input"]({ type: "input", text: editorText, source: "interactive" }, { ui }),
+      submit: (text?: string) =>
+        handlers["input"]({ type: "input", text: text ?? editorText, source: "interactive" }, { ui }),
       get widget() { return widget; },
     };
   }
@@ -526,6 +527,23 @@ describe("attachment removal flow", () => {
     assert.equal(result.images.length, 1);
     assert.ok(!result.text.includes("rm-b"), "removed file is not attached");
     assert.ok(!result.text.includes(tokenB), "removed token is gone");
+  });
+
+  it("all tokens hand-deleted before submit → tray cleared, no stale chips", async () => {
+    const file = path.join(TMP, "rm-all.png");
+    writeFileSync(file, PNG_BYTES);
+    const h = fullHarness();
+
+    const pasted: any = h.paste(`\x1b[200~${file}\x1b[201~`);
+    h.type(pasted.data);
+    assert.equal(h.widget!.length, 1, "chip shown");
+
+    // The stale case: the submitted text no longer contains the token, but the
+    // editor (seen by keystroke prune) still does — e.g. submit raced the
+    // keystroke sync. Prune misses it; the submit hook must clear instead.
+    const result: any = await h.submit("plain question, no token");
+    assert.ok(!result || result.action === "continue", "nothing attached");
+    assert.deepEqual(h.widget, [], "tray cleared — no stale chip");
   });
 });
 

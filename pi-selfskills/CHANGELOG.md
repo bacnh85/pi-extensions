@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.4 (2026-09-22)
+
+- **Fix: batch commit re-verifies the disk hash in-queue** — `operations[]`
+  planned against an in-memory overlay but committed whatever was there at
+  write time, so an external write landing between plan-time validation and
+  commit was silently clobbered. The commit loop now re-hashes each existing
+  SKILL.md patch target inside the mutation queue (mirroring `patchAction`'s
+  authoritative check) and fails that op cleanly — including the
+  target-vanished case. With nothing written yet, the failure reports `Batch
+  failed before any write` instead of a misleading partial-application notice.
+- **Docs truth**: README `read` row corrected — reading with `file=` records
+  THAT bundled file, not SKILL.md, and does not unlock patch/write/delete
+  (they gate on the SKILL.md read state); the `operations` row now states the
+  commit-time partial-application caveat instead of claiming any-failure
+  atomicity. The `selfskills` doc-skill lists `write`/`delete` in its
+  description (0.2.0 features) and its writable-roots list includes project
+  `.agents/skills` + local package roots.
+
 ## 0.3.3 (2026-09-21)
 
 - **Cleanup: removed the unused `listDeletedSnapshots` import** from

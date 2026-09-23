@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.9 (2026-09-22)
+
+- Fixed: a `pi` child killed by a signal (status null) was reported as success by `add`/`remove` — `pi()` now treats signal death as failure (exit 1) instead of `status ?? 0`.
+- Fixed: `searchCatalog` dir matching is now case-insensitive like name/description.
+- Fixed: 0.1.5 entry said "33 installable packages"; catalog.json has 32.
+- Cleanup: dropped unused `fileURLToPath` import.
+
 ## [0.1.8] - 2026-09-21
 
 - Fixed: failed installs/removes now exit 1 — `add` and the interactive installer printed `install failed: <pkg>` but still exited 0 (so `pi-hub add x && …` chains proceeded on failure); both count failed installs and return 1. `remove` propagates the `pi remove` exit status like `update` already does.
@@ -16,7 +23,7 @@
 
 ## 0.1.5
 
-- Catalog: add the three missing entries (pi-attachments, pi-cron, pi-selfskills). Bare-shorthand `add pi-cron` previously fell through `resolveSource` to the unscoped npm name `pi-cron` (fails, or could hit an unvetted same-named package); all 33 installable packages are now curated.
+- Catalog: add the three missing entries (pi-attachments, pi-cron, pi-selfskills). Bare-shorthand `add pi-cron` previously fell through `resolveSource` to the unscoped npm name `pi-cron` (fails, or could hit an unvetted same-named package); all 32 installable packages are now curated.
 
 ## 0.1.4
 

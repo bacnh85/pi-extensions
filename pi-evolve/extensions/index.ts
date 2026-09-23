@@ -95,7 +95,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
     name: "evolve_reflect",
     label: "Evolve Reflect",
     description:
-      "Extract transferable learnings from the recent live trajectory. Returns the current trajectory snapshot + a prompt skeleton for the model to produce 1-3 structured learnings (strategy/recovery/optimization). Call after fixing a bug, recovering from an error, or completing a multi-step task.",
+      "Extract transferable learnings from the recent live trajectory. Returns the current trajectory snapshot + a prompt skeleton for the model to produce 0-3 structured learnings (strategy/recovery/optimization). Call after fixing a bug, recovering from an error, or completing a multi-step task.",
     promptSnippet: "Reflect on recent trajectory to extract learnings",
     promptGuidelines: [
       "Use evolve_reflect after fixing a bug, recovering from an error, or completing a multi-step task — when the trajectory contains a transferable lesson.",

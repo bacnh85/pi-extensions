@@ -92,6 +92,19 @@ Parameters:
 
 Example: `related_files({ path: "src/Chart.tsx" })` → `Chart.test.tsx`, `Chart.module.css`, `Chart.types.ts`
 
+## Hidden files and directories
+
+Hidden paths are skipped by default, but you can scope searches to them
+explicitly via `path`:
+
+- `path: ".env"` — search a single hidden file
+- `path: ".agents/**/*.md"` — search inside a hidden directory
+- `path: ".github"` — search an entire hidden directory
+
+Explicit hidden scoping works with `ffgrep`, `fff_multi_grep`, and the
+override-mode `grep`/`find`. Patterns without a hidden `path` prefix never
+match hidden files.
+
 ## Commands
 
 - `/fff-health` — show FFF status (indexed files, git info, frecency/history DB status)

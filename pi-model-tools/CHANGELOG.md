@@ -1,8 +1,14 @@
 # Changelog
 
+## [0.8.8] - 2026-09-22
+
+- Pi SDK 0.87.1 refresh: lockfile updated to `@earendil-works/pi-coding-agent` 0.87.1 (no API changes required).
+
 ## [0.8.7] - 2026-09-21
 
 - Docs: README fixes only — `str_replace_editor` is registered unconditionally (disable per-session via `/tools`); argument repair is enabled for all models (leak-clean/steering remain family-gated); tool count corrected to 8 (adds `str_replace_editor`).
+
+## [0.8.6] - 2026-09-20
 
 - Fixed: removed dead optional chaining on `registerZaiAnthropicProvider?.(pi)` — it is a static import, the `?.` never fired.
 

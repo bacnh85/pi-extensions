@@ -1,4 +1,4 @@
-import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text } from "@earendil-works/pi-tui";
 
 import { loadConfig, migrateLegacyAdvisorModel, saveModels } from "./lib/config";
@@ -21,6 +21,24 @@ interface NoteData {
   deferred?: boolean;
 }
 
+/** Shared card body for the entry renderer and the message-renderer fallback. */
+function renderNoteCard(raw: NoteData | undefined, expanded: boolean, theme: Theme): Box {
+  const data = raw && isSeverity(raw.severity) && typeof raw.note === "string"
+    ? { ...raw, note: sanitizeNote(raw.note) }
+    : { severity: "nit" as Severity, note: "(unavailable)", timestamp: 0 };
+  const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+  const label = data.downgraded ? "Advisor (downgraded)" : data.deferred ? "Advisor (deferred — next turn)" : "Advisor";
+  const sev = data.severity === "blocker"
+    ? theme.fg("error", data.severity)
+    : data.severity === "concern"
+      ? theme.fg("warning", data.severity)
+      : theme.fg("dim", data.severity);
+  box.addChild(new Text(`${theme.fg("accent", theme.bold(label))} ${sev} ${theme.fg("dim", data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : "")}`, 0, 0));
+  box.addChild(new Markdown(data.note, 0, 0, getMarkdownTheme()));
+  if (expanded && data.timestamp) box.addChild(new Text(theme.fg("dim", new Date(data.timestamp).toLocaleString()), 0, 0));
+  return box;
+}
+
 export default function piAdvisor(pi: ExtensionAPI): void {
   let runtime: WatcherRuntime | undefined;
   let runtimeSessionId: string | undefined;
@@ -29,20 +47,7 @@ export default function piAdvisor(pi: ExtensionAPI): void {
   let migrationAttempted = false;
 
   pi.registerEntryRenderer<NoteData>(REVIEW_ENTRY, (entry, { expanded }, theme) => {
-    const data = entry.data && isSeverity(entry.data.severity) && typeof entry.data.note === "string"
-      ? { ...entry.data, note: sanitizeNote(entry.data.note) }
-      : { severity: "nit" as Severity, note: "(unavailable)", timestamp: 0 };
-    const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-    const label = data.downgraded ? "Advisor (downgraded)" : data.deferred ? "Advisor (deferred — next turn)" : "Advisor";
-    const sev = data.severity === "blocker"
-      ? theme.fg("error", data.severity)
-      : data.severity === "concern"
-        ? theme.fg("warning", data.severity)
-        : theme.fg("dim", data.severity);
-    box.addChild(new Text(`${theme.fg("accent", theme.bold(label))} ${sev} ${theme.fg("dim", data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : "")}`, 0, 0));
-    box.addChild(new Markdown(data.note, 0, 0, getMarkdownTheme()));
-    if (expanded && data.timestamp) box.addChild(new Text(theme.fg("dim", new Date(data.timestamp).toLocaleString()), 0, 0));
-    return box;
+    return renderNoteCard(entry.data, expanded, theme);
   });
 
   // Message renderer for next-turn asides (LLM-visible deferred notes). Guard for
@@ -52,20 +57,7 @@ export default function piAdvisor(pi: ExtensionAPI): void {
   if (typeof (pi as unknown as { registerMessageRenderer?: unknown }).registerMessageRenderer === "function") {
     (pi as unknown as { registerMessageRenderer: typeof pi.registerEntryRenderer }).registerMessageRenderer<NoteData>(REVIEW_ENTRY, (message, { expanded }, theme) => {
       const raw = (message as unknown as { details?: unknown }).details as NoteData | undefined;
-      const data = raw && isSeverity(raw.severity) && typeof raw.note === "string"
-        ? { ...raw, note: sanitizeNote(raw.note) }
-        : { severity: "nit" as Severity, note: "(unavailable)", timestamp: 0 };
-      const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-      const label = data.downgraded ? "Advisor (downgraded)" : data.deferred ? "Advisor (deferred — next turn)" : "Advisor";
-      const sev = data.severity === "blocker"
-        ? theme.fg("error", data.severity)
-        : data.severity === "concern"
-          ? theme.fg("warning", data.severity)
-          : theme.fg("dim", data.severity);
-      box.addChild(new Text(`${theme.fg("accent", theme.bold(label))} ${sev} ${theme.fg("dim", data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : "")}`, 0, 0));
-      box.addChild(new Markdown(data.note, 0, 0, getMarkdownTheme()));
-      if (expanded && data.timestamp) box.addChild(new Text(theme.fg("dim", new Date(data.timestamp).toLocaleString()), 0, 0));
-      return box;
+      return renderNoteCard(raw, expanded, theme);
     });
   }
 

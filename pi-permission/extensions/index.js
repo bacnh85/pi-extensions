@@ -24,7 +24,8 @@
  */
 
 import { readFileSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
-import { resolve as pathResolve } from "node:path";
+import * as nodePath from "node:path";
+const { join: pathJoin } = nodePath;
 import os from "node:os";
 
 /**
@@ -85,19 +86,9 @@ export function resolveRule(rules, subject, home) {
 export function expandHome(pattern, home) {
   if (!home) return pattern;
   if (pattern === "~") return home;
-  if (pattern.startsWith("~/")) return join(home, pattern.slice(2));
-  if (pattern.startsWith("$HOME/")) return join(home, pattern.slice(6));
+  if (pattern.startsWith("~/")) return pathJoin(home, pattern.slice(2));
+  if (pattern.startsWith("$HOME/")) return pathJoin(home, pattern.slice(6));
   return pattern;
-}
-
-// Hand-rolled join for settings-dir/~ concatenation only (zero-dep spirit;
-// path-boundary matching uses node:path resolve). Variadic so nested
-// paths (~/.pi/agent) resolve correctly (the old 2-arg version silently
-// dropped the third segment).
-function join(...parts) {
-  return parts
-    .map((p, i) => (i === 0 ? String(p).replace(/\/+$/, "") : String(p).replace(/^\/+/, "")))
-    .join("/");
 }
 
 /**
@@ -110,13 +101,13 @@ function join(...parts) {
 export function readSettingsKey(cwd, key) {
   const home = os.homedir();
   const dirs = [
-    join(cwd || process.cwd(), ".pi"),
-    process.env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent"),
-    join(home, ".pi", "agents"),
+    pathJoin(cwd || process.cwd(), ".pi"),
+    process.env.PI_CODING_AGENT_DIR || pathJoin(home, ".pi", "agent"),
+    pathJoin(home, ".pi", "agents"),
   ];
   for (const dir of dirs) {
     try {
-      const parsed = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
+      const parsed = JSON.parse(readFileSync(pathJoin(dir, "settings.json"), "utf8"));
       const v = parsed?.[key];
       // Only plain objects are valid config; arrays/strings/numbers are misconfig.
       if (v && typeof v === "object" && !Array.isArray(v)) return v;
@@ -147,24 +138,37 @@ function toolSubject(toolName, input) {
   return "";
 }
 
-function resolve(p, cwd) {
+function resolve(p, cwd, ppath = nodePath) {
   if (!p) return "";
   // node:path resolve normalizes `..` — the old hand-rolled join left it in
   // place ("../x" → "/proj/../x"), so the isExternal prefix check classified
   // traversal paths as internal and they bypassed the deny gate.
-  return pathResolve(cwd || "/", p);
+  return ppath.resolve(cwd || ppath.sep, p);
 }
 
 /**
  * Check whether `path` falls outside `cwd` (the external-directory boundary).
  * A path exactly equal to cwd (e.g. reading the project root itself) is NOT
  * external — only strictly-outside paths are.
+ *
+ * Containment uses path.relative, NOT a `root + "/"` prefix check: win32
+ * pathResolve yields backslash separators, so the prefix check classified
+ * every path as external and external_directory deny blocked all path tools
+ * (regression 0.2.5). Exported for unit testing; `ppath` (default node:path,
+ * i.e. posix on posix hosts) lets tests inject `path.win32` to exercise the
+ * exact code path production Windows takes.
  */
-function isExternal(path, cwd) {
+export function isExternal(path, cwd, ppath) {
   if (!path || !cwd) return false;
-  const abs = resolve(path, cwd);
-  const root = resolve(cwd, "");
-  return abs !== root && !abs.startsWith(root + "/");
+  const P = ppath || nodePath;
+  const abs = resolve(path, cwd, P);
+  const root = resolve(cwd, "", P);
+  if (abs === root) return false;
+  const rel = P.relative(root, abs);
+  // Canonical containment idiom: `..env` (a legal workspace filename) also
+  // starts with ".." but is INSIDE the root — only the exact parent rel or a
+  // true `..`+separator prefix escapes it.
+  return rel === ".." || rel.startsWith(".." + P.sep) || P.isAbsolute(rel);
 }
 
 // Tools that take a path and can trigger the external_directory boundary.
@@ -213,14 +217,14 @@ export function persistAllowlistRule(toolName, subject, ctx, dirs) {
     }
     const home = os.homedir();
     const search = dirs ?? [
-      join(ctx?.cwd || process.cwd(), ".pi"),
-      process.env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent"),
-      join(home, ".pi", "agents"),
+      pathJoin(ctx?.cwd || process.cwd(), ".pi"),
+      process.env.PI_CODING_AGENT_DIR || pathJoin(home, ".pi", "agent"),
+      pathJoin(home, ".pi", "agents"),
     ];
     let target = search[0];
     for (const dir of search) {
       try {
-        const existing = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
+        const existing = JSON.parse(readFileSync(pathJoin(dir, "settings.json"), "utf8"));
         if (existing?.permission && typeof existing.permission === "object" && !Array.isArray(existing.permission)) {
           target = dir;
           break;
@@ -228,7 +232,7 @@ export function persistAllowlistRule(toolName, subject, ctx, dirs) {
       } catch { /* no/invalid settings.json here — keep looking */ }
     }
     mkdirSync(target, { recursive: true });
-    const file = join(target, "settings.json");
+    const file = pathJoin(target, "settings.json");
     let parsed = {};
     try {
       const raw = readFileSync(file, "utf8");

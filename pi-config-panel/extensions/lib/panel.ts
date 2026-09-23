@@ -310,7 +310,6 @@ export class ConfigPanelModel implements Component {
   keybindings: KeybindingsManager | null = null;
 
   dirty = false;
-  width = 80; // overlay width hint
   /** Keys of rows the user actually edited (for secret-persistence decisions). */
   editedKeys = new Set<string>();
   /** Current groups (exposed for tests/rebuild inspection). */

@@ -1,5 +1,21 @@
 # Changelog
 
+All notable changes to `pi-fff` will be documented in this file.
+
+## 0.8.3 (2026-09-22)
+
+### Fixed
+
+- Override-mode `find` now returns a friendly "Invalid path constraint"
+  message for absolute out-of-workspace paths instead of a raw tool error
+  (matches the non-override path's error handling).
+
+### Changed
+
+- README documents explicit hidden-file/hidden-directory scoping
+  (`.env`, `.agents/**`) and the `0.8.2` boilerplate line moved to the top
+  of this file.
+
 ## 0.8.2 (2026-09-21)
 
 ### Fixed
@@ -49,8 +65,6 @@
 ### Improvements
 
 - Patch version bump for release sync and package documentation update.
-
-All notable changes to `pi-fff` will be documented in this file.
 
 ## 0.7.8 (2026-07-30)
 

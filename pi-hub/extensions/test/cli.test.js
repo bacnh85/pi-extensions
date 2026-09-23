@@ -99,6 +99,27 @@ test("add: failed pi install resolves 1 and prints the failure", { skip: process
   assert.ok(logs.some((l) => /install failed: definitely-not-real/.test(l)), "failure message printed");
 });
 
+test("add: signal-killed pi resolves 1 (status null is failure, not success)", { skip: process.platform === "win32" }, async () => {
+  const shim = mkdtempSync(path.join(tmpdir(), "pi-hub-shim-"));
+  writeFileSync(path.join(shim, "pi"), "#!/bin/sh\nkill -9 $$\n");
+  chmodSync(path.join(shim, "pi"), 0o755);
+  const realPath = process.env.PATH;
+  const logs = [];
+  const orig = console.log;
+  console.log = (msg) => logs.push(msg);
+  let code;
+  try {
+    process.env.PATH = `${shim}${path.delimiter}${realPath}`;
+    code = await main(["add", "signal-victim"]);
+  } finally {
+    process.env.PATH = realPath;
+    console.log = orig;
+    rmSync(shim, { recursive: true, force: true });
+  }
+  assert.equal(code, 1, "exit code 1 when pi dies from a signal");
+  assert.ok(logs.some((l) => /install failed: signal-victim/.test(l)), "failure message printed");
+});
+
 test("remove rejects -l/--local — only valid with add", async () => {
   const logs = [];
   const orig = console.log;

@@ -5,7 +5,6 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 // ponytail: static catalog regenerated from monorepo package.json files; query npm live if curation drifts
@@ -44,7 +43,7 @@ export function resolveSource(ref) {
 export function searchCatalog(query) {
   const q = query.toLowerCase();
   return catalog.filter(
-    (c) => c.dir.includes(q) || c.name.toLowerCase().includes(q) || c.description.toLowerCase().includes(q),
+    (c) => c.dir.toLowerCase().includes(q) || c.name.toLowerCase().includes(q) || c.description.toLowerCase().includes(q),
   );
 }
 
@@ -78,7 +77,8 @@ export function piInstalled() {
 function pi(args) {
   const r = spawnPi(args, { stdio: "inherit" });
   if (r.error) throw new Error(`failed to run pi: ${r.error.message}`);
-  return r.status ?? 0;
+  // status is null when the child died from a signal — that's a failure, not success
+  return r.status === 0 && !r.signal ? 0 : (r.status ?? 1);
 }
 
 export function readSettingsPackages(env = process.env) {

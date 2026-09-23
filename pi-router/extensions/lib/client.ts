@@ -272,26 +272,14 @@ export function mapModel(raw: RouterModelRaw, enableReasoning: boolean): PiModel
   // gateway that emits a present-but-invalid value (0, "unknown") must still
   // suppress CONTEXT_OVERRIDES so the stale override never mixes with router
   // truth; the unparseable value itself falls through to caps/fallback below.
-  const hasTopLevel =
-    (raw.context_length !== undefined && raw.context_length !== null) ||
-    (raw.max_output_tokens !== undefined && raw.max_output_tokens !== null);
   const override = lookupContextOverride(raw.id);
-  // Floor-aware gate, per-field: the override fires for a field when (a) no
-  // top-level field is present at all (absent), or (b) a parseable top-level
-  // value sits at/below the known DEFAULT_CAPABILITIES floor AND the
-  // override's value exceeds the floor (otherwise there is nothing to
-  // correct). Per-field reasoning keeps the deepseek-v[34] entry (which
-  // omits maxTokens) from collapsing max to the 4096 fallback when the
-  // router reports a poisoned context alongside a real maxOutput, and keeps
-  // a present-but-unparseable top-level from triggering the override (the
-  // 1.1.1 guarantee: that signals garbage, not router truth).
   const ctxAbsent = raw.context_length === undefined || raw.context_length === null;
   const maxAbsent = raw.max_output_tokens === undefined || raw.max_output_tokens === null;
   const ctxUsable = !ctxAbsent && topLevelContext !== undefined;
   const maxUsable = !maxAbsent && topLevelMax !== undefined;
-  // Pair-floor-poison gate: the override applies to the model when (a) no
-  // top-level fields are present at all (the router signals nothing — override
-  // fills both), OR (b) the top-level pair exactly matches the omniroute /
+  // All-or-nothing pair-floor-poison gate. The curated override applies to the
+  // model when (a) no top-level fields are present at all (the router signals
+  // nothing — override fills both), OR (b) the top-level pair exactly matches the omniroute /
   // 9router DEFAULT_CAPABILITIES signature (context ≤ DEFAULT_CONTEXT_FLOOR
   // AND max ≤ DEFAULT_MAX_FLOOR, with a verified override at the floor or
   // above for each). `>=` (not strict `>`) so models whose verified window

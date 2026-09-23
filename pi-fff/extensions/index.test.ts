@@ -540,6 +540,13 @@ describe("pi-fff tools", () => {
     expect(globCalls).to.include("src/*.ts");
   });
 
+  it("returns a friendly error when override find gets an absolute out-of-workspace path", async () => {
+    const { tools } = harness(fakeFinder(), "override");
+    const result = await run(tools.get("find"), { pattern: "*.ts", path: "/etc" });
+    expect(text(result)).to.include("Invalid path constraint");
+    expect(text(result)).to.include("must be relative to the workspace");
+  });
+
   it("truncates every tool output with Pi metadata", async () => {
     const items = Array.from({ length: 2101 }, (_, i) => item(`src/file-${i}.ts`));
     const result = await run(harness(fakeFinder({ fileSearch: () => search(items) })).tools.get("fffind"), {

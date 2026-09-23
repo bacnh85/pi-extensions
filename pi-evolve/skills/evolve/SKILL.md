@@ -14,9 +14,9 @@ your coding-agent sessions. It is the active half of agent self-improvement:
 ```
 CAPTURE (automatic, every turn)        REFLECT (agent-called tool)
   tool_call  ─► record tool+input        evolve_reflect returns the
-  tool_result ─► mark ok/err + category   sealed trajectory + a prompt
+  tool_result ─► mark ok/err + category   live trajectory + a prompt
   turn_end   ─► record usage              skeleton; the model produces
-  agent_end  ─► seal snapshot             1-3 structured learnings.
+  agent_end  ─► seal snapshot             0-3 structured learnings.
                                               │
 CONSOLIDATE (via evolve_save)               ▼
   write to Munin (type:learning tag) ◄──── produce learning:
@@ -110,6 +110,6 @@ future sessions. Apply one only if its trigger matches the current work.
 ## Safety
 
 - Input digests are **truncated to 200 chars and redacted** (API keys, tokens,
-  Bearer headers, long base64 blobs → `[REDACTED]`) before reaching the buffer.
+  Bearer headers → `[REDACTED]`) before reaching the buffer.
 - The buffer is **in-memory only**; sealed snapshots are short-lived.
 - Injection is **best-effort** — a read failure never breaks a session.

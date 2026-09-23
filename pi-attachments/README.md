@@ -15,7 +15,7 @@ files copied in Finder/Explorer does nothing at all.
 ## Install
 
 ```bash
-pi install @bacnh85/pi-attachments
+pi install npm:@bacnh85/pi-attachments
 ```
 
 ## What it does

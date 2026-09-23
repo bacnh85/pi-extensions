@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.5 (2026-09-22)
+
+### Fixed
+
+- **Data loss on resume**: `session_start` reset the checkpoint counter to 0, so a
+  resumed session (same sessionId) overwrote the prior session's refs
+  (`refs/pi-checkpoints/<sid>/0…`), silently destroying restore points. The
+  counter is now seeded from existing refs (`max index + 1`) at `session_start`
+  and whenever the sessionId changes, so resumed sessions append instead of
+  overwrite.
+
+### Documented
+
+- 30-day ref pruning on `session_start`.
+- `/undo` restore leaves tracked files **added** during the undone turn in place
+  (tracked-new files survive, like untracked ones); remove them manually.
+
 ## [0.1.4] - 2026-09-21
 
 ### Fixed

@@ -39,10 +39,29 @@ export default function checkpointExtension(pi) {
   let sessionCounter = 0;
   let lastSessionId = null;
 
+  function safeSid(sessionId) {
+    return String(sessionId || "default").replace(/[^a-zA-Z0-9-]/g, "").slice(0, 64) || "default";
+  }
+
   function refName(sessionId, n) {
-    // Sanitize sessionId to a ref-safe component.
-    const safe = String(sessionId || "default").replace(/[^a-zA-Z0-9-]/g, "").slice(0, 64) || "default";
-    return `${REF_NS}/${safe}/${n}`;
+    return `${REF_NS}/${safeSid(sessionId)}/${n}`;
+  }
+
+  // Highest existing ref index under refs/<ns>/<sid>/, +1 — so a RESUMED
+  // session (same sessionId) appends new checkpoints instead of silently
+  // overwriting the prior session's restore points. 0 when none exist.
+  async function seedCounter(sid, ctx) {
+    const prefix = `${REF_NS}/${safeSid(sid)}/`;
+    const listed = await git(["for-each-ref", prefix, "--format=%(refname)"], ctx);
+    if (listed?.failed || !listed?.stdout) return 0;
+    let max = -1;
+    for (const line of listed.stdout.split("\n")) {
+      const name = line.trim();
+      if (!name.startsWith(prefix)) continue;
+      const idx = parseInt(name.slice(prefix.length), 10);
+      if (Number.isInteger(idx) && idx > max) max = idx;
+    }
+    return max + 1;
   }
 
   async function git(args, ctx, opts = {}) {
@@ -60,9 +79,10 @@ export default function checkpointExtension(pi) {
   async function snapshot(ctx) {
     const sid = ctx.sessionManager?.getSessionId?.() || "default";
     if (sid !== lastSessionId) {
-      // New/resumed session: reset state so old refs aren't mixed in.
+      // New/resumed session: reset the in-memory stack, but seed the counter
+      // from existing refs so resumed sessions append instead of overwrite.
       lastSessionId = sid;
-      sessionCounter = 0;
+      sessionCounter = await seedCounter(sid, ctx);
       stack.length = 0;
       redoBuffer.length = 0;
     }
@@ -130,7 +150,12 @@ export default function checkpointExtension(pi) {
     redoBuffer.length = 0;
     sessionCounter = 0;
     lastSessionId = ctx?.sessionManager?.getSessionId?.() || null;
-    if (isGitRepo(ctx?.cwd)) await pruneOldRefs(ctx);
+    if (isGitRepo(ctx?.cwd)) {
+      // Resumed session (same sessionId): continue past existing refs instead
+      // of overwriting them. Only possible when we know the sessionId here.
+      if (lastSessionId) sessionCounter = await seedCounter(lastSessionId, ctx);
+      await pruneOldRefs(ctx);
+    }
   });
 
   // Checkpoint refs live forever unless pruned. On session_start, delete refs
