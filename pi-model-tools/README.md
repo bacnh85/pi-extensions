@@ -209,6 +209,22 @@ edits; Claude/OpenAI keep using `edit` (they're already reliable with it).
 |---------|-------------|
 | `/model-tools-status` | Shows detected family, repair counts, error history, prompt-cache stats (input/cached/written tokens + hit rate), and DeepSeek Super Power Mode + turn count |
 
+## Background long commands (OMP-style)
+
+The bash tool always carries a static anti-poll clause: never wait by looping
+`sleep`/`ps`/`pgrep`/`top` — every poll is a full provider round (whole-context
+re-read). This alone measurably cuts cost in fully-autonomous runs (cron jobs,
+A2A tasks) where the model used to sit in poll loops.
+
+Set `PI_MODEL_TOOLS_BASH_AUTO_BG=1` to also enable the mechanism (oh-my-pi
+18.2.8 parity): a foreground call still running after
+`PI_MODEL_TOOLS_BASH_AUTO_BG_SECS` (default 120) returns a receipt immediately;
+the command keeps running (nohup-like, survives turn abort), its output is
+teed to a temp log, and the result is delivered as a follow-up turn when it
+settles. A caller-set `timeout` still applies as a total-runtime kill. At most
+4 jobs run concurrently — over that, calls stay foreground. `PI_MODEL_TOOLS_BASH_AUTO_BG` is read once at startup; the bash description switches to
+the "you will be woken — NEVER poll" contract for the whole session.
+
 ## Configuration
 
 All toggles live under the `PI_MODEL_TOOLS_*` namespace.
@@ -223,6 +239,8 @@ All toggles live under the `PI_MODEL_TOOLS_*` namespace.
 | `PI_MODEL_TOOLS_BLOCK_DANGEROUS_COMMANDS` | 1 | Safety guard (on by default) |
 | `PI_MODEL_TOOLS_AUTO_BLOCK_AFTER_REMINDERS` | 0 | Auto-block tool-selection misses after N reminders |
 | `PI_MODEL_TOOLS_MAX_ERROR_HISTORY` | 100 | Maximum tracked tool errors |
+| `PI_MODEL_TOOLS_BASH_AUTO_BG` | 0 | Auto-background bash calls still running after the threshold; output delivered as a follow-up turn (`1`/`on` to enable) |
+| `PI_MODEL_TOOLS_BASH_AUTO_BG_SECS` | 120 | Foreground threshold in seconds before a bash call auto-backgrounds |
 | `PI_MODEL_TOOLS_DEBUG` | 0 | stderr diagnostic logging |
 | `PI_MODEL_TOOLS_LOG_FORMAT` | plain | `json` for structured log lines |
 

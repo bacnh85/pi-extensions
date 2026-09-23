@@ -23,7 +23,7 @@ Each package lives in its own directory and can be installed independently — e
 | [`@bacnh85/pi-fff`](./pi-fff) | 0.8.2 | FFF-powered fuzzy file and content search for Pi. |
 | [`@bacnh85/pi-init`](./pi-init) | 0.1.3 | Guided AGENTS.md generation — `/init` scans the repo and generates/updates AGENTS.md with build/test/lint commands, architecture, and conventions. |
 | [`@bacnh85/pi-kicad`](./pi-kicad) | 0.1.7 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon. |
-| [`@bacnh85/pi-model-tools`](./pi-model-tools) | 0.8.7 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, and a Codex-style `apply_patch` diff tool. |
+| [`@bacnh85/pi-model-tools`](./pi-model-tools) | 0.9.0 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, a Codex-style `apply_patch` diff tool, and bash auto-background with anti-poll guidance (OMP 18.2.8 parity). |
 | [`@bacnh85/pi-munin`](./pi-munin) | 0.5.6 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and cross-project sharing. |
 | [`@bacnh85/pi-notebooklm`](./pi-notebooklm) | 0.1.12 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | [`@bacnh85/pi-notify`](./pi-notify) | 0.1.4 | Desktop notifications and sounds — fires on task completion, errors, and questions; cross-platform (macOS/Linux/Windows + terminal OSC). |

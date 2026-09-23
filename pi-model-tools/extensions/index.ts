@@ -8,6 +8,7 @@ import {
   createFindToolDefinition,
   createGrepToolDefinition,
   createLsToolDefinition,
+  createLocalBashOperations,
   createReadToolDefinition,
   createWriteToolDefinition,
   defineTool,
@@ -86,6 +87,15 @@ import {
   superPowerModeEnabled,
   superPowerPromptContent,
 } from "./lib/guidance.ts";
+import {
+  autoBgEnabled,
+  autoBgThresholdSecs,
+  bashAutoBgClause,
+  wrapWithAutoBg,
+  abortAllBgJobs,
+  setBgDeliveryEnabled,
+  bgJobCount,
+} from "./lib/bash-auto-bg.ts";
 
 function addReadDefaults(args: unknown): unknown {
   if (!isRecord(args)) return args;
@@ -328,9 +338,21 @@ export default function (pi: ExtensionAPI) {
   }
 
   // ── Register wrapped built-in tools ONCE (the single source of tool-wrapping) ──
+  // Bash: static anti-poll clause always appended (prompt-only half, default
+  // on — env read HERE once, so the description is byte-stable per session);
+  // mechanism (auto-background) only when PI_MODEL_TOOLS_BASH_AUTO_BG is on.
+  const autoBgOn = autoBgEnabled();
+  const autoBgSecs = autoBgThresholdSecs();
   const toolFactories: Record<string, (cwd: string) => any> = {
     read: createReadToolDefinition, write: createWriteToolDefinition, edit: createEditToolDefinition,
-    grep: createGrepToolDefinition, find: createFindToolDefinition, ls: createLsToolDefinition, bash: createBashToolDefinition,
+    grep: createGrepToolDefinition, find: createFindToolDefinition, ls: createLsToolDefinition,
+    bash: (cwd: string) => {
+      const def = createBashToolDefinition(
+        cwd,
+        autoBgOn ? { operations: wrapWithAutoBg(createLocalBashOperations(), { pi, thresholdSecs: autoBgSecs }) } : undefined,
+      );
+      return { ...def, description: `${def.description}\n\n${bashAutoBgClause(autoBgOn, autoBgSecs)}` };
+    },
     // DSH Minimal-pair editor (anchors DeepSeek v4 Pro request #1; also a
     // generally useful view/create/replace/insert editor in the full catalog).
     str_replace_editor: createStrReplaceEditorToolDefinition,
@@ -417,6 +439,7 @@ export default function (pi: ExtensionAPI) {
         `  Selection guidance (DeepSeek): ${selectionGuidanceEnabled() ? "on" : "off"}`,
         `  Super Power Mode (DeepSeek): ${superPowerModeEnabled() ? "on" : "off"}`,
         `  ds-anchor (v4-pro): ${anchorState}`,
+        `  Bash auto-bg: ${autoBgOn ? `on @${autoBgSecs}s` : "off"}${autoBgOn && bgJobCount() > 0 ? ` (${bgJobCount()} running)` : ""}`,
         `  Thinking level: ${currentThinking ?? "unknown"}${currentThinking !== "max" && anchorActive ? " (recipe wants max)" : ""}`,
         ...(anchorTrace.length > 0 ? ["", "**ds-anchor trace:**", ...anchorTrace.map((l) => `  ${l}`)] : []),
         `  Super Power turns: ${turnCounter}`,
@@ -490,6 +513,18 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => {
     currentThinking = ctx.thinkingLevel;
   });
+
+  // ── session_shutdown: kill any live auto-backgrounded bash jobs. Delivery is
+  // suppressed so the aborts don't fire triggerTurn follow-ups into a session
+  // that is going away (/new and /resume also fire session_shutdown — the
+  // docs' lifecycle diagram — so cross-session leakage can't happen).
+  // session_start re-enables delivery for the (new) session.
+  if (autoBgOn) {
+    pi.on("session_start", () => setBgDeliveryEnabled(true));
+    pi.on("session_shutdown", () => {
+      abortAllBgJobs(true);
+    });
+  }
 
   // ── model_select: re-init the anchor when switching to/from a target ──
   pi.on("model_select", (event, ctx) => {

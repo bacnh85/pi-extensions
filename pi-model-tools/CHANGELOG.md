@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.9.0] - 2026-09-23
+
+- Added: bash auto-background + anti-poll guidance (oh-my-pi 18.2.8 parity, the
+  "~30% cost reduction in fully-autonomous tasks" change). The bash description
+  now always carries a static anti-poll clause (never wait by looping
+  `sleep`/`ps`/`pgrep`/`top` — every poll is a full provider round). New opt-in
+  mechanism `PI_MODEL_TOOLS_BASH_AUTO_BG=1` (threshold
+  `PI_MODEL_TOOLS_BASH_AUTO_BG_SECS`, default 120): a foreground call still
+  running at the threshold returns a receipt immediately, keeps running
+  nohup-like, tees output to a temp log, and delivers its result as a follow-up
+  turn on settlement (max 4 concurrent; caller `timeout` remains a
+  total-runtime kill). Clause text is byte-stable per session (cache-safe
+  request head); `session_shutdown` kills live background jobs and suppresses
+  their wake-ups (session_start re-enables delivery). Reviewer-hardened: log
+  paths carry a randomUUID component and are created O_CREAT|O_EXCL mode 0600
+  (no pre-planted-symlink following); on-disk log capped at 5MB with a
+  truncation note in the wake-up; receipt boilerplate never re-enters the
+  wake-up output tail. Second reviewer round: pre-threshold output streams to
+  the caller unchanged AND seeds the wake-up tail/log (no data loss); log file
+  is deleted once the wake-up delivers its tail (kept only when truncated,
+  advertised as "Full log (kept)"); receipt no longer advertises a log path.
+  Validated live (RPC-mode fresh pi × 2): receipt ~8s, turn ends ~1s later,
+  wake-up ~5s after that with clean tail, zero leaked files.
+
 ## [0.8.8] - 2026-09-22
 
 - Pi SDK 0.87.1 refresh: lockfile updated to `@earendil-works/pi-coding-agent` 0.87.1 (no API changes required).
