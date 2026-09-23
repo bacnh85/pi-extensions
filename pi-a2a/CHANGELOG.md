@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- **Bounded retry for transient model-channel 503s (#470).** The child runner's
+  retry budget is raised from `maxRetries: 1` to `{ maxRetries: 3,
+  baseDelayMs: 1000 }` (about 7 seconds), so a distributor `No available
+  channel` 503 on the final turn no longer kills the run. If the budget is
+  exhausted, `isTransientChannelError()` labels the terminal error explicitly.
 - **A provider-failed final turn maps to FAILED, not COMPLETED "(no reply)".**
   A dispatched child's run "finishes" whenever the agent loop ends, but that
   includes endings with no usable answer. The runner previously guarded only a
