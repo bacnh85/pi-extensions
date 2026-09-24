@@ -1,0 +1,36 @@
+{
+  "name": "@bacnh85/pi-classifier",
+  "version": "0.1.0",
+  "description": "System One decision models (TypeSafe Jev) for Pi — classify tool plus an opt-in Jev-gated permission auto-approve hook for shell commands. Static risky list first, never auto-denies, fails safe to the normal prompt.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "classifier",
+    "system-one",
+    "typesafe",
+    "jev",
+    "permission",
+    "auto-approve"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/bacnh85/pi-extensions/tree/main/pi-classifier",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bacnh85/pi-extensions.git"
+  },
+  "files": [
+    "README.md",
+    "extensions/index.js"
+  ],
+  "scripts": {
+    "test": "node --test extensions/test/*.test.js"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.js"
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
