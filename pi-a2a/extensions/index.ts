@@ -18,6 +18,8 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import { terminalOutcomeError } from "./lib/outcome.js";
+import { childRetrySettings, isTransientChannelError } from "./lib/retry.js";
 import { buildA2ASettingsPatch, getGatewayPeers, loadConfig, setConfigOverrides, writeSettingsA2A, type A2AConfig } from "./lib/config";
 import {
   a2aCall,
@@ -78,9 +80,18 @@ function makeSessionRunner(ctx: ExtensionContext, cfg?: A2AConfig): SessionRunne
       20_000,
       Math.floor((model.contextWindow ?? 128_000) / 5),
     );
+    // retry: the SDK agent loop retries a failed model turn IN PLACE (removes
+    // the errored assistant message, re-runs the same turn with backoff) and
+    // already narrows to the transient class (503/429/5xx/network, never
+    // quota/billing/4xx). The stock child budget was maxRetries:1 — a single
+    // 2s retry — so a transient distributor 503 ("no available channel") on
+    // the FINAL turn killed the run and left the dispatched task silently open
+    // (task #470, incident f4b6578c). childRetrySettings() lifts it to a
+    // bounded 3 retries / short backoff (~7s of coverage), converting the
+    // channel blip into a blip. See lib/retry.ts.
     const settingsManager = SettingsManager.inMemory({
       compaction: { enabled: true, keepRecentTokens },
-      retry: { enabled: true, maxRetries: 1 },
+      retry: childRetrySettings(),
     });
     // The loader must NOT receive the inMemory settingsManager: it would then
     // resolve zero extension packages and the child session would run without
@@ -142,7 +153,16 @@ function makeSessionRunner(ctx: ExtensionContext, cfg?: A2AConfig): SessionRunne
         sessionManager = undefined; // fall back to stock in-memory
       }
     }
-    if (!sessionManager) sessionManager = SessionManager.inMemory(cwd);
+    // Fallback (transcripts off or persistence failed): the in-memory child
+    // inherits the HOST session's id (fleet task #238) so its MCP calls
+    // (pi-mcp-extension stamps getSessionId() as pi/session) and outbound A2A
+    // attribute to the host conversation instead of an ephemeral id nobody
+    // can map back. The persisted path above keys the child on the taskId
+    // and records hostSessionId in its a2a/dispatch entry instead.
+    if (!sessionManager) {
+      const hostSessionId = (ctx as any).sessionManager?.getSessionId?.();
+      sessionManager = SessionManager.inMemory(cwd, hostSessionId ? { id: hostSessionId } : undefined);
+    }
     const created = await createAgentSession({
       cwd,
       model,
@@ -176,6 +196,8 @@ function makeSessionRunner(ctx: ExtensionContext, cfg?: A2AConfig): SessionRunne
     // text — consumed by the stunted-reply check after the run completes.
     let terminalStopReason: string | undefined;
     let terminalHadText = false;
+    let terminalErrorMessage: string | undefined;
+    let sawAssistant = false;
     // Cheap progress marker for post-mortems (#256): assistant turns + tool
     // executions observed before the run ended.
     let stepCount = 0;
@@ -202,6 +224,8 @@ function makeSessionRunner(ctx: ExtensionContext, cfg?: A2AConfig): SessionRunne
         if (text) reply = text;
         terminalStopReason = event.message?.stopReason;
         terminalHadText = Boolean(text);
+        terminalErrorMessage = event.message?.errorMessage;
+        sawAssistant = true;
         if (/\[INPUT_REQUIRED\]/i.test(reply)) {
           inputRequired = true;
           reply = reply.replace(/\[INPUT_REQUIRED\]\s*/gi, "").trim();
@@ -290,16 +314,33 @@ function makeSessionRunner(ctx: ExtensionContext, cfg?: A2AConfig): SessionRunne
       throw err;
     }
 
-    if (terminalStopReason === "length" && !terminalHadText) {
-      // A length stop with no assistant text means the provider capped
-      // output before any usable content — typically max_tokens clamped
-      // against the context estimate. `reply` still holds the PREVIOUS
-      // turn's text, so returning normally would report the task COMPLETED
-      // with a stale mid-work answer. Throw so the task maps to FAILED —
-      // a dispatcher must not mistake this for a finished worker.
-      throw new Error(
-        "run ended on a length stop with no assistant text — no usable reply was produced (output capped before any content; context-clamped max_tokens?)",
-      );
+    // Endings with no usable answer map to FAILED, never COMPLETED with a
+    // stale/empty reply: a length stop with no text (#314), a final turn the
+    // provider failed (#425 — e.g. HTTP 503 "no available channel", which
+    // previously came back COMPLETED "(no reply)"), and a run that produced
+    // no assistant output at all. See lib/outcome.ts.
+    let outcomeError = terminalOutcomeError({
+      stopReason: terminalStopReason,
+      hadText: terminalHadText,
+      sawAssistant,
+      errorMessage: terminalErrorMessage,
+    });
+    if (outcomeError) {
+      // If the final turn died on a transient provider/channel error, the SDK
+      // already retried it within the bounded budget above and still failed —
+      // say so, so a post-mortem does not chase a phantom permanent fault
+      // (task #470).
+      if (terminalStopReason === "error" && isTransientChannelError(terminalErrorMessage)) {
+        outcomeError += " (transient provider/channel error — bounded retries exhausted)";
+      }
+      const err = new Error(outcomeError);
+      try {
+        if (transcriptPath) (err as any).transcriptPath = transcriptPath;
+        (err as any).stepCount = stepCount;
+      } catch {
+        /* best-effort */
+      }
+      throw err;
     }
     return {
       reply: reply || "(no reply)",
@@ -518,6 +559,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
               message: String(args.message ?? ""),
               contextId: args.context_id ? String(args.context_id) : undefined,
               asyncDispatch: args.async_dispatch === true,
+              sessionId: (ctx as any).sessionManager?.getSessionId?.(),
               discoveredPeers: listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "", gatewayPeers: getGatewayPeers() }),
             }),
           },
@@ -681,6 +723,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
               capability: String(args.capability ?? ""),
               message: String(args.message ?? ""),
               mode: args.mode === "first" || args.mode === "best" ? args.mode : "all",
+              sessionId: (ctx as any).sessionManager?.getSessionId?.(),
             }),
           },
         ],

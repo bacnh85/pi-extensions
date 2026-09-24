@@ -183,6 +183,33 @@ describe("client", () => {
       assert.equal(seenHeaders["X-A2A-Identity"], "pi-kimchi");
     });
 
+    it("stamps pi/session and pi/self on the outbound message metadata (fleet task #238)", async () => {
+      const result = { task: { id: "t", contextId: "c", status: { state: STATE_COMPLETED }, artifacts: [{ parts: [{ text: "ok" }] }] } };
+      let body: any = null;
+      globalThis.fetch = (async (_url: string, init?: any) => {
+        if (init?.body) body = JSON.parse(init.body);
+        return { ok: true, status: 200, text: async () => JSON.stringify({ jsonrpc: "2.0", id: 1, result }) };
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.selfIdentity = "pi-kimchi";
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      await a2aCall({ cfg, piDir, agent: "bob", message: "hi", sessionId: "sess-123" });
+      assert.deepEqual(body.params.message.metadata, { "pi/session": "sess-123", "pi/self": "pi-kimchi" });
+    });
+
+    it("omits message metadata when there is no session or identity", async () => {
+      const result = { task: { id: "t", contextId: "c", status: { state: STATE_COMPLETED }, artifacts: [{ parts: [{ text: "ok" }] }] } };
+      let body: any = null;
+      globalThis.fetch = (async (_url: string, init?: any) => {
+        if (init?.body) body = JSON.parse(init.body);
+        return { ok: true, status: 200, text: async () => JSON.stringify({ jsonrpc: "2.0", id: 1, result }) };
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      await a2aCall({ cfg, piDir, agent: "bob", message: "hi" });
+      assert.isUndefined(body.params.message.metadata);
+    });
+
     it("falls back to server.agentName for X-A2A-Identity", async () => {
       const result = { task: { id: "t", contextId: "c", status: { state: STATE_COMPLETED }, artifacts: [{ parts: [{ text: "ok" }] }] } };
       let seenHeaders: Record<string, string> = {};

@@ -2,6 +2,8 @@ import { assert } from "chai";
 import {
   AntiLoop,
   authenticate,
+  authenticateInfo,
+  sanitizeAssertedIdentity,
   constantTimeEqual,
   filterInbound,
   getPushSecret,
@@ -100,6 +102,47 @@ describe("security", () => {
         sharedToken: "",
       });
       assert.equal(id, "alice");
+    });
+  });
+
+  describe("asserted identity (X-A2A-Identity, fleet task #322)", () => {
+    const base = { peerTokens: {}, sharedToken: "", loopbackBind: true, clientIp: "127.0.0.1" };
+    it("honors a loopback caller's asserted name on a loopback bind (no tokens)", () => {
+      assert.deepEqual(authenticateInfo({ ...base, identityHeader: "librarian-kimchi" }), { identity: "librarian-kimchi", provenance: "asserted" });
+    });
+    it("honors it for a shared-token caller", () => {
+      const r = authenticateInfo({ ...base, sharedToken: "s", authHeader: "Bearer s", identityHeader: "pi-bingsu" });
+      assert.deepEqual(r, { identity: "pi-bingsu", provenance: "asserted" });
+    });
+    it("ignores the header on a non-loopback bind", () => {
+      const r = authenticateInfo({ ...base, loopbackBind: false, sharedToken: "s", authHeader: "Bearer s", identityHeader: "pi-bingsu" });
+      assert.deepEqual(r, { identity: "ip:127.0.0.1", provenance: "address" });
+    });
+    it("ignores the header from a non-loopback client", () => {
+      const r = authenticateInfo({ ...base, clientIp: "100.64.0.9", sharedToken: "s", authHeader: "Bearer s", identityHeader: "pi-bingsu" });
+      assert.deepEqual(r, { identity: "ip:100.64.0.9", provenance: "address" });
+    });
+    it("never lets an asserted name borrow a token-backed identity", () => {
+      const r = authenticateInfo({ ...base, peerTokens: { alice: "a" }, sharedToken: "s", authHeader: "Bearer s", identityHeader: "alice" });
+      assert.deepEqual(r, { identity: "ip:127.0.0.1", provenance: "address" });
+    });
+    it("a per-peer token names the caller regardless of the header", () => {
+      const r = authenticateInfo({ ...base, peerTokens: { alice: "a" }, authHeader: "Bearer a", identityHeader: "mallory" });
+      assert.deepEqual(r, { identity: "alice", provenance: "token" });
+    });
+    it("never flips a reject into an admit", () => {
+      const r = authenticateInfo({ ...base, sharedToken: "s", authHeader: "Bearer wrong", identityHeader: "pi-kimchi" });
+      assert.deepEqual(r, { identity: null, provenance: null });
+    });
+    it("sanitizes the asserted name", () => {
+      assert.equal(sanitizeAssertedIdentity("pi-kimchi"), "pi-kimchi");
+      assert.isNull(sanitizeAssertedIdentity("bad name"));
+      assert.isNull(sanitizeAssertedIdentity("-leading"));
+      assert.isNull(sanitizeAssertedIdentity("x".repeat(65)));
+      assert.isNull(sanitizeAssertedIdentity(["a", "b"]));
+    });
+    it("authenticate() keeps its identity-only contract", () => {
+      assert.equal(authenticate({ ...base, identityHeader: "librarian-kimchi" }), "librarian-kimchi");
     });
   });
 
