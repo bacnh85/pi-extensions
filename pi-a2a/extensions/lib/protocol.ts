@@ -161,7 +161,15 @@ export interface AgentCard {
   defaultInputModes: string[];
   defaultOutputModes: string[];
   skills: AgentSkill[];
-  securitySchemes?: Record<string, { type: string; scheme: string }>;
+  /** A2A v1.0 security schemes (oneof per a2a.proto SecurityScheme), e.g.
+   *  { bearer: { httpAuthSecurityScheme: { scheme: "bearer" } } }. */
+  securitySchemes?: Record<string, { httpAuthSecurityScheme: { scheme: string; bearerFormat?: string; description?: string } }>;
+  /** A2A v1.0 security requirements: OR of ANDs; scopes are a StringList
+   *  ({ list: [...] }) per a2a.proto and the spec's example card. */
+  securityRequirements?: Array<{ schemes: Record<string, { list: string[] }> }>;
+  /** v0.3 / OpenAPI-style requirement list. NOT part of the v1.0 card: kept as
+   *  a legacy alias because hermes's a2a_discover still reads it to show
+   *  "Auth required" (fleet record eaef8e95). v1.0 parsers ignore it. */
   security?: Array<Record<string, string[]>>;
   /** Implementation-defined metadata (A2A v1.0 — permitted on core structures). */
   metadata?: Record<string, unknown>;
@@ -213,8 +221,12 @@ export function buildAgentCard(opts: {
     ],
   };
   if (opts.authRequired) {
-    card.securitySchemes = { bearer: { type: "http", scheme: "bearer" } };
-    card.security = [{ bearer: [] }];
+    // A2A v1.0 shape (fleet task #427). This used to be the v0.3/OpenAPI
+    // {type:"http",scheme:"bearer"}, which the #353 spec-oracle conformance
+    // suite flagged: a strict v1.0 client cannot read it.
+    card.securitySchemes = { bearer: { httpAuthSecurityScheme: { scheme: "bearer" } } };
+    card.securityRequirements = [{ schemes: { bearer: { list: [] } } }];
+    card.security = [{ bearer: [] }]; // legacy alias, see the AgentCard type
   }
   if (opts.sessionMetadata && Object.keys(opts.sessionMetadata).length > 0) {
     card.capabilities.extensions = [
@@ -282,11 +294,31 @@ export function unwrapSendMessageResponse(result: any): any {
   return result;
 }
 
+/** Wrap a Task as the v1.0 SendMessageResponse oneof {"task": …}. */
+export const sendTaskResponse = (task: any): any => ({ task });
+
 // StreamResponse builders (v1.0).
-export const streamTask = (task: any): any => ({ task });
 export const streamMessage = (message: any): any => ({ message });
-export const streamStatusUpdate = (task: any): any => ({ statusUpdate: task });
-export const streamArtifactUpdate = (artifact: any): any => ({ artifactUpdate: artifact });
+
+/** v1.0 TaskStatusUpdateEvent — {taskId, contextId, status, final}. */
+export const statusUpdateEvent = (task: any, final: boolean): any => ({
+  statusUpdate: {
+    taskId: task?.id,
+    contextId: task?.contextId,
+    status: task?.status,
+    final,
+  },
+});
+
+/** v1.0 TaskArtifactUpdateEvent — {taskId, contextId, artifact, lastChunk}. */
+export const artifactUpdateEvent = (task: any, artifact: any, lastChunk = true): any => ({
+  artifactUpdate: {
+    taskId: task?.id,
+    contextId: task?.contextId,
+    artifact,
+    lastChunk,
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Parts (v1.0 member-presence discriminated; v0.3 `kind` tolerant)
@@ -339,6 +371,11 @@ export interface Message {
   messageId: string;
   contextId?: string;
   taskId?: string;
+  /** Implementation-defined metadata (A2A v1.0 — permitted on core structures).
+   *  pi-a2a stamps the SENDER's session id under "pi/session" (and the
+   *  configured selfIdentity under "pi/self") so receiving peers can join
+   * dispatches to ledger rows and records on one key (fleet task #238). */
+  metadata?: Record<string, unknown>;
 }
 
 export function textMessage(role: string, text: string, contextId = ""): Message {

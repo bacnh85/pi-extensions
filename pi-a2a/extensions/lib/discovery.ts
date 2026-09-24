@@ -24,6 +24,10 @@ export interface DiscoveredPeer {
   tools?: string[];
   /** Advertised capability tags (gateway peers). */
   capabilities?: string[];
+  /** The pi session id (local-registry peers) — the per-session identity to
+   *  dispatch to and join receipts on (fleet task #238). Multiple live pi
+   *  sessions share `name`; this disambiguates them. */
+  sessionId?: string;
   /** True for local + config peers; mDNS peers are live but unverified at list time. */
   alive: boolean;
 }
@@ -63,6 +67,7 @@ export function listPeers(opts: {
       cwd: d.cwd,
       model: d.model,
       tools: d.tools,
+      sessionId: d.sessionId,
       alive: true,
     });
   }
@@ -129,6 +134,7 @@ export function formatPeers(peers: DiscoveredPeer[]): string {
     const parts = [`  - ${clean(p.name)}`, clean(p.url), `[${p.source}]`];
     if (p.cwd) parts.push(`cwd=${clean(p.cwd)}`);
     if (p.model) parts.push(`model=${clean(p.model.provider)}/${clean(p.model.id)}`);
+    if (p.sessionId) parts.push(`session=${clean(p.sessionId)}`);
     if (p.capabilities?.length) parts.push(`caps=${p.capabilities.slice(0, 8).map(clean).join(",")}`);
     lines.push(parts.join("  "));
     // Full tool list (wrapped, never truncated) — matches the Agent Card.

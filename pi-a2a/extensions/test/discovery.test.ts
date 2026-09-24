@@ -1,15 +1,13 @@
 import { assert } from "chai";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 
 import { DEFAULTS } from "./helpers";
+import { makeTempDir } from "./tmp";
 import { formatPeers, listPeers, clean } from "../lib/discovery";
 import { register, type SessionDescriptor } from "../lib/registry";
 import type { MdnsPeer } from "../lib/mdns";
 
 function tmpPiDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-disco-"));
+  return makeTempDir("pi-a2a-disco-");
 }
 
 function desc(pid: number, overrides: Partial<SessionDescriptor> = {}): SessionDescriptor {

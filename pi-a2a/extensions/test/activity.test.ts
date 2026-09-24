@@ -5,6 +5,7 @@ import {
   activityStatusLine,
   activityToText,
   classifyLine,
+  dispatchLabel,
   preview,
   type InboundActivity,
 } from "../lib/activity";
@@ -60,14 +61,30 @@ describe("activity", () => {
     });
   });
 
+  describe("dispatchLabel", () => {
+    it("renders protocol task ids as dispatch labels", () => {
+      assert.equal(dispatchLabel("task-1b4f8d1c30d54819"), "a2a-1b4");
+      assert.equal(dispatchLabel("t1"), "a2a-t1");
+      assert.equal(dispatchLabel(""), "a2a-");
+    });
+  });
+
   describe("activityToText", () => {
-    it("formats arrived", () => {
+    it("formats arrived as a dispatch", () => {
       const a: InboundActivity = { type: "arrived", taskId: "t1", identity: "hermes", text: "find TODOs", contextId: "c1" };
-      assert.equal(activityToText(a), "[A2A inbound] task from hermes:\nfind TODOs");
+      assert.equal(activityToText(a), "[A2A inbound] dispatch from hermes:\nfind TODOs");
     });
     it("formats completed with elapsed", () => {
       const a: InboundActivity = { type: "completed", taskId: "t1", state: "completed", replyPreview: "done", elapsedMs: 2500 };
       assert.match(activityToText(a), /completed \(2\.5s\) — done/);
+    });
+    it("renders completed as an A2A dispatch, not a task", () => {
+      const a: InboundActivity = { type: "completed", taskId: "task-1b4f8d1c30d54819", state: "completed", replyPreview: "done", elapsedMs: 2500 };
+      assert.equal(activityToText(a), "[A2A inbound] A2A dispatch a2a-1b4 completed (2.5s) — done");
+    });
+    it("renders failed as an A2A dispatch", () => {
+      const a: InboundActivity = { type: "failed", taskId: "task-1b4f8d1c30d54819", error: "boom", elapsedMs: 1000 };
+      assert.equal(activityToText(a), "[A2A inbound] A2A dispatch a2a-1b4 failed (1.0s): boom");
     });
     it("formats failed", () => {
       const a: InboundActivity = { type: "failed", taskId: "t1", error: "boom", elapsedMs: 1000 };
@@ -79,12 +96,15 @@ describe("activity", () => {
     it("returns undefined when no active tasks", () => {
       assert.equal(activityStatusLine([]), undefined);
     });
-    it("summarizes active tasks with identities", () => {
+    it("summarizes active dispatches with identities", () => {
       const line = activityStatusLine([
         { taskId: "t1", identity: "hermes" },
         { taskId: "t2", identity: "session-b" },
       ]);
-      assert.equal(line, "A2A: 2 inbound tasks (hermes, session-b)");
+      assert.equal(line, "A2A: 2 inbound dispatches (hermes, session-b)");
+    });
+    it("uses the singular dispatch for one active", () => {
+      assert.equal(activityStatusLine([{ taskId: "t1", identity: "hermes" }]), "A2A: 1 inbound dispatch (hermes)");
     });
   });
 
@@ -96,6 +116,13 @@ describe("activity", () => {
       assert.equal(classifyLine("[A2A inbound] ✎ here is the list"), "replying");
       assert.equal(classifyLine("[A2A inbound] task t1 comp completed (2.5s) — done"), "completed");
       assert.equal(classifyLine("[A2A inbound] task t1 comp failed (1.0s): boom"), "failed");
+    });
+    it("classifies the dispatch vocabulary", () => {
+      assert.equal(classifyLine("[A2A inbound] dispatch from hermes:\nfind TODOs"), "received");
+      assert.equal(classifyLine("[A2A inbound] A2A dispatch a2a-1b4 completed (2.5s) — done"), "completed");
+      assert.equal(classifyLine("[A2A inbound] A2A dispatch a2a-1b4 failed (1.0s): boom"), "failed");
+      assert.equal(classifyLine("[A2A inbound] A2A dispatch a2a-1b4 failed (1.0s): boom\nstack"), "failed");
+      assert.equal(classifyLine("[A2A inbound] A2A dispatch a2a-1b4 completed (1.0s) — a\nb"), "completed");
     });
     it("multi-line prefixes classify by prefix, not by newline", () => {
       // Real replies and error stacks are multi-line — the prefix wins.

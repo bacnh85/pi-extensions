@@ -118,7 +118,16 @@ export interface A2AConfig {
     host: string;
     workspace: string;
     maxConcurrent: number;
+    /** Blocking-send supervision window in seconds — the HTTP request stays
+     *  open at most this long. 0 = no reply-window timer (unbounded): the
+     *  request stays open until the run settles. Deliberate, rare — same 0
+     *  semantics as asyncTimeoutSec. */
     replyTimeoutSec: number;
+    /** Supervision window for detached (returnImmediately) tasks, in seconds.
+     *  The caller's HTTP request already returned an ACK, so the reply window
+     *  does not apply — this bounds a detached run instead. 0 = unbounded
+     *  (caller-supervised via GetTask / CancelTask). */
+    asyncTimeoutSec: number;
     agentName: string;
     publicUrl: string;
     sharedToken: string;
@@ -127,6 +136,18 @@ export interface A2AConfig {
     allowAllUsers: boolean;
     maxPingpongTurns: number;
     rateLimitPerMin: number;
+    /** Persist each dispatched child session's transcript to
+     *  <agentDir>/a2a_sessions/<timestamp>_<taskId>.jsonl (fleet task #252).
+     *  Stock pi-a2a ran children on an in-memory SessionManager, so a worker
+     *  that stalled or was killed mid-run left no step history at all. On,
+     *  every entry (user message, assistant turns, tool calls and results)
+     *  is written synchronously and the file is a real pi session, openable
+     *  with pi's own session tooling. Off = fully in-memory (stock). */
+    childTranscripts: boolean;
+    /** Delete child transcripts older than N days when the inbound server
+     *  starts. 0 = keep forever. Transcripts carry everything the dispatched
+     *  worker read, so keep the retention window bounded. */
+    childTranscriptRetentionDays: number;
     skills: Array<{ id: string; name: string; description: string; tags?: string[] }>;
   };
   timeouts: { send: number; async: number; stream: number };
@@ -162,6 +183,7 @@ const DEFAULTS: A2AConfig = {
     workspace: "",
     maxConcurrent: 3,
     replyTimeoutSec: 300,
+    asyncTimeoutSec: 86400,
     agentName: "",
     publicUrl: "",
     sharedToken: "",
@@ -170,9 +192,11 @@ const DEFAULTS: A2AConfig = {
     allowAllUsers: false,
     maxPingpongTurns: 5,
     rateLimitPerMin: 60,
+    childTranscripts: true,
+    childTranscriptRetentionDays: 30,
     skills: [],
   },
-  timeouts: { send: 120000, async: 30000, stream: 120000 },
+  timeouts: { send: 360000, async: 30000, stream: 120000 },
   retryAttempts: 2,
   verifySsl: true,
   discovery: {
@@ -211,8 +235,12 @@ function parseDotEnv(text: string): Record<string, string> {
  * cwd→root `.env.local` walk: a coding agent opens attacker-controlled repos,
  * so repo files must not be able to enable the server, widen the bind,
  * install tokens, or redirect the gateway (see loadEnv).
+ *
+ * Exported for the env/settings parity test: the set must cover the same
+ * server abuse-control surface that sanitizeRepoA2ASettings strips from
+ * repo-controlled settings.json.
  */
-const SECURITY_ENV_KEYS: ReadonlySet<string> = new Set([
+export const SECURITY_ENV_KEYS: ReadonlySet<string> = new Set([
   "A2A_SERVER_ENABLED",
   "A2A_HOST",
   "A2A_BEARER_TOKEN",
@@ -221,6 +249,16 @@ const SECURITY_ENV_KEYS: ReadonlySet<string> = new Set([
   "A2A_ALLOW_ALL_USERS",
   "A2A_MAX_PINGPONG_TURNS",
   "A2A_RATE_LIMIT",
+  "A2A_CHILD_TRANSCRIPTS",
+  "A2A_CHILD_TRANSCRIPT_RETENTION_DAYS",
+  // Abuse-control parity with sanitizeRepoA2ASettings ("maxConcurrent",
+  // "replyTimeoutSec", "asyncTimeoutSec"): a repo must not be able to raise
+  // the concurrency ceiling or stretch either supervision window
+  // (asyncTimeoutSec 0 = unbounded; a huge window pins maxConcurrent slots
+  // for the whole window).
+  "A2A_MAX_CONCURRENT",
+  "A2A_REPLY_TIMEOUT",
+  "A2A_ASYNC_TIMEOUT",
   "A2A_VERIFY_SSL",
   "A2A_DISCOVERY_MDNS",
   "A2A_ENRICH_CARD",
@@ -309,6 +347,14 @@ function sanitizeRepoA2ASettings(s: any): any {
       "maxPingpongTurns",
       "maxConcurrent",
       "replyTimeoutSec",
+      // Audit-trail parity with SECURITY_ENV_KEYS (A2A_CHILD_TRANSCRIPTS,
+      // A2A_CHILD_TRANSCRIPT_RETENTION_DAYS) — a repo must not be able to
+      // opt its dispatched runs out of the #252 transcript audit trail, nor
+      // move the retention window (aggressive evidence deletion at 0/1 day,
+      // keep-forever disk-fill when raised).
+      "childTranscripts",
+      "childTranscriptRetentionDays",
+      "asyncTimeoutSec",
     ])
       delete srv[k];
     c.server = srv;
@@ -429,20 +475,36 @@ export function loadConfig(opts: {
   cfg.server.workspace = String(srv.workspace ?? "");
   cfg.server.maxConcurrent = num(srv.maxConcurrent, DEFAULTS.server.maxConcurrent);
   cfg.server.replyTimeoutSec = num(srv.replyTimeoutSec ?? env.A2A_REPLY_TIMEOUT, DEFAULTS.server.replyTimeoutSec);
+  cfg.server.asyncTimeoutSec = num(srv.asyncTimeoutSec ?? env.A2A_ASYNC_TIMEOUT, DEFAULTS.server.asyncTimeoutSec);
   cfg.server.agentName = String(srv.agentName ?? env.A2A_AGENT_NAME ?? "");
   cfg.server.publicUrl = String(srv.publicUrl ?? env.A2A_PUBLIC_URL ?? "");
   cfg.server.sharedToken = String(srv.sharedToken ?? env.A2A_BEARER_TOKEN ?? "");
-  cfg.server.peerTokens = parsePeerTokens(
-    typeof srv.peerTokens === "string"
-      ? srv.peerTokens
-      : env.A2A_PEER_TOKENS,
-  );
+  // Object form (README-documented: `"peerTokens": { "alice": "tok-a" }`) —
+  // keep only string-valued entries. String + env paths unchanged.
+  cfg.server.peerTokens =
+    srv.peerTokens && typeof srv.peerTokens === "object"
+      ? Object.entries(srv.peerTokens)
+          .filter(([, v]) => typeof v === "string" && v)
+          .reduce<Record<string, string>>((m, [k, v]) => ((m[k] = v as string), m), {})
+      : parsePeerTokens(
+          typeof srv.peerTokens === "string"
+            ? srv.peerTokens
+            : env.A2A_PEER_TOKENS,
+        );
   cfg.server.trustedPeers = Array.isArray(srv.trustedPeers)
     ? srv.trustedPeers.map(String)
     : (env.A2A_TRUSTED_PEERS || "").split(",").map((x) => x.trim()).filter(Boolean);
   cfg.server.allowAllUsers = bool(srv.allowAllUsers ?? env.A2A_ALLOW_ALL_USERS, DEFAULTS.server.allowAllUsers);
   cfg.server.maxPingpongTurns = num(srv.maxPingpongTurns ?? env.A2A_MAX_PINGPONG_TURNS, DEFAULTS.server.maxPingpongTurns);
   cfg.server.rateLimitPerMin = num(srv.rateLimitPerMin ?? env.A2A_RATE_LIMIT, DEFAULTS.server.rateLimitPerMin);
+  cfg.server.childTranscripts = bool(
+    srv.childTranscripts ?? env.A2A_CHILD_TRANSCRIPTS,
+    DEFAULTS.server.childTranscripts,
+  );
+  cfg.server.childTranscriptRetentionDays = num(
+    srv.childTranscriptRetentionDays ?? env.A2A_CHILD_TRANSCRIPT_RETENTION_DAYS,
+    DEFAULTS.server.childTranscriptRetentionDays,
+  );
   cfg.server.skills = Array.isArray(srv.skills) ? srv.skills : [];
 
   // Timeouts
@@ -666,7 +728,17 @@ export function buildA2ASettingsPatch(opts: {
     return {
       ...a2a,
       ...(serverPatch ? { server: serverPatch } : {}),
-      ...(peerChanges ? { peers: working.peers } : {}),
+      // Peers persist in SETTINGS units: timeout in seconds (the loader
+      // multiplies by 1000 on read). working.peers holds runtime ms —
+      // this is the single writer-side conversion, so panel saves and
+      // panel-added peers are idempotent (no 1000× drift per save).
+      ...(peerChanges
+        ? {
+            peers: Object.fromEntries(
+              Object.entries(working.peers).map(([name, p]) => [name, { ...p, timeout: Math.round(p.timeout / 1000) }]),
+            ),
+          }
+        : {}),
       ...(discoveryChanged ? { discovery: mergedDiscovery } : {}),
       ...(working.selfIdentity !== cfg.selfIdentity ? { selfIdentity: working.selfIdentity } : {}),
       ...(JSON.stringify(working.ui) !== JSON.stringify(cfg.ui) ? { ui: working.ui } : {}),
@@ -756,13 +828,16 @@ export function writeSettingsA2A(opts: {
  * (same machine, same user, operator-configured) does not hold for them. */
 let repoPeerUrls = new Set<string>();
 
-export function repoControlledPeerUrls(): ReadonlySet<string> {
-  return repoPeerUrls;
-}
-
 /** Normalize a URL for dedupe/comparison (lowercase, trailing slashes stripped). */
 export function normUrl(u: string): string {
   return String(u || "").trim().replace(/\/+$/, "").toLowerCase();
+}
+
+/** Clean an OS hostname for use as a peer-name base: strip mDNS suffixes
+ *  (`MBP-Sao.local` → `mbp-sao`) and lowercase. Empty/missing → "pi". */
+export function cleanHostName(host: string | undefined): string {
+  const h = String(host || "").replace(/\.(local|lan)\.?$/i, "").trim().toLowerCase();
+  return h || "pi";
 }
 
 /** Resolve a peer by configured name OR treat as a direct http(s) URL.

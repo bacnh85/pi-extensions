@@ -1,13 +1,13 @@
 import { assert } from "chai";
 import * as fs from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
-import * as os from "node:os";
 import * as path from "node:path";
 
 import { DEFAULTS } from "./helpers";
+import { makeTempDir } from "./tmp";
 import { A2AServer, type SessionRunner } from "../lib/server";
 import type { A2AConfig } from "../lib/config";
-import { STATE_CANCELED, STATE_COMPLETED, STATE_FAILED, STATE_INPUT_REQUIRED, STATE_REJECTED } from "../lib/protocol";
+import { STATE_CANCELED, STATE_COMPLETED, STATE_FAILED, STATE_INPUT_REQUIRED, STATE_REJECTED, STATE_WORKING } from "../lib/protocol";
 import { authenticate } from "../lib/security";
 import { metrics } from "../lib/client";
 import { list as listRegistry } from "../lib/registry";
@@ -21,8 +21,13 @@ function stubRunner(reply = "canned reply"): SessionRunner {
   return async () => ({ reply, inputRequired: false });
 }
 
+/** Extract the Task from a v1.0 SendMessageResponse {"task": …} result. */
+function sendTask(r: any): any {
+  return r.result?.task;
+}
+
 function tmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-server-"));
+  return makeTempDir("pi-a2a-server-");
 }
 
 /** Pick an ephemeral free port. */
@@ -77,6 +82,19 @@ async function jsonRpc(url: string, method: string, params: any, headers: Record
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
   return resp.json();
+}
+
+/** Poll tasks/get until the task reaches a terminal state (bounded). */
+async function pollTask(url: string, taskId: string, timeoutMs = 5000): Promise<any> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const r = await jsonRpc(url, "tasks/get", { id: taskId });
+    if (r.error) throw new Error(`tasks/get error: ${JSON.stringify(r.error)}`);
+    const state = r.result?.status?.state;
+    if ([STATE_COMPLETED, STATE_FAILED, STATE_CANCELED, STATE_REJECTED].includes(state)) return r.result;
+    if (Date.now() > deadline) throw new Error(`poll timeout; still ${state}`);
+    await new Promise((res) => setTimeout(res, 50));
+  }
 }
 
 describe("server", () => {
@@ -276,6 +294,44 @@ describe("server", () => {
       }
     });
 
+    it("defaults agentName to hostname-port so same-machine sessions don't collide", async () => {
+      const piDir = tmpDir();
+      const { server, stop } = await startServer({ cfg: DEFAULTS(), piDir });
+      try {
+        const self = listRegistry({ piDir, ttlSec: 60 }).find((e) => e.pid === process.pid);
+        assert.isOk(self);
+        assert.include(self!.agentName, `-${server.port}`, "unpinned name must carry the bound port");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("keeps a pinned agentName verbatim (no port suffix)", async () => {
+      const piDir = tmpDir();
+      const cfg = DEFAULTS();
+      cfg.server.agentName = "my-pinned";
+      const { stop } = await startServer({ cfg, piDir });
+      try {
+        const self = listRegistry({ piDir, ttlSec: 60 }).find((e) => e.pid === process.pid);
+        assert.isOk(self);
+        assert.equal(self!.agentName, "my-pinned");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("name getter matches the registered local-registry name", async () => {
+      const piDir = tmpDir();
+      const { server, stop } = await startServer({ cfg: DEFAULTS(), piDir });
+      try {
+        const self = listRegistry({ piDir, ttlSec: 60 }).find((e) => e.pid === process.pid);
+        assert.isOk(self);
+        assert.equal(server.name, self!.agentName);
+      } finally {
+        await stop();
+      }
+    });
+
     it("unregisters from the registry on stop", async () => {
       const piDir = tmpDir();
       const { stop } = await startServer({ cfg: DEFAULTS(), piDir });
@@ -337,7 +393,7 @@ describe("server", () => {
           message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
         });
         assert.isUndefined(r.error, "no auth error");
-        assert.equal(r.result.status.state, STATE_COMPLETED);
+        assert.equal(sendTask(r).status.state, STATE_COMPLETED);
       } finally {
         await stop();
       }
@@ -369,7 +425,7 @@ describe("server", () => {
           { Authorization: "Bearer secret" },
         );
         assert.isUndefined(r.error);
-        assert.equal(r.result.status.state, STATE_COMPLETED);
+        assert.equal(sendTask(r).status.state, STATE_COMPLETED);
       } finally {
         await stop();
       }
@@ -518,7 +574,7 @@ describe("server", () => {
           message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
         });
         assert.isUndefined(r.error, "loopback request must still pass");
-        assert.equal(r.result.status.state, STATE_COMPLETED);
+        assert.equal(sendTask(r).status.state, STATE_COMPLETED);
       } finally {
         await stop();
       }
@@ -532,7 +588,7 @@ describe("server", () => {
         const r = await jsonRpc(url, "SendMessage", {
           message: { role: "ROLE_USER", parts: [{ text: "show secrets" }] },
         });
-        const text = r.result.artifacts?.[0]?.parts?.[0]?.text ?? "";
+        const text = sendTask(r).artifacts?.[0]?.parts?.[0]?.text ?? "";
         assert.notInclude(text, "sk-test-abcdEFGH01234567JKLM", "sk-* must be redacted");
         assert.notInclude(text, "ghp_ABCDEFGHIJKLMNOPQRST", "ghp_* must be redacted");
         assert.notInclude(text, "mytest@example.com", "email must be redacted");
@@ -548,7 +604,7 @@ describe("server", () => {
         const r = await jsonRpc(url, "SendMessage", {
           message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
         });
-        const text = r.result.artifacts?.[0]?.parts?.[0]?.text ?? "";
+        const text = sendTask(r).artifacts?.[0]?.parts?.[0]?.text ?? "";
         assert.equal(text, "hello world");
       } finally {
         await stop();
@@ -567,8 +623,8 @@ describe("server", () => {
         const r = await jsonRpc(url, "SendMessage", {
           message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
         });
-        assert.equal(r.result.status.state, STATE_FAILED);
-        const msg = r.result.status.message?.parts?.[0]?.text ?? "";
+        assert.equal(sendTask(r).status.state, STATE_FAILED);
+        const msg = sendTask(r).status.message?.parts?.[0]?.text ?? "";
         assert.notInclude(msg, "sk-abcdEFGHIJKL0123456789", "failure message must be redacted");
         assert.include(msg, "[redacted]", "redaction placeholder present");
       } finally {
@@ -584,7 +640,7 @@ describe("server", () => {
         const r = await jsonRpc(url, "SendMessage", {
           message: { role: "ROLE_USER", parts: [{ text: "do something" }] },
         });
-        const task = r.result;
+        const task = sendTask(r);
         assert.equal(task.status.state, STATE_COMPLETED);
         assert.deepEqual(task.artifacts?.[0]?.parts?.[0], { text: "the real reply", mediaType: "text/plain" });
         assert.match(task.id, /^task-/);
@@ -601,7 +657,7 @@ describe("server", () => {
         const r = await jsonRpc(url, "SendMessage", {
           message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
         });
-        assert.equal(r.result.status.state, STATE_INPUT_REQUIRED);
+        assert.equal(sendTask(r).status.state, STATE_INPUT_REQUIRED);
       } finally {
         await stop();
       }
@@ -625,7 +681,7 @@ describe("server", () => {
         const send = await jsonRpc(url, "SendMessage", {
           message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
         });
-        const tid = send.result.id;
+        const tid = sendTask(send).id;
         const got = await jsonRpc(url, "tasks/get", { id: tid });
         assert.equal(got.result.id, tid);
         const list = await jsonRpc(url, "tasks/list", {});
@@ -729,7 +785,7 @@ describe("server", () => {
         const r = await jsonRpc(url, "SendMessage", {
           message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
         });
-        assert.equal(r.result.status.state, STATE_COMPLETED);
+        assert.equal(sendTask(r).status.state, STATE_COMPLETED);
       } finally {
         await stop();
       }
@@ -746,16 +802,16 @@ describe("server", () => {
         const r1 = await jsonRpc(url, "SendMessage", {
           message: { role: "ROLE_USER", parts: [{ text: "t1" }], contextId: "ctx-loop" },
         });
-        assert.equal(r1.result.status.state, STATE_COMPLETED);
+        assert.equal(sendTask(r1).status.state, STATE_COMPLETED);
         const r2 = await jsonRpc(url, "SendMessage", {
           message: { role: "ROLE_USER", parts: [{ text: "t2" }], contextId: "ctx-loop" },
         });
-        assert.equal(r2.result.status.state, STATE_COMPLETED);
+        assert.equal(sendTask(r2).status.state, STATE_COMPLETED);
         // Third — rejected.
         const r3 = await jsonRpc(url, "SendMessage", {
           message: { role: "ROLE_USER", parts: [{ text: "t3" }], contextId: "ctx-loop" },
         });
-        assert.equal(r3.result.status.state, STATE_REJECTED);
+        assert.equal(sendTask(r3).status.state, STATE_REJECTED);
       } finally {
         await stop();
       }
@@ -784,7 +840,7 @@ describe("server", () => {
         assert.equal(cancel.result.status.state, STATE_CANCELED);
         // The original send resolves to a CANCELED task too.
         const send = await sendP;
-        assert.equal(send.result.status.state, STATE_CANCELED);
+        assert.equal(sendTask(send).status.state, STATE_CANCELED);
       } finally {
         await stop();
       }
@@ -796,7 +852,7 @@ describe("server", () => {
         const send = await jsonRpc(url, "SendMessage", {
           message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
         });
-        const tid = send.result.id;
+        const tid = sendTask(send).id;
         const cancel = await jsonRpc(url, "tasks/cancel", { id: tid });
         assert.equal(cancel.error?.code, -32002);
       } finally {
@@ -814,7 +870,7 @@ describe("server", () => {
         const send = await jsonRpc(url, "SendMessage", {
           message: { role: "ROLE_USER", parts: [{ text: "alice task" }] },
         }, aliceH);
-        const tid = send.result.id;
+        const tid = sendTask(send).id;
         // Bob cannot fetch Alice's task or see it in his list.
         const foreignGet = await jsonRpc(url, "tasks/get", { id: tid }, bobH);
         assert.equal(foreignGet.error?.code, -32001, "foreign tasks/get must fail");
@@ -940,6 +996,120 @@ describe("server", () => {
     });
   });
 
+  describe("v1.0 wire shapes (PascalCase methods)", () => {
+    /** POST one JSON-RPC frame and return the parsed SSE data frames. */
+    async function sseFrames(url: string, method: string, params: any, id = "sse-v1"): Promise<any[]> {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+      });
+      const text = await resp.text();
+      return text
+        .split("\n")
+        .filter((l) => l.startsWith("data:"))
+        .map((l) => JSON.parse(l.replace(/^data:\s*/, "")));
+    }
+
+    it("SendMessage returns the oneof {\"task\": …} wrapper, not a bare Task", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("wrapped reply") });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        assert.isUndefined(r.error);
+        // The result must be the oneof wrapper with exactly the task member.
+        assert.exists(r.result?.task, "result must carry {task: …}");
+        assert.notExists(r.result?.message);
+        assert.equal(r.result.task.status.state, STATE_COMPLETED);
+        assert.equal(r.result.task.artifacts?.[0]?.parts?.[0]?.text, "wrapped reply");
+        // …and must not leak Task fields at the top level.
+        assert.isUndefined(r.result.status, "bare Task shape must not bleed through");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("SendStreamingMessage emits TaskArtifactUpdateEvent then a final TaskStatusUpdateEvent", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("stream body") });
+      try {
+        const frames = await sseFrames(url, "SendStreamingMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        assert.isAtLeast(frames.length, 2, "artifact + terminal status events");
+        const artifacts = frames.filter((f) => f.result?.artifactUpdate);
+        const statuses = frames.filter((f) => f.result?.statusUpdate);
+        assert.equal(artifacts.length, 1, "one artifact event");
+        assert.equal(statuses.length, 1, "one terminal status event");
+        // TaskArtifactUpdateEvent: {taskId, contextId, artifact, lastChunk}.
+        const ae = artifacts[0]!.result.artifactUpdate;
+        assert.equal(ae.taskId, statuses[0]!.result.statusUpdate.taskId);
+        assert.equal(ae.contextId, statuses[0]!.result.statusUpdate.contextId);
+        assert.match(ae.taskId, /^task-/);
+        assert.match(ae.contextId, /^ctx-/);
+        assert.equal(ae.artifact?.parts?.[0]?.text, "stream body");
+        assert.equal(ae.lastChunk, true);
+        // TaskStatusUpdateEvent: {taskId, contextId, status, final}.
+        const se = statuses[0]!.result.statusUpdate;
+        assert.equal(se.status?.state, STATE_COMPLETED);
+        assert.equal(se.final, true);
+        // The artifact event precedes the terminal status event (the final
+        // frame carries the terminal state).
+        assert.isBelow(frames.indexOf(artifacts[0]!), frames.indexOf(statuses[0]!));
+        // No event may wrap a whole Task (the pre-1.0 shape).
+        for (const f of frames) {
+          assert.notExists(f.result?.task, "stream events must not be whole Tasks");
+          assert.notExists(f.result?.statusUpdate?.artifacts, "statusUpdate must be an event, not a Task");
+        }
+      } finally {
+        await stop();
+      }
+    });
+
+    it("ListTasks returns full Task objects; tasks/list keeps {id,state} stubs", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("listed") });
+      try {
+        const send = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        const tid = sendTask(send).id;
+        const v1 = await jsonRpc(url, "ListTasks", {});
+        assert.isAtLeast(v1.result?.tasks?.length, 1);
+        const mine = v1.result.tasks.find((t: any) => t.id === tid);
+        assert.exists(mine, "the created task is listed");
+        assert.equal(mine.status.state, STATE_COMPLETED);
+        assert.exists(mine.contextId, "full Task object, not an {id,state} stub");
+        const legacy = await jsonRpc(url, "tasks/list", {});
+        const stub = legacy.result.tasks.find((t: any) => t.id === tid);
+        assert.exists(stub);
+        assert.deepEqual(Object.keys(stub).sort(), ["id", "state"], "legacy alias keeps the stub shape");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("SubscribeToTask emits a v1.0 TaskStatusUpdateEvent snapshot", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("subscribed") });
+      try {
+        const send = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        const tid = sendTask(send).id;
+        const frames = await sseFrames(url, "SubscribeToTask", { id: tid }, "sub-v1");
+        assert.isAtLeast(frames.length, 1);
+        const se = frames[0]!.result?.statusUpdate;
+        assert.exists(se, "snapshot statusUpdate event");
+        assert.equal(se.taskId, tid);
+        assert.match(se.contextId, /^ctx-/);
+        assert.equal(se.status?.state, STATE_COMPLETED);
+        assert.equal(se.final, true, "snapshot of a finished task is the final event");
+        assert.notExists(se.artifacts, "statusUpdate must be an event, not a Task");
+      } finally {
+        await stop();
+      }
+    });
+  });
+
   describe("reply timeout classifies as FAILED (not CANCELED)", () => {
     it("times out a slow task to STATE_FAILED", async () => {
       const cfg = DEFAULTS();
@@ -954,7 +1124,546 @@ describe("server", () => {
         const r = await jsonRpc(url, "SendMessage", {
           message: { role: "ROLE_USER", parts: [{ text: "slow" }] },
         });
-        assert.equal(r.result.status.state, STATE_FAILED);
+assert.equal(sendTask(r).status.state, STATE_FAILED);
+        // Classification comes from the abort reason (the supervision ground
+        // truth), not the runner's own "timeout" rejection above.
+        assert.match(sendTask(r).status.message?.parts?.[0]?.text ?? "", /reply timeout/);
+      } finally {
+        await stop();
+      }
+    });
+  });
+
+  describe("non-blocking dispatch (SendMessageConfiguration.returnImmediately)", () => {
+    it("acks WORKING immediately and completes in the background (GetTask)", async () => {
+      const runner: SessionRunner = async () => {
+        await new Promise((res) => setTimeout(res, 300));
+        return { reply: "done eventually", inputRequired: false };
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner });
+      try {
+        const t0 = Date.now();
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "long job" }] },
+          configuration: { returnImmediately: true },
+        });
+        const ackMs = Date.now() - t0;
+        // The ack must NOT wait for the 300ms runner — that is the whole point
+        // of non-blocking dispatch (the caller envelope stops bounding the run).
+        assert.isBelow(ackMs, 200, `ack took ${ackMs}ms; runner should still be pending`);
+        assert.equal(sendTask(r).status.state, STATE_WORKING);
+        assert.match(sendTask(r).id, /^task-/);
+        const task = await pollTask(url, sendTask(r).id);
+        assert.equal(task.status.state, STATE_COMPLETED);
+        assert.equal(task.artifacts?.[0]?.parts?.[0]?.text, "done eventually");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("accepts the snake_case return_immediately spelling", async () => {
+      // Delayed runner: with an instant one the run settles before the HTTP
+      // layer serializes the ack, so the ack legitimately carries the terminal
+      // state (the client handles that — fast tasks just return their result).
+      // A pending runner makes the WORKING assertion meaningful: it only holds
+      // if the server truly returned before the run finished.
+      const runner: SessionRunner = async () => {
+        await new Promise((res) => setTimeout(res, 150));
+        return { reply: "snake ok", inputRequired: false };
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+          configuration: { return_immediately: true },
+        });
+        assert.equal(sendTask(r).status.state, STATE_WORKING);
+        const task = await pollTask(url, sendTask(r).id);
+        assert.equal(task.status.state, STATE_COMPLETED);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("a detached run is NOT bounded by the reply window", async () => {
+      // Same config that FAILS a blocking task after 1s (see the reply-timeout
+      // suite above): detached, with the async window disabled (0), the run
+      // must outlive the reply window and complete.
+      const cfg = DEFAULTS();
+      cfg.server.replyTimeoutSec = 1;
+      cfg.server.asyncTimeoutSec = 0;
+      const runner: SessionRunner = async () => {
+        await new Promise((res) => setTimeout(res, 1600));
+        return { reply: "survived the reply window", inputRequired: false };
+      };
+      const { url, stop } = await startServer({ cfg, runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "outlive the window" }] },
+          configuration: { returnImmediately: true },
+        });
+        assert.equal(sendTask(r).status.state, STATE_WORKING);
+        const task = await pollTask(url, sendTask(r).id, 6000);
+        assert.equal(task.status.state, STATE_COMPLETED);
+        assert.equal(task.artifacts?.[0]?.parts?.[0]?.text, "survived the reply window");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("server.asyncTimeoutSec bounds a detached run and classifies it FAILED", async () => {
+      const cfg = DEFAULTS();
+      cfg.server.asyncTimeoutSec = 1;
+      // The runner rejects with its OWN error on abort (like a session runner
+      // whose prompt rejects with an SDK error) — the server must still
+      // classify by the abort REASON, which carries the descriptive window
+      // message. If it used the runner's error, a dispatcher could not tell a
+      // supervision kill from a worker crash.
+      const runner: SessionRunner = ({ signal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("async window hit")));
+        });
+      const { url, stop } = await startServer({ cfg, runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hang" }] },
+          configuration: { returnImmediately: true },
+        });
+        assert.equal(sendTask(r).status.state, STATE_WORKING);
+        const task = await pollTask(url, sendTask(r).id, 4000);
+        assert.equal(task.status.state, STATE_FAILED);
+        assert.match(task.status.message?.parts?.[0]?.text ?? "", /async timeout.*detached-task window/);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("tasks/cancel cancels a detached run", async () => {
+      const runner: SessionRunner = ({ signal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("canceled")));
+        });
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "cancel me" }] },
+          configuration: { returnImmediately: true },
+        });
+        assert.equal(sendTask(r).status.state, STATE_WORKING);
+        const c = await jsonRpc(url, "tasks/cancel", { id: sendTask(r).id });
+        assert.equal(c.result.status.state, STATE_CANCELED);
+        const task = await pollTask(url, sendTask(r).id);
+        assert.equal(task.status.state, STATE_CANCELED);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("a detached runner failure is visible via GetTask as FAILED with the message", async () => {
+      const runner: SessionRunner = async () => {
+        throw new Error("worker exploded");
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "will fail" }] },
+          configuration: { returnImmediately: true },
+        });
+        const task = await pollTask(url, sendTask(r).id);
+        assert.equal(task.status.state, STATE_FAILED);
+        assert.match(task.status.message?.parts?.[0]?.text ?? "", /worker exploded/);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("contains an unexpected throw on the detached path (no unhandled rejection; task FAILED)", async () => {
+      // A failing runner + an onActivity sink that throws on the "failed"
+      // event makes executeTask reject AFTER the ack already returned — the
+      // floating-promise path. The detached observer must contain it: the
+      // task still lands FAILED with the runner's message (set before the
+      // sink threw), and the process must not die of an unhandled rejection.
+      const runner: SessionRunner = async () => {
+        // Fail AFTER the ack is serialized, so the rejection genuinely lands
+        // on the detached path (an instantly-throwing runner can lose the
+        // race and mutate the task before the HTTP layer serializes the ack).
+        await new Promise((res) => setTimeout(res, 150));
+        throw new Error("worker exploded");
+      };
+      const onActivity = (a: any) => {
+        if (a.type === "failed") throw new Error("activity sink exploded");
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner, onActivity });
+      // Observe process-level unhandled rejections for the duration of the
+      // scenario: the detached `execution` promise must never surface as one.
+      // (A bare test would not discriminate — mocha installs its own
+      // unhandledRejection handler that swallows detached rejections.)
+      let unhandled: unknown = null;
+      const onUnhandled = (e: unknown) => {
+        unhandled = e ?? new Error("unhandled rejection");
+      };
+      process.on("unhandledRejection", onUnhandled);
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "will fail" }] },
+          configuration: { returnImmediately: true },
+        });
+        assert.equal(sendTask(r).status.state, STATE_WORKING);
+        const task = await pollTask(url, sendTask(r).id);
+        assert.equal(task.status.state, STATE_FAILED);
+        assert.match(task.status.message?.parts?.[0]?.text ?? "", /worker exploded/);
+        // The poll above let the event loop turn; any unhandled rejection
+        // from the detached path has fired by now.
+        assert.isNull(unhandled, `detached path must not produce an unhandled rejection (got: ${String(unhandled)})`);
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+        await stop();
+      }
+    });
+
+    it("classification is keyed to the supervision timer, not the abort-reason text", async () => {
+      // No supervision timer fires here (replyTimeoutSec is large); the
+      // runner rejects with its own "reply timeout:"-prefixed error. The
+      // task must be FAILED with the runner's message PASSED THROUGH VERBATIM
+      // — supervision wording ("…window") may only ever come from OUR timer,
+      // so a lying runner cannot pose as a supervision kill.
+      const cfg = DEFAULTS();
+      cfg.server.replyTimeoutSec = 60;
+      const runner: SessionRunner = async () => {
+        throw new Error("reply timeout: this text lies");
+      };
+      const { url, stop } = await startServer({ cfg, runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "spoof attempt" }] },
+        });
+        assert.equal(sendTask(r).status.state, STATE_FAILED);
+        const msg = sendTask(r).status.message?.parts?.[0]?.text ?? "";
+        assert.equal(msg, "reply timeout: this text lies");
+        assert.notInclude(msg, "window");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("replyTimeoutSec 0 means NO reply-window timer (unbounded), not instant timeout", async () => {
+      // Pre-async-dispatch, replyTimeoutSec 0 armed setTimeout(…, 0) = an
+      // instant timeout. The >0 guard redefined 0 to "no timer"; this pins
+      // the documented reading (0 = unbounded, same as asyncTimeoutSec).
+      const cfg = DEFAULTS();
+      cfg.server.replyTimeoutSec = 0;
+      const runner: SessionRunner = async () => {
+        await new Promise((res) => setTimeout(res, 400));
+        return { reply: "outlived a zero window", inputRequired: false };
+      };
+      const { url, stop } = await startServer({ cfg, runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "slow but allowed" }] },
+        });
+        assert.equal(sendTask(r).status.state, STATE_COMPLETED);
+        assert.equal(sendTask(r).artifacts?.[0]?.parts?.[0]?.text, "outlived a zero window");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("returnImmediately has no effect on message/stream (spec §3.2.2)", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("streamed reply") });
+      try {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: "sse-async",
+            method: "message/stream",
+            params: {
+              message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+              configuration: { returnImmediately: true },
+            },
+          }),
+        });
+        const text = await resp.text();
+        const frames = text
+          .split("\n")
+          .filter((l) => l.startsWith("data:"))
+          .map((l) => JSON.parse(l.replace(/^data:\s*/, "")));
+        const statusFrame = frames.find((f) => f.result?.statusUpdate);
+        // Streaming keeps its blocking semantics: the final statusUpdate is the
+        // COMPLETED task, not an early WORKING ack.
+        assert.equal(statusFrame?.result?.statusUpdate?.status?.state, STATE_COMPLETED);
+      } finally {
+        await stop();
+      }
+    });
+  });
+
+  describe("stunted length-stop reply is not COMPLETED", () => {
+    // A context-clamped turn ends with stopReason "length" and no assistant
+    // text (max_tokens squeezed to the remaining context, the model emits
+    // almost nothing). The session runner now throws for such a turn — the
+    // alternative is returning the PREVIOUS turn's text normally, which
+    // takes messageSend's success path: the task completes with a stale
+    // mid-work reply and a dispatcher cannot tell a dead worker from a
+    // finished one. These tests lock the classification the contract
+    // depends on: the throw maps to FAILED with a status message and no
+    // reply artifact.
+    const stuntedRunner: SessionRunner = async () => {
+      throw new Error(
+        "run ended on a length stop with no assistant text — no usable reply was produced (output capped before any content; context-clamped max_tokens?)",
+      );
+    };
+
+    it("maps a length-stop-no-text turn to STATE_FAILED with a status message", async () => {
+      const events: any[] = [];
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stuntedRunner, onActivity: (a) => events.push(a) });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "long task" }] },
+        });
+        assert.equal(sendTask(r).status.state, STATE_FAILED);
+        const msgText = sendTask(r).status.message?.parts?.[0]?.text ?? "";
+        assert.include(msgText, "no usable reply", "status message explains the stunted turn");
+        assert.isUndefined(sendTask(r).artifacts, "a stunted turn carries no reply artifact");
+        // The host toast must say failed — not "completed (Ns)".
+        assert.deepEqual(events.map((e) => e.type), ["arrived", "failed"]);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("does not count the stunted turn as completed in metrics", async () => {
+      const before = metrics.tasksCompleted;
+      const beforeFailed = metrics.tasksFailed;
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stuntedRunner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "long task" }] },
+        });
+        assert.equal(sendTask(r).status.state, STATE_FAILED);
+        assert.equal(metrics.tasksCompleted, before, "stunted turns never increment completions");
+        assert.equal(metrics.tasksFailed, beforeFailed + 1, "stunted turns increment failures");
+      } finally {
+        await stop();
+      }
+    });
+  });
+
+  describe("reply-window timer teardown (#257)", () => {
+    it("clears the reply-window watchdog when the runner throws — no leaked 300s timer", async () => {
+      // Regression (#257): a throwing runner skips the success-path
+      // clearTimeout and never aborts the controller, so the 5-minute
+      // reply-window timer stayed armed after the task reported FAILED —
+      // the task was dead but the timer kept the process's event loop alive
+      // for the full window (the test-suite exit-hang). Every exit path must
+      // clear it.
+      const cfg = DEFAULTS(); // replyTimeoutSec: 300 → watchdog delay 300000ms
+      const windowMs = cfg.server.replyTimeoutSec * 1000;
+      const runner: SessionRunner = async () => {
+        throw new Error("boom");
+      };
+      const { url, stop } = await startServer({ cfg, runner });
+      const origSetTimeout = globalThis.setTimeout;
+      const origClearTimeout = globalThis.clearTimeout;
+      let created = 0;
+      const armed = new Set<ReturnType<typeof setTimeout>>();
+      try {
+        (globalThis as any).setTimeout = (fn: any, delay?: number, ...args: any[]) => {
+          const t = origSetTimeout(fn, delay, ...args);
+          if (delay === windowMs) {
+            created += 1;
+            armed.add(t);
+          }
+          return t;
+        };
+        (globalThis as any).clearTimeout = (t: ReturnType<typeof setTimeout>) => {
+          armed.delete(t);
+          return origClearTimeout(t);
+        };
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        assert.equal(sendTask(r).status.state, STATE_FAILED);
+      } finally {
+        (globalThis as any).setTimeout = origSetTimeout;
+        (globalThis as any).clearTimeout = origClearTimeout;
+        await stop();
+      }
+      assert.equal(created, 1, "the reply-window watchdog must be created for the task");
+      assert.equal(armed.size, 0, "reply-window timer must be cleared when the runner throws");
+    });
+  });
+
+  describe("aborted runner returning normally is not COMPLETED (#247)", () => {
+    // The stock session runner resolves its prompt promise on session.abort()
+    // (instead of rejecting) and used to return the truncated reply normally,
+    // which took messageSend's success path: a reply-window kill came back
+    // TASK_STATE_COMPLETED with a partial artifact — indistinguishable from
+    // a finished worker. The server must classify by the abort signal, not
+    // by how the runner happened to return.
+    const partialRunner: SessionRunner = ({ signal }) =>
+      new Promise((resolve) => {
+        // Mimics the stock runner: abort resolves it normally with whatever
+        // partial reply was captured so far.
+        signal.addEventListener(
+          "abort",
+          () => resolve({ reply: "partial work before the window closed", inputRequired: false }),
+          { once: true },
+        );
+      });
+
+    it("maps a reply-window timeout to STATE_FAILED with a timeout status message", async () => {
+      const cfg = DEFAULTS();
+      cfg.server.replyTimeoutSec = 1;
+      const events: any[] = [];
+      const { url, stop } = await startServer({ cfg, runner: partialRunner, onActivity: (a) => events.push(a) });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "long task" }] },
+        });
+        assert.equal(sendTask(r).status.state, STATE_FAILED);
+        const msgText = sendTask(r).status.message?.parts?.[0]?.text ?? "";
+        assert.include(msgText, "reply timeout", "status message names the timeout");
+        assert.isUndefined(sendTask(r).artifacts, "an aborted task carries no reply artifact");
+        // The host toast must say failed — not "completed (Ns)".
+        assert.deepEqual(events.map((e) => e.type), ["arrived", "failed"]);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("preserves STATE_CANCELED when a canceled runner returns normally", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: partialRunner });
+      try {
+        const sendP = jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "long task" }] },
+        });
+        // Let the task start, then cancel it.
+        await new Promise((r) => setTimeout(r, 50));
+        const tasks = await jsonRpc(url, "tasks/list", {});
+        const tid = tasks.result.tasks[0]!.id;
+        await jsonRpc(url, "tasks/cancel", { id: tid });
+        const send = await sendP;
+        // The success path used to clobber the cancel handler's CANCELED.
+        assert.equal(sendTask(send).status.state, STATE_CANCELED);
+      } finally {
+        await stop();
+      }
+    });
+  });
+
+  describe("child transcripts (#252)", () => {
+    it("passes the A2A taskId to the runner", async () => {
+      let seenTaskId: string | undefined;
+      const runner: SessionRunner = async ({ taskId }) => {
+        seenTaskId = taskId;
+        return { reply: "ok", inputRequired: false };
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        assert.equal(sendTask(r).status.state, STATE_COMPLETED);
+        assert.equal(seenTaskId, sendTask(r).id, "runner receives the task's own A2A id");
+        assert.match(seenTaskId ?? "", /^task-/);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("audits the transcript path + step count on completion", async () => {
+      const piDir = tmpDir();
+      const runner: SessionRunner = async () => ({
+        reply: "done",
+        inputRequired: false,
+        transcriptPath: "/tmp/a2a_sessions/20260830T000000_task-abc.jsonl",
+        stepCount: 7,
+      });
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner, piDir });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        assert.equal(sendTask(r).status.state, STATE_COMPLETED);
+        const lines = fs
+          .readFileSync(path.join(piDir, "a2a_audit.jsonl"), "utf-8")
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => JSON.parse(l));
+        const tp = lines.find((l) => l.transcript);
+        assert.ok(tp, "a transcript audit line exists");
+        assert.equal(tp.taskId, sendTask(r).id);
+        assert.equal(tp.transcript, "/tmp/a2a_sessions/20260830T000000_task-abc.jsonl");
+        assert.match(tp.preview, /7 steps/);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("audits the transcript path when the runner throws (killed worker)", async () => {
+      const piDir = tmpDir();
+      const runner: SessionRunner = async () => {
+        const err = new Error("reply timeout: exceeded the 1800s reply window");
+        (err as any).transcriptPath = "/tmp/a2a_sessions/20260830T000000_task-def.jsonl";
+        (err as any).stepCount = 42;
+        throw err;
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner, piDir });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
+        });
+        assert.equal(sendTask(r).status.state, STATE_FAILED);
+        const lines = fs
+          .readFileSync(path.join(piDir, "a2a_audit.jsonl"), "utf-8")
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => JSON.parse(l));
+        const tp = lines.find((l) => l.transcript);
+        assert.ok(tp, "a transcript audit line exists for the failure");
+        assert.match(tp.preview, /42 steps/);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("carries the transcript on the error when an aborted runner returns normally", async () => {
+      // The #247 defense-in-depth path: the runner resolves normally on
+      // abort, and messageSend must reclassify as FAILED — carrying the
+      // transcript forensics onto the classification error.
+      const piDir = tmpDir();
+      const partialRunner: SessionRunner = ({ signal }) =>
+        new Promise((resolve) => {
+          signal.addEventListener(
+            "abort",
+            () =>
+              resolve({
+                reply: "partial",
+                inputRequired: false,
+                transcriptPath: "/tmp/a2a_sessions/20260830T000000_task-ghi.jsonl",
+                stepCount: 3,
+              }),
+            { once: true },
+          );
+        });
+      const cfg = DEFAULTS();
+      cfg.server.replyTimeoutSec = 1;
+      const { url, stop } = await startServer({ cfg, runner: partialRunner, piDir });
+      try {
+        const r = await jsonRpc(url, "SendMessage", {
+          message: { role: "ROLE_USER", parts: [{ text: "long task" }] },
+        });
+        assert.equal(sendTask(r).status.state, STATE_FAILED);
+        const lines = fs
+          .readFileSync(path.join(piDir, "a2a_audit.jsonl"), "utf-8")
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => JSON.parse(l));
+        const tp = lines.find((l) => l.transcript);
+        assert.ok(tp, "transcript audited despite the post-abort normal return");
+        assert.match(tp.preview, /3 steps/);
       } finally {
         await stop();
       }

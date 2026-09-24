@@ -1,19 +1,20 @@
 import { assert } from "chai";
-import * as path from "node:path";
-import * as fs from "node:fs";
-import * as os from "node:os";
 
 import { DEFAULTS } from "./helpers";
+import { makeTempDir } from "./tmp";
 import {
   a2aCall,
   a2aDiscover,
+  a2aList,
   a2aOrchestrate,
+  a2aStatus,
   isPrivateHost,
   metrics,
   rpcUrl,
 } from "../lib/client";
-import { buildAgentCard, STATE_COMPLETED } from "../lib/protocol";
-import { setGatewayRegistrationName, gatewayKeyFromUrl } from "../lib/config";
+import { buildAgentCard, STATE_COMPLETED, STATE_WORKING } from "../lib/protocol";
+import { setGatewayRegistrationName, setGatewayPeers, gatewayKeyFromUrl } from "../lib/config";
+import type { DiscoveredPeer } from "../lib/discovery";
 
 // ---------------------------------------------------------------------------
 // fetch mock helpers
@@ -63,7 +64,7 @@ function makeResp(body: any, status: number): any {
 }
 
 function tmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-client-"));
+  return makeTempDir("pi-a2a-client-");
 }
 
 describe("client", () => {
@@ -163,6 +164,87 @@ describe("client", () => {
       assert.isUndefined(seenHeaders["X-Gateway-Caller"]);
     });
 
+    it("sends the asserted X-A2A-Identity header from selfIdentity", async () => {
+      const result = { task: { id: "t", contextId: "c", status: { state: STATE_COMPLETED }, artifacts: [{ parts: [{ text: "ok" }] }] } };
+      let seenHeaders: Record<string, string> = {};
+      globalThis.fetch = (async (_url: string, init?: any) => {
+        seenHeaders = { ...(init?.headers || {}) };
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ jsonrpc: "2.0", id: 1, result }),
+        };
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.selfIdentity = "pi-kimchi";
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aCall({ cfg, piDir, agent: "bob", message: "hi" });
+      assert.include(out, "ok");
+      assert.equal(seenHeaders["X-A2A-Identity"], "pi-kimchi");
+    });
+
+    it("stamps pi/session and pi/self on the outbound message metadata (fleet task #238)", async () => {
+      const result = { task: { id: "t", contextId: "c", status: { state: STATE_COMPLETED }, artifacts: [{ parts: [{ text: "ok" }] }] } };
+      let body: any = null;
+      globalThis.fetch = (async (_url: string, init?: any) => {
+        if (init?.body) body = JSON.parse(init.body);
+        return { ok: true, status: 200, text: async () => JSON.stringify({ jsonrpc: "2.0", id: 1, result }) };
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.selfIdentity = "pi-kimchi";
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      await a2aCall({ cfg, piDir, agent: "bob", message: "hi", sessionId: "sess-123" });
+      assert.deepEqual(body.params.message.metadata, { "pi/session": "sess-123", "pi/self": "pi-kimchi" });
+    });
+
+    it("omits message metadata when there is no session or identity", async () => {
+      const result = { task: { id: "t", contextId: "c", status: { state: STATE_COMPLETED }, artifacts: [{ parts: [{ text: "ok" }] }] } };
+      let body: any = null;
+      globalThis.fetch = (async (_url: string, init?: any) => {
+        if (init?.body) body = JSON.parse(init.body);
+        return { ok: true, status: 200, text: async () => JSON.stringify({ jsonrpc: "2.0", id: 1, result }) };
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      await a2aCall({ cfg, piDir, agent: "bob", message: "hi" });
+      assert.isUndefined(body.params.message.metadata);
+    });
+
+    it("falls back to server.agentName for X-A2A-Identity", async () => {
+      const result = { task: { id: "t", contextId: "c", status: { state: STATE_COMPLETED }, artifacts: [{ parts: [{ text: "ok" }] }] } };
+      let seenHeaders: Record<string, string> = {};
+      globalThis.fetch = (async (_url: string, init?: any) => {
+        seenHeaders = { ...(init?.headers || {}) };
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ jsonrpc: "2.0", id: 1, result }),
+        };
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.server.agentName = "pi-bingsu"; // selfIdentity unset
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      await a2aCall({ cfg, piDir, agent: "bob", message: "hi" });
+      assert.equal(seenHeaders["X-A2A-Identity"], "pi-bingsu");
+    });
+
+    it("omits X-A2A-Identity when no identity is configured", async () => {
+      const result = { task: { id: "t", contextId: "c", status: { state: STATE_COMPLETED }, artifacts: [{ parts: [{ text: "ok" }] }] } };
+      let seenHeaders: Record<string, string> = {};
+      globalThis.fetch = (async (_url: string, init?: any) => {
+        seenHeaders = { ...(init?.headers || {}) };
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ jsonrpc: "2.0", id: 1, result }),
+        };
+      }) as any;
+      const cfg = DEFAULTS(); // selfIdentity and server.agentName both ""
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      await a2aCall({ cfg, piDir, agent: "bob", message: "hi" });
+      assert.isUndefined(seenHeaders["X-A2A-Identity"]);
+    });
+
     it("falls back to the runtime gateway registration name for X-Gateway-Caller", async () => {
       const result = { task: { id: "t", contextId: "c", status: { state: STATE_COMPLETED }, artifacts: [{ parts: [{ text: "ok" }] }] } };
       let seenHeaders: Record<string, string> = {};
@@ -240,12 +322,77 @@ describe("client", () => {
       assert.include(out, "unknown agent 'ghost'");
     });
 
+    it("calls a discovered peer by name", async () => {
+      let postUrl = "";
+      globalThis.fetch = (async (url: string, init?: any) => {
+        if (init?.method === "POST") postUrl = String(url);
+        return makeResp(
+          { jsonrpc: "2.0", id: 1, result: { message: { parts: [{ text: "pong" }] } } },
+          200,
+        );
+      }) as any;
+      const discoveredPeers: DiscoveredPeer[] = [
+        { name: "pi-solo", url: "http://127.0.0.1:9912", source: "local", alive: true },
+      ];
+      const out = await a2aCall({ cfg: DEFAULTS(), piDir, agent: "pi-solo", message: "hi", discoveredPeers });
+      assert.include(out, "pong");
+      assert.include(postUrl, "127.0.0.1:9912");
+    });
+
+    it("errors with candidate URLs for an ambiguous discovered name", async () => {
+      const discoveredPeers: DiscoveredPeer[] = [
+        { name: "pi-s2", url: "http://127.0.0.1:9912", source: "local", alive: true },
+        { name: "pi-s2", url: "http://127.0.0.1:9913", source: "local", alive: true },
+      ];
+      const out = await a2aCall({ cfg: DEFAULTS(), piDir, agent: "pi-s2", message: "hi", discoveredPeers });
+      assert.include(out, "share the name 'pi-s2'");
+      assert.include(out, "9912");
+      assert.include(out, "9913");
+    });
+
+    it("does not attach a bearer token to a discovered peer outside the known set", async () => {
+      let auth = "";
+      globalThis.fetch = (async (_url: string, init?: any) => {
+        if (init?.method === "POST") auth = String(init?.headers?.Authorization ?? "");
+        return makeResp({ jsonrpc: "2.0", id: 1, result: { message: { parts: [{ text: "pong" }] } } }, 200);
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.server = { ...cfg.server, peerTokens: { anon: "secret-token" } } as any;
+      const discoveredPeers: DiscoveredPeer[] = [
+        // loopback URL but NOT in the local registry (unknown → no credential)
+        { name: "rogue", url: "http://127.0.0.1:9999", source: "local", alive: true },
+      ];
+      await a2aCall({ cfg, piDir, agent: "rogue", message: "hi", discoveredPeers });
+      assert.notInclude(auth, "secret-token");
+    });
+
     it("surfaces peer auth rejection (401)", async () => {
       globalThis.fetch = mockFetch({ rpcStatus: 401 }) as any;
       const cfg = DEFAULTS();
       cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
       const out = await a2aCall({ cfg, piDir, agent: "bob", message: "hi" });
       assert.include(out, "rejected auth");
+    });
+
+    it("distinguishes reply timeout from connection failure", async () => {
+      globalThis.fetch = ((_url: string, init?: any) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+        })) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5, capabilities: [] };
+      const out = await a2aCall({ cfg, piDir, agent: "bob", message: "hi" });
+      assert.include(out, "reply timed out after 5ms");
+      assert.include(out, "delivery status unknown");
+      assert.include(out, "requestId=");
+      assert.notInclude(out, "This operation was aborted");
+
+      globalThis.fetch = (async () => {
+        throw new TypeError("fetch failed");
+      }) as any;
+      const connectionOut = await a2aCall({ cfg, piDir, agent: "bob", message: "hi" });
+      assert.include(connectionOut, "connection failed");
+      assert.notInclude(connectionOut, "delivery status unknown");
     });
 
     it("redacts credentials before sending", async () => {
@@ -262,6 +409,234 @@ describe("client", () => {
       await a2aCall({ cfg, piDir, agent: "bob", message: "my key is sk-1234567890abcdefXX" });
       assert.notInclude(capturedBody, "sk-1234567890abcdefXX");
       assert.include(capturedBody, "sk-[redacted]");
+    });
+  });
+
+  describe("non-blocking dispatch (asyncDispatch + a2a_status)", () => {
+    const workingTask = {
+      id: "task-9",
+      contextId: "ctx-async",
+      status: { state: STATE_WORKING },
+    };
+    const completedTask = {
+      id: "task-9",
+      contextId: "ctx-async",
+      status: { state: STATE_COMPLETED },
+      artifacts: [{ parts: [{ text: "late result" }] }],
+    };
+
+    /** Sequential POST-result mock: each POST returns the next entry (last
+     *  one repeats). GETs (card fetch) 404 — non-fatal, rpcUrl falls back to
+     *  the base URL. */
+    function seqMock(results: any[]): { fetch: FetchMock; posts: () => number } {
+      let i = 0;
+      let n = 0;
+      const fetch = async (url: string, init?: any) => {
+        if (init?.method === "POST") {
+          n += 1;
+          const result = results[Math.min(i++, results.length - 1)];
+          return makeResp({ jsonrpc: "2.0", id: 1, result }, 200);
+        }
+        return makeResp(null, 404);
+      };
+      return { fetch, posts: () => n };
+    }
+
+    it("sends configuration.returnImmediately only when asyncDispatch is set", async () => {
+      const bodies: any[] = [];
+      globalThis.fetch = (async (_url: string, init?: any) => {
+        if (init?.method === "POST") bodies.push(JSON.parse(init.body));
+        return makeResp({ jsonrpc: "2.0", id: 1, result: { task: workingTask } }, 200);
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      await a2aCall({ cfg, piDir, agent: "bob", message: "hi", asyncDispatch: true });
+      await a2aCall({ cfg, piDir, agent: "bob", message: "hi" });
+      assert.equal(bodies[0]!.params.configuration?.returnImmediately, true, "asyncDispatch must set the configuration");
+      assert.isUndefined(bodies[1]!.params.configuration, "a blocking call must not send any configuration");
+    });
+
+    it("formats the detached ack with the poll hint", async () => {
+      globalThis.fetch = mockFetch({ rpcResult: { task: workingTask } }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aCall({ cfg, piDir, agent: "bob", message: "hi", asyncDispatch: true });
+      assert.include(out, "detached");
+      assert.include(out, "task-9");
+      assert.include(out, "non-blocking");
+      assert.include(out, 'a2a_status(agent: "bob", task_id: "task-9")');
+      assert.notInclude(out, "late result");
+    });
+
+    it("falls through to normal formatting when the task finished before the ack", async () => {
+      // A fast peer completes before the ack is serialized — the ack carries
+      // the terminal state, so the caller gets the result inline, no poll hint.
+      globalThis.fetch = mockFetch({ rpcResult: { task: completedTask } }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aCall({ cfg, piDir, agent: "bob", message: "hi", asyncDispatch: true });
+      assert.include(out, "completed");
+      assert.include(out, "late result");
+      assert.notInclude(out, "detached");
+      assert.notInclude(out, "a2a_status(");
+    });
+
+    it("persists the dispatch ack marker under the conversation context", async () => {
+      const { loadConversation } = await import("../lib/persistence");
+      globalThis.fetch = mockFetch({ rpcResult: { task: workingTask } }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      await a2aCall({ cfg, piDir, agent: "bob", message: "hi", asyncDispatch: true });
+      // Both sides land under the PEER's context id so a2a_history works.
+      const msgs = loadConversation(piDir, "ctx-async");
+      assert.lengthOf(msgs, 2);
+      assert.equal(msgs[0]!.role, "user");
+      assert.equal(msgs[1]!.role, "agent");
+      assert.include(msgs[1]!.text, "dispatched non-blocking");
+      assert.include(msgs[1]!.text, "task-9");
+    });
+
+    it("a2a_status: single fetch without wait_seconds", async () => {
+      const m = seqMock([{ task: workingTask }]);
+      globalThis.fetch = m.fetch as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-9" });
+      assert.equal(m.posts(), 1, "no wait_seconds → exactly one GetTask");
+      assert.include(out, "task-9");
+      assert.include(out, "working");
+      assert.include(out, "no text yet");
+    });
+
+    it("a2a_status: polls to terminal with wait_seconds", async () => {
+      const m = seqMock([{ task: workingTask }, { task: completedTask }]);
+      globalThis.fetch = m.fetch as any;
+      const cfg = DEFAULTS();
+      cfg.timeouts.async = 250; // min poll interval for a fast test
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-9", waitSeconds: 5 });
+      assert.equal(m.posts(), 2, "WORKING then COMPLETED → exactly two GetTask polls");
+      assert.include(out, "completed");
+      assert.include(out, "late result");
+    });
+
+    it("a2a_status: expires with a clear message at the deadline", async () => {
+      const m = seqMock([{ task: workingTask }]);
+      globalThis.fetch = m.fetch as any;
+      const cfg = DEFAULTS();
+      cfg.timeouts.async = 250;
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-9", waitSeconds: 0.3 });
+      assert.include(out, "Still non-terminal after 0.3s of polling");
+      assert.include(out, "call a2a_status again later");
+    });
+
+    it("a2a_status: non-positive wait_seconds is a single fetch (no nonsense deadline)", async () => {
+      const m = seqMock([{ task: workingTask }]);
+      globalThis.fetch = m.fetch as any;
+      const cfg = DEFAULTS();
+      cfg.timeouts.async = 250;
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-9", waitSeconds: -5 });
+      assert.equal(m.posts(), 1, "negative wait_seconds must not enter the poll loop");
+      assert.notInclude(out, "-5s");
+      assert.include(out, "working");
+    });
+
+    it("a2a_status: maps TaskNotFoundError (-32001) to the unknown/evicted/foreign hint", async () => {
+      globalThis.fetch = mockFetch({ rpcError: { code: -32001, message: "task not found" } }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-ghost" });
+      assert.include(out, "does not know task 'task-ghost'");
+      assert.include(out, "visible only to the identity that sent them");
+    });
+
+    it("a2a_status: maps 401 to the auth error", async () => {
+      globalThis.fetch = mockFetch({ rpcStatus: 401 }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const out = await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-9" });
+      assert.include(out, "rejected auth");
+    });
+
+    it("a2a_status: errors with candidate URLs for an ambiguous discovered name", async () => {
+      const discoveredPeers: DiscoveredPeer[] = [
+        { name: "pi-s2", url: "http://127.0.0.1:9912", source: "local", alive: true },
+        { name: "pi-s2", url: "http://127.0.0.1:9913", source: "local", alive: true },
+      ];
+      const out = await a2aStatus({ cfg: DEFAULTS(), piDir, agent: "pi-s2", taskId: "task-9", discoveredPeers });
+      assert.include(out, "share the name 'pi-s2'");
+      assert.include(out, "9912");
+      assert.include(out, "9913");
+    });
+
+    it("a2a_status: cancels promptly when the abort signal fires mid-poll", async () => {
+      const m = seqMock([{ task: workingTask }]);
+      globalThis.fetch = m.fetch as any;
+      const cfg = DEFAULTS();
+      cfg.timeouts.async = 250;
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const ctl = new AbortController();
+      setTimeout(() => ctl.abort(), 120);
+      const t0 = Date.now();
+      const out = await a2aStatus({
+        cfg,
+        piDir,
+        agent: "bob",
+        taskId: "task-9",
+        waitSeconds: 30, // would poll ~2min at 250ms without the signal
+        signal: ctl.signal,
+      });
+      const elapsed = Date.now() - t0;
+      assert.isBelow(elapsed, 2000, `abort must end the poll promptly (took ${elapsed}ms)`);
+      assert.include(out, "Status polling canceled");
+      assert.include(out, "call a2a_status");
+      // The last-known state is still reported — the abort only stops polling.
+      assert.include(out, "working");
+    });
+
+    it("a2a_status: returns immediately on a pre-aborted signal (no fetch)", async () => {
+      const m = seqMock([{ task: workingTask }]);
+      globalThis.fetch = m.fetch as any;
+      const cfg = DEFAULTS();
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      const ctl = new AbortController();
+      ctl.abort();
+      const out = await a2aStatus({
+        cfg,
+        piDir,
+        agent: "bob",
+        taskId: "task-9",
+        waitSeconds: 30,
+        signal: ctl.signal,
+      });
+      assert.equal(m.posts(), 0, "a pre-aborted poll must not fetch at all");
+      assert.include(out, "Status polling canceled");
+      assert.include(out, "task-9");
+    });
+
+    it("carries X-A2A-Identity on SendMessage AND on GetTask polls", async () => {
+      const seen: Array<Record<string, string>> = [];
+      globalThis.fetch = (async (url: string, init?: any) => {
+        if (init?.method === "POST") {
+          seen.push({ ...(init?.headers || {}) });
+          const isGetTask = JSON.parse(init.body).method === "GetTask";
+          return makeResp(
+            { jsonrpc: "2.0", id: 1, result: { task: isGetTask ? completedTask : workingTask } },
+            200,
+          );
+        }
+        return makeResp(null, 404);
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.selfIdentity = "pi-kimchi";
+      cfg.peers.bob = { url: "http://b", auth: { type: "none" }, timeout: 5000, capabilities: [] };
+      await a2aCall({ cfg, piDir, agent: "bob", message: "hi", asyncDispatch: true });
+      await a2aStatus({ cfg, piDir, agent: "bob", taskId: "task-9" });
+      assert.equal(seen.length, 2, "one SendMessage + one GetTask");
+      assert.equal(seen[0]!["X-A2A-Identity"], "pi-kimchi", "SendMessage carries the identity");
+      assert.equal(seen[1]!["X-A2A-Identity"], "pi-kimchi", "GetTask polls carry the identity too");
     });
   });
 
@@ -290,7 +665,48 @@ describe("client", () => {
 
     it("returns a message when no peers match", async () => {
       const out = await a2aOrchestrate({ cfg: DEFAULTS(), piDir, capability: "x", message: "go" });
-      assert.include(out, "No configured peers advertise capability");
+      assert.include(out, "No peers advertise capability");
+    });
+
+    it("fans out to gateway peers advertising the capability", async () => {
+      let gwPost = 0;
+      globalThis.fetch = (async (url: string, init?: any) => {
+        if (init?.method === "POST" && String(url).includes("gw-proxy")) gwPost++;
+        return makeResp(
+          { jsonrpc: "2.0", id: 1, result: { message: { parts: [{ text: "gw reply" }] } } },
+          200,
+        );
+      }) as any;
+      setGatewayPeers({
+        "gw/remote/x": { url: "http://gw-proxy/peer/x/", auth: { type: "bearer", token: "t" }, timeout: 5000, capabilities: ["coding"], viaGateway: true },
+      });
+      try {
+        const out = await a2aOrchestrate({ cfg: DEFAULTS(), piDir, capability: "coding", message: "go" });
+        assert.equal(gwPost, 1, "gateway peer called at its proxy URL");
+        assert.include(out, "gw/remote/x");
+      } finally {
+        setGatewayPeers({});
+      }
+    });
+
+    it("configured peer with the same capability wins over gateway-only entries", async () => {
+      let posts = 0;
+      globalThis.fetch = (async (_url: string, init?: any) => {
+        if (init?.method === "POST") posts++;
+        return makeResp({ jsonrpc: "2.0", id: 1, result: { message: { parts: [{ text: "ok" }] } } }, 200);
+      }) as any;
+      const cfg = DEFAULTS();
+      cfg.peers.local = { url: "http://a", auth: { type: "none" }, timeout: 5000, capabilities: ["coding"] };
+      setGatewayPeers({
+        "gw/remote/local": { url: "http://gw-proxy/peer/local/", auth: { type: "bearer", token: "t" }, timeout: 5000, capabilities: ["coding"], viaGateway: true },
+      });
+      try {
+        const out = await a2aOrchestrate({ cfg, piDir, capability: "coding", message: "go" });
+        assert.equal(posts, 1, "merged by name — one entry, not two");
+        assert.include(out, "local");
+      } finally {
+        setGatewayPeers({});
+      }
     });
 
     it("reports failures when all peers error", async () => {
@@ -349,6 +765,20 @@ describe("client", () => {
       cfg.peers.local = { url: "http://127.0.0.1:9999", auth: { type: "none" }, timeout: 1000, capabilities: [] };
       const out = await a2aCall({ cfg, piDir, agent: "local", message: "hi" });
       assert.notInclude(out, "SSRF");
+    });
+  });
+
+  describe("a2aList", () => {
+    it("shows up to 20 tools with a +N more suffix", () => {
+      const tools = Array.from({ length: 25 }, (_, i) => `tool_${i}`);
+      const out = a2aList({
+        cfg: DEFAULTS(),
+        piDir,
+        discoveredPeers: [{ name: "big", url: "http://127.0.0.1:1/", source: "local", tools }],
+      });
+      assert.include(out, "tool_19");
+      assert.include(out, "(+5 more)");
+      assert.notInclude(out, "tool_20");
     });
   });
 

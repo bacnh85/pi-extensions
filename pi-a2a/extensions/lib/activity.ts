@@ -106,6 +106,18 @@ function argsPreview(args: unknown): string {
   return "";
 }
 
+/** Human-facing label for an A2A protocol Task id.
+ *
+ * The protocol calls each delegated unit of work a "Task", and its raw
+ * ids ("task-1b4f8d1c30d54819") read like todo-list entries when rendered
+ * verbatim ("task task-1b4 …"). Human-facing lines therefore label
+ * protocol tasks as dispatches — one delegation/execution from a peer:
+ * "task-1b4f8d1c30d54819" → "a2a-1b4" ("A2A dispatch a2a-1b4 completed").
+ * The raw protocol id stays in audit-log lines and debug receipts. */
+export function dispatchLabel(taskId: string): string {
+  return `a2a-${taskId.replace(/^task-/, "").slice(0, 3)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Transcript message rendering (terse text the host LLM sees)
 // ---------------------------------------------------------------------------
@@ -114,13 +126,13 @@ function argsPreview(args: unknown): string {
 export function activityToText(a: InboundActivity): string {
   switch (a.type) {
     case "arrived":
-      return `[A2A inbound] task from ${a.identity}:\n${a.text || "(empty)"}`;
+      return `[A2A inbound] dispatch from ${a.identity}:\n${a.text || "(empty)"}`;
     case "progress":
       return `[A2A inbound] ${a.line}`;
     case "completed":
-      return `[A2A inbound] task ${a.taskId.slice(0, 8)} completed (${(a.elapsedMs / 1000).toFixed(1)}s) — ${a.replyPreview || "(no reply)"}`;
+      return `[A2A inbound] A2A dispatch ${dispatchLabel(a.taskId)} completed (${(a.elapsedMs / 1000).toFixed(1)}s) — ${a.replyPreview || "(no reply)"}`;
     case "failed":
-      return `[A2A inbound] task ${a.taskId.slice(0, 8)} failed (${(a.elapsedMs / 1000).toFixed(1)}s): ${a.error || "unknown error"}`;
+      return `[A2A inbound] A2A dispatch ${dispatchLabel(a.taskId)} failed (${(a.elapsedMs / 1000).toFixed(1)}s): ${a.error || "unknown error"}`;
   }
 }
 
@@ -136,21 +148,26 @@ export type A2ALineClass = "received" | "executing" | "replying" | "completed" |
 /** Classify a rendered activity line by shape. Pure — unit-testable, and the
  *  renderer stays a thin color map. Order matters: the explicit ✎/completed/
  *  failed prefixes (which may wrap MULTI-LINE reply/error text) are checked
- *  before the generic received/executing shapes. */
+ *  before the generic received/executing shapes.
+ *
+ *  Lines rendered by older versions say "task from …" / "task … completed";
+ *  current lines say "dispatch from …" / "A2A dispatch … completed". Hosts
+ *  re-render HISTORICAL transcript lines after a restart, so both shapes
+ *  must keep classifying. */
 export function classifyLine(content: string): A2ALineClass {
-  if (/^\[A2A inbound\] task from /.test(content)) return "received";
+  if (/^\[A2A inbound\] (?:task|dispatch) from /.test(content)) return "received";
   if (/^\[A2A inbound\] ✎ /.test(content)) return "replying";
-  if (/^\[A2A inbound\] task .+ completed /.test(content)) return "completed";
-  if (/^\[A2A inbound\] task .+ failed /.test(content)) return "failed";
+  if (/^\[A2A inbound\] (?:task|A2A dispatch) .+ completed /.test(content)) return "completed";
+  if (/^\[A2A inbound\] (?:task|A2A dispatch) .+ failed /.test(content)) return "failed";
   // Multi-line with no recognized prefix = the arrived task text itself.
   if (content.includes("\n")) return "received";
   return "executing"; // ⚙ tool runs, “✓ agent finished”, anything else mid-flight
 }
 
-/** Short footer status while tasks are running (e.g. "2 inbound · 3 tools"). */
+/** Short footer status while dispatches are running (e.g. "A2A: 2 inbound dispatches (hermes)"). */
 export function activityStatusLine(active: Array<{ taskId: string; identity: string }>): string | undefined {
   if (active.length === 0) return undefined;
   const n = active.length;
   const who = active.map((t) => t.identity).join(", ");
-  return `A2A: ${n} inbound task${n > 1 ? "s" : ""} (${who})`;
+  return `A2A: ${n} inbound dispatch${n > 1 ? "es" : ""} (${who})`;
 }

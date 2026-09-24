@@ -1,11 +1,11 @@
 import { assert } from "chai";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
-import { persistMessage, loadConversation, listConversations } from "../lib/persistence";
+import { makeTempDir } from "./tmp";
+import { persistMessage, loadConversation, listConversations, childTranscriptDir, sweepChildTranscripts } from "../lib/persistence";
 
 function tmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "pi-a2a-persist-"));
+  return makeTempDir("pi-a2a-persist-");
 }
 
 describe("persistence", () => {
@@ -43,5 +43,49 @@ describe("persistence", () => {
     persistMessage({ piDir: dir, contextId: "ctx-b", role: "user", text: "y" });
     const list = listConversations(dir);
     assert.includeMembers(list, ["ctx-a", "ctx-b"]);
+  });
+});
+
+describe("child transcript sweep (#252)", () => {
+  function touch(dir: string, name: string, ageDays: number): string {
+    const p = path.join(dir, name);
+    fs.writeFileSync(p, "{}\n");
+    const t = new Date(Date.now() - ageDays * 86_400_000);
+    fs.utimesSync(p, t, t);
+    return p;
+  }
+
+  it("childTranscriptDir sits under the pi dir", () => {
+    assert.equal(childTranscriptDir("/tmp/agent"), path.join("/tmp/agent", "a2a_sessions"));
+  });
+
+  it("deletes only transcripts older than the retention window", () => {
+    const dir = tmpDir();
+    fs.mkdirSync(path.join(dir, "a2a_sessions"), { recursive: true });
+    const sessions = path.join(dir, "a2a_sessions");
+    const old = touch(sessions, "20260101T000000_task-old.jsonl", 40);
+    const fresh = touch(sessions, "20260830T000000_task-new.jsonl", 1);
+    const removed = sweepChildTranscripts(sessions, 30);
+    assert.equal(removed, 1);
+    assert.isFalse(fs.existsSync(old), "past-retention transcript removed");
+    assert.isTrue(fs.existsSync(fresh), "within-retention transcript kept");
+  });
+
+  it("ignores non-jsonl files", () => {
+    const dir = tmpDir();
+    const old = touch(dir, "notes.txt", 400);
+    assert.equal(sweepChildTranscripts(dir, 30), 0);
+    assert.isTrue(fs.existsSync(old));
+  });
+
+  it("retentionDays 0 keeps everything", () => {
+    const dir = tmpDir();
+    const old = touch(dir, "20260101T000000_task-old.jsonl", 400);
+    assert.equal(sweepChildTranscripts(dir, 0), 0);
+    assert.isTrue(fs.existsSync(old));
+  });
+
+  it("missing dir is a no-op, never a throw", () => {
+    assert.equal(sweepChildTranscripts(path.join(tmpDir(), "nope"), 30), 0);
   });
 });

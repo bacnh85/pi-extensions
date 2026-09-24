@@ -13,10 +13,13 @@
  */
 
 import { homedir } from "node:os";
+import { chmodSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import { terminalOutcomeError } from "./lib/outcome.js";
+import { childRetrySettings, isTransientChannelError } from "./lib/retry.js";
 import { buildA2ASettingsPatch, getGatewayPeers, loadConfig, setConfigOverrides, writeSettingsA2A, type A2AConfig } from "./lib/config";
 import {
   a2aCall,
@@ -24,11 +27,13 @@ import {
   a2aHistory,
   a2aList,
   a2aOrchestrate,
+  a2aStatus,
   metrics,
 } from "./lib/client";
 import { A2AServer, type SessionRunner } from "./lib/server";
 import { formatPeers, listPeers } from "./lib/discovery";
-import { activityLine, activityStatusLine, activityToText, classifyLine, preview, type InboundActivity } from "./lib/activity";
+import { childTranscriptDir } from "./lib/persistence";
+import { activityLine, activityStatusLine, activityToText, classifyLine, dispatchLabel, preview, type InboundActivity } from "./lib/activity";
 import { openPanel, type PanelAction } from "./lib/config-panel";
 
 import { Container, Text } from "@earendil-works/pi-tui";
@@ -52,17 +57,41 @@ function cfgFor(ctx: ExtensionContext): A2AConfig {
 // (Same proven path pi-subagent uses; lazy import to avoid load cost.)
 // ---------------------------------------------------------------------------
 
-function makeSessionRunner(ctx: ExtensionContext): SessionRunner {
-  return async ({ message, signal, onProgress }) => {
+function makeSessionRunner(ctx: ExtensionContext, cfg?: A2AConfig): SessionRunner {
+  return async ({ message, taskId, signal, onProgress }) => {
     const sdk = await import("@earendil-works/pi-coding-agent");
     const { createAgentSession, SessionManager, SettingsManager, DefaultResourceLoader } = sdk;
     const modelRegistry = ctx.modelRegistry as any;
     const model = ctx.model;
     if (!model) throw new Error("no active model on the host session");
     const cwd = ctx.cwd || process.cwd();
+    // Auto-compaction is the only recovery path a long dispatch has near
+    // the context window: pi clamps max_tokens to the remaining budget
+    // (down to 1 at the extreme), so without compact-and-retry the final
+    // turn is cut and the task dies with a truncated or empty reply. The
+    // keep window is scaled to the model's context window (stock: flat
+    // 20k) because pi's cut-point walk never cuts at tool results — a
+    // single tool-result batch bigger than the keep budget strands the
+    // walk and auto-compaction silently no-ops exactly when it is most
+    // needed. Dispatched coding tasks routinely produce such batches (one
+    // large read or command dump), so the keep budget needs headroom
+    // proportional to the window.
+    const keepRecentTokens = Math.max(
+      20_000,
+      Math.floor((model.contextWindow ?? 128_000) / 5),
+    );
+    // retry: the SDK agent loop retries a failed model turn IN PLACE (removes
+    // the errored assistant message, re-runs the same turn with backoff) and
+    // already narrows to the transient class (503/429/5xx/network, never
+    // quota/billing/4xx). The stock child budget was maxRetries:1 — a single
+    // 2s retry — so a transient distributor 503 ("no available channel") on
+    // the FINAL turn killed the run and left the dispatched task silently open
+    // (task #470, incident f4b6578c). childRetrySettings() lifts it to a
+    // bounded 3 retries / short backoff (~7s of coverage), converting the
+    // channel blip into a blip. See lib/retry.ts.
     const settingsManager = SettingsManager.inMemory({
-      compaction: { enabled: false },
-      retry: { enabled: true, maxRetries: 1 },
+      compaction: { enabled: true, keepRecentTokens },
+      retry: childRetrySettings(),
     });
     // The loader must NOT receive the inMemory settingsManager: it would then
     // resolve zero extension packages and the child session would run without
@@ -80,12 +109,66 @@ function makeSessionRunner(ctx: ExtensionContext): SessionRunner {
       // same behavior as pi-subagent's runner; never prompt (no UI).
       resolveProjectTrust: async () => (ctx as any).isProjectTrusted?.() ?? false,
     });
+    // Persist the child's transcript (fleet task #252). Stock pi-a2a ran
+    // children on SessionManager.inMemory, so a dispatched worker that
+    // stalled or was killed mid-run left NO step history — the only evidence
+    // was its final A2A reply (196d39be: a worker stopped mid-sentence at
+    // 989s and the cause could not be determined). AgentSession appends every
+    // entry (user message, assistant turns, tool calls and results) to its
+    // SessionManager synchronously as it runs, so a REAL SessionManager
+    // gives each dispatch a full pi session file at
+    // <agentDir>/a2a_sessions/<timestamp>_<taskId>.jsonl — openable with pi's
+    // own session tooling and complete up to the moment of death even on a
+    // window kill (the file materializes on the child's first assistant
+    // output; a child that dies before ANY model output leaves no transcript,
+    // covered instead by the FAILED task + audit line). Keyed by the A2A
+    // taskId so ledger rows, the audit log, and the transcript all join on
+    // one key; the host session lineage is preserved via parentSession.
+    // Privacy: the transcript carries everything the worker read — the file
+    // is chmod 600 at turn end, and server.childTranscriptRetentionDays
+    // bounds its lifetime (swept on server start); set
+    // a2a.server.childTranscripts=false for stock in-memory behavior.
+    // Best-effort by design: any persistence failure falls back to the
+    // in-memory manager — forensics must never break the dispatch itself.
+    let transcriptPath: string | undefined;
+    let sessionManager: any;
+    if (taskId && cfg?.server.childTranscripts !== false) {
+      try {
+        const hostSession = (ctx as any).sessionManager;
+        const hostSessionFile = hostSession?.getSessionFile?.();
+        sessionManager = SessionManager.create(cwd, childTranscriptDir(piDir()), {
+          id: taskId,
+          ...(hostSessionFile ? { parentSession: hostSessionFile } : {}),
+        });
+        // Attribution entry: plain custom entries persist in the session
+        // file but never enter the child's LLM context. Ties the transcript
+        // to the dispatch and the host session lineage.
+        sessionManager.appendCustomEntry("a2a/dispatch", {
+          taskId,
+          hostSessionId: hostSession?.getSessionId?.(),
+          hostSessionFile,
+        });
+        transcriptPath = sessionManager.getSessionFile();
+      } catch {
+        sessionManager = undefined; // fall back to stock in-memory
+      }
+    }
+    // Fallback (transcripts off or persistence failed): the in-memory child
+    // inherits the HOST session's id (fleet task #238) so its MCP calls
+    // (pi-mcp-extension stamps getSessionId() as pi/session) and outbound A2A
+    // attribute to the host conversation instead of an ephemeral id nobody
+    // can map back. The persisted path above keys the child on the taskId
+    // and records hostSessionId in its a2a/dispatch entry instead.
+    if (!sessionManager) {
+      const hostSessionId = (ctx as any).sessionManager?.getSessionId?.();
+      sessionManager = SessionManager.inMemory(cwd, hostSessionId ? { id: hostSessionId } : undefined);
+    }
     const created = await createAgentSession({
       cwd,
       model,
       thinkingLevel: ctx.thinkingLevel ?? "medium",
       resourceLoader,
-      sessionManager: SessionManager.inMemory(cwd),
+      sessionManager,
       settingsManager,
       ...(modelRegistry?.runtime ? { modelRuntime: modelRegistry.runtime } : {}),
       ...(modelRegistry?.authStorage
@@ -93,8 +176,31 @@ function makeSessionRunner(ctx: ExtensionContext): SessionRunner {
         : {}),
     } as any);
     const session = created.session;
+    // Fire the extension session lifecycle for the child. createAgentSession
+    // loads extension packages but never emits session_start — the SDK's own
+    // print/rpc modes emit it via bindExtensions() right after creation — so
+    // without this the child runs every extension's factory but none of their
+    // session_start handlers: extensions that register tools there (e.g.
+    // pi-mcp-extension, which wires ALL of its MCP servers/tools on
+    // session_start) are silently missing from dispatched sessions. mode
+    // "print" with no uiContext keeps ctx.hasUI === false, matching how the
+    // host-only session_start guard below classifies child sessions.
+    try {
+      await session.bindExtensions({ mode: "print" });
+    } catch {
+      // Best-effort: a child that fails to bind still runs base tools.
+    }
     let reply = "";
     let inputRequired = false;
+    // Stop reason of the LAST assistant message and whether it carried any
+    // text — consumed by the stunted-reply check after the run completes.
+    let terminalStopReason: string | undefined;
+    let terminalHadText = false;
+    let terminalErrorMessage: string | undefined;
+    let sawAssistant = false;
+    // Cheap progress marker for post-mortems (#256): assistant turns + tool
+    // executions observed before the run ended.
+    let stepCount = 0;
     let resolveDone!: () => void;
     const done = new Promise<void>((r) => (resolveDone = r));
     const unsub = session.subscribe((event: any) => {
@@ -102,7 +208,11 @@ function makeSessionRunner(ctx: ExtensionContext): SessionRunner {
       // assistant text deltas become one-line progress entries.
       const line = activityLine(event);
       if (line && onProgress) onProgress(line);
+      if (event.type === "tool_execution_start") {
+        stepCount += 1;
+      }
       if (event.type === "message_end" && event.message?.role === "assistant") {
+        stepCount += 1;
         // Agent-session events carry the OpenAI-style message shape: the text
         // parts live under `content` (e.g. [{type:"text",text:"..."}]), not
         // `parts` — reading `parts` yields nothing and the reply comes back
@@ -112,15 +222,21 @@ function makeSessionRunner(ctx: ExtensionContext): SessionRunner {
           .map((p: any) => (typeof p?.text === "string" ? p.text : ""))
           .join("");
         if (text) reply = text;
+        terminalStopReason = event.message?.stopReason;
+        terminalHadText = Boolean(text);
+        terminalErrorMessage = event.message?.errorMessage;
+        sawAssistant = true;
         if (/\[INPUT_REQUIRED\]/i.test(reply)) {
           inputRequired = true;
           reply = reply.replace(/\[INPUT_REQUIRED\]\s*/gi, "").trim();
         }
-      } else if (event.type === "agent_end" && !event.willRetry) {
-        resolveDone();
       }
     });
     const onAbort = () => {
+      // Settle the race (see the prompt race below) so a prompt() that
+      // outlives session.abort() cannot hang the runner past the server's
+      // reply window.
+      resolveDone();
       try {
         session.abort();
       } catch {
@@ -128,18 +244,110 @@ function makeSessionRunner(ctx: ExtensionContext): SessionRunner {
       }
     };
     signal.addEventListener("abort", onAbort, { once: true });
+    // Whether the turn finished on its own before any abort fired, captured
+    // the instant the race settles: an abort landing during the cleanup below
+    // (the server clears its reply-window timer only after this runner
+    // returns) must not retroactively fail a turn that already completed.
+    let completedCleanly = false;
     try {
+      // Settle the race on prompt() completion, not on agent_end: agent_end
+      // fires when the model turn ends — BEFORE the post-run overflow
+      // recovery that prompt() awaits (agent-session's _handlePostAgentRun
+      // → compact-and-retry). Settling at agent_end let the cleanup below
+      // dispose() the session while that recovery compaction was still in
+      // flight (dispose → abortCompaction), so a context-clamped turn could
+      // never recover even though pi's compact-and-retry would have saved
+      // it. prompt() resolves only after recovery and any continuation
+      // turns finish; aborts still settle the race immediately via onAbort
+      // above.
       await Promise.race([session.prompt(message), done]);
+      completedCleanly = !signal.aborted;
     } finally {
       signal.removeEventListener("abort", onAbort);
       unsub();
+      // dispose() does NOT emit session_shutdown (it only invalidates the
+      // extension runner), so emit it explicitly first: extensions that
+      // started processes on session_start (pi-mcp-extension's stdio MCP
+      // servers) stop them on session_shutdown and would otherwise leak one
+      // process per inbound task.
+      try {
+        await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" });
+      } catch {
+        /* best-effort */
+      }
       try {
         session.dispose();
       } catch {
         /* ignore */
       }
+      // The session file materializes lazily (SessionManager buffers
+      // entries until the first assistant message), so tighten permissions
+      // here — best-effort 0600 for a file that carries everything the
+      // worker read.
+      if (transcriptPath) {
+        try {
+          chmodSync(transcriptPath, 0o600);
+        } catch {
+          /* file never materialized (no model output) — nothing to chmod */
+        }
+      }
     }
-    return { reply: reply || "(no reply)", inputRequired };
+    if (!completedCleanly) {
+      // The reply window expired (or the caller canceled) mid-run: the race
+      // ended because of the abort, not because the turn finished, so `reply`
+      // holds at most a truncated partial answer. Throw so messageSend maps
+      // the task to FAILED/CANCELED — returning normally takes the success
+      // path and hands the dispatcher a truncated reply labelled COMPLETED,
+      // indistinguishable from a finished worker (#247). Carry the transcript
+      // forensics on the error so the failure audit line points at the step
+      // history (#252).
+      const err =
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error("inbound session aborted before completing");
+      try {
+        if (transcriptPath) (err as any).transcriptPath = transcriptPath;
+        (err as any).stepCount = stepCount;
+      } catch {
+        /* best-effort */
+      }
+      throw err;
+    }
+
+    // Endings with no usable answer map to FAILED, never COMPLETED with a
+    // stale/empty reply: a length stop with no text (#314), a final turn the
+    // provider failed (#425 — e.g. HTTP 503 "no available channel", which
+    // previously came back COMPLETED "(no reply)"), and a run that produced
+    // no assistant output at all. See lib/outcome.ts.
+    let outcomeError = terminalOutcomeError({
+      stopReason: terminalStopReason,
+      hadText: terminalHadText,
+      sawAssistant,
+      errorMessage: terminalErrorMessage,
+    });
+    if (outcomeError) {
+      // If the final turn died on a transient provider/channel error, the SDK
+      // already retried it within the bounded budget above and still failed —
+      // say so, so a post-mortem does not chase a phantom permanent fault
+      // (task #470).
+      if (terminalStopReason === "error" && isTransientChannelError(terminalErrorMessage)) {
+        outcomeError += " (transient provider/channel error — bounded retries exhausted)";
+      }
+      const err = new Error(outcomeError);
+      try {
+        if (transcriptPath) (err as any).transcriptPath = transcriptPath;
+        (err as any).stepCount = stepCount;
+      } catch {
+        /* best-effort */
+      }
+      throw err;
+    }
+    return {
+      reply: reply || "(no reply)",
+      inputRequired,
+      ...(transcriptPath ? { transcriptPath } : {}),
+      stepCount,
+    };
   };
 }
 
@@ -179,7 +387,7 @@ function broadcastActivity(
     case "arrived":
       activeInboundTasks.set(a.taskId, { identity: a.identity, last: a });
       // Toast stays short (it would flood the TUI); the transcript carries full text.
-      ctx.ui.notify(`A2A task from ${a.identity}: ${preview(a.text, 160)}`, "info");
+      ctx.ui.notify(`A2A dispatch from ${a.identity}: ${preview(a.text, 160)}`, "info");
       break;
     case "progress":
       activeInboundTasks.set(a.taskId, { identity: activeInboundTasks.get(a.taskId)?.identity ?? "peer", last: a });
@@ -189,8 +397,8 @@ function broadcastActivity(
       activeInboundTasks.delete(a.taskId);
       ctx.ui.notify(
         a.type === "completed"
-          ? `A2A task ${a.taskId.slice(0, 8)} completed (${(a.elapsedMs / 1000).toFixed(1)}s)`
-          : `A2A task ${a.taskId.slice(0, 8)} failed: ${a.error}`,
+          ? `A2A dispatch ${dispatchLabel(a.taskId)} completed (${(a.elapsedMs / 1000).toFixed(1)}s)`
+          : `A2A dispatch ${dispatchLabel(a.taskId)} failed: ${a.error}`,
         a.type === "completed" ? "info" : "error",
       );
       break;
@@ -314,16 +522,29 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     description:
       "Call a remote A2A (Agent2Agent) agent with a task message and return its reply. " +
       "Use to delegate work to other agents (Hermes, ADK, LangChain, CrewAI, any A2A peer). " +
-      "Pass context_id to continue a multi-turn conversation.",
+      "Pass context_id to continue a multi-turn conversation. Set async_dispatch true for " +
+      "long-running work: the call returns an ack with a task id immediately and the peer " +
+      "keeps working — poll it with a2a_status.",
     promptSnippet: "delegate a task to a remote A2A agent and get its reply",
     promptGuidelines: [
       "Use for cross-agent task distribution and specialist delegation.",
       "The agent param is a configured peer name OR a full URL.",
+      "For jobs that may run long, set async_dispatch true — you get a task id back " +
+      "immediately instead of holding the call open; check a2a_status for the result.",
     ],
     parameters: Type.Object({
       agent: agentParam,
       message: messageParam,
       context_id: contextIdParam,
+      async_dispatch: Type.Optional(
+        Type.Boolean({
+          description:
+            "Non-blocking dispatch (A2A v1.0 returnImmediately): return an ack with the task id " +
+            "as soon as the peer accepts, instead of waiting for the work to finish. " +
+            "The peer runs the task detached — poll a2a_status for the result.",
+          default: false,
+        }),
+      ),
     }),
     execute: async (_id, args, _signal, _onUpdate, ctx) => {
       const cfg = cfgFor(ctx);
@@ -337,6 +558,57 @@ export default function a2aExtension(pi: ExtensionAPI): void {
               agent: String(args.agent ?? ""),
               message: String(args.message ?? ""),
               contextId: args.context_id ? String(args.context_id) : undefined,
+              asyncDispatch: args.async_dispatch === true,
+              sessionId: (ctx as any).sessionManager?.getSessionId?.(),
+              discoveredPeers: listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "", gatewayPeers: getGatewayPeers() }),
+            }),
+          },
+        ],
+        details: {},
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "a2a_status",
+    label: "A2A Status",
+    description:
+      "Check the status of a task previously dispatched to a remote A2A agent (by task id — " +
+      "see the ack from an async_dispatch a2a_call). Returns the task state, and the reply " +
+      "text once the task is completed/failed. Optionally wait (wait_seconds) and poll until " +
+      "the task reaches a terminal state.",
+    promptSnippet: "poll the status of a task dispatched to a remote A2A agent",
+    promptGuidelines: [
+      "Use after an async_dispatch a2a_call to fetch the result of a long-running task.",
+      "Without wait_seconds it fetches once; with it, the tool polls until the task is " +
+      "terminal or the deadline passes (the task keeps running on the peer either way).",
+    ],
+    parameters: Type.Object({
+      agent: agentParam,
+      task_id: Type.String({
+        description: "Task id from the dispatch ack (e.g. task-1b4f8d1c30d54819).",
+      }),
+      wait_seconds: Type.Optional(
+        Type.Number({
+          description: "If positive, poll until the task is terminal or this many seconds pass. " +
+          "Omit (or 0/negative) for a single status fetch.",
+        }),
+      ),
+    }),
+    execute: async (_id, args, signal, _onUpdate, ctx) => {
+      const cfg = cfgFor(ctx);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: await a2aStatus({
+              cfg,
+              piDir: piDir(),
+              agent: String(args.agent ?? ""),
+              taskId: String(args.task_id ?? ""),
+              waitSeconds: typeof args.wait_seconds === "number" ? args.wait_seconds : undefined,
+              discoveredPeers: listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "", gatewayPeers: getGatewayPeers() }),
+              signal: signal ?? undefined,
             }),
           },
         ],
@@ -424,7 +696,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     promptSnippet: "delegate one task to multiple capable A2A peers in parallel",
     promptGuidelines: [
       "Peers advertise capabilities in a2a.peers.<name>.capabilities.",
-      "Use 'first' for speed, 'best' for quality.",
+      "All matching peers are contacted and awaited either way; 'first' returns the first-listed successful reply, 'best' the longest. Narrow `capabilities` to limit the fan-out.",
     ],
     parameters: Type.Object({
       capability: Type.String({
@@ -451,6 +723,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
               capability: String(args.capability ?? ""),
               message: String(args.message ?? ""),
               mode: args.mode === "first" || args.mode === "best" ? args.mode : "all",
+              sessionId: (ctx as any).sessionManager?.getSessionId?.(),
             }),
           },
         ],
@@ -515,6 +788,9 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     getArgumentCompletions: (prefix) => {
       // Only the first token (peer name) is completable; the rest is free text.
       if (/\s/.test(prefix)) return null;
+      // lastA2aCtx is undefined until the first session_start (e.g. hot-reload);
+      // cfgFor(undefined) would throw.
+      if (!lastA2aCtx) return null;
       const cfg = cfgFor(lastA2aCtx as unknown as ExtensionContext);
       const peers = listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "", gatewayPeers: getGatewayPeers() });
       const q = prefix.trim().toLowerCase();
@@ -532,7 +808,8 @@ export default function a2aExtension(pi: ExtensionAPI): void {
         return;
       }
       const cfg = cfgFor(ctx as unknown as ExtensionContext);
-      ctx.ui.notify(await a2aCall({ cfg, piDir: piDir(), agent, message }), "info");
+      const discoveredPeers = listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "", gatewayPeers: getGatewayPeers() });
+      ctx.ui.notify(await a2aCall({ cfg, piDir: piDir(), agent, message, discoveredPeers }), "info");
     },
   });
 
@@ -553,8 +830,9 @@ export default function a2aExtension(pi: ExtensionAPI): void {
         return;
       }
       const cfg = cfgFor(ctx as unknown as ExtensionContext);
+      const discoveredPeers = listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "", gatewayPeers: getGatewayPeers() });
       const results = await Promise.all(
-        agents.map((a) => a2aCall({ cfg, piDir: piDir(), agent: a, message })),
+        agents.map((a) => a2aCall({ cfg, piDir: piDir(), agent: a, message, discoveredPeers })),
       );
       ctx.ui.notify(results.join("\n\n---\n\n"), "info");
     },
@@ -566,9 +844,10 @@ export default function a2aExtension(pi: ExtensionAPI): void {
       const cfg = cfgFor(ctx as unknown as ExtensionContext);
       const m = metrics.snapshot();
       const lines = [
+        `Name: ${server?.name ?? (cfg.server.agentName || "(default: <hostname>-<port> once started)")}`,
         `Server: ${server ? "running at " + server.url : cfg.server.enabled ? "enabled (not started)" : "disabled"}`,
         `Outbound: ${m.outbound_total} sent / ${m.inbound_total} replies`,
-        `Tasks: ${m.tasks_completed} completed, ${m.tasks_failed} failed`,
+        `Dispatches: ${m.tasks_completed} completed, ${m.tasks_failed} failed`,
         `Avg latency: ${m.avg_latency_ms}ms`,
       ];
       ctx.ui.notify(lines.join("\n"), "info");
@@ -758,7 +1037,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
                 ctx: ectx,
                 cwd: ectx.cwd,
                 piDir: piDir(),
-                runner: makeSessionRunner(ectx),
+                runner: makeSessionRunner(ectx, fresh),
                 api: pi,
                 onActivity: (a) => broadcastActivity(pi, ectx, fresh, a),
                 onStatus: statusSink(pi, ectx),
@@ -800,7 +1079,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
             ctx: ectx,
             cwd: ectx.cwd,
             piDir: piDir(),
-            runner: makeSessionRunner(ectx),
+            runner: makeSessionRunner(ectx, cfg),
             api: pi,
             onActivity: (a) => broadcastActivity(pi, ectx, cfg, a),
             onStatus: statusSink(pi, ectx),
@@ -862,7 +1141,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
           "  /a2a-config show             Show config summary",
           "  /a2a-server start|stop|status  Manage inbound server",
           "",
-          "Tools: a2a_call, a2a_discover, a2a_list, a2a_history, a2a_orchestrate",
+          "Tools: a2a_call, a2a_status, a2a_discover, a2a_peers, a2a_list, a2a_history, a2a_orchestrate",
         ].join("\n"),
         "info",
       );
@@ -880,7 +1159,6 @@ export default function a2aExtension(pi: ExtensionAPI): void {
 
   let lastA2aCtx: ExtensionContext | undefined;
   pi.on("session_start", async (_event, ctx) => {
-    lastA2aCtx = ctx;
     // Only HOST sessions serve inbound A2A. SDK-created child sessions (a2a
     // inbound tasks via makeSessionRunner, pi-subagent children) have
     // hasUI=false AND mode='print' — without this guard every child would
@@ -888,8 +1166,10 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     // per task, and duplicate gateway registration. The host session is the
     // single inbound server; children only run the task. json-mode hosts are
     // long-lived headless HOSTS (mode='json'), not children — they keep the
-    // auto-start.
+    // auto-start. lastA2aCtx (completions/cfgFor context) is captured BELOW
+    // the guard so a child session can't overwrite the host's ctx.
     if (!ctx.hasUI && ctx.mode !== "json") return;
+    lastA2aCtx = ctx;
     const cfg = cfgFor(ctx);
     if (!cfg.server.enabled) return;
     try {
@@ -898,7 +1178,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
         ctx,
         cwd: ctx.cwd,
         piDir: piDir(),
-        runner: makeSessionRunner(ctx),
+        runner: makeSessionRunner(ctx, cfg),
         api: pi,
         onActivity: (a) => broadcastActivity(pi, ctx, cfg, a),
         onStatus: statusSink(pi, ctx),
@@ -925,7 +1205,15 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", async (_event, ctx) => {
+    // Only the HOST session owns the inbound server. Child sessions share
+    // this cached extension factory (the loader caches it per process), so
+    // the session_shutdown makeSessionRunner now emits for each child would
+    // otherwise stop the host's shared `server` mid-dispatch. Same host-only
+    // classification as session_start above: children have hasUI=false and
+    // mode "print"; json-mode hosts are long-lived HOSTS, not children —
+    // they keep the shutdown.
+    if (!ctx.hasUI && ctx.mode !== "json") return;
     if (server) {
       try {
         await server.stop();
