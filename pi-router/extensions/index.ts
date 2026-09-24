@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getSettings } from "./lib/config.js";
 import { migrateLegacyConfig } from "./lib/migrate.js";
-import { registerProvider, PROVIDER_ID } from "./lib/provider.js";
+import { registerProvider, maybeRefreshCatalog, PROVIDER_ID } from "./lib/provider.js";
 import { registerCommands } from "./commands/commands.js";
 
 /** Re-select the active router model so Pi picks up refreshed capability
@@ -38,7 +38,19 @@ export default function (pi: ExtensionAPI) {
 
   registerCommands(pi);
 
+  // Periodic catalog pull: TTL gate makes this a no-op while the catalog is
+  // fresh, a fetch when it ages out. Catches mid-session endpoint additions.
+  // Uses the latest session ctx (ExtensionAPI carries no modelRegistry).
+  // ponytail: 5-min tick + 15-min TTL constants, no env knob until asked.
+  let lastCtx: ExtensionContext | undefined;
+  const periodicRefresh = setInterval(() => {
+    if (!lastCtx) return;
+    void maybeRefreshCatalog(lastCtx).catch(() => { /* transient — next tick retries */ });
+  }, 5 * 60_000);
+  periodicRefresh.unref?.();
+
   pi.on("session_start", async (_event, ctx) => {
+    lastCtx = ctx;
     // Now ctx exists: trust-gate the repo scope. A trusted repo may add/override
     // the endpoint; an untrusted one is ignored (attacker-redirect guard).
     const s = getSettings({ trustProject: ctx.isProjectTrusted?.() === true });
@@ -54,11 +66,22 @@ export default function (pi: ExtensionAPI) {
     if (s.baseUrl !== registeredBaseUrl) {
       registeredBaseUrl = s.baseUrl;
       registerProvider(pi, s);
-      try {
-        await ctx.modelRegistry.refresh({ providers: [PROVIDER_ID] });
-      } catch { /* refresh errors are surfaced by Pi elsewhere */ }
+      // New endpoint — bypass TTL so the first pull is immediate.
+      try { await maybeRefreshCatalog(ctx, { force: true }); } catch { /* surfaced by Pi elsewhere */ }
     }
     await refreshActiveModel(pi, ctx);
+    // Automatic network pull in EVERY mode — Pi only network-refreshes from
+    // the TUI /model picker (agent-session-services.js forces allowNetwork:
+    // false), so RPC/print/headless sessions would otherwise keep serving the
+    // stale models-store.json for the whole session. Fire-and-forget: never
+    // blocks session start; TTL + in-flight guard make repeats cheap.
+    void maybeRefreshCatalog(ctx)
+      .then(() => refreshActiveModel(pi, ctx))
+      .catch(() => { /* transient — timer/session end retries */ });
   });
+
+  // Stop the interval from refreshing with a dead session's registry after
+  // quit/reload/session replacement (review finding 4).
+  pi.on("session_shutdown", () => { lastCtx = undefined; });
 }
 

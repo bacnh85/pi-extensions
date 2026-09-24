@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.2.0 (2026-09-24)
+
+### Added
+
+- **Automatic model pull in every mode.** Pi itself only network-refreshes
+  extension model catalogs from the TUI `/model` picker (session services force
+  `allowNetwork: false`), so RPC/print/headless sessions served the stale
+  `models-store.json` for the whole session — endpoint model additions/updates
+  never arrived until someone opened the picker. pi-router now refreshes on
+  every `session_start` (fire-and-forget, all modes) and on a 5-min interval
+  while pi runs, gated by a 15-minute TTL so fresh catalogs fetch nothing.
+  `PI_OFFLINE` still disables all network pulls.
+- `/router-model` now pulls the live catalog before listing (mirrors the
+  built-in `/model` picker behavior), instead of showing only the cached list.
+- Catalog freshness is persisted as `checkedAt` in `models-store.json` (same
+  field Pi's own remote catalogs use), so TTL state survives restarts. Legacy
+  entries without the field are treated as stale and backfilled on the next
+  refresh.
+
+### Fixed
+
+- Concurrent router refreshes no longer supersede each other: session_start,
+  the interval, `/router-model`, `/router-config` save, and
+  `/router-reasoning` all share one in-flight refresh (pi-ai drops publications
+  from superseded refresh generations, so stacked refreshes could silently
+  discard a fresh fetch). Commands that must take effect immediately
+  (`/router-reasoning`, `/router-config`, endpoint flips) pass `force`, which
+  supersedes a stale in-flight fetch instead of joining it — a join would
+  return the OLD endpoint's result right after a baseUrl change and leave the
+  new catalog unpulled for a full TTL window.
+- The 5-minute interval stops refreshing after `session_shutdown` (quit,
+  reload, session switch) instead of holding a dead session's registry for
+  the life of the process.
+
 ## 1.1.12 (2026-09-24)
 
 ### Fixed

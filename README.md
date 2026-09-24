@@ -8,7 +8,7 @@ Each package lives in its own directory and can be installed independently — e
 
 | Package | Version | What it adds |
 | --- | ---: | --- |
-| [`@bacnh85/pi-router`](./pi-router) | 1.1.12 | Connect to any OpenAI-compatible AI router (9router, omniroute, …) — API key via built-in /login, URL in settings.json (`/router-config` panel), cached model discovery. |
+| [`@bacnh85/pi-router`](./pi-router) | 1.2.0 | Connect to any OpenAI-compatible AI router (9router, omniroute, …) — API key via built-in /login, URL in settings.json (`/router-config` panel), cached model discovery with automatic TTL refresh in all session modes. |
 | [`@bacnh85/pi-commandcode`](./pi-commandcode) | 0.2.6 | Connect to Command Code's OpenAI-compatible Provider API; API key via built-in `/login`, base URL in settings.json (`/commandcode-config` panel). |
 | [`@bacnh85/pi-agy`](./pi-agy) | 0.3.7 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
 | [`@bacnh85/pi-budget`](./pi-budget) | 0.1.5 | Spend cap enforcement — `--budget <usd>` aborts the agent at the cap. |

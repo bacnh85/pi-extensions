@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { openConfigPanel, row } from "@bacnh85/pi-config-panel";
 import { configSummary, getSettings, readStoredApiKey, maskApiKey, normalizeUrl } from "../lib/config.js";
-import { registerProvider, PROVIDER_ID } from "../lib/provider.js";
+import { registerProvider, maybeRefreshCatalog, PROVIDER_ID } from "../lib/provider.js";
 import { refreshActiveModel } from "../index.js";
 
 /** Router model ids from the last /router-model invocation — the completion
@@ -58,11 +58,12 @@ export function registerCommands(pi: ExtensionAPI): void {
       const next = !current.enableReasoning;
       writeRouterSection({ enableReasoning: next });
       // Re-register so refreshModels closure picks up the new flag, then force
-      // a provider refresh; the offline phase re-maps persisted models and the
-      // network phase re-fetches with the new reasoning flag.
+      // a refresh — the offline phase re-maps persisted models with the new
+      // flag, so the pull must actually run even when the catalog is TTL-fresh
+      // (shared in-flight guard; force supersedes a stale in-flight fetch).
       registerProvider(pi, { ...current, enableReasoning: next });
       try {
-        await ctx.modelRegistry.refresh({ providers: [PROVIDER_ID] });
+        await maybeRefreshCatalog(ctx, { force: true });
       } catch { /* refresh errors are surfaced by Pi elsewhere */ }
       await refreshActiveModel(pi, ctx);
       // Report the EFFECTIVE flag — env/repo precedence can shadow the persisted value.
@@ -95,6 +96,10 @@ export function registerCommands(pi: ExtensionAPI): void {
         ctx.ui.notify("/router-model requires interactive (TUI) mode.", "error");
         return;
       }
+      // Pull the live catalog first (TTL-gated, in-flight-guarded) — mirrors
+      // Pi's own /model picker, which refreshes every time it opens. Best
+      // effort: on failure the cached list still serves.
+      try { await maybeRefreshCatalog(ctx); } catch { /* cached list below */ }
       const ids = ctx.modelRegistry
         .getAll()
         .filter((m) => m.provider === PROVIDER_ID)
@@ -230,10 +235,12 @@ export function registerCommands(pi: ExtensionAPI): void {
             enableReasoning: working.enableReasoning !== before.enableReasoning ? working.enableReasoning : undefined,
           });
           // Re-register so the provider closure picks up the new values, then
-          // force a refresh; refreshActiveModel keeps the active model valid.
+          // force a refresh (new endpoint or reasoning flag must take effect
+          // immediately — bypass TTL, supersede any in-flight fetch);
+          // refreshActiveModel keeps the active model valid.
           registerProvider(pi, working);
           try {
-            await ctx.modelRegistry.refresh({ providers: [PROVIDER_ID] });
+            await maybeRefreshCatalog(ctx, { force: true });
           } catch { /* refresh errors are surfaced by Pi elsewhere */ }
           await refreshActiveModel(pi, ctx);
           const effective = getSettings();

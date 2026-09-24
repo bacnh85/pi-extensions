@@ -1,4 +1,4 @@
-import { describe, it, before, after } from "node:test";
+import { describe, it, before, after, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, unlinkSync, existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -755,5 +755,342 @@ describe("provider", () => {
     } finally {
       globalThis.fetch = realFetch;
     }
+  });
+});
+
+// ── automatic catalog refresh (TTL + in-flight guard + checkedAt persist) ────
+
+describe("maybeRefreshCatalog", () => {
+  // fake ModelRegistry.refresh — counts calls, records options
+  function fakeRegistry() {
+    const calls: { providers?: string[]; force?: boolean }[] = [];
+    return {
+      calls,
+      modelRegistry: {
+        refresh: async (opts?: { providers?: string[]; force?: boolean }) => {
+          calls.push(opts ?? {});
+          return { aborted: false, errors: new Map() };
+        },
+      },
+    };
+  }
+
+  // capture the refreshModels callback + feed it a network success, so a
+  // registry refresh updates lastFetchedAt exactly like production does.
+  async function primeFresh(): Promise<void> {
+    const { registerProvider } = await import("../lib/provider.js");
+    let refreshModels: (ctx: unknown) => Promise<unknown>;
+    registerProvider({
+      registerProvider: (_n: string, config: { refreshModels: (ctx: unknown) => Promise<unknown> }) => { refreshModels = config.refreshModels; },
+      events: { emit: () => {} },
+    } as never, { baseUrl: "http://x", enableReasoning: true });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ object: "list", data: [{ id: "m" }] }), { status: 200 })) as typeof fetch;
+    try {
+      await refreshModels!({ stored: undefined, allowNetwork: true, signal: new AbortController().signal, publish: async () => {} });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  before(async () => { (await import("../lib/provider.js")).resetCatalogState(); });
+  after(async () => { delete process.env.PI_OFFLINE; (await import("../lib/provider.js")).resetCatalogState(); });
+
+  it("network phase persists checkedAt into the store entry", async () => {
+    const { registerProvider, catalogAgeMs, resetCatalogState } = await import("../lib/provider.js");
+    let refreshModels: (ctx: unknown) => Promise<unknown>;
+    registerProvider({
+      registerProvider: (_n: string, config: { refreshModels: (ctx: unknown) => Promise<unknown> }) => { refreshModels = config.refreshModels; },
+      events: { emit: () => {} },
+    } as never, { baseUrl: "http://x", enableReasoning: true });
+    let persisted: { checkedAt?: number } | undefined;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ object: "list", data: [{ id: "m" }] }), { status: 200 })) as typeof fetch;
+    try {
+      await refreshModels!({
+        stored: undefined, allowNetwork: true, signal: new AbortController().signal,
+        publish: async (pub: { persist?: unknown }) => { persisted = pub.persist as { checkedAt?: number }; },
+      });
+      assert.ok(persisted?.checkedAt && Math.abs(Date.now() - persisted.checkedAt) < 5_000);
+      // offline phase backfills freshness from the persisted entry
+      await refreshModels!({
+        stored: { models: [], checkedAt: persisted.checkedAt } as never, allowNetwork: false,
+        signal: new AbortController().signal,
+      });
+      assert.ok(catalogAgeMs() !== undefined);
+    } finally {
+      globalThis.fetch = realFetch;
+      resetCatalogState();
+    }
+  });
+
+  it("fresh catalog → no refresh call; stale → exactly one", async () => {
+    const { maybeRefreshCatalog, resetCatalogState, catalogAgeMs, ROUTER_MODELS_TTL_MS } = await import("../lib/provider.js");
+    resetCatalogState();
+    const reg = fakeRegistry();
+    await maybeRefreshCatalog(reg as never);
+    assert.equal(reg.calls.length, 1); // unknown freshness → backfill fetch
+    assert.deepEqual(reg.calls[0].providers, ["router"]);
+
+    await primeFresh(); // lastFetchedAt = now
+    assert.ok(catalogAgeMs()! < ROUTER_MODELS_TTL_MS);
+    const fresh = fakeRegistry();
+    await maybeRefreshCatalog(fresh as never);
+    assert.equal(fresh.calls.length, 0); // TTL gate: no call
+
+    // force bypasses the TTL gate
+    const forced = fakeRegistry();
+    await maybeRefreshCatalog(forced as never, { force: true });
+    assert.equal(forced.calls.length, 1);
+    assert.equal(forced.calls[0].force, true);
+    resetCatalogState();
+  });
+
+  it("concurrent callers share one refresh (in-flight guard)", async () => {
+    const { maybeRefreshCatalog, resetCatalogState } = await import("../lib/provider.js");
+    resetCatalogState();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const calls: unknown[] = [];
+    const reg = {
+      modelRegistry: {
+        refresh: async (opts: unknown) => { calls.push(opts); await gate; return {}; },
+      },
+    };
+    const a = maybeRefreshCatalog(reg as never);
+    const b = maybeRefreshCatalog(reg as never);
+    assert.equal(a, b); // same shared promise
+    release();
+    await Promise.all([a, b]);
+    assert.equal(calls.length, 1);
+    // guard cleared after settle → next call refreshes again
+    await maybeRefreshCatalog(reg as never);
+    assert.equal(calls.length, 2);
+    resetCatalogState();
+  });
+
+  it("force with a refresh in flight supersedes it instead of joining (endpoint flip)", async () => {
+    const { maybeRefreshCatalog, resetCatalogState } = await import("../lib/provider.js");
+    resetCatalogState();
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((r) => { releaseA = r; });
+    const calls: { force?: boolean }[] = [];
+    let callsSeen = 0;
+    const reg = {
+      modelRegistry: {
+        refresh: async (opts: { force?: boolean }) => {
+          calls.push(opts);
+          if (callsSeen++ === 0) await gateA; // first (stale-endpoint) fetch hangs
+          return {};
+        },
+      },
+    };
+    // Auto refresh for the OLD endpoint starts and hangs (slow endpoint).
+    const stale = maybeRefreshCatalog(reg as never);
+    // baseUrl flips; forced refresh must NOT join the stale fetch.
+    const forced = maybeRefreshCatalog(reg as never, { force: true });
+    assert.notEqual(forced, stale); // new job, not the joined old one
+    await forced;
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].force, true); // new endpoint fetched
+    // The superseded stale job must not clear the NEW job's guard when it
+    // finally settles, and must not be affected by it either.
+    releaseA();
+    await Promise.allSettled([stale]);
+    await maybeRefreshCatalog(reg as never); // works — guard not corrupted
+    assert.equal(calls.length, 3);
+    resetCatalogState();
+  });
+
+  it("PI_OFFLINE skips the refresh entirely", async () => {
+    const { maybeRefreshCatalog, resetCatalogState } = await import("../lib/provider.js");
+    resetCatalogState();
+    process.env.PI_OFFLINE = "1";
+    try {
+      const reg = fakeRegistry();
+      await maybeRefreshCatalog(reg as never);
+      assert.equal(reg.calls.length, 0);
+    } finally {
+      delete process.env.PI_OFFLINE;
+      resetCatalogState();
+    }
+  });
+});
+
+
+// ── extension wiring (session_start / shutdown / interval / commands) ────────
+
+// ── extension wiring (session_start / shutdown / interval / commands) ────────
+
+describe("wiring (index.ts + commands)", () => {
+  const indexPromise = import("../index.js");
+
+  interface Harness {
+    pi: {
+      handlers: Map<string, (event: unknown, ctx: unknown) => Promise<void> | void>;
+      commands: Map<string, { handler: (args: unknown, ctx: unknown) => Promise<void> }>;
+    };
+    refreshes: { providers?: string[]; force?: boolean }[];
+    setModelCalls: { n: number };
+    ctx: Record<string, unknown>;
+    fireSessionStart: (ctxExtra?: Record<string, unknown>) => Promise<void>;
+    fireShutdown: () => Promise<void>;
+    tick: (ms: number) => Promise<void>;
+  }
+
+  /** Build the extension under test with a fake pi + counting registry. */
+  async function makeHarness(): Promise<Harness> {
+    const [{ default: factory }, { resetCatalogState }] = await Promise.all([
+      indexPromise,
+      import("../lib/provider.js"),
+    ]);
+    resetCatalogState();
+    const refreshes: { providers?: string[]; force?: boolean }[] = [];
+    // Capture the real refreshModels callback; registry refresh runs it (with
+    // stubbed fetch) so lastFetchedAt advances exactly like production.
+    let refreshModelsCb: ((ctx: unknown) => Promise<unknown>) | undefined;
+    const runRefreshModels = async () => {
+      if (!refreshModelsCb) return;
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ object: "list", data: [{ id: "m" }] }), { status: 200 })) as typeof fetch;
+      try {
+        await refreshModelsCb({ stored: undefined, allowNetwork: true, signal: new AbortController().signal, publish: async () => {} });
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+    };
+    const modelRegistry: Record<string, unknown> = {
+      refresh: async (opts?: { providers?: string[]; force?: boolean }) => {
+        refreshes.push(opts ?? {});
+        await runRefreshModels();
+        return { aborted: false, errors: new Map() };
+      },
+      getAll: () => [] as unknown[],
+      find: () => undefined,
+    };
+    const ctx: Record<string, unknown> = {
+      isProjectTrusted: () => false,
+      model: undefined,
+      modelRegistry,
+      ui: { notify: () => {} },
+      mode: "rpc",
+      hasUI: false,
+    };
+    const setModelCalls = { n: 0 };
+    const pi = {
+      handlers: new Map<string, (event: unknown, ctx: unknown) => Promise<void> | void>(),
+      commands: new Map<string, { handler: (args: unknown, ctx: unknown) => Promise<void> }>(),
+      events: { emit: () => {} },
+      registerProvider: (_n: string, config: { refreshModels: (ctx: unknown) => Promise<unknown> }) => {
+        refreshModelsCb = config.refreshModels;
+      },
+      registerCommand: (name: string, def: { handler: (args: unknown, ctx: unknown) => Promise<void> }) => {
+        pi.commands.set(name, def);
+      },
+      on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<void> | void) => {
+        pi.handlers.set(event, handler);
+      },
+      setModel: async () => { setModelCalls.n++; },
+    };
+    factory(pi as never);
+    return {
+      pi,
+      refreshes,
+      setModelCalls,
+      ctx,
+      fireSessionStart: async (extra?: Record<string, unknown>) => {
+        await pi.handlers.get("session_start")!({}, { ...ctx, ...extra });
+      },
+      fireShutdown: async () => {
+        await pi.handlers.get("session_shutdown")!({}, ctx);
+      },
+      tick: async (ms: number) => {
+        mock.timers.tick(ms);
+        await new Promise((r) => setImmediate(r)); // let fire-and-forget chains settle
+      },
+    };
+  }
+
+  before(() => { mock.timers.enable({ apis: ["setInterval"] }); });
+  after(async () => {
+    mock.timers.reset();
+    delete process.env.PI_OFFLINE;
+    (await import("../lib/provider.js")).resetCatalogState();
+  });
+
+  it("session_start refreshes once, fire-and-forget, in every mode", async () => {
+    const h = await makeHarness();
+    await h.fireSessionStart();
+    await h.tick(0);
+    assert.equal(h.refreshes.length, 1);
+    assert.deepEqual(h.refreshes[0].providers, ["router"]);
+  });
+
+  it("endpoint flip forces the refresh (bypasses TTL + in-flight)", async () => {
+    const h = await makeHarness();
+    // Prime TTL-fresh state via the session-start auto refresh.
+    await h.fireSessionStart();
+    await h.tick(0);
+    assert.equal(h.refreshes.length, 1);
+    // Second session with a flipped endpoint (env override wins over saved
+    // baseUrl): force must refresh even though the catalog is fresh.
+    process.env.ROUTER_BASE_URL = "http://flipped-endpoint";
+    try {
+      await h.fireSessionStart();
+      await h.tick(0);
+    } finally {
+      delete process.env.ROUTER_BASE_URL;
+    }
+    assert.equal(h.refreshes.length, 2);
+    assert.equal(h.refreshes[1].force, true);
+  });
+
+  it("session_shutdown clears the interval's ctx — no refresh on later ticks", async () => {
+    const h = await makeHarness();
+    await h.fireSessionStart();
+    await h.tick(0);
+    await h.fireShutdown();
+    const before = h.refreshes.length;
+    await h.tick(5 * 60_000); // tick after shutdown: lastCtx cleared → no-op
+    assert.equal(h.refreshes.length, before);
+  });
+
+  it("interval fires while session is live and respects the TTL gate", async () => {
+    const h = await makeHarness();
+    await h.fireSessionStart();
+    await h.tick(0); // refresh #1 → lastFetchedAt = now
+    assert.equal(h.refreshes.length, 1);
+    await h.tick(5 * 60_000); // within TTL → no fetch
+    assert.equal(h.refreshes.length, 1);
+  });
+
+  it("/router-model awaits maybeRefreshCatalog before listing", async () => {
+    const h = await makeHarness();
+    const order: string[] = [];
+    h.refreshes.length = 0;
+    h.ctx.modelRegistry = {
+      ...h.ctx.modelRegistry as Record<string, unknown>,
+      getAll: () => {
+        order.push("list");
+        return [{ provider: "router", id: "m1" }];
+      },
+      refresh: async (opts?: { providers?: string[] }) => {
+        order.push("refresh");
+        h.refreshes.push(opts ?? {});
+        return { aborted: false, errors: new Map() };
+      },
+      find: () => ({ provider: "router", id: "m1" }),
+    };
+    const cmd = h.pi.commands.get("router-model")!;
+    await cmd.handler("", {
+      ...h.ctx,
+      mode: "tui",
+      hasUI: true,
+    } as never);
+    assert.deepEqual(order, ["refresh", "list"]); // pre-pull before listing
+    assert.equal(h.setModelCalls.n, 1); // single match auto-selected
   });
 });

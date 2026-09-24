@@ -54,13 +54,18 @@ cannot redirect `router.baseUrl` to an attacker endpoint.
 persisted `router.enableReasoning` flag — it wins over both settings files
 and shadows what `/router-reasoning` saves (the command reports this).
 
-## Model discovery (cached)
+## Model discovery (cached, auto-refreshed)
 
 Models are fetched automatically via Pi's native `refreshModels`:
 
-- First `/models` or `/login` in a session triggers `GET /v1/models`.
+- Every session start pulls `GET /v1/models` in the background — TUI, RPC,
+  and print modes alike (Pi core only network-refreshes from the TUI `/model`
+  picker; this covers the rest).
+- A 5-minute timer re-pulls while pi runs; a 15-minute TTL keeps a fresh
+  catalog from fetching at all. `PI_OFFLINE` disables all network pulls.
 - The result is cached in `~/.pi/agent/models-store.json` under the `router`
-  key — next session restores instantly, offline.
+  key with a `checkedAt` timestamp — next session restores instantly, offline,
+  and freshness survives restarts.
 - Reasoning levels (Shift+Tab, `:high` suffixes) map per model family
   (OpenAI, Claude, Gemini, DeepSeek, Kimi, Qwen, GLM, …).
 
