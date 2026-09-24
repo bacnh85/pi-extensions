@@ -57,6 +57,41 @@ test("scanProject detects pnpm over npm when lockfile present", () => {
   }
 });
 
+test("scanProject framework detection uses exact dep names (no preact/react-dom/vue-router/next-themes false positives; nuxt detected)", () => {
+  const dir = fixture((d) => {
+    writeFileSync(
+      join(d, "package.json"),
+      JSON.stringify({ name: "x", dependencies: { preact: "^10.0.0", "vue-router": "^4.0.0", "next-themes": "^0.3.0" } }),
+    );
+  });
+  try {
+    const s = scanProject(dir);
+    for (const lang of ["React", "Vue", "Next.js", "Nuxt", "SST"]) {
+      assert.ok(!s.languages.has(lang), `unexpected ${lang} from lookalike deps`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  // exact names still detected, including react-dom and the added nuxt
+  for (const [dep, lang] of [
+    ["react", "React"],
+    ["react-dom", "React"],
+    ["vue", "Vue"],
+    ["nuxt", "Nuxt"],
+    ["next", "Next.js"],
+    ["sst", "SST"],
+  ]) {
+    const d2 = fixture((d) => {
+      writeFileSync(join(d, "package.json"), JSON.stringify({ name: "x", dependencies: { [dep]: "*" } }));
+    });
+    try {
+      assert.ok(scanProject(d2).languages.has(lang), `${dep} should detect ${lang}`);
+    } finally {
+      rmSync(d2, { recursive: true, force: true });
+    }
+  }
+});
+
 test("scanProject detects non-JS build systems (cargo, go)", () => {
   const dir = fixture((d) => {
     writeFileSync(join(d, "Cargo.toml"), '[package]\nname = "thing"\n');

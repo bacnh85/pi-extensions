@@ -12,6 +12,7 @@ test("isGitRepo: true when .git exists, false otherwise", () => {
   const d1 = mkdtempSync(join(tmpdir(), "ck-"));
   mkdirSync(join(d1, ".git"));
   const d2 = mkdtempSync(join(tmpdir(), "ck-"));
+  TEMP_CWDS.push(d1, d2);
   try {
     assert.equal(isGitRepo(d1), true);
     assert.equal(isGitRepo(d2), false);
@@ -20,6 +21,24 @@ test("isGitRepo: true when .git exists, false otherwise", () => {
   } finally {
     rmSync(d1, { recursive: true, force: true });
     rmSync(d2, { recursive: true, force: true });
+  }
+});
+
+test("isGitRepo: true from a subdirectory of the repo root", () => {
+  const repo = mkdtempSync(join(tmpdir(), "ck-"));
+  const sub = join(repo, "packages", "app");
+  mkdirSync(join(repo, ".git"));
+  mkdirSync(sub, { recursive: true });
+  const plain = mkdtempSync(join(tmpdir(), "ck-"));
+  const plainSub = join(plain, "deep");
+  mkdirSync(plainSub, { recursive: true });
+  TEMP_CWDS.push(repo, plain);
+  try {
+    assert.equal(isGitRepo(sub), true, ".git found via parent walk");
+    assert.equal(isGitRepo(plainSub), false, "no repo anywhere up the tree");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(plain, { recursive: true, force: true });
   }
 });
 
@@ -52,6 +71,9 @@ function harness({ gitRepo = true, sessionStable = true } = {}) {
 }
 
 const TEMP_CWDS = [];
+process.on("exit", () => {
+  for (const d of TEMP_CWDS) rmSync(d, { recursive: true, force: true });
+});
 function gitCwd() {
   const d = mkdtempSync(join(tmpdir(), "ck-"));
   mkdirSync(join(d, ".git"));
@@ -80,7 +102,6 @@ function ctx({ cwd, sessionId = "s1" } = {}) {
 }
 
 test("snapshot captures refs on turn_start; /undo pops and restores", async () => {
-  const pi = harness();
   // Capture the handler from registration by re-implementing the turn flow:
   // our harness stubs pi.on, so instead drive a fresh real extension instance.
   const calls = [];

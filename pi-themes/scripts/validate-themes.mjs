@@ -26,6 +26,7 @@ try {
   process.exit(1);
 }
 const required = Object.keys(reference.colors).sort();
+const requiredExport = Object.keys(reference.export ?? {}).sort();
 
 let failed = false;
 const names = new Set();
@@ -55,6 +56,12 @@ for (const file of files) {
   const extra = keys.filter((k) => !required.includes(k));
   if (missing.length) fail(`missing required tokens: ${missing.join(", ")}`);
   if (extra.length) fail(`unknown tokens: ${extra.join(", ")}`);
+
+  const exportKeys = Object.keys(theme.export ?? {}).sort();
+  const exportMissing = requiredExport.filter((k) => !exportKeys.includes(k));
+  const exportExtra = exportKeys.filter((k) => !requiredExport.includes(k));
+  if (exportMissing.length) fail(`missing required export tokens: ${exportMissing.join(", ")}`);
+  if (exportExtra.length) fail(`unknown export tokens: ${exportExtra.join(", ")}`);
 
   const vars = new Set(Object.keys(theme.vars ?? {}));
   for (const [token, value] of Object.entries(theme.colors ?? {})) {

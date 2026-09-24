@@ -8,7 +8,7 @@ import {
   pathLooksNonSemantic,
   commandLooksLikeSemanticCodeSearch,
 } from "./lib/detect";
-import { SERENA_FIRST_GUIDANCE, SERENA_MISS_GUIDANCE, shouldBlockSemanticMiss } from "./lib/guidance";
+import { SERENA_FIRST_GUIDANCE, SERENA_MISS_GUIDANCE, isSerenaActive, shouldBlockSemanticMiss } from "./lib/guidance";
 import { normalizeTimeoutMs, stripControlParams } from "./lib/normalize";
 import { repairSymbolNameKey } from "./lib/symbol-key";
 import { truncateText, OUTPUT_MAX_LINES, OUTPUT_MAX_BYTES } from "./lib/truncate";
@@ -61,6 +61,61 @@ describe("Serena tool-selection guidance", () => {
   it("does not count --include/--exclude glob flags as searched code files", () => {
     expect(commandLooksLikeSemanticCodeSearch('grep -rn "todo" --include="*.md" --include="*.ts" docs/')).to.be.false;
     expect(commandLooksLikeSemanticCodeSearch("rg -g '*.ts' 'todo' docs/")).to.be.false;
+  });
+});
+
+describe("isSerenaActive", () => {
+  it("is true when the active tool list contains serena_find_symbol", () => {
+    expect(isSerenaActive(["read", "serena_find_symbol", "bash"])).to.be.true;
+  });
+
+  it("is false without serena_find_symbol in the list", () => {
+    expect(isSerenaActive(["read", "bash"])).to.be.false;
+    expect(isSerenaActive([])).to.be.false;
+  });
+
+  it("is false for undefined or non-array input", () => {
+    expect(isSerenaActive(undefined)).to.be.false;
+    expect(isSerenaActive("serena_find_symbol" as unknown as string[])).to.be.false;
+  });
+});
+
+describe("handler wiring", () => {
+  // Fake ExtensionAPI that records handlers; getActiveTools is the live registry
+  // the gates must read (regression: systemPromptOptions.selectedTools never
+  // contains extension-registered tools, so the guidance never fired).
+  function fakePi(activeTools: string[] | undefined) {
+    const handlers = new Map<string, Array<(event: any) => unknown>>();
+    const pi: any = {
+      on: (name: string, fn: (event: any) => unknown) => {
+        handlers.set(name, [...(handlers.get(name) ?? []), fn]);
+      },
+      registerTool: () => {},
+      registerCommand: () => {},
+      getActiveTools: () => activeTools,
+    };
+    const fire = async (name: string, event: any) => {
+      let out: unknown;
+      for (const fn of handlers.get(name) ?? []) out = await fn(event);
+      return out;
+    };
+    return { pi, fire };
+  }
+
+  it("before_agent_start appends guidance when serena tools are active", async () => {
+    const { pi, fire } = fakePi(["read", "serena_find_symbol", "bash"]);
+    const mod = await import("./index");
+    mod.default(pi);
+    const result = await fire("before_agent_start", { systemPrompt: "base" });
+    expect((result as any).systemPrompt).to.include(SERENA_FIRST_GUIDANCE);
+  });
+
+  it("before_agent_start does not append guidance without serena tools", async () => {
+    const { pi, fire } = fakePi(["read", "bash"]);
+    const mod = await import("./index");
+    mod.default(pi);
+    const result = await fire("before_agent_start", { systemPrompt: "base" });
+    expect(result).to.equal(undefined);
   });
 });
 

@@ -182,6 +182,21 @@ describe("categorizeError", () => {
     expect(info!.category).to.equal("edit_mismatch");
   });
 
+  it("classifies edit tool errors verbatim from harness variants (old_text/old text/oldtext, with and without prefix)", () => {
+    const variants = [
+      "old_text must match exactly one or more consecutive lines", // pi edit tool (snake_case)
+      "old text must match exactly one or more consecutive lines", // space-separated variant
+      "oldtext must be unique in the file", // no separator
+      "text must be unique in the file", // bare variant, no old prefix
+      "edits.oldText must match exactly one targeted replacement", // pi edits[] form
+    ];
+    for (const text of variants) {
+      const info = categorizeError("edit", text);
+      expect(info, `expected classification for: ${text}`).to.not.equal(undefined);
+      expect(info!.category).to.equal("edit_mismatch", `for input: ${text}`);
+    }
+  });
+
   it("returns unknown for circular/unserializable tool_result content", () => {
     const obj: any = { status: "error" };
     obj.self = obj; // JSON.stringify throws

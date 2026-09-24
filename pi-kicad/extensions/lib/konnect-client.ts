@@ -93,6 +93,15 @@ export function extractResult(response: JsonRpcResponse): unknown {
  */
 const TRUNC_MARKER = "\n…(truncated)";
 
+/**
+ * Hard-cap a string to `max` chars, reserving room for the truncation marker
+ * (same convention as mapContent). Model-facing output budgets use this.
+ */
+export function truncateToBudget(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return (text.slice(0, Math.max(0, max - TRUNC_MARKER.length)) + TRUNC_MARKER).slice(0, max);
+}
+
 export function mapContent(
   content: KonnectContent[] | undefined,
   opts: { maxChars: number },
@@ -121,6 +130,7 @@ export function mapContent(
       images.push({ data: item.data, mimeType: item.mimeType });
       const note = `[image: ${item.mimeType ?? "image/png"}, ${item.data.length} chars base64]`;
       piContent.push({ type: "text", text: note });
+      used += note.length;
     }
   }
   return { piContent, images };

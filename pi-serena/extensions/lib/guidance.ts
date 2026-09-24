@@ -4,6 +4,15 @@ export const SERENA_FIRST_GUIDANCE = "Serena-first code navigation: before readi
 
 export const SERENA_MISS_GUIDANCE = "Use serena_get_symbols_overview for source-file outlines or serena_find_symbol for named symbols before reading/searching code. Use read after Serena identifies the relevant region, or for docs/config/non-code files.";
 
+/**
+ * Is Serena's tool surface actually active in this session? The guidance hook
+ * keys on `serena_find_symbol` being in the active tool list. Exported pure
+ * predicate so the hook and its tests share one definition.
+ */
+export function isSerenaActive(activeTools: readonly string[] | undefined): boolean {
+  return Array.isArray(activeTools) && activeTools.includes("serena_find_symbol");
+}
+
 const BLOCKED_TOOLS = new Set(["read", "bash"]);
 
 export function shouldBlockSemanticMiss(toolName: string, input: Record<string, unknown>): boolean {

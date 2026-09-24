@@ -70,6 +70,16 @@ const DESTRUCTIVE_BASH_PATTERNS = [
   /\bgit\s+branch\s+(?!--(?:list|all|remote|merged|no-merged|contains|show-current)\b)/i,
   /--output(?:=|\s)/i,
   /\bfind\b[^\n]*-(delete|exec|execdir|ok|okdir|fprint[f0]?|fls)\b/i,
+  // rg/fd are clap CLIs. rg accepts unambiguous long-prefix abbreviations
+  // (`rg --pr` = `--pre`, verified live); fd does NOT infer long prefixes
+  // (--exec-b is rejected by fd) but DOES combine/attach short flags:
+  // `fd -Hx cmd` combines, `fd -xrm tmp` attaches "rm" as -x's value — both
+  // execute the command per match. So for fd, ANY short-flag cluster
+  // containing x/X counts as exec (conservative over-block of value-attached
+  // clusters like `-ex` is fine for a read-only review gate); for rg, any
+  // `--pr` prefix (also covers --pre-glob, which is inert without --pre).
+  /\bfd\b[^\n]*\s(?:-[a-zA-Z]*[xX][a-zA-Z]*|--exec)/i,
+  /\brg\b[^\n]*\s--pr/i,
   /\bsed\b[^\n]*\s-i(?:\s|$)/i,
   /\bsed\b[^\n]*(?:'w\s|\bw\s+\/[^\s]|'\s*w\s)/i,
   /\bsort\b[^\n]*\s-[a-zA-Z]*o[a-zA-Z]*(?:\s|=|$)/i,
@@ -240,8 +250,12 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
     reviewThinking = thinking;
     toolsBeforeReview = pi.getActiveTools();
     pi.setActiveTools([...new Set(toolsBeforeReview.filter((tool) => SAFE_REVIEW_TOOLS.has(tool)).concat(["read", "bash", "grep", "find", "ls"]))]);
-    const current = pi.getThinkingLevel();
-    thinkingBeforeReview = (THINKING_LEVELS as readonly string[]).includes(current ?? "") ? current as ThinkingLevel : undefined;
+    // Capture unconditionally, but keep the unknown case a named policy: the
+    // SDK types getThinkingLevel as always returning a ThinkingLevel, so a
+    // falsy value here means host drift. leaveLocalReview only restores when
+    // the value is a string — it must never push undefined back into the host
+    // (that would corrupt the level instead of just leaving it at review's).
+    thinkingBeforeReview = pi.getThinkingLevel() ?? undefined;
     pi.setThinkingLevel(thinking);
     setStatus(ctx);
   }
@@ -251,7 +265,7 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
     restorePending = false;
     reviewModeEnabled = false;
     if (toolsBeforeReview) pi.setActiveTools(toolsBeforeReview);
-    if (thinkingBeforeReview) pi.setThinkingLevel(thinkingBeforeReview);
+    if (typeof thinkingBeforeReview === "string") pi.setThinkingLevel(thinkingBeforeReview);
     toolsBeforeReview = undefined;
     thinkingBeforeReview = undefined;
     currentPrompt = "";

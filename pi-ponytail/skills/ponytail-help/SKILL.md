@@ -18,6 +18,7 @@ write flag files, or persist anything.
 | **Lite** | `/ponytail lite` | Build what's asked, name the lazier alternative in one line. |
 | **Full** | `/ponytail full` | The ladder enforced: YAGNI → stdlib → native → one line → minimum. Default. |
 | **Ultra** | `/ponytail ultra` | YAGNI extremist. Deletion before addition. Challenges requirements before building. |
+| **Review** | `/ponytail review` | Ruleset off; behavior governed by `/skill:ponytail-review`. Session-only — cannot be a default. |
 
 Level sticks until changed or session end.
 

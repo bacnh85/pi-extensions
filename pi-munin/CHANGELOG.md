@@ -2,6 +2,16 @@
 
 All notable changes to `pi-munin` will be documented in this file.
 
+## 0.5.8 (2026-09-24)
+
+### Fixed
+
+- `munin-status` and `before_agent_start` no longer assume the host provides
+  `ctx.isProjectTrusted` — both call sites now use the optional-call form
+  (`ctx.isProjectTrusted?.() === true`), matching `withMuninClient`. A host/
+  SDK version without the callback crashed both paths instead of degrading to
+  the untrusted default.
+
 ## 0.5.7 (2026-09-22)
 
 ### Fixed

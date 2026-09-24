@@ -23,7 +23,7 @@ Falls back to terminal OSC protocols when no desktop binary is available.
 
 ## Configuration
 
-Add a `notify` object to `.pi/settings.json` (project) or `~/.pi/agent/settings.json` (global):
+Add a `notify` object to `.pi/settings.json` (project), `~/.pi/agent/settings.json` (global; `PI_CODING_AGENT_DIR` overrides), or `~/.pi/agents/settings.json` — the first settings.json containing a `notify` object wins (files without one are skipped):
 
 ```json
 {

@@ -1,5 +1,7 @@
 # Changelog
 
+All notable changes to `pi-web` will be documented in this file.
+
 ## 0.17.4 (2026-09-21)
 
 ### Fixed
@@ -568,6 +570,15 @@ session it was keeping alive.
   404 for ~1–2s right after generation (edge propagation); downloads now
   retry with 1s/2s/3s backoff instead of wasting the generation.
 
+## 0.10.6
+
+Docs correction: Deep Research is **not** Gemini-Advanced-gated. Live
+verification (2026-09-13, free-tier account): Deep Research plan creation
+succeeds via a browser-impersonating client, while this package's Node
+transport is refused with 1184/FEATURE_NOT_AVAILABLE on the same fresh
+session. The 1184 error is a client-transport artifact; README,
+`web_research` descriptions, and troubleshooting updated accordingly.
+
 ## 0.10.5 (2026-09-13)
 
 ### Added
@@ -794,8 +805,6 @@ Review hardening of the `web_image` fallback chain (3 review rounds):
 - **agy extraction backend:** `web_extract` gains a new `agy` mode that uses the Antigravity CLI (Gemini/Claude) native `read_url` web tool to fetch bot-protected and anti-AI-scraping pages that block Firecrawl/Crawl4AI. `auto` mode now falls back static → dynamic → full → agy; explicit `mode: "agy"` forces it. Structured extraction (`prompt`/`schema`) is supported. `web_status` reports `agy.installed`.
 - agy is optional and self-contained: if the CLI is not installed, `auto` mode skips it silently and existing flows are unchanged. Install: `curl -fsSL https://antigravity.google/cli/install.sh | bash`, then authenticate once with `agy`.
 
-All notable changes to `pi-web` will be documented in this file.
-
 ## 0.5.7 (2026-08-05)
 
 ### Improvements
@@ -832,11 +841,3 @@ All notable changes to `pi-web` will be documented in this file.
 
 - Consolidated 14 backend-specific tools into 7 unified tools (`web_search`, `web_extract`, `web_map`, `web_crawl`, `web_screenshot`, `web_pdf`, `web_status`).
 - Auto-selection and adaptive fallback between static (JSDOM), dynamic (Firecrawl), and full (Crawl4AI) backends.
-## 0.10.6
-
-Docs correction: Deep Research is **not** Gemini-Advanced-gated. Live
-verification (2026-09-13, free-tier account): Deep Research plan creation
-succeeds via a browser-impersonating client, while this package's Node
-transport is refused with 1184/FEATURE_NOT_AVAILABLE on the same fresh
-session. The 1184 error is a client-transport artifact; README,
-`web_research` descriptions, and troubleshooting updated accordingly.

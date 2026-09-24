@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.12 (2026-09-24)
+
+### Fixed
+
+- **Corrupt settings.json no longer silently destroyed.** `readSettingsJson`
+  returned `{}` on a JSON parse failure, conflating "missing" with "corrupt",
+  so saving router settings rename-overwrote the file with ONLY the `router`
+  section — every other settings key (theme, packages, other extensions'
+  config) was lost. It now returns `null` for an existing-but-unparseable file
+  and `writeRouterSection` throws
+  `"<path> is not valid JSON — fix or remove it before saving."`
+  (the config panel surfaces the throw as a "Save failed" notification with
+  the panel left open). File is left byte-identical on refusal.
+
 ## 1.1.11 (2026-09-22)
 
 ### Fixed

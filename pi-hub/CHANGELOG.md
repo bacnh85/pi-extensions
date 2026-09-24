@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.10 - 2026-09-24
+
+- Fixed: interactive install now prints a failure summary (`N install(s)
+  failed`) — `-y` users no longer miss failed installs.
+- Fixed: a lone ESC quits the picker (same as `q`/Ctrl-C).
+- Fixed: sources carrying shell metacharacters (`pkg&whoami`) are rejected
+  with `invalid source: "…"` instead of reaching the win32 shell path.
+
 ## 0.1.9 (2026-09-22)
 
 - Fixed: a `pi` child killed by a signal (status null) was reported as success by `add`/`remove` — `pi()` now treats signal death as failure (exit 1) instead of `status ?? 0`.

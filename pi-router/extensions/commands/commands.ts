@@ -16,13 +16,15 @@ function settingsPath(): string {
   return join(agentDir, "settings.json");
 }
 
-function readSettingsJson(): Record<string, unknown> {
+function readSettingsJson(): Record<string, unknown> | null {
   try {
-    return existsSync(settingsPath())
-      ? (JSON.parse(readFileSync(settingsPath(), "utf8")) as Record<string, unknown>)
-      : {};
+    if (!existsSync(settingsPath())) return {};
+    return JSON.parse(readFileSync(settingsPath(), "utf8")) as Record<string, unknown>;
   } catch {
-    return {};
+    // Corrupt ≠ missing: returning {} here would make writeRouterSection
+    // rename-overwrite the file with ONLY the router section, destroying
+    // every other settings key. Null = bail, same as lib/config.ts readFileJson.
+    return null;
   }
 }
 
@@ -31,6 +33,9 @@ function readSettingsJson(): Record<string, unknown> {
  *  Atomicity (tmp+rename) is part of the contract — exported for tests. */
 export function writeRouterSection(patch: { baseUrl?: string; enableReasoning?: boolean }): void {
   const settings = readSettingsJson();
+  if (settings === null) {
+    throw new Error(`${settingsPath()} is not valid JSON — fix or remove it before saving.`);
+  }
   const router = (settings.router ?? {}) as Record<string, unknown>;
   if (patch.baseUrl !== undefined) router.baseUrl = normalizeUrl(patch.baseUrl);
   if (patch.enableReasoning !== undefined) router.enableReasoning = patch.enableReasoning;

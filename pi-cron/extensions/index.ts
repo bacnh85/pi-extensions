@@ -342,7 +342,15 @@ export function tickOnce(deps: {
     if (due.length === 0) return;
     // Mark first, deliver second — a crashed delivery never re-fires in a loop.
     for (const job of due) markFired(job, now);
-    saveJobs(deps.dir, jobs);
+    try {
+      saveJobs(deps.dir, jobs);
+    } catch (e) {
+      // Persistence failed: firing now would re-fire every tick (lastRun never
+      // hits disk). Stay silent-ish, leave jobs due, and let them fire on the
+      // next tick once persistence recovers.
+      console.warn(`pi-cron: persisting lastRun failed, deferring ${due.length} due job(s):`, e);
+      return;
+    }
     for (const job of due) deps.fire(job);
   } catch {
     // never escape into the timer

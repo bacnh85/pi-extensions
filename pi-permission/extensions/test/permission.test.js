@@ -333,6 +333,21 @@ test("external_directory deny catches `..` traversal (regression 0.2.4)", async 
   assert.match(r2.reason, /external_directory/);
 });
 
+test("external_directory deny catches `~/…` paths (regression 0.2.6)", async () => {
+  // The boundary check ran on the RAW path: `~/ext/file` posix-resolved to
+  // /proj/~/ext/file → classified internal → deny gate never fired, while the
+  // path tool expands ~ to an external file. ~ is now expanded before the
+  // boundary check (same as the rule-matching subject already did).
+  const pi = harness({
+    rules: { external_directory: { "*": "deny", "~/projects/**": "allow" } },
+  });
+  const denied = await pi.handler({ toolName: "read", input: { path: "~/ext/file" } }, ctx());
+  assert.equal(denied?.block, true, "~/ext/file expands outside cwd → deny gate fires");
+  assert.match(denied.reason, /external_directory/);
+  const allowed = await pi.handler({ toolName: "read", input: { path: "~/projects/x" } }, ctx());
+  assert.equal(allowed, undefined, "~/projects/** allow rule still applies");
+});
+
 test("external_directory allow lets tool rules still apply", async () => {
   // Per OpenCode: external_directory is a gate. Once allowed through, tool rules
   // still apply. Here path is external but allowed; tool rule denies → deny.
@@ -574,12 +589,16 @@ test("stale runner (getFlag throws at load) never crashes handlers (regression)"
   // Simulates the SDK invalidating the runner: the load-time flag capture must
   // swallow the throw and default to non-yolo; tool_call must still run and
   // route "ask" through the normal prompt (no crash, no auto-approve).
-  const rules = { bash: "*" }; // matches "ask" path
+  const rules = { bash: "*" }; // string rule → "ask"
   const pi = harness({ rules, getFlagThrows: true });
-  const c = ctx();
+  const c = ctx({ selectChoice: "Allow once" });
   const call = { toolName: "bash", input: { command: "ls" } };
-  // No session reset needed; the doom-loop ring is per-run. Call once:
+  // "Allow once" answered → the ask path executed without crashing and
+  // resolved to allow (undefined). Proves the prompt path ran: a silent
+  // auto-approve would also be undefined, but with hasUI + select stub any
+  // crash or fail-closed block would surface here.
   const result = await pi.handler(call, c);
-  assert.ok(result === undefined || result.block === false || result.block === true, "handler returned without throwing");
-  assert.doesNotThrow(() => pi.handler(call, c));
+  assert.equal(result, undefined, "ask → Allow once → allow");
+  const second = await pi.handler(call, c);
+  assert.equal(second, undefined, "second call handled identically");
 });

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.6 (2026-09-24)
+
+- **Bug fix:** a `saveJobs` throw after `markFired` re-fired due jobs on every
+  tick — `lastRun` was advanced in memory but never persisted, so jobs stayed
+  due forever. `tickOnce` now catches the persistence failure, logs a warning,
+  and defers firing: on-disk jobs stay due and fire on the next tick once
+  persistence recovers, with no per-tick spam and no lost fires.
+- Docs: completed the 0.3.5 housekeeping bullet that was truncated
+  mid-sentence.
+
 ## 0.3.5 (2026-09-22)
 
 - **Bug fix:** `latestLog` prefix collision — job `a` could read sibling job
@@ -9,6 +19,9 @@
   window after arming, not in-flight immunity (a fired turn running >30s can
   mutate). `enable`/`disable` added to the mutating-actions list in the skill.
 - Housekeeping: stale "hard 10-min cap" ponytail comment refreshed (timeoutMs
+  is now `cron.timeoutMs`-configurable — 1min–24h clamp, default unchanged at
+  10min).
+
 ## 0.3.4 (2026-09-21)
 
 - Widened Pi SDK peer range to `<0.88.0` (devDeps to `^0.87.0`); tested against Pi 0.87.0. No behavioral changes — the 0.87.0 audit found no affected code paths.

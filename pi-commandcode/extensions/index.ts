@@ -133,11 +133,11 @@ function registerConfigCommand(pi: ExtensionAPI): void {
 
       // Non-interactive mode or explicit "show": print the summary.
       if (sub === "show" || ctx.mode !== "tui" || !ctx.hasUI) {
-        ctx.ui.notify(configSummary(getSettings(ctx.cwd)), "info");
+        ctx.ui.notify(configSummary(getSettings(ctx.cwd, { trustProject: ctx.isProjectTrusted?.() === true })), "info");
         return;
       }
 
-      const before = getSettings(ctx.cwd);
+      const before = getSettings(ctx.cwd, { trustProject: ctx.isProjectTrusted?.() === true });
       const working = structuredClone(before);
       await openConfigPanel({
         ctx,
@@ -189,7 +189,7 @@ function registerConfigCommand(pi: ExtensionAPI): void {
 // Register the provider (instant), then fire background discovery.
 
 export default function (pi: ExtensionAPI) {
-  const settings = getSettings();
+  const settings = getSettings(); // factory has no ctx — global/env scope only (pi-router pattern)
   registerProvider(pi, settings);
 
   registerConfigCommand(pi);

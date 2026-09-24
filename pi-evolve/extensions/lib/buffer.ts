@@ -142,7 +142,7 @@ export function categorizeError(toolName: string, result: unknown): ErrorInfo | 
   // Edit mismatch is checked before rate_limit/timeout because an enriched edit error may
   // append a nearest-region file snippet containing 'timeout'/'429'/'rate limit' strings
   // (e.g. `const timeout = 5000;`), which would otherwise misclassify and give the wrong hint.
-  if (toolName === "edit" && /could not find (?:edits|the exact text)|old ?text must match exactly|found \d+ occurrences|(?:old)?text must be unique|provide more context to make it unique/i.test(text)) return { category: "edit_mismatch", hint: "Edit requires exact unique matching. Read a narrow range, copy oldText verbatim, include surrounding lines." };
+  if (toolName === "edit" && /could not find (?:edits|the exact text)|old[_ ]?text must match exactly|found \d+ occurrences|old[_ ]?(?:text must be unique)|text must be unique|provide more context to make it unique/i.test(text)) return { category: "edit_mismatch", hint: "Edit requires exact unique matching. Read a narrow range, copy oldText verbatim, include surrounding lines." };
   if (/rate limit|429|too many requests|exceeded.*limit/i.test(text)) return { category: "rate_limit", hint: "Rate-limited. Wait before retrying or simplify the request." };
   if (/timed? ?out|timeout/i.test(text)) return { category: "timeout", hint: "Timed out. Use simpler inputs or reduce scope." };
   if (/validation failed|invalid_type|required|missing.*(field|argument|property)/i.test(text)) return { category: "validation", hint: "Invalid arguments. Provide all required fields with correct types." };

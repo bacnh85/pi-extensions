@@ -36,6 +36,10 @@ When Pi runs from a directory inside an Obsidian vault (a `.obsidian/` directory
 
 Note that while the CWD is inside a vault, bash commands containing shell operators (`|`, `;`, `&`, `$`, `(`, `)`, backtick) are blocked conservatively — the guard can't reliably tell what a chained command would touch. Workarounds: run the command from outside the vault, or use the `obsidian` tool for vault files.
 
+Within a vault, the bash guard works as an allowlist, not a blocklist: a small set of recognized-safe commands (`npm test`/`build`/`lint` (npm/pnpm/yarn/bun), `git status`/`diff`/`log`/`branch`, `node --version`/`python3 --version`, `pwd`, `which`) always run; commands that explicitly target a vault path (e.g. `cat`, `rm`, `grep -r`) are redirected to the `obsidian` tool; and everything unrecognized (`npm install`, `node script.js`, `pytest`) is blocked by default. If a legitimate command gets blocked, run it from outside the vault or ask for it to be allow-listed upstream.
+
+The focused-vault lookup is cached for the process lifetime (successful lookups are memoized and never invalidated) — switching the focused vault mid-session requires reloading the Pi session.
+
 ## Usage
 
 One tool: `obsidian` with a `run` parameter containing the full CLI command.

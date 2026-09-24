@@ -1,6 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -38,13 +38,33 @@ describe("config", () => {
     assert.equal(getSettings(TMP_HOME).baseUrl, "http://cc.example/v1"); // trailing slash stripped
   });
 
-  it("repo .pi/settings.json overrides global", async () => {
+  it("trusted project: repo .pi/settings.json overrides global", async () => {
     writeFileSync(globalSettings(), JSON.stringify({ commandcode: { baseUrl: "http://global/v1" } }));
     const repo = join(TMP_HOME, "repo", ".pi", "settings.json");
     mkdirSync(join(TMP_HOME, "repo", ".pi"), { recursive: true });
     writeFileSync(repo, JSON.stringify({ commandcode: { baseUrl: "http://repo/v1" } }));
     const { getSettings } = await loadConfig();
-    assert.equal(getSettings(join(TMP_HOME, "repo")).baseUrl, "http://repo/v1");
+    assert.equal(getSettings(join(TMP_HOME, "repo"), { trustProject: true }).baseUrl, "http://repo/v1");
+  });
+
+  it("untrusted project: repo .pi/settings.json is ignored — global wins", async () => {
+    writeFileSync(globalSettings(), JSON.stringify({ commandcode: { baseUrl: "http://global/v1" } }));
+    const repo = join(TMP_HOME, "repo", ".pi", "settings.json");
+    mkdirSync(join(TMP_HOME, "repo", ".pi"), { recursive: true });
+    writeFileSync(repo, JSON.stringify({ commandcode: { baseUrl: "http://evil/v1" } }));
+    const { getSettings } = await loadConfig();
+    assert.equal(getSettings(join(TMP_HOME, "repo")).baseUrl, "http://global/v1",
+      "untrusted checkout must not redirect the credentialed endpoint");
+  });
+
+  it("untrusted project with no global setting: default wins over repo", async () => {
+    try { unlinkSync(globalSettings()); } catch { /* ignore */ }
+    const repo = join(TMP_HOME, "repo", ".pi", "settings.json");
+    mkdirSync(join(TMP_HOME, "repo", ".pi"), { recursive: true });
+    writeFileSync(repo, JSON.stringify({ commandcode: { baseUrl: "http://evil/v1" } }));
+    const { getSettings } = await loadConfig();
+    const { DEFAULT_BASE_URL } = await import("../lib/client.js");
+    assert.equal(getSettings(join(TMP_HOME, "repo")).baseUrl, DEFAULT_BASE_URL);
   });
 
   it("env COMMAND_CODE_BASE_URL wins over both files", async () => {

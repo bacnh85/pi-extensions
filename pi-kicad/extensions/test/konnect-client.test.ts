@@ -6,6 +6,7 @@ import {
   callKonnect,
   probeHealth,
   _resetRequestId,
+  truncateToBudget,
   baseUrl,
   MCP_PATH,
   HEALTH_PATH,
@@ -82,13 +83,39 @@ describe("konnect-client", () => {
       assert.equal(images.length, 1);
       assert.isAtLeast(piContent.length, 1);
       const total = piContent.reduce((n, c) => n + c.text.length, 0);
-      assert.isAtMost(total, 30 + 200, "stays near the budget");
+      // The image note is counted against the budget, so the whole payload is
+      // strictly bounded: budget + the one exempt-free note itself.
+      assert.isAtMost(total, 30 + 35, "strictly bounded (note text is 35 chars)");
+    });
+
+    it("image note is budget-accounted (text after an image gets only the remainder)", () => {
+      const { piContent } = mapContent(
+        [
+          { type: "image", data: "QUJD", mimeType: "image/png" },
+          { type: "text", text: "x".repeat(1000) },
+        ],
+        { maxChars: 30 },
+      );
+      const total = piContent.reduce((n, c) => n + c.text.length, 0);
+      assert.isAtMost(total, 65, "note (35) + ≤30 budget for the text");
     });
 
     it("returns empty arrays for undefined content", () => {
       const { piContent, images } = mapContent(undefined, { maxChars: 100 });
       assert.deepEqual(piContent, []);
       assert.deepEqual(images, []);
+    });
+  });
+
+  describe("truncateToBudget", () => {
+    it("passes short strings through untouched", () => {
+      assert.equal(truncateToBudget("small", 100), "small");
+    });
+
+    it("caps long strings to max chars including the truncation marker", () => {
+      const out = truncateToBudget("y".repeat(50_000), 12_000);
+      assert.equal(out.length, 12_000);
+      assert.match(out, /\n…\(truncated\)$/);
     });
   });
 

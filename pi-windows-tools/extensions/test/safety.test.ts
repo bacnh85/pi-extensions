@@ -70,6 +70,23 @@ describe("safety", () => {
       expect(r.reasons).to.not.include("Recursive delete");
     });
 
+    it("backtick line-continuations no longer hide recursive flags (0.5.8)", () => {
+      // A backtick continuation joined the -Recurse onto a later physical
+      // line; rule 1's lookahead can't cross newlines, so the command
+      // classified safe and auto-ran. Continuations are joined before matching.
+      for (const command of ["Remove-Item C:\\x `\n-Recurse", "Remove-Item C:\\x `\r\n-Recurse", "del C:\\x `\n -Recurse"]) {
+        const r = classifyCommand(command);
+        expect(r.risk, command).to.equal("confirm");
+        expect(r.reasons, command).to.include("Recursive delete");
+      }
+    });
+
+    it("a backtick escape not at line end stays safe", () => {
+      // PowerShell escape / inside-string backticks are not continuations.
+      const r = classifyCommand('Write-Host `"hello`" -PassThru');
+      expect(r.risk).to.equal("safe");
+    });
+
     it("returns confirm for git push --force", () => {
       const r = classifyCommand("git push --force origin main");
       expect(r.risk).to.equal("confirm");

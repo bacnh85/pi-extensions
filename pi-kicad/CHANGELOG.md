@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.9 - 2026-09-24
+
+- Fixed: `kicad_batch` caps each entry in `details.results[]` at the same
+  12k-char output budget as `kicad_call` (new `truncateToBudget` helper in
+  konnect-client, shared truncation marker). The cap is per-op, so data
+  extracted between batches (e.g. pin coordinates) stays intact.
+- Fixed: `mapContent` counts image summary notes against the output budget —
+  mixed text+image results can no longer exceed `maxChars` by the note length.
+- Cleanup: deleted the unused `_resetDaemon()` export.
+
 ## [0.1.8] - 2026-09-22
 
 ### Fixed

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.6 (2026-09-24)
+
+### Fixed
+
+- **`categorizeError` now matches edit errors verbatim from the harness.** The
+  regex assumed `old ?text` (optional single space), but pi emits `old_text`
+  (snake_case) and other variants (`old text`, `oldtext`, bare `text must be
+  unique`, `edits.oldText must match exactly`) — real mismatches fell through
+  to `unknown` and the agent got the generic hint instead of the exact-edit
+  guidance. Separator is now `[_ ]?` on each `old?text` phrase; the bare
+  `text must be unique` alternative is kept. Test covers all five variants.
+
+### Known limitation (honesty note)
+
+- The seed-learnings cache is seeded SYNCHRONOUSLY on the first injection
+  attempt of the session (0.3.1's non-blocking change only covers TTL hits and
+  background refreshes). On an unresponsive Munin backend this can block the
+  first turn by up to the 3s seed deadline (~3-4s observed); turns 2+ remain
+  non-blocking.
+
 ## 0.3.5 (2026-09-22)
 
 ### Fixed

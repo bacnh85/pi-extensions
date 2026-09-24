@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.14 (2026-09-24)
+
+### Changed
+
+- Peer dependency swapped from `@sinclair/typebox` to `typebox` (unscoped),
+  matching the host SDK — `@earendil-works/pi-coding-agent` bundles
+  `typebox` and its dist imports `from "typebox"`, so the scoped package
+  never matched the real host. Also aligns with the sibling extension
+  convention. Dev dependency `@sinclair/typebox` dropped; `Type` resolves
+  via the peer (peer auto-install / SDK).
+
 ## 0.1.13 (2026-09-22)
 
 ### Fixed

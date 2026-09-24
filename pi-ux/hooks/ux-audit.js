@@ -56,11 +56,44 @@ function parseOklch(str) {
   return [to255(r), to255(g), to255(bl)];
 }
 
+// ponytail: standard hsl->rgb, ~15 lines, no dep. Alpha is dropped (contrast
+// gates treat a colour as opaque, matching the hex parser's alpha stripping).
+function parseHsl(str) {
+  const m = /^hsla?\(\s*([0-9.]+)(?:deg)?(?:\s*,\s*|\s+)([0-9.]+)%(?:\s*,\s*|\s+)([0-9.]+)%\s*(?:(?:,|\/)\s*([0-9.]+%?))?\s*\)$/i.exec(String(str).trim());
+  if (!m) return null;
+  const h = parseFloat(m[1]) / 360;
+  const s = parseFloat(m[2]) / 100;
+  const l = parseFloat(m[3]) / 100;
+  if ([h, s, l].some(Number.isNaN)) return null;
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const hue = (t) => {
+    let x = t % 1;
+    if (x < 0) x += 1;
+    if (x < 1 / 6) return p + (q - p) * 6 * x;
+    if (x < 1 / 2) return q;
+    if (x < 2 / 3) return p + (q - p) * (2 / 3 - x) * 6;
+    return p;
+  };
+  return [hue(h + 1 / 3), hue(h), hue(h - 1 / 3)].map((c) => Math.round(c * 255));
+}
+
+function parseRgb(str) {
+  const m = /^rgba?\(\s*(\d{1,3})(?:\s*,\s*|\s+)(\d{1,3})(?:\s*,\s*|\s+)(\d{1,3})\s*(?:(?:,|\/)\s*([0-9.]+%?))?\s*\)$/i.exec(String(str).trim());
+  if (!m) return null;
+  const r = +m[1], g = +m[2], b = +m[3];
+  if (r > 255 || g > 255 || b > 255) return null;
+  return [r, g, b]; // alpha dropped, like 8-digit hex
+}
+
 function parseColor(input) {
   const s = String(input).trim();
   if (s.startsWith('#') || /^[0-9a-f]{3,8}$/i.test(s)) return parseHex(s);
-  if (s.toLowerCase().startsWith('oklch')) return parseOklch(s);
-  // ponytail: named/hsl/rgb not supported — DESIGN.md tokens use hex/oklch.
+  const lower = s.toLowerCase();
+  if (lower.startsWith('oklch')) return parseOklch(s);
+  if (lower.startsWith('rgb')) return parseRgb(s);
+  if (lower.startsWith('hsl')) return parseHsl(s);
+  // ponytail: named colours not supported — DESIGN.md tokens use hex/oklch/rgb/hsl.
   // Tokens with other formats are just not contrast-checkable here; the gate
   // still runs on the pairs that ARE parseable.
   return parseHex(s); // falls back to hex parser (returns null on garbage)
@@ -207,6 +240,8 @@ function scanOffSystem(css, tokens) {
 function scanStates(css) {
   css = css.replace(/\/\*[\s\S]*?\*\//g, ' '); // dead code must not fail the gate
   css = css.replace(/"[^"]*"|'[^']*'/g, ' '); // quoted words ("a b" in grid-template-areas) are not selectors
+  css = css.replace(/:root\b[^{]*\{[^}]*\}/g, ' '); // :root token definitions must not trip the gate (FIX v0.6.3)
+  css = css.replace(/var\(--[a-zA-Z0-9-]+(?:\s*,[^)]*)?\)/g, ' '); // nor token names used in rules (--input-bg is not an <input>)
   const findings = { missingFocusVisible: [], missingDisabled: [], missingReducedMotion: [], hasInteractive: false };
 
   // Motion needs a reduced-motion fallback regardless of interactive elements
@@ -376,7 +411,15 @@ function extractContrastPairs(css) {
     let v = value.trim();
     const varMatch = v.match(/^var\((--[^,)]+)(?:,\s*([^)]*))?\)$/);
     if (varMatch) v = nameToValue.get(varMatch[1]) || (varMatch[2] || '').trim();
-    return /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$|^(?:rgb|hsl)a?\(/i.test(v) ? v : null;
+    if (/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$|^(?:rgb|hsl)a?\(/i.test(v)) return v;
+    // ponytail: layered background values (e.g. "url(x.png) #fff") — pair with
+    // the first space-separated token the parsers accept, not just token 0.
+    if (/\s/.test(v) && !varMatch) {
+      for (const token of v.split(/\s+/)) {
+        if (/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$|^(?:rgb|hsl)a?\(/i.test(token)) return token;
+      }
+    }
+    return null;
   };
 
   const pairs = [];
@@ -389,7 +432,7 @@ function extractContrastPairs(css) {
     const bgMatch = decls.match(/(?:^|;)\s*(?:background|background-color)\s*:\s*([^;]+)/);
     if (!colorMatch || !bgMatch) continue;
     const fg = resolve(colorMatch[1]);
-    const bg = resolve(bgMatch[1].split(' ')[0]);
+    const bg = resolve(bgMatch[1]);
     if (!fg || !bg || fg.toLowerCase() === bg.toLowerCase()) continue;
     // Normalise to rgb triples so #FFFFFF and #fff dedupe to one pair.
     const keyOf = (c) => { const p = parseColor(c); return p ? `${p[0]},${p[1]},${p[2]}` : c.toLowerCase(); };
@@ -467,6 +510,8 @@ function audit({ css = '', pairs = [] }) {
 module.exports = {
   parseHex,
   parseOklch,
+  parseRgb,
+  parseHsl,
   parseColor,
   sRGBtoY,
   apcaContrastLc,

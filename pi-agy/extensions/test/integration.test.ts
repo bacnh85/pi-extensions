@@ -150,9 +150,10 @@ describe("agy_execute tool integration", function () {
       for (const model of ["sonnet", "pro-low"]) {
         await execute("test-id", { prompt: "work", model }, undefined, undefined, mockCtx);
       }
+      const { MODEL_MAP } = await import("../lib/cli.js");
       expect(models).to.deep.equal([
-        "claude-sonnet-4-6",
-        "gemini-3.1-pro-low",
+        MODEL_MAP.sonnet,
+        MODEL_MAP["pro-low"],
       ]);
     });
 

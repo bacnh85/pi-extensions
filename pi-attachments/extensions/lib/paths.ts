@@ -11,8 +11,15 @@ import { statSync } from "node:fs";
 // Token may contain backslash-escaped spaces ("with\ space.png" — the form
 // terminals paste on file drops); the escaped form is unescaped before fs access.
 const IMAGE_RE = /[^\s"']+(?:\\ [^\s"']+)*\.(?:png|jpe?g|webp|gif)\b/gi;
-/** Absolute-path token regex: slash segments whose chars may include backslash-escaped spaces (terminal drop form). */
-export const ABSOLUTE_PATH_RE = /(?:\/(?:[\w.@+-]|\\ )+)+/g;
+/**
+ * Absolute-path token regex: slash segments whose chars may include
+ * backslash-escaped spaces (terminal drop form), or Windows drive-letter
+ * paths (`C:\Users\x` / `C:/Users/x`) with the same escaped-space charset and
+ * backslash as an NTFS separator. isFile() gates every match, so POSIX never
+ * false-positives on `C:\…` text and Windows lets the real fs decide.
+ */
+export const ABSOLUTE_PATH_RE =
+  /(?:\/(?:[\w.@+-]|\\ )+)+|(?:[A-Za-z]:[\\/](?:[\w.@+-]|\\ )+(?:[\\/](?:[\w.@+-]|\\ )+)*)/g;
 
 /** A matched absolute-path token: unescaped path plus its literal span in the text. */
 export interface AbsolutePathSpan {

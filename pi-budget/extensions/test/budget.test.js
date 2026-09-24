@@ -225,6 +225,17 @@ test("handler does not throw when theme is unavailable (review: MEDIUM)", () => 
   assert.equal(ctx.aborted(), true, "abort still works without a theme");
 });
 
+test("stale status line is cleared when theme has no fg (theme?.fg missing)", () => {
+  const captured = [];
+  const { events } = createPiHarness("1.00");
+  const ctx = createCtx({ theme: {}, setStatus: (key, text) => captured.push({ key, text }) });
+  events.get("session_start")({}, ctx);
+
+  events.get("message_end")({ message: assistantMsg(0.6, "m1") }, ctx);
+  assert.deepEqual(captured, [{ key: "pi-budget", text: undefined }],
+    "no-fg theme clears the footer instead of leaving the last render");
+});
+
 test("cost is idempotent per message id (review: LOW)", () => {
   const { events } = createPiHarness("1.00");
   const ctx = createCtx();

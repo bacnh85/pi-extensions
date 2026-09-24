@@ -25,9 +25,9 @@ pi install npm:@bacnh85/pi-ponytail
 | Command | What it does |
 |---------|--------------|
 | `/ponytail` | Show current and default mode (same as `status`) |
-| `/ponytail lite\|full\|ultra\|off` | Set session intensity |
+| `/ponytail lite\|full\|ultra\|off\|review` | Set session intensity |
 | `/ponytail status` | Show current and default mode |
-| `/ponytail default lite\|full\|ultra\|off` | Persist the default across sessions |
+| `/ponytail default lite\|full\|ultra\|off` | Persist the default across sessions (`review` is session-only) |
 | `/skill:ponytail-review` | Over-engineering review on the current diff |
 | `/skill:ponytail-audit` | Whole-repo over-engineering audit |
 | `/skill:ponytail-debt` | Harvest `ponytail:` shortcut markers into a ledger |
@@ -45,6 +45,7 @@ Deactivate: `stop ponytail` or `normal mode`. Resume with `/ponytail <mode>` (e.
 | **lite** | Build what's asked, name the lazier alternative in one line. You pick. |
 | **full** | The ladder enforced. Stdlib and native first. Shortest diff, shortest explanation. **Default.** |
 | **ultra** | YAGNI extremist. Deletion before addition. Ship the one-liner and challenge the rest. |
+| **review** | Ruleset off; behavior governed by `/skill:ponytail-review`. Session-only — not a valid default. |
 | **off** | Ponytail disabled for this session. |
 
 ---

@@ -101,6 +101,7 @@ function writeDefaultMode(mode) {
 
 module.exports = {
   DEFAULT_MODE,
+  VALID_MODES,
   RUNTIME_MODES,
   getDefaultMode,
   getQuietStartup,

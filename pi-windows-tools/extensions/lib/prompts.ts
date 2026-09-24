@@ -83,7 +83,7 @@ Use Linux shell syntax (bash):
   preferredCommands: ["ls", "cp", "mv", "rm", "grep", "find", "cat", "echo", "make", "gcc"],
 };
 
-export function getPromptForShell(kind: WindowsShellKind): ShellPrompt {
+function getPromptForShell(kind: WindowsShellKind): ShellPrompt {
   switch (kind) {
     case "pwsh": return pwshPrompt;
     case "powershell": return pwshPrompt; // same guidance

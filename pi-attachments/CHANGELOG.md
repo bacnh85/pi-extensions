@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.7 (2026-09-24)
+
+- Fixed: Windows drive-letter paths (`C:\Users\me\shot.png`, `D:/data/x.md`)
+  are recognized as path-like in paste payloads and matched by the
+  absolute-path token regex; POSIX behavior is unchanged (`isFile()` still
+  gates every match).
+- Fixed: Windows clipboard file list joins on newlines instead of `;`, so
+  filenames containing `;` survive the round-trip.
+- Fixed: registry `lookup()` only resolves tokens whose file still exists —
+  a stale token (file deleted, machine restarted) now stays literal in the
+  message instead of expanding to a dead path.
+
 ## 0.3.6 (2026-09-22)
 
 - Fixed: submitting text whose `[[attach:]]` tokens were all hand-deleted now

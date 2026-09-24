@@ -64,6 +64,7 @@ describe("bash auto-background config toggles", () => {
     assert.equal(autoBgThresholdSecs({ PI_MODEL_TOOLS_BASH_AUTO_BG_SECS: "0" }), 120);
     assert.equal(autoBgThresholdSecs({ PI_MODEL_TOOLS_BASH_AUTO_BG_SECS: "abc" }), 120);
     assert.equal(autoBgThresholdSecs({ PI_MODEL_TOOLS_BASH_AUTO_BG_SECS: "30.9" }), 30);
+    assert.equal(autoBgThresholdSecs({ PI_MODEL_TOOLS_BASH_AUTO_BG_SECS: "0.5" }), 1, "fractional floors to 0 → clamped to 1");
   });
 });
 
@@ -297,6 +298,24 @@ describe("bash auto-bg reviewer round (hardening)", () => {
     await p;
     await sleep(30);
     await assert.rejects(stat(logPath), /ENOENT/, "log deleted after wake-up");
+  });
+
+  it("job finishing before the async log open() resolves leaves no log file (j.finished race)", async () => {
+    const { stat } = await import("node:fs/promises");
+    const { ops, pending } = makeFakeOps();
+    const { pi, deps } = makeDeps(0.05);
+    const wrapped = wrapWithAutoBg(ops, deps);
+
+    const p = wrapped.exec("instant job", "/tmp", { onData: () => {}, timeout: undefined, env: {} });
+    await sleep(100); // threshold fires → backgrounded, open() still in flight
+    const logPath = activeBgLogPaths()[0];
+    // Resolve the exec IMMEDIATELY — finishJob runs before open()'s .then does.
+    pending[0].resolve({ exitCode: 0 });
+    await p;
+    // Wait past the threshold timer AND a tick so the racing open() has landed.
+    await sleep(100);
+    assert.equal(bgJobCount(), 0, "registry empty");
+    await assert.rejects(stat(logPath), /ENOENT/, "no log file remains — race closed the fd and removed it");
   });
 });
 

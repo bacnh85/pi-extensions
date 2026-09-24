@@ -34,10 +34,11 @@ async function readMac(): Promise<string[]> {
 async function readWindows(): Promise<string[]> {
   const { stdout } = await run(
     "powershell",
-    ["-NoProfile", "-STA", "-Command", "(Get-Clipboard -Format FileDropList) -join ';'"],
+    // Newline-join, not ';': a filename containing ';' survives the split.
+    ["-NoProfile", "-STA", "-Command", '(Get-Clipboard -Format FileDropList) -join "`n"'],
     { timeout: 5000 },
   );
-  return stdout.split(";").map((p) => p.trim()).filter(Boolean);
+  return stdout.split(/\r?\n/).map((p) => p.trim()).filter(Boolean);
 }
 
 async function readLinux(): Promise<string[]> {

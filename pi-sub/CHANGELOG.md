@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.50 (2026-09-24)
+
+- The disabled-usage hint no longer echoes the router key prefix/first/last
+  fragment pair (`ab12…wx34`); it now just says "disabled for this router
+  key", keeping only the navigational last-4 in the dashboard pointer.
+
 ## 0.1.49 (2026-09-22)
 
 - Review fixes for the 0.1.48 router-usage path: monthly-only reports

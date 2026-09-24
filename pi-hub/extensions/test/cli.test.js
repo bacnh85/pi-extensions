@@ -120,6 +120,42 @@ test("add: signal-killed pi resolves 1 (status null is failure, not success)", {
   assert.ok(logs.some((l) => /install failed: signal-victim/.test(l)), "failure message printed");
 });
 
+test("add: multi-ref install prints the failure summary with the count", { skip: process.platform === "win32" }, async () => {
+  // Shim: --version exits 0 (piInstalled), install exits 1 (always fails).
+  const shim = mkdtempSync(path.join(tmpdir(), "pi-hub-shim-"));
+  writeFileSync(path.join(shim, "pi"), '#!/bin/sh\n[ "$1" = "--version" ] && exit 0\nexit 1\n');
+  chmodSync(path.join(shim, "pi"), 0o755);
+  const realPath = process.env.PATH;
+  const logs = [];
+  const orig = console.log;
+  console.log = (msg) => logs.push(msg);
+  let code;
+  try {
+    process.env.PATH = `${shim}${path.delimiter}${realPath}`;
+    code = await main(["add", "bad-one", "bad-two"]);
+  } finally {
+    process.env.PATH = realPath;
+    console.log = orig;
+    rmSync(shim, { recursive: true, force: true });
+  }
+  assert.equal(code, 1);
+  assert.ok(logs.some((l) => /2 install\(s\) failed/.test(l)), "summary line printed for -y users too");
+});
+
+test("resolveSource: shell metacharacters throw (all branches)", () => {
+  assert.throws(() => resolveSource("pkg&whoami"), /invalid source/);
+  assert.throws(() => resolveSource("pkg;rm"), /invalid source/);
+  assert.throws(() => resolveSource("$(whoami)"), /invalid source/);
+  // explicit-prefix passthrough is guarded too — the prefix doesn't launder the ref
+  assert.throws(() => resolveSource("npm:foo&calc"), /invalid source/);
+  assert.throws(() => resolveSource("git:github.com/x;y/repo"), /invalid source/);
+  // safe forms still pass through
+  assert.equal(resolveSource("pi-plan"), "npm:@bacnh85/pi-plan");
+  assert.equal(resolveSource("npm:@scope/pkg"), "npm:@scope/pkg");
+  assert.equal(resolveSource("git:github.com/user/repo"), "git:github.com/user/repo");
+  assert.equal(resolveSource("left-pad"), "npm:left-pad");
+});
+
 test("remove rejects -l/--local — only valid with add", async () => {
   const logs = [];
   const orig = console.log;

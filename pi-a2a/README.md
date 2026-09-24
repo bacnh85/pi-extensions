@@ -581,7 +581,7 @@ results, `{id, state}` list stubs) so existing peers see no change.
 ```bash
 cd pi-a2a
 npm install
-npm test         # mocha + tsx (198 tests)
+npm test         # mocha + tsx
 npm run typecheck
 npm pack --dry-run
 ```

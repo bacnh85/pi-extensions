@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.15 (2026-09-24)
+
+### Fixed
+
+- `/ponytail review` now parses: the set-mode path uses `normalizePersistedMode` (accepts `review`), while `set-default` still rejects it via `normalizeMode` (review is session-only, #377). Completion vocabulary and the command description now include `review`.
+- `before_agent_start` double-inject guard uses `startsWith` semantics (leading marker, or a marker leading an inherited `## Task Contract` block) instead of a blanket `includes` — an incidental mid-text mention of the marker in the base prompt no longer suppresses injection, mirroring the `tool_call` subagent side.
+
+### Changed
+
+- README and ponytail-help document `review` in the intensity tables and the `/ponytail <mode>` command row.
+- `/ponytail review` is session-only end to end: the command sets the live
+  session mode, but review never rides the persisted session-entry channel (a
+  reload can't resurrect it) — matching the `default review` rejection.
+
 ## 0.1.14 (2026-09-12)
 
 ### Fixed

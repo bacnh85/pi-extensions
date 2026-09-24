@@ -44,7 +44,8 @@ export interface AgyOptions {
 const PREFLIGHT_TIMEOUT_MS = 10_000;
 const MAX_CAPTURE_BYTES = 64 * 1024;
 
-const MODEL_MAP: Record<AgyModel, string> = {
+// Alias → machine map: single source of truth, consumed by the live smoke test.
+export const MODEL_MAP: Record<AgyModel, string> = {
   "flash-low": "gemini-3.7-flash-low",
   "flash-medium": "gemini-3.7-flash-medium",
   "flash-high": "gemini-3.7-flash-high",

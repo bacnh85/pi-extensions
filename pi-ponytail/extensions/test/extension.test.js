@@ -209,6 +209,26 @@ test("before_agent_start skips when the marker is already present (extension-loa
   assert.equal(result, undefined, "must not double-inject into children that already carry the block");
 }));
 
+test("before_agent_start skips a leading marker but injects past an incidental mention", async () => withTempConfig(async () => {
+  const { events } = createPiHarness();
+  const ctx = createCommandContext();
+  await events.get("session_start")({ reason: "startup" }, ctx);
+
+  // Leading marker = prior injection: untouched.
+  const injected = await events.get("before_agent_start")({
+    systemPrompt: "PONYTAIL MODE ACTIVE — level: full (inherited).",
+  }, ctx);
+  assert.equal(injected, undefined, "leading marker means the block is already in place");
+
+  // Incidental mid-text mention (e.g. Task Contract quoting the marker): must still inject.
+  const mentioned = await events.get("before_agent_start")({
+    systemPrompt: "BASE\n\n## Task Contract\nCheck that PONYTAIL MODE ACTIVE appears in the output.",
+  }, ctx);
+  assert.ok(mentioned, "mid-text mention must not suppress injection");
+  assert.ok(mentioned.systemPrompt.startsWith("BASE\n\n"));
+  assert.ok(mentioned.systemPrompt.includes("PONYTAIL MODE ACTIVE — level: full"));
+}));
+
 test("bare /ponytail handler reports status with a re-activation hint", async () => withTempConfig(async () => {
   const { commands } = createPiHarness();
   const noted = [];
@@ -220,6 +240,26 @@ test("bare /ponytail handler reports status with a re-activation hint", async ()
   assert.match(status, /current \w+/);
   assert.match(status, /default \w+/);
   assert.match(status, /\/ponytail <mode>/);
+}));
+
+test("/ponytail review is session-only: sets the live mode, never persists (0.1.15)", async () => withTempConfig(async () => {
+  // The command path (not just the parser): review must activate now —
+  // instructions injected on the next turn, status shows REVIEW — but must not
+  // ride the persisted session-entry channel (a reload can't resurrect it).
+  const { commands, events, appendedEntries } = createPiHarness();
+  const ctx = createCommandContext();
+  await events.get("session_start")({ reason: "startup" }, ctx);
+
+  await commands.get("ponytail").handler("review", ctx);
+  assert.equal(appendedEntries.length, 0, "review must not persist via appendEntry");
+
+  const injected = await events.get("before_agent_start")({ systemPrompt: "BASE" }, ctx);
+  assert.ok(injected?.systemPrompt.includes("level: review"), "review instructions active this session");
+
+  // Control: a runtime mode persists as expected.
+  await commands.get("ponytail").handler("ultra", ctx);
+  assert.equal(appendedEntries.length, 1);
+  assert.equal(appendedEntries[0].data.mode, "ultra");
 }));
 
 test("tool_call skips other tools, off mode, and disabled scope", async () => withTempConfig(async () => {

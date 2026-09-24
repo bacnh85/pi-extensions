@@ -308,11 +308,15 @@ export default function permissionExtension(pi) {
     // here inherits workspace defaults, it is not blanket-trusted).
     if (
       PATH_TOOLS.has(toolName) &&
-      rules.external_directory &&
-      isExternal(input?.path, ctx.cwd)
+      rules.external_directory
     ) {
+      // Expand ~ BEFORE the boundary check: on the raw path, `~/ext/file`
+      // resolves relative to cwd (e.g. /proj/~/ext/file) → classified internal
+      // → the deny gate never fired, while the path tool expands ~ to an
+      // external file. resolveRule already expanded; the gate must too.
+      // Empty home → expandHome is identity → behavior unchanged.
       const subj = expandHome(input?.path || "", home);
-      if (resolveRule(rules.external_directory, subj, home) === "deny") {
+      if (isExternal(subj, ctx.cwd) && resolveRule(rules.external_directory, subj, home) === "deny") {
         return { block: true, reason: "denied by permission rule (external_directory)" };
       }
     }

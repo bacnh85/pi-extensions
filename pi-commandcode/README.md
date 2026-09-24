@@ -49,8 +49,8 @@ Once logged in, models populate via catalog refresh and `/model` shows them:
 ### settings.json (base URL)
 
 The endpoint URL lives in `settings.json` under `commandcode.baseUrl`
-(precedence: env > repo `.pi/settings.json` > global `~/.pi/agent/settings.json` >
-default). Edit it interactively:
+(precedence: env > repo `.pi/settings.json` for trusted projects only >
+global `~/.pi/agent/settings.json` > default). Edit it interactively:
 
 ```
 /commandcode-config

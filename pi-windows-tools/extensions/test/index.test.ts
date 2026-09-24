@@ -31,6 +31,20 @@ describe("extension registration", () => {
     process.env.PI_WINDOWS_TOOLS_ENABLED = old;
   });
 
+  it("denied dangerous commands appear in the audit log (0.5.8)", async () => {
+    const old = process.env.PI_WINDOWS_TOOLS_ENABLED;
+    delete process.env.PI_WINDOWS_TOOLS_ENABLED;
+    const f = fakePi();
+    piWindowsToolsExtension(f.api as any);
+    const tool = f.tools.find(tool => tool.name === "windows_shell_exec");
+    const audit = f.tools.find(t => t.name === "windows_audit_log");
+    await tool.execute("id", { command: "npm publish" }, new AbortController().signal, undefined, { cwd: process.cwd(), hasUI: true, ui: { select: async () => "Deny" } });
+    const out = await audit.execute("id", {});
+    expect(out.content[0].text).to.include("npm publish");
+    expect(out.content[0].text).to.include("exit:denied");
+    process.env.PI_WINDOWS_TOOLS_ENABLED = old;
+  });
+
   it("'Allow for this session' suppresses the prompt for the same executable", async () => {
     const old = process.env.PI_WINDOWS_TOOLS_ENABLED;
     delete process.env.PI_WINDOWS_TOOLS_ENABLED;

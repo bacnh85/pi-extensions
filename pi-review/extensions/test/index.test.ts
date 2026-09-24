@@ -63,6 +63,7 @@ function harness(subagent = false, reviewOutput = '{"summary":"clean","findings"
     emit: (name: string, value: any) => pi.events.emit(name, value),
     tools: () => activeTools,
     thinking: () => thinking,
+    setThinking: (level: string) => { thinking = level; },
   };
 }
 
@@ -73,6 +74,20 @@ describe("review parsing and shell gate", () => {
     assert.equal(isReadOnlyBash("rtk git reset --hard"), false);
     assert.equal(isReadOnlyBash("find . -delete"), false);
     assert.equal(isReadOnlyBash("git diff | tee out"), false);
+    assert.equal(isReadOnlyBash("rg --pre ./evil pattern"), false, "rg preprocessor");
+    assert.equal(isReadOnlyBash("rg --pre=./evil pattern"), false, "rg preprocessor =");
+    assert.equal(isReadOnlyBash("rg --pr ./evil pattern"), false, "rg preprocessor abbreviation (clap prefix matching)");
+    assert.equal(isReadOnlyBash("rg --pr=./evil pattern"), false, "rg preprocessor abbreviation =");
+    assert.equal(isReadOnlyBash("rg pattern src"), true, "rg ok");
+    assert.equal(isReadOnlyBash("fd -x rm -r tmp"), false, "fd -x exec");
+    assert.equal(isReadOnlyBash("fd -X rm tmp"), false, "fd -X exec");
+    assert.equal(isReadOnlyBash("fd --exec rm tmp"), false, "fd --exec");
+    assert.equal(isReadOnlyBash("fd --exec-batch rm tmp"), false, "fd --exec-batch");
+    assert.equal(isReadOnlyBash("fd -Hx rm tmp"), false, "fd combined short flags (-Hx) run exec per match");
+    assert.equal(isReadOnlyBash("fd -xrm tmp"), false, "fd attached short-flag value (-xrm) runs rm per match");
+    assert.equal(isReadOnlyBash("fd -Hrx tmp"), false, "fd cluster with x anywhere is exec");
+    assert.equal(isReadOnlyBash("fd name src"), true, "fd ok");
+    assert.equal(isReadOnlyBash("fd -e md src"), true, "fd extension flag without x is ok");
   });
 
   it("blocks destructive git commands", () => {
@@ -232,6 +247,33 @@ describe("review lifecycle", () => {
     assert.deepEqual(h.tools(), ["read", "edit", "ffgrep", "serena_find_symbol"]);
     assert.equal(h.thinking(), "medium");
   });
+
+  it("restores thinking level even when it falls outside the known list (0.2.13)", async () => {
+    // The old whitelist check turned any SDK drift (new/renamed level) into
+    // undefined, which leaveLocalReview's `if` skipped — the session stayed
+    // stuck at the review thinking level. Capture is now unconditional.
+    const h = harness(false);
+    h.setThinking("ultra");
+    await h.commands.review.handler("changes", h.ctx);
+    await flush();
+    assert.equal(h.thinking(), "high", "review level applied");
+    await h.handlers.agent_settled[0]({}, h.ctx);
+    assert.equal(h.thinking(), "ultra", "original level restored");
+  });
+
+  it("undefined captured level is never pushed back into the host on restore", async () => {
+    // Host drift where getThinkingLevel() returns undefined: restoring it would
+    // corrupt the level. leaveLocalReview guards with typeof === "string", so
+    // the session stays at the review level (least surprise) instead of
+    // becoming undefined.
+    const h = harness(false);
+    h.setThinking(undefined as unknown as string);
+    await h.commands.review.handler("changes", h.ctx);
+    await flush();
+    assert.equal(h.thinking(), "high", "review level applied");
+    await h.handlers.agent_settled[0]({}, h.ctx);
+    assert.equal(h.thinking(), "high", "undefined never restored — stays at review level");
+  });
 });
 
 describe("review prompt builder and git evidence gate", () => {
@@ -273,5 +315,18 @@ describe("review prompt builder and git evidence gate", () => {
     await flush();
     assert.equal(response?.ok, false);
     assert.equal(response?.error, "Reviewer Git range could not be resolved");
+  });
+
+  it("fails closed when Git evidence exceeds the byte cap", async () => {
+    const h = harness(false, undefined, undefined, undefined, undefined,
+      async () => ({ code: 0, stdout: "x".repeat(11 * 1024), stderr: "", killed: false }));
+    let response: any;
+    h.emit("pi-review:run", {
+      id: "review-bytecap", cwd: process.cwd(), prompt: "Review this change",
+      accept: () => true, respond: (value: any) => { response = value; },
+    });
+    await flush();
+    assert.equal(response?.ok, false);
+    assert.equal(response?.error, "Reviewer Git evidence exceeds the configured limit");
   });
 });

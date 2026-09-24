@@ -100,7 +100,7 @@ export class KonnectDaemon {
   private cfgDir: string | null = null;
   private exitHandlerBound = false;
   // Stable handler refs so stop() can unbind — without this, every discarded
-  // instance (_resetDaemon, tests) leaks a full set of process handlers, since
+  // instance (a discarded daemon) leaks a full set of process handlers, since
   // exitHandlerBound is per-instance.
   private exitCleanup = (): void => this.killChild();
   private onSigint = (): void => {
@@ -310,10 +310,6 @@ let _daemon: KonnectDaemon | null = null;
 export function getDaemon(): KonnectDaemon {
   if (!_daemon) _daemon = new KonnectDaemon();
   return _daemon;
-}
-
-export function _resetDaemon(): void {
-  _daemon = null;
 }
 
 export type { DaemonConfig };

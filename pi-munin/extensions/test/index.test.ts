@@ -87,6 +87,28 @@ describe("pi-munin extension", () => {
     expect(h.notifications[0]).to.include("Project: project-id");
   });
 
+  it("treats absent isProjectTrusted callback as untrusted (no throw)", async () => {
+    // Pins the ?. calls — reverting either the munin-status handler or the
+    // before_agent_start hook to a direct ctx.isProjectTrusted() call throws
+    // TypeError instead of degrading to untrusted-default behaviour.
+    // Untrusted default: cwd .env.local is NOT read, so the project key here is
+    // invisible → header skipped, status command reports the missing key.
+    const h = harness();
+    delete h.ctx.isProjectTrusted;
+    h.ctx.cwd = projectDir();
+    const result = await h.handlers.before_agent_start[0]({ systemPrompt: "BASE" }, h.ctx);
+    expect(result).to.equal(undefined);
+    await h.commands["munin-status"].handler("", h.ctx);
+    expect(h.notifications[0]).to.include("Munin Status: MUNIN_API_KEY is required");
+  });
+
+  it("trusted isProjectTrusted still reads project env", async () => {
+    const h = harness();
+    h.ctx.cwd = projectDir();
+    await h.commands["munin-status"].handler("", h.ctx);
+    expect(h.notifications[0]).to.include("Project: project-id");
+  });
+
   it("throws for invalid munin_store tags", async () => {
     const { tools, ctx } = harness();
     try {

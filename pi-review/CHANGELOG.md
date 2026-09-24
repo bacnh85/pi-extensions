@@ -1,11 +1,38 @@
 # Changelog
 
+## 0.2.13 (2026-09-24)
+
+### Fixed
+
+- **Security: the read-only bash gate missed `fd`'s exec family and `rg`'s
+  preprocessor.** `fd -x/-X/--exec[--batch]` runs an arbitrary command per
+  match, and `rg --pre[=cmd]` pipes match content through an arbitrary
+  preprocessor — both previously passed `isReadOnlyBash` in read-only review
+  mode (`find -exec` was already blocked). Both families are now rejected.
+  Both are clap CLIs, but they differ: rg accepts unambiguous long-prefix
+  abbreviations (`rg --pr` ≡ `--pre`) while fd does not infer long prefixes —
+  but fd combines and attaches short flags (`fd -Hx cmd`, `fd -xrm tmp` both
+  execute per match, verified live). The fd pattern now blocks any short-flag
+  cluster containing x/X, and the rg pattern matches any `--pr` prefix
+  (reviewer round 2).
+- SDK drift no longer leaves the session stuck at the review thinking level.
+  `enterLocalReview` captured the pre-review level only when it was inside the
+  local `THINKING_LEVELS` whitelist; a new/renamed SDK level became `undefined`
+  and `leaveLocalReview` silently skipped the restore. Capture is now
+  unconditional, and restore guards with `typeof === "string"` so a drifted
+  `undefined` capture is never pushed back into the host (session stays at the
+  review level instead — least surprise).
+
+### Tests
+
+- Cover the new `fd`/`rg` exec-gate patterns (positive and read-only cases).
+- Cover thinking restore with an out-of-list SDK level (`"ultra"`).
+- Cover the Git-evidence byte-cap fail-closed branch (11KB status →
+  `ok:false, error:"Reviewer Git evidence exceeds the configured limit"`).
+
 ## 0.2.12 (2026-09-21)
 
 - Widened Pi SDK peer range to `<0.88.0` (devDeps to `^0.87.0`); tested against Pi 0.87.0. No behavioral changes — the 0.87.0 audit found no affected code paths.
-
-## Unreleased
-
 - Tests: cover `buildReviewPrompt` preset-specific prompts and the fail-closed Git
   evidence/range gates (primary git failure, unresolvable custom range). No
   behavioral changes.

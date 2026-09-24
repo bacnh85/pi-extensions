@@ -3,13 +3,13 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const {
   DEFAULT_MODE,
-  RUNTIME_MODES,
   getDefaultMode,
   getQuietStartup,
   getHideStatus,
   normalizeMode,
   normalizePersistedMode,
   isDeactivationCommand,
+  VALID_MODES,
   writeDefaultMode,
 } = require("../hooks/ponytail-config.js");
 const { getPonytailInstructions, filterSkillBodyForMode } = require("../hooks/ponytail-instructions.js");
@@ -55,7 +55,7 @@ export function parsePonytailCommand(text) {
     return mode ? { type: "set-default", mode } : { type: "invalid", reason: "invalid-default-mode" };
   }
 
-  const mode = normalizeMode(primary);
+  const mode = normalizePersistedMode(primary);
   return mode ? { type: "set-mode", mode } : { type: "invalid", reason: "invalid-mode", mode: primary };
 }
 
@@ -85,17 +85,18 @@ export default function ponytailExtension(pi) {
   const setMode = (mode, ctx) => {
     const normalized = normalizePersistedMode(mode);
     if (!normalized) return;
-
-    pi.appendEntry("ponytail-mode", { mode: normalized });
+    // ponytail: 'review' is session-only — it updates the live session but must
+    // not ride the persisted-entry channel (a reload can't resurrect it).
+    if (normalized !== "review") pi.appendEntry("ponytail-mode", { mode: normalized });
     currentMode = normalized;
     syncStatus(ctx);
   };
 
   pi.registerCommand("ponytail", {
-    description: `Set mode: ${RUNTIME_MODES.join("|")}. Commands: status, default <mode>`,
+    description: `Set mode: ${VALID_MODES.join("|")} (review is session-only). Commands: status, default <mode>`,
     getArgumentCompletions: (prefix) => {
       const q = String(prefix || "").trim().toLowerCase();
-      const vocab = [...RUNTIME_MODES, "status", "default"];
+      const vocab = [...VALID_MODES, "status", "default"];
       const items = vocab.filter((k) => k.startsWith(q)).map((k) => ({ value: k, label: k }));
       return items.length > 0 ? items : null;
     },
@@ -177,8 +178,13 @@ export default function ponytailExtension(pi) {
 
   pi.on("before_agent_start", async (event) => {
     if (!currentMode || currentMode === "off") return;
-    // ponytail: extension-loaded children carry the injected marker in their Task Contract — don't double-inject.
-    if (event?.systemPrompt?.includes("PONYTAIL MODE ACTIVE")) return;
+    // ponytail: suppress only a *leading* marker — the real prior-injection shapes
+    // (injected prompt leads with the block; an inherited Task Contract leads with
+    // it after "## Task Contract\n"). An incidental mid-text mention must not
+    // suppress injection, mirroring the tool_call side below.
+    const basePrompt = typeof event?.systemPrompt === "string" ? event.systemPrompt : "";
+    if (basePrompt.startsWith("PONYTAIL MODE ACTIVE")
+      || basePrompt.includes("\n## Task Contract\nPONYTAIL MODE ACTIVE")) return;
     // Guard null/undefined event and missing systemPrompt (#439, #440).
     const base = event?.systemPrompt ? `${event.systemPrompt}\n\n` : "";
     return { systemPrompt: `${base}${getPonytailInstructions(currentMode)}` };

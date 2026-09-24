@@ -102,7 +102,7 @@ Environment variables (override config file):
 | `PI_UX_QUIET_STARTUP` | unset | Suppress the startup toast |
 | `PI_UX_HIDE_STATUS` | unset | Hide the status-bar indicator |
 
-Config file: `~/.config/pi-ux/config.json` (or `$XDG_CONFIG_HOME/pi-ux/`):
+Config file: `%APPDATA%\pi-ux\config.json` (Windows) or `~/.config/pi-ux/config.json` (or `$XDG_CONFIG_HOME/pi-ux/`):
 
 ```json
 { "defaultMode": "strict", "quietStartup": false, "hideStatus": false }

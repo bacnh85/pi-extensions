@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.6 (2026-09-24)
+
+### Fixed
+
+- **Security: `~/…` paths bypassed the `external_directory` deny gate.**
+  `resolveCall` ran `isExternal` on the RAW path: `~/ext/file` posix-resolved
+  relative to cwd (`/proj/~/ext/file`) → classified internal → the deny rule
+  was never checked — while the path tool itself expands `~` to an external
+  file. `~`/`$HOME` is now expanded before the boundary check (the same
+  expansion the rule-matching subject already used); empty home → expansion is
+  identity → behavior unchanged.
+
+### Tests
+
+- Regression: `external_directory: {"*": "deny", "~/projects/**": "allow"}` —
+  `read ~/ext/file` blocks with the external_directory reason; `read
+  ~/projects/x` still allowed.
+- Rewrote the tautological stale-runner test: the old assertions
+  (`result === undefined || block === false || block === true` plus an
+  un-awaited `doesNotThrow` promise) could never fail; it now awaits the
+  handler and asserts the ask → "Allow once" → allow path resolves.
+
 ## 0.2.5 (2026-09-22)
 
 ### Fixed

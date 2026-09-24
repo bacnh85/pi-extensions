@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.8 (2026-09-24)
+
+### Fixed
+
+- **Security: PowerShell backtick line-continuations bypassed the danger gate.**
+  `Remove-Item C:\x ` + backtick + newline + `-Recurse` hid the flag on a later
+  physical line, outside rule 1's `[^;&|\r\n]*` lookahead — the command
+  classified safe and auto-ran (multi-line commands execute via -EncodedCommand
+  with no per-line prompt). `classifyCommand` now joins backtick continuations
+  into one logical line before matching; a backtick not followed by a line
+  break (escape / inside string) is untouched, and the existing
+  flags-don't-leak-across-newlines behavior is preserved.
+- Security: denied dangerous commands (Deny chosen, or no UI available to
+  prompt) now appear in `windows_audit_log` with `exit:denied` instead of
+  leaving no audit trace.
+- Removed the dead `export` from `getPromptForShell` (sole consumer is
+  `buildShellGuidance` in the same file).
+
 ## 0.5.7 (2026-09-21)
 
 ### Fixed

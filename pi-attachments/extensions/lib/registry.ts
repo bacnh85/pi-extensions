@@ -7,7 +7,7 @@
  * capped at REGISTRY_MAX entries (oldest evicted).
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -60,5 +60,11 @@ export function remember(name: string, path: string): void {
 }
 
 export function lookup(name: string): string | undefined {
-  return load()[name];
+  const path = load()[name];
+  if (!path) return undefined;
+  try {
+    return statSync(path).isFile() ? path : undefined;
+  } catch {
+    return undefined; // stale token — file deleted or volume gone
+  }
 }

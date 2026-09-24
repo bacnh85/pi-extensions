@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.9.1] - 2026-09-24
+
+- Fixed: fractional `PI_MODEL_TOOLS_BASH_AUTO_BG_SECS` values (e.g. `"0.5"`)
+  clamp to 1 instead of flooring to 0 — a 0 ms threshold timer would
+  background every command instantly.
+- Cleanup: dropped the redundant local `declare const process` in
+  bash-auto-bg.ts (`@types/node` is a devDependency and tsconfig pins
+  `types: ["node"]`).
+- Tests: added a regression test for the async log `open()` vs
+  `finishJob` race (job settling before the log fd opens leaves no file).
+
 ## [0.9.0] - 2026-09-23
 
 - Added: bash auto-background + anti-poll guidance (oh-my-pi 18.2.8 parity, the

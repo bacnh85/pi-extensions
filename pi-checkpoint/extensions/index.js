@@ -20,15 +20,23 @@
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const REF_NS = "refs/pi-checkpoints";
 
 /**
- * Is `cwd` the root of a git repo (has a .git dir)? Exported for testing.
+ * Is `cwd` inside a git repo (a .git dir in cwd or any ancestor)? Exported for
+ * testing. Pi sessions often run in a subdirectory of the repo root.
  */
 export function isGitRepo(cwd) {
-  return !!cwd && existsSync(join(cwd, ".git"));
+  let dir = cwd;
+  while (dir) {
+    if (existsSync(join(dir, ".git"))) return true;
+    const parent = dirname(dir);
+    if (parent === dir) return false; // filesystem root
+    dir = parent;
+  }
+  return false;
 }
 
 export default function checkpointExtension(pi) {

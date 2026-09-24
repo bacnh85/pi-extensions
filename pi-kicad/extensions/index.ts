@@ -5,6 +5,7 @@ import {
   callKonnect,
   mapContent,
   type KonnectCallResult,
+  truncateToBudget,
 } from "./lib/konnect-client.js";
 import { runBatch, summarizeBatch, type BatchOp } from "./lib/batch.js";
 
@@ -136,7 +137,17 @@ export default function piKicadExtension(pi: ExtensionAPI) {
       );
       return {
         content: [{ type: "text" as const, text: summarizeBatch(outcome) }],
-        details: { errors: outcome.errors, stopped: outcome.stopped, results: outcome.results },
+        details: {
+          errors: outcome.errors,
+          stopped: outcome.stopped,
+          // Per-op cap (not shared): pin coordinates extracted between batches
+          // stay intact even when earlier ops were huge. The capped string
+          // replaces the result — truncated JSON is no longer valid JSON, so
+          // parsing it back would throw.
+          results: outcome.results.map((r) =>
+            r.result === undefined ? r : { ...r, result: truncateToBudget(JSON.stringify(r.result), MAX_OUTPUT_CHARS) },
+          ),
+        },
       };
     },
   });

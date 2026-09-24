@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.17 (2026-09-24)
+
+### Fixed
+
+- **Serena-first guidance never injected**: the `before_agent_start` gate read
+  `event.systemPromptOptions.selectedTools`, which never contains
+  extension-registered tools — so `serena_find_symbol` was never found and the
+  guidance system prompt was never appended. The gate now uses
+  `pi.getActiveTools()` (the same live registry the `tool_call` hook already
+  uses), extracted into the exported pure predicate `isSerenaActive` in
+  `lib/guidance.ts`.
+- **`tool_call` gate routed through `isSerenaActive` too** (review round 2):
+  it still inlined `activeTools.includes("serena_find_symbol")`; both gates now
+  share the one predicate. Handler-wired tests pin the `before_agent_start`
+  behaviour with a fake `pi` whose `getActiveTools()` returns/omits
+  `serena_find_symbol`.
+
 ## 0.9.16 (2026-09-21)
 
 ### Fixed

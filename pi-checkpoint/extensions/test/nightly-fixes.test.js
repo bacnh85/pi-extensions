@@ -14,6 +14,7 @@ import checkpointExtension from "../index.js";
 function setup(execImpl) {
   const repo = mkdtempSync(join(tmpdir(), "ck-nightly-"));
   mkdirSync(join(repo, ".git"));
+  TEMP_REPOS.push(repo);
   const calls = [];
   const realPi = {
     on(_evt, handler) { calls.push({ evt: _evt, handler }); },
@@ -40,7 +41,6 @@ function setup(execImpl) {
     redo: calls.find((x) => x.cmd === "redo").opts,
     checkpointCmd: calls.find((x) => x.cmd === "checkpoint").opts,
   };
-  TEMP_REPOS.push(repo);
 }
 
 const TEMP_REPOS = [];

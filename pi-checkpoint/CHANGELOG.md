@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.6 (2026-09-24)
+
+### Fixed
+
+- **`isGitRepo` missed repos rooted above `cwd`**: the check required a `.git`
+  dir in the session's exact cwd, so a pi session launched in a subdirectory
+  of a repo (e.g. `repo/packages/app`) was treated as outside git and
+  checkpoints were silently disabled. `isGitRepo` now walks parent
+  directories (pure fs, no spawn) until it finds `.git` or the filesystem
+  root.
+
+### Tests
+
+- Dropped an unused harness binding; added `process.on("exit")` temp-dir
+  cleanup in `checkpoint.test.js`; fixed `nightly-fixes.test.js` `setup()`
+  where `TEMP_REPOS.push(repo)` sat after `return`, so setup-created repos
+  were never cleaned.
+
 ## 0.1.5 (2026-09-22)
 
 ### Fixed

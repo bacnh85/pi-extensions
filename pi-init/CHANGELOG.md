@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.5 (2026-09-24)
+
+### Fixed
+
+- **Framework detection from package.json deps now matches exact names, not
+  substrings.** `preact` no longer detects React, `vue-router` no longer
+  detects Vue, and `next-themes` no longer detects Next.js — the old
+  `dep.includes(...)` matchers flagged every lookalike package. Adds `nuxt` →
+  Nuxt (same substring-bug class as `next`) and keeps `react-dom` → React and
+  exact `sst` → SST. Map-based exact matching; test covers the lookalikes and
+  all six real names.
+
 ## 0.1.4 (2026-09-22)
 
 ### Fixed

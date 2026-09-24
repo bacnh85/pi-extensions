@@ -1034,6 +1034,31 @@ describe("pi-selfskills extension", () => {
     expect(readFileSync(join(overrideDir, "ovr-skill", "SKILL.md"), "utf8")).to.include("Imperative.");
   });
 
+  it("create races: same name into two different roots — second gets the in-queue clash error, not a silent double-create", async () => {
+    const { tools, ctx } = harness(cwd, undefined, true);
+    // Two roots: user default (no root=) and project .pi/skills (root=) —
+    // different targets, so the target-exists check alone never fires; only
+    // the in-queue discovered-name re-check can catch the loser.
+    const call = (root?: string) =>
+      tools.skill_manage.execute(
+        "id",
+        { action: "create", name: "race-skill", description: "Use when racing. Imperative.", body: "Imperative.", ...(root ? { root } : {}) },
+        undefined,
+        undefined,
+        ctx,
+      );
+    const res = await Promise.all([call(), call(join(cwd, ".pi", "skills"))]);
+    const created = res.filter((r) => String(r.content[0].text).includes("Created skill `race-skill`"));
+    const refused = res.filter((r) => String(r.content[0].text).includes("already discovered"));
+    expect(created).to.have.lengthOf(1);
+    expect(refused).to.have.lengthOf(1);
+    expect(refused[0].details.error).to.equal(true);
+    // Exactly one SKILL.md across both roots.
+    const userTarget = join(defaultSkillsDir(), "race-skill", "SKILL.md");
+    const projectTarget = join(cwd, ".pi", "skills", "race-skill", "SKILL.md");
+    expect(existsSync(userTarget) !== existsSync(projectTarget)).to.equal(true);
+  });
+
   it("create root= places project-local skills: relative-root bootstrap, realpath alias, bogus refused, default unchanged", async () => {
     // No .agents/skills pre-created — the would-be root must be listed and
     // creatable into (bootstrap) in a fresh trusted project.

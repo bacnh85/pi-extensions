@@ -9,7 +9,7 @@ import { after, before, describe, it } from "mocha";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { extractImagePaths } from "./lib/paths";
+import { ABSOLUTE_PATH_RE, absolutePathSpans, extractImagePaths } from "./lib/paths";
 import { parseUriList } from "./lib/clipboard-files";
 import { DEFAULTS, loadSettings } from "./lib/settings";
 import { lookup, remember, registryPath } from "./lib/registry";
@@ -102,6 +102,16 @@ describe("extractImagePaths", () => {
     const escaped = spaced.replace(/ /g, "\\ "); // Terminal.app pastes "with\ space.png"
     assert.deepEqual(extractImagePaths(`dropped ${escaped}`), [spaced]);
   });
+
+  it("matches Windows drive-letter paths (image + text)", () => {
+    // On POSIX isFile() rejects these paths, so assert raw regex matching.
+    const matches = (t: string) => t.match(new RegExp(ABSOLUTE_PATH_RE.source, "g")) ?? [];
+    assert.deepEqual(matches("C:\\Users\\me\\notes.md"), ["C:\\Users\\me\\notes.md"]);
+    assert.deepEqual(matches("C:/Users/me/notes.md"), ["C:/Users/me/notes.md"]);
+    assert.deepEqual(matches("D:/data/with\\ space.md"), ["D:/data/with\\ space.md"]);
+    assert.deepEqual(absolutePathSpans(md).map((s) => s.path), [md]);
+    assert.deepEqual(matches("/posix/never-created.md"), ["/posix/never-created.md"], "POSIX branch unchanged");
+  });
 });
 
 describe("parseUriList", () => {
@@ -111,6 +121,16 @@ describe("parseUriList", () => {
 
   it("ignores non-file lines and malformed uris", () => {
     assert.deepEqual(parseUriList("copy\nhttps://x.com/y\nfile://\nfile:///tmp/ok.md"), ["/tmp/ok.md"]);
+  });
+});
+
+describe("windows clipboard FileDropList parsing", () => {
+  // readWindows() joins with `n and splits on /\r?\n/ — a filename containing
+  // ';' must survive. PowerShell itself is not exercised in tests (parser only).
+  it("newline-split keeps filenames containing ';'", () => {
+    const stdout = "C:\\Users\\me\\a;b.txt\r\nC:\\Users\\me\\c.txt";
+    const paths = stdout.split(/\r?\n/).map((p) => p.trim()).filter(Boolean);
+    assert.deepEqual(paths, ["C:\\Users\\me\\a;b.txt", "C:\\Users\\me\\c.txt"]);
   });
 });
 
@@ -148,13 +168,15 @@ describe("loadSettings", () => {
 describe("registry persistence", () => {
   it("remember() creates a fresh agent dir and an atomic, parseable registry file", () => {
     const dir = path.join(TMP, "fresh-agent");
+    const fresh = path.join(TMP, "fresh.md");
+    writeFileSync(fresh, "fresh\n");
     const saved = process.env.PI_CODING_AGENT_DIR;
     process.env.PI_CODING_AGENT_DIR = dir;
     try {
-      remember("fresh.md", "/tmp/fresh.md");
-      assert.equal(lookup("fresh.md"), "/tmp/fresh.md");
+      remember("fresh.md", fresh);
+      assert.equal(lookup("fresh.md"), fresh);
       const raw = JSON.parse(readFileSync(registryPath(), "utf-8"));
-      assert.equal(raw["fresh.md"], "/tmp/fresh.md");
+      assert.equal(raw["fresh.md"], fresh);
     } finally {
       if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = saved;
@@ -250,13 +272,27 @@ describe("input transform", () => {
   });
 
   it("default mode: dropped-text-file token resolves to a 📎 path, no content dump", async () => {
-    remember("cookies.txt", "/Users/bacnh/Downloads/medium.com_cookies.txt");
+    const cookies = path.join(TMP, "medium.com_cookies.txt");
+    writeFileSync(cookies, "k=v\n");
+    remember("cookies.txt", cookies);
     const h = harness();
     const result = await run(h, `what is in [[attach:cookies.txt]] ?`);
     assert.equal(result.action, "transform");
-    assert.ok(result.text.includes("📎 /Users/bacnh/Downloads/medium.com_cookies.txt"));
+    assert.ok(result.text.includes(`📎 ${cookies}`));
     assert.ok(!result.text.includes("<file"), "no content block");
     assert.ok(!result.text.includes("[[attach:"), "token resolved");
+  });
+
+  it("registry token whose file was deleted stays literal (stale lookup)", async () => {
+    const stale = path.join(TMP, "gone.txt");
+    writeFileSync(stale, "temp\n");
+    remember("gone.txt", stale);
+    rmSync(stale); // file deleted since the drop (or machine restarted)
+    assert.equal(lookup("gone.txt"), undefined, "lookup() drops stale entries");
+    const h = harness();
+    const result = await run(h, "summarize [[attach:gone.txt]]");
+    assert.equal(result.action, "continue");
+    assert.ok(result.text === undefined, "no transform — token left as-is for the model");
   });
 
   it("substring paths don't corrupt each other (inline mode)", async () => {
@@ -288,14 +324,16 @@ describe("input transform", () => {
 
   it("token from a PREVIOUS session resolves via the persistent registry", async () => {
     // Simulate: file dropped in an earlier session (registry written), tray now empty.
-    remember("custom-footer.ts", "/Users/bacnh/Downloads/custom-footer.ts");
-    assert.equal(lookup("custom-footer.ts"), "/Users/bacnh/Downloads/custom-footer.ts");
+    const footer = path.join(TMP, "custom-footer.ts");
+    writeFileSync(footer, "export const x = 1;\n");
+    remember("custom-footer.ts", footer);
+    assert.equal(lookup("custom-footer.ts"), footer);
 
     // Fresh extension load (new session) — tray is empty but registry knows the file.
     const h = harness();
     const result = await run(h, "what is [[attach:custom-footer.ts]] ?");
     assert.equal(result.action, "transform");
-    assert.ok(result.text.includes("/Users/bacnh/Downloads/custom-footer.ts"), "token expanded via registry");
+    assert.ok(result.text.includes(footer), "token expanded via registry");
     assert.ok(!result.text.includes("[[attach:"), "no dead token left");
   });
 
@@ -386,6 +424,16 @@ describe("input transform", () => {
     const onPaste = harnessWithPaste(h);
     assert.equal(onPaste("\x1b[200~hello world /tmp\x1b[201~"), undefined);
     assert.equal(onPaste("plain keys"), undefined);
+  });
+
+  it("Windows drive-letter paste payload is treated as path-like (not text-collapse)", () => {
+    // On POSIX `C:\...` doesn't exist, so nothing tokenizes and the payload
+    // passes through (undefined, not a paste-collapse token). The assertion
+    // pins the looksLikePathPayload drive-letter branch; on Windows the real
+    // fs decides and existing files become [[attach:]] tokens.
+    const h = harness();
+    const onPaste = harnessWithPaste(h);
+    assert.equal(onPaste("\x1b[200~C:\\Users\\me\\shot.png\x1b[201~"), undefined);
   });
 
   it("token flow: pasted tokens expand to real content at submit", async () => {

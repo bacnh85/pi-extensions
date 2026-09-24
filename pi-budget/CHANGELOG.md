@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.5 (2026-09-24)
+
+### Fixed
+
+- **Stale status line when `theme?.fg` was missing**: the footer handler
+  returned early without touching the status line, leaving the last rendered
+  budget text on screen (e.g. during theme re-initialization). The no-fg path
+  now clears the footer (`setStatus(STATUS_KEY, undefined)`), matching the
+  no-cap branch.
+
 ## 0.1.4 (2026-09-22)
 
 ### Added

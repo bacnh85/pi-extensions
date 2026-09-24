@@ -10,6 +10,8 @@ import {
   contrastRatio,
   parseHex,
   parseOklch,
+  parseRgb,
+  parseHsl,
   parseColor,
   sRGBtoY,
   apcaContrastLc,
@@ -223,6 +225,18 @@ test("scanStates ignores quoted strings (grid-template-areas \"a b\")", () => {
   assert.equal(r.gates.states.pass, true);
 });
 
+// FIX (v0.6.3): :root token names like --input-bg contain the substring
+// "input" and falsely matched the interactive-element regex.
+test("scanStates ignores :root token names (--input-bg is not an input selector)", () => {
+  const css = `:root { --input-bg: #fff; --button-fg: #111; } .card { color: var(--button-fg); background: var(--input-bg); }`;
+  const states = scanStates(css);
+  assert.equal(states.hasInteractive, false);
+  assert.deepEqual(states.missingFocusVisible, []);
+  assert.deepEqual(states.missingDisabled, []);
+  const r = audit({ css, pairs: [] });
+  assert.equal(r.gates.states.pass, true);
+});
+
 test("slop tells: eyebrow label (tracked-out uppercase at ≤13px)", () => {
   const hit = scanSlopTells(`.eyebrow { text-transform: uppercase; font-size: 11px; letter-spacing: 0.1em; }`);
   assert.equal(hit.tells.length, 1);
@@ -330,6 +344,36 @@ test("audit treats invalid colour as a failed contrast pair (ratio null, pass fa
   assert.equal(result.gates.contrast.results[0].pass, false);
 });
 
+// FIX (v0.6.3 review): CSS Color-4 space syntax — rgb(17 17 17), rgb(0 0 0 / 50%),
+// hsl(0 0% 50% / 0.4) — previously returned null and hard-failed the gate.
+test("parseRgb accepts CSS Color-4 space-separated syntax", () => {
+  assert.deepEqual(parseRgb("rgb(17 17 17)"), [17, 17, 17]);
+  assert.deepEqual(parseRgb("rgb(0 0 0 / 50%)"), [0, 0, 0]);
+  assert.deepEqual(parseRgb("rgba(17, 17, 17, 0.5)"), [17, 17, 17]); // comma syntax still parses
+  assert.equal(parseRgb("rgb(17 17"), null);
+});
+
+test("parseHsl accepts slash-alpha syntax", () => {
+  assert.deepEqual(parseHsl("hsl(0 0% 50% / 0.4)"), [128, 128, 128]);
+  assert.deepEqual(parseHsl("hsl(120, 100%, 50%)"), [0, 255, 0]); // comma syntax still parses
+  assert.equal(parseHsl("hsl(0 0% 50%"), null);
+});
+
+test("audit: rgb() colour-4 pair yields a parsed passing contrast result, not n/a", () => {
+  const result = audit({ css: `.x{color:#111;background:rgb(255 255 255)}`, pairs: [] });
+  const pair = result.gates.contrast.results.find((r) => /auto: \.x/.test(r.label));
+  assert.ok(pair, "pair from rgb() background extracted");
+  assert.equal(typeof pair.ratio, "number");
+  assert.equal(pair.pass, true);
+});
+
+test("scanStates: var() with fallback does not mark stylesheet interactive", () => {
+  const states = scanStates(`.x { background: var(--input-bg, #fff); }`);
+  assert.equal(states.hasInteractive, false);
+  assert.deepEqual(states.missingFocusVisible, []);
+  assert.deepEqual(states.missingDisabled, []);
+});
+
 test("audit tolerates { pairs: null } (behaves like an empty list, no throw)", () => {
   const result = audit({ css: "", pairs: null });
   assert.equal(result.gates.contrast.results.length, 0);
@@ -391,6 +435,54 @@ test("parseColor routes hex and oklch to the right parser", () => {
   assert.deepEqual(parseColor("#111111"), [17, 17, 17]);
   assert.deepEqual(parseColor("oklch(100% 0 0)")[0], 255);
   assert.equal(parseColor("nope"), null);
+});
+
+test("parseRgb parses rgb()/rgba(), drops alpha, rejects out-of-range", () => {
+  assert.deepEqual(parseRgb("rgb(17,17,17)"), [17, 17, 17]);
+  assert.deepEqual(parseRgb("rgb( 0 , 102 , 255 )"), [0, 102, 255]);
+  assert.deepEqual(parseRgb("rgba(0, 0, 0, 0.4)"), [0, 0, 0]); // alpha dropped
+  assert.equal(parseRgb("rgb(300,0,0)"), null);
+  assert.equal(parseRgb("rgb(1,2)"), null);
+});
+
+test("parseHsl converts to sRGB (primaries and a known mix)", () => {
+  assert.deepEqual(parseHsl("hsl(0 100% 50%)"), [255, 0, 0]);
+  assert.deepEqual(parseHsl("hsl(120deg 100% 50%)"), [0, 255, 0]);
+  assert.deepEqual(parseHsl("hsl(240 100% 50%)"), [0, 0, 255]);
+  assert.deepEqual(parseHsl("hsl(0 0% 100%)"), [255, 255, 255]);
+  assert.deepEqual(parseHsl("hsl(0 0% 0%)"), [0, 0, 0]);
+  assert.deepEqual(parseHsl("hsla(210, 100%, 20%, 0.5)"), parseHsl("hsl(210 100% 20%)")); // alpha dropped
+});
+
+test("parseColor routes rgb/hsl to the right parser", () => {
+  assert.deepEqual(parseColor("rgb(17,17,17)"), [17, 17, 17]);
+  assert.deepEqual(parseColor("hsl(0 100% 50%)"), [255, 0, 0]);
+});
+
+// FIX (v0.6.3): rgb/hsl pairs previously fell through as unparseable.
+test("audit: rgb/hsl colours feed the contrast gate (auto-extracted pair passes, bad rgb pair fails)", () => {
+  const pass = audit({ css: ".x { color: rgb(17,17,17); background: #fff; }" });
+  assert.equal(pass.autoPairs, true);
+  assert.equal(pass.gates.contrast.results.length, 1);
+  assert.equal(pass.gates.contrast.results[0].pass, true);
+  assert.equal(pass.gates.contrast.pass, true); // contrast only — the raw #fff still trips the token gate
+
+  const fail = audit({ css: ".x { color: rgb(170,170,170); background: #fff; }" });
+  assert.equal(fail.gates.contrast.results[0].pass, false);
+  assert.equal(fail.gates.contrast.pass, false);
+
+  const hsl = audit({ css: ".x { color: hsl(0 0% 7%); background: hsl(0 0% 100%); }" });
+  assert.equal(hsl.gates.contrast.results[0].pass, true);
+});
+
+// FIX (v0.6.3): layered background values ("url(x.png) #fff") resolved only
+// the first space-separated token, so the real colour was missed.
+test("audit: bg pairs with the colour token inside a layered background value", () => {
+  const r = audit({ css: ".hero { color: #111111; background: url(bg.png) no-repeat #ffffff; }" });
+  assert.equal(r.autoPairs, true);
+  assert.equal(r.gates.contrast.results.length, 1);
+  assert.equal(r.gates.contrast.results[0].bg, "#ffffff");
+  assert.equal(r.gates.contrast.results[0].pass, true);
 });
 
 // --- APCA contrast (primary gate) -----------------------------------------

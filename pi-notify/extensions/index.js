@@ -84,7 +84,10 @@ export function detectBackend() {
   if (backendCache) return backendCache;
   if (process.platform === "darwin") {
     backendCache = hasBinary("osascript") ? "darwin" : "terminal";
-  } else if (process.platform === "win32" || process.env.WT_SESSION) {
+  } else if (process.platform === "win32") {
+    // WT_SESSION is deliberately NOT consulted: Windows Terminal sets it in
+    // WSL too, where the platform is linux and must route through
+    // notify-send/OSC — spawning powershell.exe there is wrong.
     backendCache = hasBinary("powershell.exe") ? "windows" : "terminal";
   } else {
     backendCache = hasBinary("notify-send") ? "linux" : "terminal";
@@ -114,13 +117,27 @@ export function sanitizeOsc(str) {
   return String(str).replace(/[\x00-\x1f\x7f]/g, "").replace(/;/g, ",");
 }
 
+/**
+ * Escape a string for safe embedding inside an AppleScript double-quoted
+ * literal: `"` and `\` are the two chars that break out of (or corrupt) the
+ * string. Exported for testing. Used by the darwin branch of notify().
+ */
+export function appleScriptEscape(str) {
+  return str.replace(/["\\]/g, "\\$&");
+}
+
 function notifyOSC777(title, body) {
+  // A TUI owns the terminal when stdout is a TTY — raw OSC writes would paint
+  // escape garbage into the UI. Skip when a TUI renders; only write when the
+  // terminal is otherwise idle (piped, or plain REPL stdout).
+  if (process.stdout.isTTY) return;
   try {
     process.stdout.write(`\x1b]777;notify;${sanitizeOsc(title)};${sanitizeOsc(body)}\x07`);
   } catch { /* best-effort */ }
 }
 
 function notifyOSC99(title, body) {
+  if (process.stdout.isTTY) return; // same TUI rule as OSC 777
   try {
     process.stdout.write(`\x1b]99;i=1:d=0;${sanitizeOsc(title)}\x1b\\`);
     process.stdout.write(`\x1b]99;i=1:p=body;${sanitizeOsc(body)}\x1b\\`);
@@ -134,8 +151,7 @@ function notifyOSC99(title, body) {
 export function notify(title, body, backend = detectBackend()) {
   switch (backend) {
     case "darwin":
-      // Escape both `"` and `\` for safe embedding in an AppleScript string.
-      run("osascript", ["-e", `display notification "${body.replace(/["\\]/g, "\\$&")}" with title "${title.replace(/["\\]/g, "\\$&")}"`]);
+      run("osascript", ["-e", `display notification "${appleScriptEscape(body)}" with title "${appleScriptEscape(title)}"`]);
       return;
     case "windows":
       run("powershell.exe", ["-NoProfile", "-Command", toastScript(title, body)]);

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.5 (2026-09-24)
+
+### Fixed
+
+- **System-prompt injection actually works now.** The `before_agent_start`
+  handler mutated `event.systemPromptOptions.appendSystemPrompt`, but the SDK
+  runner only applies a returned `result.systemPrompt` — the injection was a
+  silent no-op. The handler now returns
+  `{ systemPrompt: event.systemPrompt + "\n\n" + snippet }`.
+- **No more prompt pollution across turns.** The removed code also mutated the
+  shared options object, which persisted between turns and would have baked
+  duplicated copies of the snippet into later system-prompt rebuilds.
+
 ## 0.1.4 (2026-09-21)
 
 ### Security

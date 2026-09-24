@@ -221,17 +221,13 @@ export default function referencesExtension(pi) {
     ).catch(() => { /* best-effort */ });
   });
 
-  // Inject the reference list into the system prompt every turn.
+  // Inject the reference list into the system prompt every turn. The runner
+  // applies ONLY a returned `systemPrompt` (event.systemPromptOptions is
+  // read-only inspection state — mutating appendSystemPrompt is a silent no-op
+  // that also leaks across turns on the shared options object).
   pi.on("before_agent_start", (event, _ctx) => {
-    if (!snippet) return;
-    try {
-      const opts = event.systemPromptOptions;
-      if (opts?.appendSystemPrompt) {
-        opts.appendSystemPrompt = opts.appendSystemPrompt + "\n\n" + snippet;
-      } else if (opts) {
-        opts.appendSystemPrompt = snippet;
-      }
-    } catch { /* best-effort */ }
+    if (!snippet) return undefined;
+    return { systemPrompt: event.systemPrompt + "\n\n" + snippet };
   });
 
   // /refs command: list configured references and their resolved paths.

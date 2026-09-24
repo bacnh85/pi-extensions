@@ -22,8 +22,6 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-declare const process: { env: Record<string, string | undefined>; pid: number; kill: (pid: number, signal: string) => unknown; on: (event: string, listener: () => void) => unknown; removeListener: (event: string, listener: () => void) => unknown; listenerCount: (event: string) => number };
-
 // ── Config toggles ──
 
 /** PI_MODEL_TOOLS_BASH_AUTO_BG=1 enables the auto-background mechanism (default off). */
@@ -34,7 +32,8 @@ export function autoBgEnabled(env: Record<string, string | undefined> = process.
 /** PI_MODEL_TOOLS_BASH_AUTO_BG_SECS — foreground threshold before auto-backgrounding (default 120). */
 export function autoBgThresholdSecs(env: Record<string, string | undefined> = process.env): number {
   const raw = Number(env.PI_MODEL_TOOLS_BASH_AUTO_BG_SECS);
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 120;
+  // Clamp to ≥1: "0.5" would floor to 0 → a 0 ms timer = instant-background-everything.
+  return Number.isFinite(raw) && raw > 0 ? Math.max(1, Math.floor(raw)) : 120;
 }
 
 // ── Job registry ──

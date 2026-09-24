@@ -533,7 +533,7 @@ export default function muninExtension(pi: ExtensionAPI) {
         const { apiKey, projectId, baseUrl } = getMuninConfig(
           {},
           ctx.cwd,
-          ctx.isProjectTrusted() === true,
+          ctx.isProjectTrusted?.() === true,
         );
         ctx.ui.notify(
           `Munin Status:\n  API Key: ${apiKey ? "present" : "missing"}\n  Project: ${projectId}\n  Base URL: ${baseUrl}`,
@@ -554,7 +554,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event, ctx) => {
     try {
-      getMuninConfig({}, ctx.cwd, ctx.isProjectTrusted() === true);
+      getMuninConfig({}, ctx.cwd, ctx.isProjectTrusted?.() === true);
     } catch {
       return; // skip header if Munin not configured
     }

@@ -24,7 +24,7 @@ function rs(shell?: WindowsShellKind): WindowsShellKind {
 }
 
 // in-memory audit log
-const _log: { shell: string; command: string; exitCode: number | null; timedOut: boolean }[] = [];
+const _log: { shell: string; command: string; exitCode: number | null | "denied"; timedOut: boolean }[] = [];
 // ponytail: cap at 200 — audit log is in-memory and unbounded growth is a leak.
 function _fmt() {
   if (!_log.length) return "No commands executed yet.";
@@ -51,7 +51,12 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
       const opts: ExecOptions = { shell: rs(p.shell as WindowsShellKind | undefined), cwd: p.cwd || ctx?.cwd || process.cwd(), timeoutMs: p.timeout_ms, signal };
       const safe = classifyCommand(p.command);
       if (safe.risk === "confirm") {
-        if (!ctx?.hasUI) return tr(`Command requires confirmation but UI is unavailable: ${safe.reasons.join("; ")}`);
+        if (!ctx?.hasUI) {
+          // No UI to prompt with — refusal still leaves an audit trace.
+          _log.push({ shell: opts.shell as string, command: p.command, exitCode: "denied", timedOut: false });
+          if (_log.length > 200) _log.shift();
+          return tr(`Command requires confirmation but UI is unavailable: ${safe.reasons.join("; ")}`);
+        }
         // ponytail: session-allow keying — interpreter/wrapper tokens run
         // arbitrary payloads, and direct destructive verbs (rm, del, format,
         // git reset --hard, …) take arbitrary targets, so both key on the FULL
@@ -78,7 +83,12 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
             ["Allow once", "Allow for this session", "Deny"],
           );
           if (choice === "Allow for this session") sessionAllowedCommands.add(allowKey);
-          else if (choice !== "Allow once") return tr("Command cancelled by user.");
+          else if (choice !== "Allow once") {
+            // Denied dangerous commands still belong in the audit trail.
+            _log.push({ shell: opts.shell as string, command: p.command, exitCode: "denied", timedOut: false });
+            if (_log.length > 200) _log.shift();
+            return tr("Command cancelled by user.");
+          }
         }
       }
       // ponytail: SDK OutputAccumulator is internal; throttled onChunk buffer suffices, add temp-file spill if builds regularly exceed 1MB

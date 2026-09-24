@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.3] - 2026-09-24
+
+- Fixed: `parseColor` now understands `rgb()`/`rgba()` and `hsl()`/`hsla()` (comma and space syntax, alpha dropped like 8-digit hex) — rgb/hsl pairs previously fell through as unparseable and bypassed APCA, falling back to the WCAG sidecar. Regression tests cover both a passing and a failing rgb pair feeding the gate.
+- Fixed: `parseRgb`/`parseHsl` accept CSS Color-4 space-separated syntax — `rgb(17 17 17)`, `rgb(0 0 0 / 50%)`, `hsl(0 0% 50% / 0.4)` now parse instead of returning null and hard-failing the contrast gate (separators accept comma or whitespace; alpha prefix accepts `,` or `/`). Regression tests for both parsers plus an audit-level case proving `.x{color:#111;background:rgb(255 255 255)}` yields a parsed passing pair, not an n/a failure.
+- Fixed: `scanStates` also strips `var()` references **with fallbacks** (`var(--input-bg, #fff)`) before the interactive-element test — the fallback form previously left `input` in the CSS and falsely failed the States gate. Regression test added.
+- Fixed: `scanStates` strips `:root` token blocks and `var(--token)` references before the interactive-element test — a token name like `--input-bg` falsely marked CSS as interactive and failed the States gate on dialog-free stylesheets.
+- Fixed: `extractContrastPairs` resolves the first parseable colour token inside a layered background value — `background: url(x.png) #fff` now pairs with `#fff` instead of being skipped.
+- Docs: README Configuration section documents the Windows config path (`%APPDATA%\pi-ux\config.json`), matching `ux-config.js`.
+
 ## [0.6.2] - 2026-09-21
 
 - Fixed: `scanStates` strips quoted strings before the interactive-element test — a quoted word `a` (e.g. `grid-template-areas: "a b"`) falsely marked CSS as interactive and failed the States gate on dialog-free stylesheets. Regression test added.

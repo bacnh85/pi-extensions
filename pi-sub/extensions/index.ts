@@ -877,10 +877,9 @@ async function fetchRouterUsage(signal?: AbortSignal, provider?: string): Promis
         }
         // Usage command exists but is disabled for this key — keep the footer
         // clean (endpoint display) and surface the hint in /sub detail only.
-        const keyFp = apiKey ? `${apiKey.slice(0, 4)}…${apiKey.slice(-4)}` : "?";
         const hintAccount: SubscriptionAccountSnapshot = {
           ...baseAccount,
-          usageBreakdown: `OmniRoute usage command is disabled for the router key ${keyFp} — ` +
+          usageBreakdown: `OmniRoute usage command is disabled for this router key — ` +
             `enable it in the dashboard (API Keys → the key ending ${apiKey?.slice(-4)} → usage command).`,
         };
         return {

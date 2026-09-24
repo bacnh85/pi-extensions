@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-notebooklm",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "Pi extension for Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via notebooklm-py CLI bridge.",
   "type": "module",
   "license": "MIT",
@@ -49,10 +49,9 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
-    "@sinclair/typebox": "*"
+    "typebox": "*"
   },
   "devDependencies": {
-    "@sinclair/typebox": "^0.34.41",
     "@types/chai": "^4.3.20",
     "@types/mocha": "^10.0.10",
     "@types/node": "^22.0.0",

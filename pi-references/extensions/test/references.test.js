@@ -281,30 +281,36 @@ test("no config → no system prompt injection, /refs reports none", async () =>
   const pi = harness({ setting: undefined });
   const c = ctx();
   pi.calls.handlers.session_start({}, c);
-  // before_agent_start with no snippet: no mutation
-  const event = { systemPromptOptions: {} };
-  pi.calls.handlers.before_agent_start(event, c);
-  assert.equal(event.systemPromptOptions.appendSystemPrompt, undefined);
+  // before_agent_start with no snippet: no return value (runner keeps prompt)
+  const event = { systemPrompt: "BASE" };
+  assert.equal(pi.calls.handlers.before_agent_start(event, c), undefined);
 });
 
-test("before_agent_start appends reference snippet when configured", () => {
+test("before_agent_start returns systemPrompt = event.systemPrompt + snippet", () => {
   const pi = harness({ setting: { docs: { path: "../d", description: "docs" } } });
   const c = ctx();
   pi.calls.handlers.session_start({}, c);
-  const event = { systemPromptOptions: {} };
-  pi.calls.handlers.before_agent_start(event, c);
-  assert.match(event.systemPromptOptions.appendSystemPrompt, /Project references/);
-  assert.match(event.systemPromptOptions.appendSystemPrompt, /@docs/);
+  const event = { systemPrompt: "BASE" };
+  const result = pi.calls.handlers.before_agent_start(event, c);
+  assert.match(result.systemPrompt, /^BASE/);
+  assert.match(result.systemPrompt, /Project references/);
+  assert.match(result.systemPrompt, /@docs/);
+  assert.equal(
+    result.systemPrompt,
+    "BASE\n\n" + result.systemPrompt.slice(result.systemPrompt.indexOf("## Project references")),
+  );
 });
 
-test("before_agent_start appends to existing appendSystemPrompt", () => {
+test("before_agent_start appends snippet to event.systemPrompt, does not mutate event", () => {
   const pi = harness({ setting: { docs: { path: "../d", description: "docs" } } });
   const c = ctx();
   pi.calls.handlers.session_start({}, c);
-  const event = { systemPromptOptions: { appendSystemPrompt: "BASE" } };
-  pi.calls.handlers.before_agent_start(event, c);
-  assert.match(event.systemPromptOptions.appendSystemPrompt, /^BASE/);
-  assert.match(event.systemPromptOptions.appendSystemPrompt, /@docs/);
+  const event = { systemPrompt: "BASE\n\nTAIL", systemPromptOptions: { appendSystemPrompt: "OLD" } };
+  const result = pi.calls.handlers.before_agent_start(event, c);
+  const snippet = result.systemPrompt.slice(result.systemPrompt.indexOf("## Project references"));
+  assert.equal(result.systemPrompt, "BASE\n\nTAIL\n\n" + snippet);
+  assert.equal(event.systemPromptOptions.appendSystemPrompt, "OLD",
+    "options object must stay untouched (read-only inspection state)");
 });
 
 test("/refs lists configured references", async () => {
@@ -316,17 +322,11 @@ test("/refs lists configured references", async () => {
   });
   const c = ctx();
   pi.calls.handlers.session_start({}, c);
-  const refsCmd = pi.calls.registeredCmds.find((n) => n === "refs");
-  // Simulate the command by re-loading config then calling the handler.
-  // The handler closure is internal; verify via /refs through the test's own
-  // loadConfig path by checking the snippet + refs resolution instead.
-  assert.ok(refsCmd, "/refs registered");
-  // Verify refs were resolved correctly by inspecting the injected snippet.
-  const event = { systemPromptOptions: {} };
-  pi.calls.handlers.before_agent_start(event, c);
-  assert.match(event.systemPromptOptions.appendSystemPrompt, /@docs/);
+  assert.ok(pi.calls.registeredCmds.find((n) => n === "refs"), "/refs registered");
+  const result = pi.calls.handlers.before_agent_start({ systemPrompt: "BASE" }, c);
+  assert.match(result.systemPrompt, /@docs/);
   // sdk has no description → not advertised, but still configured.
-  assert.equal(event.systemPromptOptions.appendSystemPrompt.includes("@sdk"), false);
+  assert.equal(result.systemPrompt.includes("@sdk"), false);
 });
 
 // ── Review-fix regression tests ────────────────────────────────────────────
@@ -379,9 +379,8 @@ test("untrusted project: .pi/settings.json refs ignored (no clone, no prompt inj
     const pi = harness({ setting: undefined });
     const c = ctx({ cwd: dir, trusted: false });
     pi.calls.handlers.session_start({}, c);
-    const event = { systemPromptOptions: {} };
-    pi.calls.handlers.before_agent_start(event, c);
-    assert.equal(event.systemPromptOptions.appendSystemPrompt, undefined,
+    const result = pi.calls.handlers.before_agent_start({ systemPrompt: "BASE" }, c);
+    assert.equal(result, undefined,
       "untrusted project refs must not reach the system prompt");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -394,10 +393,9 @@ test("trusted project: .pi/settings.json refs honored", () => {
     const pi = harness({ setting: undefined });
     const c = ctx({ cwd: dir, trusted: true });
     pi.calls.handlers.session_start({}, c);
-    const event = { systemPromptOptions: {} };
-    pi.calls.handlers.before_agent_start(event, c);
-    assert.match(event.systemPromptOptions.appendSystemPrompt, /@docs/);
-    assert.match(event.systemPromptOptions.appendSystemPrompt, /evil docs/);
+    const result = pi.calls.handlers.before_agent_start({ systemPrompt: "BASE" }, c);
+    assert.match(result.systemPrompt, /@docs/);
+    assert.match(result.systemPrompt, /evil docs/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -416,11 +414,10 @@ test("untrusted project: global settings.json still honored (global read is unco
     const pi = harness({ setting: undefined });
     const c = ctx({ cwd: dir, trusted: false });
     pi.calls.handlers.session_start({}, c);
-    const event = { systemPromptOptions: {} };
-    pi.calls.handlers.before_agent_start(event, c);
-    assert.match(event.systemPromptOptions.appendSystemPrompt, /@gdocs/,
+    const result = pi.calls.handlers.before_agent_start({ systemPrompt: "BASE" }, c);
+    assert.match(result.systemPrompt, /@gdocs/,
       "global config applies regardless of project trust");
-    assert.equal(event.systemPromptOptions.appendSystemPrompt.includes("@docs"), false,
+    assert.equal(result.systemPrompt.includes("@docs"), false,
       "untrusted project refs still ignored");
   } finally {
     if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;

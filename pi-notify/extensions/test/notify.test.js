@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import notifyExtension, { resolveConfig, notify, playSound, detectBackend, toastScript, sanitizeOsc, _resetBackendCacheForTest } from "../index.js";
+import notifyExtension, { resolveConfig, notify, playSound, detectBackend, toastScript, sanitizeOsc, appleScriptEscape, _resetBackendCacheForTest } from "../index.js";
 
 // ── resolveConfig ─────────────────────────────────────────────────────────
 
@@ -192,13 +192,10 @@ test("detectBackend falls back to terminal when the platform binary is absent", 
 // ── Review-fix regression tests ────────────────────────────────────────────
 
 test("macOS notify escapes backslash and quote in body/title (review: MED)", () => {
-  // Capture the args passed to execFile by intercepting the child_process import.
-  // We can't easily monkeypatch the imported execFile; instead verify the escape
-  // logic directly by re-implementing it the same way and checking no raw
-  // unescaped `"` or `\` leaks. This guards against regressions in the regex.
-  const esc = (s) => s.replace(/["\\]/g, "\\$&");
+  // appleScriptEscape is the production escape used by the darwin branch.
+  // Assert no raw unescaped `"` or `\` survives, and round-trip back.
   const body = 'He said "hi\\bye"';
-  const escaped = esc(body);
+  const escaped = appleScriptEscape(body);
   // In the generated AppleScript, no raw unescaped `"` or `\` leaks: every
   // occurrence is prefixed by a backslash.
   assert.equal(escaped, 'He said \\"hi\\\\bye\\"');
@@ -221,6 +218,25 @@ test("Windows toastScript escapes single quotes in title/body (mirrors macOS tes
   const slots = [...script.matchAll(/'((?:[^']|'')*)'/g)].map((m) => m[1].replace(/''/g, "'"));
   assert.ok(slots.includes(title), "title round-trips");
   assert.ok(slots.includes(body), "body round-trips");
+});
+
+test("terminal backend writes nothing when a TUI owns stdout (isTTY)", () => {
+  const written = [];
+  const origWrite = process.stdout.write.bind(process.stdout);
+  const origIsTTY = process.stdout.isTTY;
+  process.stdout.write = (chunk) => { written.push(String(chunk)); return true; };
+  process.stdout.isTTY = true; // TUI rendering — OSC would paint garbage
+  try {
+    notify("T", "B", "terminal");
+    assert.equal(written.length, 0, "no OSC written while a TUI renders");
+  } finally {
+    process.stdout.isTTY = false; // no TUI — the write path must run
+    notify("T", "B", "terminal");
+    process.stdout.write = origWrite;
+    process.stdout.isTTY = origIsTTY;
+  }
+  assert.ok(written.length > 0, "OSC written when stdout is not a TTY");
+  assert.match(written.join(""), /\x1b\](777|99);/);
 });
 
 test("sanitizeOsc strips escapes so OSC 777 payload stays well-formed (review: P2)", () => {

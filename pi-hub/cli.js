@@ -32,6 +32,10 @@ const spawnPi = (args, opts) =>
     : spawnSync("pi", args, opts);
 
 export function resolveSource(ref) {
+  // win32 spawnPi may route through a shell — a ref carrying metacharacters
+  // (`npm:pkg&whoami`) must never reach it. Allow-list the safe charset on the
+  // raw ref; every branch below only prepends safe prefixes to it.
+  if (!/^[\w.@/:~-]+$/.test(ref)) throw new Error(`invalid source: "${ref}"`);
   if (ref.startsWith("npm:") || ref.startsWith("git:") || /^[a-z]+:\/\//.test(ref)) return ref;
   if (ref.startsWith("@")) return `npm:${ref}`; // scoped npm
   if (/^[\w.-]+\/[\w.-]+$/.test(ref)) return `git:github.com/${ref}`; // owner/repo shorthand
@@ -142,7 +146,7 @@ function picker(title, items, renderDetail) {
           } else if (seq === KEY.DOWN) {
             cursor = (cursor + 1) % items.length;
             i += 2;
-          }
+          } else return cleanup(null); // lone ESC — universal cancel, like q/Ctrl-C
           continue;
         }
         if (ch === KEY.CTRL_C || ch === "q") return cleanup(null);
@@ -196,17 +200,31 @@ function cmdList() {
   for (const p of pkgs) console.log(`  ${p}`);
 }
 
-async function cmdAdd(refs, flags) {
+/** Install sources sequentially. sources: [source, label][] — label is what failure messages quote. Returns the failure count. */
+function installSources(sources, flags) {
   let failed = 0;
-  for (const ref of refs) {
-    const source = resolveSource(ref);
+  for (const [source, label] of sources) {
     console.log(paint.cyan(`pi install ${source}${flags.local ? " -l" : ""}`));
-    const code = pi(["install", source, ...(flags.local ? ["-l"] : [])]);
-    if (code !== 0) {
+    if (pi(["install", source, ...(flags.local ? ["-l"] : [])]) !== 0) {
       failed++;
-      console.log(paint.red(`install failed: ${ref}`));
+      console.log(paint.red(`install failed: ${label}`));
     }
   }
+  if (failed) console.log(paint.red(`${failed} install(s) failed`));
+  return failed;
+}
+
+async function cmdAdd(refs, flags) {
+  const sources = [];
+  for (const ref of refs) {
+    try {
+      sources.push([resolveSource(ref), ref]);
+    } catch (e) {
+      console.log(paint.red(e.message));
+      return 1;
+    }
+  }
+  const failed = installSources(sources, flags);
   return failed ? 1 : undefined;
 }
 
@@ -240,12 +258,7 @@ async function cmdInteractive(flags) {
   if (!flags.yes) {
     console.log(`\nWill install:\n${sources.map((s) => `  ${s}`).join("\n")}`);
   }
-  let failed = 0;
-  for (const source of sources) {
-    console.log(paint.cyan(`pi install ${source}${flags.local ? " -l" : ""}`));
-    const code = pi(["install", source, ...(flags.local ? ["-l"] : [])]);
-    if (code !== 0) failed++;
-  }
+  const failed = installSources(sources.map((s) => [s, s]), flags);
   return failed ? 1 : undefined;
 }
 
@@ -254,7 +267,13 @@ function cmdRemove(refs, flags) {
     console.log(paint.red("-l/--local is only valid with add — remove takes package names"));
     return 1;
   }
-  let sources = refs.map(resolveSource);
+  let sources;
+  try {
+    sources = refs.map(resolveSource);
+  } catch (e) {
+    console.log(paint.red(e.message));
+    return 1;
+  }
   if (!sources.length) {
     const installed = readSettingsPackages().filter((p) => p.startsWith("npm:"));
     if (!installed.length) return console.log(paint.dim("no npm pi packages to remove"));

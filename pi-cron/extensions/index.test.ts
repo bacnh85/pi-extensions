@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
-import { mkdtempSync, existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, utimesSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, utimesSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nextFire, nextFires, validateSchedule } from "./lib/schedule.ts";
@@ -645,6 +645,29 @@ describe("tickOnce (scheduler wiring)", () => {
         now: 10_000,
       }),
     );
+  });
+
+  it("does not fire when persisting lastRun fails (no per-tick re-fire loop)", function () {
+    // chmod is a no-op as root and EACCES semantics differ on win32 — skip there.
+    if (process.platform === "win32" || (typeof process.getuid === "function" && process.getuid() === 0)) this.skip();
+    const dir = tmpAgentDir();
+    addJob(dir, { name: "a", schedule: "* * * * *", prompt: "p" }, 0);
+    // Read-only dir: loadJobs still works, saveJobs (mkdir/write/rename) throws.
+    // POSIX-only; cleanup restores the mode before rmSync.
+    chmodSync(dir, 0o500);
+    const fired: string[] = [];
+    try {
+      assert.doesNotThrow(() =>
+        tickOnce({ dir, enabled: true, fire: (j) => fired.push(j.name), now: 70_000 }),
+      );
+      assert.equal(fired.length, 0, "unpersistable fire must be deferred, not delivered");
+      assert.equal(loadJobs(dir)[0]!.lastRun, undefined, "on-disk job stays due");
+    } finally {
+      chmodSync(dir, 0o700);
+    }
+    // Persistence recovered: the same tick fires exactly once.
+    tickOnce({ dir, enabled: true, fire: (j) => fired.push(j.name), now: 70_000 });
+    assert.deepEqual(fired, ["a"]);
   });
 });
 

@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { SerenaWorkerClient, type SerenaWorkerResponse } from "./worker";
-import { SERENA_FIRST_GUIDANCE, SERENA_MISS_GUIDANCE, shouldBlockSemanticMiss } from "./lib/guidance";
+import { SERENA_FIRST_GUIDANCE, SERENA_MISS_GUIDANCE, isSerenaActive, shouldBlockSemanticMiss } from "./lib/guidance";
 import { normalizeProject, normalizeContext, normalizeTimeoutMs, stripControlParams } from "./lib/normalize";
 import { repairSymbolNameKey } from "./lib/symbol-key";
 
@@ -544,7 +544,9 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   // Serena guidance — only inject when serena tools are actually active
   pi.on("before_agent_start", async (event) => {
-    const serenaActive = event.systemPromptOptions?.selectedTools?.includes("serena_find_symbol");
+    // pi.getActiveTools() is the live registry — extension-registered tools
+    // (like serena_find_symbol) never appear in systemPromptOptions.selectedTools.
+    const serenaActive = isSerenaActive(pi.getActiveTools());
     if (!serenaActive) return;
     return {
       systemPrompt: `${event.systemPrompt}\n\n${SERENA_FIRST_GUIDANCE}`,
@@ -553,8 +555,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.on("tool_call", async (event) => {
     // Skip semantic miss detection if serena tools are not active (e.g., plan mode)
-    const activeTools = pi.getActiveTools();
-    if (!activeTools.includes("serena_find_symbol")) return;
+    if (!isSerenaActive(pi.getActiveTools())) return;
 
     // Strict mode blocks obvious raw code reads/searches in-band; no reminder steering.
     const strict = process.env.PI_SERENA_STRICT === "1" || process.env.PI_SERENA_STRICT_MISSES === "1";

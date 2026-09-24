@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.6] - 2026-09-24
+
+- **macOS escape test asserted on itself**: the escape-regex test
+  re-implemented the regex under test, so a production regression could not
+  fail it. The escaping is now exported as `appleScriptEscape` (used by the
+  darwin branch of `notify`), and the test asserts on the production
+  function (no raw unescaped `"`/`\` + round-trip).
+- **`WT_SESSION` forced the windows backend on any OS**: Windows Terminal
+  also sets `WT_SESSION` under WSL (linux), which routed notifications to
+  `powershell.exe` instead of notify-send/OSC. Backend detection is now
+  `process.platform === "win32"` only.
+- **OSC 777/99 were written even while the TUI renders**: raw escape
+  sequences into a TUI-owned terminal paint garbage. Both writers now skip
+  when `process.stdout.isTTY` (covers the default backend path and explicit
+  `notify(..., "terminal")`).
+- README Configuration now lists all three settings locations (`.pi/`,
+  `~/.pi/agent/`, `~/.pi/agents/`), matching `readSettingsKey`.
+
 ## [0.1.5] - 2026-09-22
 
 - Docs: `readSettingsKey` docstring now describes the actual behavior — files

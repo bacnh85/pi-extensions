@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import { runBatch, summarizeBatch, type BatchOp } from "../lib/batch.js";
+import { truncateToBudget } from "../lib/konnect-client.js";
 
 describe("batch", () => {
   it("runs ops strictly sequentially (callFn awaited in order)", async () => {
@@ -76,5 +77,28 @@ describe("batch", () => {
     assert.match(s, /2 ops, 1 error/);
     assert.match(s, /✓ \[0\] load_toolset/);
     assert.match(s, /✗ \[1\] create_symbol: IO error/);
+  });
+
+  it("large op results are capped to the output budget for details.results[]", async () => {
+    // Mirrors the kicad_batch execute() cap: result → capped JSON string.
+    // Truncated JSON is no longer valid JSON, so it must NOT be parsed back.
+    const outcome = await runBatch(
+      [{ tool: "huge" }, { tool: "small" }],
+      async (op) => ({
+        content: [
+          op.tool === "huge"
+            ? { text: JSON.stringify({ data: "x".repeat(60_000), tool: op.tool }) }
+            : { text: JSON.stringify({ ok: true, tool: op.tool }) },
+        ],
+      }),
+    );
+    const MAX_OUTPUT_CHARS = 12_000;
+    const capped = outcome.results.map((r) =>
+      r.result === undefined ? r : { ...r, result: truncateToBudget(JSON.stringify(r.result), MAX_OUTPUT_CHARS) },
+    );
+    assert.equal((capped[0].result as string).length, MAX_OUTPUT_CHARS, "huge result capped, marker included");
+    assert.match(capped[0].result as string, /\n…\(truncated\)$/);
+    // small result passes through intact (round-trips as the same JSON)
+    assert.deepEqual(JSON.parse(capped[1].result as string), { ok: true, tool: "small" });
   });
 });

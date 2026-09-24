@@ -122,9 +122,14 @@ export default function budgetExtension(pi) {
           return;
         }
         const remaining = Math.max(0, state.budgetCap - state.cumulativeCost);
-        const line = `Budget $${state.cumulativeCost.toFixed(2)} / $${state.budgetCap.toFixed(2)}`;
         const color = state.exceeded ? "error" : remaining <= state.budgetCap * 0.2 ? "warning" : "dim";
-        if (!ctx.ui.theme?.fg) return;
+        const line = `Budget $${state.cumulativeCost.toFixed(2)} / $${state.budgetCap.toFixed(2)}`;
+        if (!ctx.ui.theme?.fg) {
+          // Theme not ready (or no fg): clear any stale footer instead of
+          // leaving the previous render on screen.
+          ctx.ui.setStatus(STATUS_KEY, undefined);
+          return;
+        }
         ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(color, line));
       } catch { /* best-effort footer */ }
     }

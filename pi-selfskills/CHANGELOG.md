@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.5 (2026-09-24)
+
+- **Fix: in-queue create re-checks the discovered-name clash** — parity with
+  the pre-queue check. Two parallel `create`s of the same name into different
+  roots (different targets, so the target-exists check alone never fires)
+  both passed the pre-queue discovery snapshot and silently double-created;
+  the in-queue `discoverSkills` re-check now refuses the second with the
+  `already discovered` error. Test races two promises without monkeypatching
+  (mutation-queue registration is serialized, so the first write lands before
+  the second's re-check runs).
+
 ## 0.3.4 (2026-09-22)
 
 - **Fix: batch commit re-verifies the disk hash in-queue** — `operations[]`

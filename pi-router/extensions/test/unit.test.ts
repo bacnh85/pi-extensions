@@ -153,6 +153,22 @@ describe("commands", () => {
     assert.notEqual(inoBefore, statSync(settingsPath).ino);
     assert.ok(!existsSync(settingsPath + ".tmp")); // no tmp residue
   });
+
+  it("writeRouterSection refuses to clobber a corrupt settings.json (data-loss guard)", async () => {
+    const settingsPath = join(TMP_HOME, "settings.json");
+    const corrupt = '{ "router": { "baseUrl": "http://x" }, "other": true\nOOPS';
+    writeFileSync(settingsPath, corrupt);
+    const before = readFileSync(settingsPath, "utf8");
+    const { writeRouterSection } = await import("../commands/commands.js");
+    assert.throws(() => writeRouterSection({ enableReasoning: true }), /not valid JSON/);
+    assert.equal(readFileSync(settingsPath, "utf8"), before,
+      "corrupt file must be left byte-identical — no rename-overwrite");
+    assert.ok(!existsSync(settingsPath + ".tmp")); // no tmp residue either
+    // Recovery path: once the user fixes the file, saving works again.
+    writeFileSync(settingsPath, JSON.stringify({ other: true }));
+    writeRouterSection({ enableReasoning: true });
+    assert.equal(JSON.parse(readFileSync(settingsPath, "utf8")).other, true);
+  });
 });
 
 // ── migration ────────────────────────────────────────────────────────────────

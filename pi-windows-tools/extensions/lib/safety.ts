@@ -42,7 +42,12 @@ const SENSITIVE_FILE_PATTERNS: { pattern: RegExp; reason: string }[] = [
 ];
 
 export function classifyCommand(command: string): RiskResult {
-  const normalized = command.replace(/\.(?:exe|cmd|com)\b/gi, "");
+  // Join PowerShell backtick line-continuations into one logical line FIRST:
+  // `Remove-Item C:\x ` + backtick + newline + `-Recurse` otherwise hides the
+  // flag past rule 1's `[^;&|\r\n]*` lookahead (multi-line commands run via
+  // -EncodedCommand with no newline crossing). A backtick NOT followed by a
+  // line break is a PowerShell escape / inside a string — untouched.
+  const normalized = command.replace(/`[ \t]*\r?\n/g, " ").replace(/\.(?:exe|cmd|com)\b/gi, "");
   const reasons = [...DESTRUCTIVE_COMMANDS, ...SENSITIVE_FILE_PATTERNS].filter(rule => rule.pattern.test(normalized)).map(rule => rule.reason);
   return reasons.length ? { risk: "confirm", reasons } : { risk: "safe", reasons: [] };
 }

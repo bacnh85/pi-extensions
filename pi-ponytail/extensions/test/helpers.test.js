@@ -20,6 +20,7 @@ test("parsePonytailCommand reports status when invoked bare (#99), instead of re
 
 test("parsePonytailCommand parses modes, status, and default subcommand", () => {
   assert.deepEqual(parsePonytailCommand("ultra"), { type: "set-mode", mode: "ultra" });
+  assert.deepEqual(parsePonytailCommand("review"), { type: "set-mode", mode: "review" });
   assert.deepEqual(parsePonytailCommand("status"), { type: "status" });
   assert.deepEqual(parsePonytailCommand("default lite"), { type: "set-default", mode: "lite" });
 });

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.6 (2026-09-24)
+
+### Security
+
+- **Repo `.pi/settings.json` is now only read for trusted projects.**
+  `getSettings` read the repo-scope `commandcode.baseUrl` unconditionally, so
+  an untrusted checkout could redirect the endpoint that receives the
+  `/login` credential (or `COMMAND_CODE_API_KEY`) as a Bearer token to an
+  attacker-controlled URL. The signature is now
+  `getSettings(cwd, { trustProject })` (pi-router 1.1.9 pattern): repo scope
+  applies only when `trustProject === true`; command handlers pass
+  `ctx.isProjectTrusted()`. The extension factory (no ctx at load time) reads
+  global/env scope only.
+
 ## 0.2.5 (2026-09-22)
 
 ### Fixed

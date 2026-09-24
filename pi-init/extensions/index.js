@@ -61,11 +61,12 @@ export function scanProject(cwd) {
       const allDeps = { ...(pj.dependencies || {}), ...(pj.devDependencies || {}) };
       if ("typescript" in allDeps) out.languages.add("TypeScript");
       else out.languages.add("JavaScript");
+      // Exact dep names only: substring matching flagged preact→React,
+      // vue-router→Vue, next-themes→Next.js.
+      const depLanguages = { react: "React", "react-dom": "React", vue: "Vue", nuxt: "Nuxt", next: "Next.js", sst: "SST" };
       for (const dep of Object.keys(allDeps)) {
-        if (dep.includes("react")) out.languages.add("React");
-        if (dep.includes("vue")) out.languages.add("Vue");
-        if (dep.includes("next")) out.languages.add("Next.js");
-        if (dep === "sst") out.languages.add("SST");
+        const lang = depLanguages[dep];
+        if (lang) out.languages.add(lang);
       }
     } catch {
       out.packageJson = null; // malformed; ignore

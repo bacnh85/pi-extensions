@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.3.7] - 2026-09-24
+
+- Changed: `MODEL_MAP` (alias → machine model map) is now exported from `extensions/lib/cli.ts` — the integration smoke test derives its expected models from it instead of hardcoding machine names, eliminating drift when the map updates.
+
 ## [0.3.6] - 2026-09-21
 
 - Fixed: removed stale comment in `spawnAgy` claiming a global lock — no serialization exists; concurrent `agy_execute` calls run in parallel (quota-group guidance discourages same-group parallelism).

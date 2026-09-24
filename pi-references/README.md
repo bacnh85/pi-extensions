@@ -12,7 +12,7 @@ pi install npm:@bacnh85/pi-references
 
 ## Configuration
 
-Add a `references` object to `.pi/settings.json` (project) or `~/.pi/agent/settings.json` (global):
+Add a `references` object to `.pi/settings.json` (project), `~/.pi/agent/settings.json` (global; `PI_CODING_AGENT_DIR` overrides), or `~/.pi/agents/settings.json` — the first settings.json containing a `references` object wins (files without one are skipped):
 
 ```json
 {

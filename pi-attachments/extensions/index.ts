@@ -36,7 +36,7 @@ function splitPathTokens(payload: string): string[] {
 /** Paste payload is all path-like tokens (optionally escaped spaces)? */
 function looksLikePathPayload(payload: string): boolean {
   const tokens = splitPathTokens(payload);
-  return tokens.length > 0 && tokens.every((t) => t.replace(/\\ /g, " ").startsWith("/"));
+  return tokens.length > 0 && tokens.every((t) => /^(?:\/|[A-Za-z]:[\\/])/.test(t.replace(/\\ /g, " ")));
 }
 
 export default function piAttachments(pi: ExtensionAPI): void {

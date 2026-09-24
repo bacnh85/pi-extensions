@@ -3,8 +3,10 @@
  *
  * Placement convention (repo-wide):
  * - `commandcode.baseUrl` lives in settings.json — precedence:
- *   env COMMAND_CODE_BASE_URL > repo `.pi/settings.json` (non-secret, same
- *   trust model as pi-router) > global `~/.pi/agent/settings.json` > default.
+ *   env COMMAND_CODE_BASE_URL > repo `.pi/settings.json` (only when the
+ *   project is trusted — an untrusted checkout must not redirect the endpoint
+ *   that receives the /login credential as Bearer) > global
+ *   `~/.pi/agent/settings.json` > default.
  * - The API key NEVER lives here — it's auth.json via `/login commandcode`
  *   (provider registers `apiKey: "$COMMAND_CODE_API_KEY"`), or the env var.
  *
@@ -50,10 +52,15 @@ function readSection(path: string): { baseUrl?: string } {
   return out;
 }
 
-/** Read `commandcode` settings. Precedence: env > repo `.pi/settings.json` >
- *  global `~/.pi/agent/settings.json` > DEFAULT_BASE_URL. */
-export function getSettings(cwd = process.cwd()): CommandCodeSettings {
-  const repo = readSection(join(cwd, ".pi", "settings.json"));
+/** Read `commandcode` settings. Precedence (with trustProject: true): env >
+ *  repo `.pi/settings.json` > global `~/.pi/agent/settings.json` >
+ *  DEFAULT_BASE_URL. Default (trustProject falsy): repo settings are ignored
+ *  entirely (pi-router 1.1.9 getSettings trust gate). */
+export function getSettings(
+  cwd = process.cwd(),
+  opts: { trustProject?: boolean } = {},
+): CommandCodeSettings {
+  const repo = opts.trustProject === true ? readSection(join(cwd, ".pi", "settings.json")) : {};
   const saved = readSection(join(agentDir(), "settings.json"));
   const env = process.env.COMMAND_CODE_BASE_URL?.trim().replace(/\/+$/, "");
   return { baseUrl: env || repo.baseUrl || saved.baseUrl || DEFAULT_BASE_URL };

@@ -467,12 +467,21 @@ async function createAction(params: any, cwd: string, settings: ReturnType<typeo
   const content = buildSkillContent(name, desc, body);
   const validated = validateSkillContent(content, name);
   if (!validated.ok) return err(validated.reason ?? "Skill content failed validation.");
-  // Duplicate check INSIDE the queue: two parallel creates of one name must
-  // not silently overwrite each other — the second refuses instead.
+  // Duplicate checks INSIDE the queue: two parallel creates of one name must
+  // not silently overwrite each other — the second refuses instead. Both the
+  // target-exists check AND the discovered-name clash re-check run in-queue so
+  // a create racing this one (same name, different root) is caught — the
+  // pre-queue discovery snapshot can't see it (queue-keyed serially by target).
   let result: any;
   await withFileMutationQueue(target, async () => {
     if (existsSync(target)) {
       result = err(`Refusing: ${target} already exists.`);
+      return;
+    }
+    const { skills } = discoverSkills(cwd, agentDir(), trusted);
+    const clash = skills.find((s) => s.name === name);
+    if (clash) {
+      result = err(`Refusing: a skill named "${name}" is already discovered (${clash.filePath}).`);
       return;
     }
     mkdirSync(path.dirname(target), { recursive: true });
