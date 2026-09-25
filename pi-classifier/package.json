@@ -1,7 +1,7 @@
 {
   "name": "@bacnh85/pi-classifier",
-  "version": "0.1.0",
-  "description": "System One decision models (TypeSafe Jev) for Pi — classify tool plus an opt-in Jev-gated permission auto-approve hook for shell commands. Static risky list first, never auto-denies, fails safe to the normal prompt.",
+  "version": "0.2.0",
+  "description": "System One decision models (TypeSafe Jev) for Pi — classify tool for typed probabilistic answers, an opt-in Jev-gated permission auto-approve hook for shell commands (static risky list first, never auto-denies, fails safe, observe mode), and a /classifier-config panel with decision-model discovery from the router.",
   "keywords": [
     "pi-package",
     "pi",
@@ -20,15 +20,27 @@
   },
   "files": [
     "README.md",
+    "CHANGELOG.md",
     "extensions/index.js"
   ],
+  "main": "./extensions/index.js",
+  "exports": {
+    ".": "./extensions/index.js"
+  },
   "scripts": {
-    "test": "node --test extensions/test/*.test.js"
+    "test": "node --import tsx --test extensions/test/*.test.js"
   },
   "pi": {
     "extensions": [
       "./extensions/index.js"
     ]
+  },
+  "dependencies": {
+    "@bacnh85/pi-config-panel": "^0.1.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.87.0",
+    "tsx": "^4.23.1"
   },
   "publishConfig": {
     "access": "public"

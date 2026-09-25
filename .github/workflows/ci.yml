@@ -83,6 +83,7 @@ jobs:
             pi-selfskills: pi-selfskills/**
             pi-cron: pi-cron/**
             pi-windows-tools: pi-windows-tools/**
+            pi-classifier: pi-classifier/**
 
       - name: Build matrix
         id: set-matrix
@@ -124,6 +125,7 @@ jobs:
               { pkg: 'pi-selfskills', cmd: 'npm ci && npm test' },
             { pkg: 'pi-cron', cmd: 'npm ci && npm test && npm run typecheck' },
             { pkg: 'pi-windows-tools', cmd: 'npm ci && npm test && npm run typecheck' },
+            { pkg: 'pi-classifier', cmd: 'npm ci && npm test' },
             ];
 
             const selected = '${{ github.event_name }}' === 'workflow_dispatch'

@@ -10,8 +10,9 @@ Two pieces:
    answers: `noul` (P(yes)), `choice` (option + probabilities + confidence),
    `score` (weighted position + confidence). Use for routing, verification,
    and gating decisions.
-2. **Opt-in permission auto-approve hook** — shell commands Jev is confident
-   are *reversible* and *serve the task* run without prompting. [The OpenRouter
+2. **Permission auto-approve hook (on by default; explicit opt-out wins)** — shell
+   commands Jev is confident are *reversible* and *serve the task* run without
+   prompting; set `permission.enabled: false` to turn it off. [The OpenRouter
    cookbook pattern](https://openrouter.ai/docs/cookbook/coding-agents/auto-approve-permission-prompts-with-jev).
 
 ## Install
@@ -22,7 +23,12 @@ pi install @bacnh85/pi-classifier
 
 ## Configure
 
-Global settings only (`~/.pi/agent/settings.json`) — never repo scope, because
+Run **`/classifier-config`** in Pi (TUI): an arrow-key panel for the baseUrl,
+the decision model — with completions pulled live from the router's
+`GET /v1/systemone/models` (yardmaster) — and the permission block below.
+`/classifier-config show` prints the config plus discovered models in any
+mode. Everything is still plain JSON in global settings
+(`~/.pi/agent/settings.json`) — never repo scope, because
 the endpoint receives your API key as Bearer:
 
 ```jsonc
@@ -30,10 +36,15 @@ the endpoint receives your API key as Bearer:
   "classifier": {
     "baseUrl": "http://localhost:8787/v1",  // yardmaster (or https://openrouter.ai/api)
     "model": "jev/jev-latest",              // id the upstream knows: jev/jev-latest, or/typesafe/jev-1.13, jev-latest…
-    "permission": {                          // opt-in — default OFF
+    "permission": {                          // default ON/enforce — auto-approves reversible,
+      "enabled": true,                       // task-serving commands; set enabled:false to opt out
+      "mode": "enforce",                     // "observe" logs decisions without acting
+      "threshold": 0.9                       // both nouls must clear it
+    },
+    "planGate": {                            // opt-in — default OFF; used by pi-plan
       "enabled": true,
       "mode": "observe",                     // start here; "enforce" to act
-      "threshold": 0.9                       // both nouls must clear it
+      "threshold": 0.9                       // independent of permission.threshold
     }
   }
 }
@@ -49,7 +60,10 @@ API key: `CLASSIFIER_API_KEY` env, or the `classifier` credential in
 Through [yardmaster](https://github.com/bacnh85/yardmaster): point `baseUrl`
 at the router's `/v1`, set `model` to the prefixed id (`jev/jev-latest` for
 the TypeSafe-direct provider, `or/typesafe/jev-1.13` via OpenRouter) and use
-your router key. Pricing: $0.042/Mtok input, output free.
+your router key. Pricing: $0.042/Mtok input, output free. The panel's model
+completions come from yardmaster's decision-model listing
+(`GET /v1/systemone/models`); routers without it (OpenRouter direct,
+TypeSafe direct) just fall back to manual entry.
 
 ## The safety envelope
 
@@ -70,6 +84,22 @@ Non-negotiables, in order:
 
 Host deny rules always win: pi-classifier only ever *allows*; it cannot
 override an explicit deny from pi-permission or the harness.
+
+## Plan gate (pi-plan integration)
+
+`planGate` powers pi-plan's plan-mode confirm tier: when a bash command lands
+in the "confirm" tier during plan mode, pi-plan asks Jev *"is this read-only
+and needed for planning?"* and auto-allows only a confident yes. Jev may only
+**reduce prompts** — it can never unlock a write (the outer gate blocks those
+before the gate runs), never deny (every non-confident outcome falls through
+to the normal prompt), and every verdict is audited to `classifier.log` with
+`source: "plan-gate"`.
+
+Workflow: set `classifier.planGate.enabled: true` → observe is the default
+(logs would-be allows, still prompts) → review the log → flip
+`mode: "enforce"`. Risky-list commands (`rm -rf`, pipe-to-shell, …) never
+reach Jev. The library export `planGateVerdict(opts, command, cwd, task)` is
+what pi-plan calls; it is exported for tests and library hosts.
 
 ## Verification cache
 
