@@ -39,6 +39,9 @@
     "test": "cd extensions && npx mocha",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@bacnh85/pi-classifier": "^0.2.0"
+  },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.80.8 <0.88.0",
     "@earendil-works/pi-coding-agent": ">=0.84.3 <0.88.0",

@@ -21,12 +21,19 @@ import { loadUtilityConfig, parseModel } from "./lib/utility-config";
 import { advanceGoal, DEFAULT_GOAL_MAX_TURNS, registerGoal, type GoalAccessors, type GoalState } from "./commands/goal";
 import { chooseModel, exactModel, modelRef, modelSearchText, type Model } from "./lib/model-picker";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
+// Static import (repo-standard pattern): pi-classifier is side-effect-free at
+// module scope, so this dependency copy does NOT activate it as an extension —
+// it only brings the plan-gate helper. The ambient types live in lib/classifier-shim.d.ts.
+import { planGateVerdict } from "@bacnh85/pi-classifier";
 import { registerBtw } from "./commands/btw";
 import { registerDoctor } from "./commands/doctor";
 import { registerHandoff } from "./commands/handoff";
 import { registerSpecs } from "./commands/specs";
 
 const STATUS_KEY = "pi-plan";
+/** Most-recent user prompt (string content only) — feeds the plan gate's
+ *  `serves_plan` question so Jev can judge whether the command serves the ask. */
+let lastUserAsk = "";
 const DEFAULT_PLAN_DIR = ".agents/plans";
 const PLAN_TOOL = "write_plan";
 const ASK_USER_QUESTION_TOOL = "ask_user_question";
@@ -2187,6 +2194,11 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     updateFooter(ctx);
   });
 
+  pi.on("message_end", (event) => {
+    const msg = event.message;
+    if (msg?.role === "user" && typeof msg.content === "string") lastUserAsk = msg.content.slice(0, 4000);
+  });
+
   /**
    * Tool gating in plan mode:
    *   - Blocked tools → deny with error
@@ -2233,6 +2245,17 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       const INTERPRETER_TOKENS = new Set(["node", "npx", "python", "python3", "bash", "sh", "zsh", "deno", "bun", "make", "cargo", "go", "ruby", "perl", "awk", "eval"]);
       const allowKey = INTERPRETER_TOKENS.has(firstToken) ? `bash-cmd:${rawCommand}` : `bash:${firstToken}`;
       if (planSessionAllows.has(allowKey)) return;
+      // Jev plan gate (opt-in, default off): ask whether this confirm-tier
+      // command is read-only + needed for planning. It may only REDUCE prompts
+      // — a confident yes auto-allows in enforce mode; every other outcome
+      // (disabled, risky, low score, error) falls through to the prompt below.
+      // Unreachable for write-disposition commands (hard-blocked above), so it
+      // can never unlock a write; headless sessions were already blocked above.
+      const verdict = await planGateVerdict({ signal: ctx.signal }, rawCommand, ctx.cwd, lastUserAsk || undefined);
+      if (verdict.allow) {
+        try { ctx.ui.notify(`pi-plan: auto-allowed by Jev plan gate: ${clip(rawCommand)}`, "info"); } catch { /* non-tui */ }
+        return;
+      }
       const rememberNote = INTERPRETER_TOKENS.has(firstToken)
         ? `"Allow for this session" remembers only this exact command until plan mode toggles.`
         : `"Allow for this session" remembers \`${clip(firstToken)}\` commands until plan mode toggles.`;

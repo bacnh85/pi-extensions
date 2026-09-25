@@ -71,11 +71,39 @@ Fresh-session replacement is intentionally initiated by `/plan-approve`: extensi
 | `write_plan`, `ask_user_question` | Always available |
 | `bash` (write commands: redirects, heredocs, `sed -i`/`w`/`e`/`-f`, `tee`, `cp`/`mv`/`rm`, `touch`, `mkdir`) | Hard-blocked — no filesystem mutations via bash in plan mode |
 | `bash` (read commands incl. pipelines/chains: `ls`, `grep`, `find`, `git status`, `cat`, `jq`, print-only `sed`, `xargs` over read tools, `tar -t`/`-xO`, `cd &&`, `VAR=` prefixes, multi-line) | Auto-allowed without prompt |
-| `bash` (unknown executables, including test/build/package scripts) | Requires approval (**Allow once / Allow for this session / Deny**) warning about possible side effects; denied without UI. "Allow for this session" remembers the executable (first token) until plan mode toggles |
+| `bash` (unknown executables, including test/build/package scripts) | Requires approval (**Allow once / Allow for this session / Deny**) warning about possible side effects; denied without UI. "Allow for this session" remembers the executable (first token) until plan mode toggles. **Optional Jev plan gate** (see below): a confident read-only + serves-plan verdict auto-allows |
 | Baseline custom tools not on the known-read list | Requires approval (same options; "Allow for this session" remembers the tool) |
 | Unknown tools (not in original baseline) | Requires approval (same options) |
 | Direct source mutators (`edit`, `write`, `apply_patch`, Serena/Munin mutations) | Hard-blocked with error message |
 | `multi_tool_use.parallel` | Each nested call independently gated |
+
+### Jev plan gate (optional, default off)
+
+In the bash confirm tier above, pi-plan can ask [pi-classifier](../pi-classifier/)'s
+Jev decision model: *"is this command read-only and needed for planning?"*
+A confident yes auto-allows the command; every other outcome — gate disabled,
+risky-list command, low score, network error, timeout — falls back to the
+normal approval prompt. Jev can only **reduce prompts**: it can never unlock
+a write (the hard block runs first), never deny, and never fires headless
+(No-UI confirm-tier commands stay blocked). Every verdict is audited to
+`~/.pi/agent/classifier.log` with `source: "plan-gate"`.
+
+Enable it in global settings (`~/.pi/agent/settings.json`):
+
+```jsonc
+{
+  "classifier": {
+    "planGate": {
+      "enabled": true,        // default false
+      "mode": "observe",      // default: logs would-be allows, still prompts; "enforce" to act
+      "threshold": 0.9        // both nouls (read_only, serves_plan) must clear it
+    }
+  }
+}
+```
+
+Requires the classifier endpoint (baseUrl + API key) — the zero-config
+`router.*` fallbacks documented in pi-classifier apply.
 
 ## Utility command configuration
 
