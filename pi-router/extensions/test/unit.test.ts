@@ -934,6 +934,7 @@ describe("wiring (index.ts + commands)", () => {
     };
     refreshes: { providers?: string[]; force?: boolean }[];
     setModelCalls: { n: number };
+    thinking: { level: string; default: string };
     ctx: Record<string, unknown>;
     fireSessionStart: (ctxExtra?: Record<string, unknown>) => Promise<void>;
     fireShutdown: () => Promise<void>;
@@ -980,10 +981,15 @@ describe("wiring (index.ts + commands)", () => {
       hasUI: false,
     };
     const setModelCalls = { n: 0 };
+    // Mirror Pi core: setModel re-applies the global thinking default even for
+    // an unchanged model (its modelsAreEqual guard covers the event only).
+    const thinking = { level: "high" as string, default: "high" as string };
     const pi = {
       handlers: new Map<string, (event: unknown, ctx: unknown) => Promise<void> | void>(),
       commands: new Map<string, { handler: (args: unknown, ctx: unknown) => Promise<void> }>(),
       events: { emit: () => {} },
+      getThinkingLevel: () => thinking.level,
+      setThinkingLevel: (level: string) => { thinking.level = level; },
       registerProvider: (_n: string, config: { refreshModels: (ctx: unknown) => Promise<unknown> }) => {
         refreshModelsCb = config.refreshModels;
       },
@@ -993,13 +999,14 @@ describe("wiring (index.ts + commands)", () => {
       on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<void> | void) => {
         pi.handlers.set(event, handler);
       },
-      setModel: async () => { setModelCalls.n++; },
+      setModel: async () => { setModelCalls.n++; thinking.level = thinking.default; },
     };
     factory(pi as never);
     return {
       pi,
       refreshes,
       setModelCalls,
+      thinking,
       ctx,
       fireSessionStart: async (extra?: Record<string, unknown>) => {
         await pi.handlers.get("session_start")!({}, { ...ctx, ...extra });
@@ -1092,5 +1099,25 @@ describe("wiring (index.ts + commands)", () => {
     } as never);
     assert.deepEqual(order, ["refresh", "list"]); // pre-pull before listing
     assert.equal(h.setModelCalls.n, 1); // single match auto-selected
+  });
+
+  it("refreshActiveModel preserves a session thinking level across the re-select", async () => {
+    const h = await makeHarness();
+    h.ctx.model = { provider: "router", id: "m" };
+    (h.ctx.modelRegistry as Record<string, unknown>).find = () => ({ provider: "router", id: "m" });
+    // session_start itself runs refreshActiveModel (immediately + after the
+    // fire-and-forget catalog pull); core's setModel would re-apply the
+    // global default — restoration must keep the level equal.
+    await h.fireSessionStart();
+    await h.tick(0);
+    assert.ok(h.setModelCalls.n >= 1);
+    assert.equal(h.thinking.level, "high");
+    // User picks a session-only level, then a catalog refresh re-selects the
+    // same model (the revert scenario): level must survive.
+    h.thinking.level = "max";
+    await h.fireSessionStart();
+    await h.tick(0);
+    assert.ok(h.setModelCalls.n > 2);
+    assert.equal(h.thinking.level, "max");
   });
 });

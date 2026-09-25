@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.1 (2026-09-25)
+
+### Fixed
+
+- **Session thinking level no longer silently reverts to the default.**
+  `refreshActiveModel` re-selects the active router model after catalog
+  refreshes (session start, 5-min TTL pull, `/router-reason`, `/router-config`
+  save). Pi core's `setModel` re-applies the global `defaultThinkingLevel`
+  even when the model is unchanged — its `modelsAreEqual` guard suppresses
+  only the `model_select` event — so a session-only `/thinking` pick (e.g.
+  `max`) was reset to `high` minutes into the session. The re-select now
+  snapshots the current level and restores it if the host clobbered it.
+
 ## 1.2.0 (2026-09-24)
 
 ### Added
