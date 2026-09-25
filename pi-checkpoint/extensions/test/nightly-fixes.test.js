@@ -33,10 +33,19 @@ function setup(execImpl) {
     ui: { notify(m, t) { c.notifies.push({ m, t }); } },
   };
   // isGitRepo only checks for a .git dir; fake it via a cwd we control.
+  const agentStart = calls.find((x) => x.evt === "agent_start").handler;
+  const turnStart = calls.find((x) => x.evt === "turn_start").handler;
+  // One user turn = agent_start + turn_start (matches real pi event order;
+  // the extension snapshots at most once per agent run).
+  const turn = async (evt = {}, ctx = c) => {
+    await agentStart(evt, ctx);
+    await turnStart(evt, ctx);
+  };
   return {
     pi: realPi,
     ctx: c,
-    turnStart: calls.find((x) => x.evt === "turn_start").handler,
+    turnStart,
+    turn,
     undo: calls.find((x) => x.cmd === "undo").opts,
     redo: calls.find((x) => x.cmd === "redo").opts,
     checkpointCmd: calls.find((x) => x.cmd === "checkpoint").opts,
@@ -53,11 +62,11 @@ test("/redo 2 replays oldest-first and ends at the pre-undo state (round-trip)",
     if (args[0] === "stash" && args[1] === "create") return { stdout: `tree${this.turn = (this.turn ?? 0) + 1}\n`, stderr: "" };
     return { stdout: "", stderr: "" };
   });
-  const { pi, ctx, turnStart, undo, redo, checkpointCmd } = t;
+  const { pi, ctx, turnStart, turn, undo, redo, checkpointCmd } = t;
 
-  await turnStart({}, ctx); // checkpoint 0 → tree1
-  await turnStart({}, ctx); // checkpoint 1 → tree2
-  await turnStart({}, ctx); // checkpoint 2 → tree3
+  await turn({}, ctx); // checkpoint 0 → tree1
+  await turn({}, ctx); // checkpoint 1 → tree2
+  await turn({}, ctx); // checkpoint 2 → tree3
 
   await undo.handler("2", ctx);
   let checkouts = pi.execCalls.filter((x) => x.args[0] === "checkout");
@@ -83,9 +92,9 @@ test("snapshot is skipped (and notified) when git stash create fails", async () 
     if (args[0] === "stash" && args[1] === "create") throw new Error("fatal: not a git repository");
     return { stdout: "", stderr: "" };
   });
-  const { pi, ctx, turnStart, undo } = t;
+  const { pi, ctx, turnStart, turn, undo } = t;
 
-  await turnStart({}, ctx);
+  await turn({}, ctx);
   assert.equal(pi.execCalls.filter((x) => x.args[0] === "update-ref").length, 0,
     "no ref written after stash create failure");
   const last = ctx.notifies[ctx.notifies.length - 1];
@@ -104,9 +113,9 @@ test("snapshot is skipped when git update-ref fails", async () => {
     if (args[0] === "update-ref") return { stdout: "", stderr: "error: unable to write ref", failed: true };
     return { stdout: "", stderr: "" };
   });
-  const { ctx, turnStart, undo } = t;
+  const { ctx, turnStart, turn, undo } = t;
 
-  await turnStart({}, ctx);
+  await turn({}, ctx);
   const last = ctx.notifies[ctx.notifies.length - 1];
   assert.equal(last.t, "warning");
   assert.match(last.m, /update-ref failed/);
@@ -121,9 +130,9 @@ test("stash create resolving with code 128 (no throw) is treated as failure — 
       return { code: 128, stdout: "", stderr: "fatal: not a git repository (resolved exit)" };
     return { code: 0, stdout: "", stderr: "" };
   });
-  const { pi, ctx, turnStart, undo } = t;
+  const { pi, ctx, turnStart, turn, undo } = t;
 
-  await turnStart({}, ctx);
+  await turn({}, ctx);
   assert.equal(pi.execCalls.filter((x) => x.args[0] === "update-ref").length, 0,
     "resolved non-zero exit must not write a ref");
   const last = ctx.notifies[ctx.notifies.length - 1];
@@ -141,10 +150,10 @@ test("restore checkout resolving with code 1 (no throw) fails the undo and rolls
     if (args[0] === "checkout") return { code: 1, stdout: "", stderr: "error: could not checkout (resolved exit)" };
     return { code: 0, stdout: "", stderr: "" };
   });
-  const { pi, ctx, turnStart, undo } = t;
+  const { pi, ctx, turnStart, turn, undo } = t;
 
-  await turnStart({}, ctx); // checkpoint 0
-  await turnStart({}, ctx); // checkpoint 1 — restore target after undoing 1
+  await turn({}, ctx); // checkpoint 0
+  await turn({}, ctx); // checkpoint 1 — restore target after undoing 1
   await undo.handler("1", ctx);
   const last = ctx.notifies[ctx.notifies.length - 1];
   assert.equal(last.t, "warning");
@@ -164,10 +173,10 @@ test("/undo reports honestly when the restore checkout fails (no false success)"
     if (args[0] === "checkout") return { stdout: "", stderr: "error: could not checkout", failed: true };
     return { stdout: "", stderr: "" };
   });
-  const { ctx, turnStart, undo } = t;
+  const { ctx, turnStart, turn, undo } = t;
 
-  await turnStart({}, ctx); // checkpoint 0
-  await turnStart({}, ctx); // checkpoint 1 — restore target after undoing 1
+  await turn({}, ctx); // checkpoint 0
+  await turn({}, ctx); // checkpoint 1 — restore target after undoing 1
   await undo.handler("1", ctx);
   const last = ctx.notifies[ctx.notifies.length - 1];
   assert.equal(last.t, "warning");
@@ -183,11 +192,11 @@ test("failed /undo rolls the stack back — retry-able, redo buffer untouched", 
     if (args[0] === "checkout") return { stdout: "", stderr: "error: could not checkout", failed: true };
     return { stdout: "", stderr: "" };
   });
-  const { ctx, turnStart, undo, checkpointCmd } = t;
+  const { ctx, turnStart, turn, undo, checkpointCmd } = t;
 
-  await turnStart({}, ctx);
-  await turnStart({}, ctx);
-  await turnStart({}, ctx);
+  await turn({}, ctx);
+  await turn({}, ctx);
+  await turn({}, ctx);
   await undo.handler("2", ctx);
   const last = ctx.notifies[ctx.notifies.length - 1];
   assert.equal(last.t, "warning");
@@ -204,10 +213,10 @@ test("failed /redo keeps the checkpoint in the redo buffer and counts 0", async 
     if (args[0] === "stash" && args[1] === "create") return { stdout: "tree\n", stderr: "" };
     return { stdout: "", stderr: "" };
   });
-  const { ctx, turnStart, undo, redo, checkpointCmd } = t;
+  const { ctx, turnStart, turn, undo, redo, checkpointCmd } = t;
 
-  await turnStart({}, ctx);
-  await turnStart({}, ctx);
+  await turn({}, ctx);
+  await turn({}, ctx);
   await undo.handler("1", ctx); // succeeds — redo buffer now holds checkpoint 1
   failCheckout = true;
   await redo.handler("1", ctx);
@@ -226,12 +235,12 @@ test("a new turn clears the redo buffer (no stale re-apply)", async () => {
     if (args[0] === "stash" && args[1] === "create") return { stdout: `tree${++n}\n`, stderr: "" };
     return { stdout: "", stderr: "" };
   });
-  const { ctx, turnStart, undo, redo } = t;
+  const { ctx, turnStart, turn, undo, redo } = t;
 
-  await turnStart({}, ctx); // checkpoint 0
-  await turnStart({}, ctx); // checkpoint 1
+  await turn({}, ctx); // checkpoint 0
+  await turn({}, ctx); // checkpoint 1
   await undo.handler("1", ctx);
-  await turnStart({}, ctx); // new work → redo history invalidated
+  await turn({}, ctx); // new work → redo history invalidated
   await redo.handler("1", ctx);
   assert.match(ctx.notifies[ctx.notifies.length - 1].m, /Nothing to redo/);
 });
@@ -264,4 +273,57 @@ test("session_start prunes checkpoint refs older than 30 days (new kept)", async
   await handlers.session_start({}, { cwd: repo, sessionManager: { getSessionId: () => "newsid" } });
   const deletes = execCalls.filter((a) => a[0] === "update-ref" && a[1] === "-d").map((a) => a[2]);
   assert.deepEqual(deletes, ["refs/pi-checkpoints/oldsid/0"]);
+});
+
+test("session_start caps each session at MAX_REFS_PER_SESSION refs (newest kept, no dup deletes)", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const handlers = {};
+  const execCalls = [];
+  // 53 fresh refs in one session (cap is 50) → 3 over-cap deletes, oldest first.
+  const lines = [];
+  for (let i = 0; i < 53; i++) lines.push(`refs/pi-checkpoints/busy/${i} ${now - i}`);
+  const fakePi = {
+    on(evt, handler) { handlers[evt] = handler; },
+    registerCommand() {},
+    async exec(_cmd, args) {
+      execCalls.push(args);
+      if (args[0] === "for-each-ref") return { stdout: lines.join("\n"), stderr: "" };
+      return { stdout: "", stderr: "" };
+    },
+  };
+  checkpointExtension(fakePi);
+  const repo = mkdtempSync(join(tmpdir(), "ck-cap-"));
+  TEMP_REPOS.push(repo);
+  mkdirSync(join(repo, ".git"));
+  await handlers.session_start({}, { cwd: repo, sessionManager: { getSessionId: () => "other" } });
+  const deletes = execCalls.filter((a) => a[0] === "update-ref" && a[1] === "-d").map((a) => a[2]);
+  assert.equal(deletes.length, 3, "53 refs - cap 50 = 3 deletes");
+  // Newest 50 kept (i = 0..49); deleted are the oldest three.
+  assert.deepEqual(deletes.sort(), ["refs/pi-checkpoints/busy/50", "refs/pi-checkpoints/busy/51", "refs/pi-checkpoints/busy/52"]);
+});
+
+test("prune deletes an old AND over-cap ref exactly once", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const handlers = {};
+  const execCalls = [];
+  // 51 refs in the cutoff window AND over cap: ref 0 is both old and oldest.
+  const lines = [];
+  for (let i = 0; i < 51; i++) lines.push(`refs/pi-checkpoints/old/${i} ${now - 40 * 86400 - i}`);
+  const fakePi = {
+    on(evt, handler) { handlers[evt] = handler; },
+    registerCommand() {},
+    async exec(_cmd, args) {
+      execCalls.push(args);
+      if (args[0] === "for-each-ref") return { stdout: lines.join("\n"), stderr: "" };
+      return { stdout: "", stderr: "" };
+    },
+  };
+  checkpointExtension(fakePi);
+  const repo = mkdtempSync(join(tmpdir(), "ck-dedup-"));
+  TEMP_REPOS.push(repo);
+  mkdirSync(join(repo, ".git"));
+  await handlers.session_start({}, { cwd: repo, sessionManager: { getSessionId: () => "other" } });
+  const deletes = execCalls.filter((a) => a[0] === "update-ref" && a[1] === "-d").map((a) => a[2]);
+  assert.equal(new Set(deletes).size, deletes.length, "no duplicate deletes");
+  assert.equal(deletes.length, 51, "all 51 deleted exactly once");
 });

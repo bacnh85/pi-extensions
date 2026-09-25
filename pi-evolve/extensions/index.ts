@@ -37,6 +37,10 @@ let injectCache: { key: string; digest: string; ts: number; ttl: number } | null
 let seedInFlight: Promise<void> | null = null;
 const INJECT_TTL_MS = 5 * 60 * 1000; // 5 min — non-timeout results (incl. genuine empties)
 const INJECT_EMPTY_TTL_MS = 30 * 1000; // 30s — timeout results, self-healing retry
+// Grace budget for the first-turn seed race: session_start pre-seeded in the
+// background, so this only bounds the residual wait when the user submitted
+// within ~a second of session start.
+const FIRST_SEED_GRACE_MS = 800;
 // Fresh budget for the recent fallback after the similar search burned the
 // shared deadline — a slow search must not starve the recent fallback.
 // ponytail: 1s per the reviewer's suggestion; worst case dead-Munin turn is
@@ -44,7 +48,7 @@ const INJECT_EMPTY_TTL_MS = 30 * 1000; // 30s — timeout results, self-healing 
 const RECENT_FALLBACK_BUDGET_MS = 1000;
 // Matches RECALL_TIMEOUT_MS: real Munin semantic search measures ~1.9s live,
 // so 3s gives headroom. Test-overridable via _setInjectTimeoutForTest.
-let injectTimeoutMs = 3000;
+let injectTimeoutMs = 3000; // internal deadline for seedInjectCache; user-facing wait is FIRST_SEED_GRACE_MS
 
 // v0.3 Layer 4: plan-mode deferred hint for write-recommending categories.
 const PLAN_DEFER_HINT =
@@ -266,7 +270,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
   // ====================================================================
 
   // Reset on new/resume/fork session so cross-session digests don't leak.
-  pi.on("session_start", (event: any) => {
+  pi.on("session_start", (event: any, ctx: any) => {
     const reason = String(event?.reason ?? "");
     if (reason === "new" || reason === "resume" || reason === "fork" || reason === "startup" || reason === "") {
       buffer.clear();
@@ -277,6 +281,28 @@ export default function evolveExtension(pi: ExtensionAPI) {
       // Fresh injection cache per session (same-cwd resume/fork must not reuse
       // a previous session's digest; matches _resetForTest).
       injectCache = null;
+      // Pre-seed the injection cache in the background while the user is still
+      // typing. Without this, the session's first before_agent_start awaited
+      // the Munin round-trip synchronously (up to 3s) — blocking the very
+      // first message send. Awaiting here would block session start instead;
+      // fire-and-forget keeps session_start instant.
+      // Only for recent-only mode: the digest must not depend on prompt text
+      // (none exists yet). In similar/both modes a prompt-less seed would
+      // cache a recent-only digest that TTL-hits for 5 min — the first turn's
+      // prompt-aware grace race instead (see before_agent_start).
+      const settings = readEvolveSettings(ctx?.cwd ?? process.cwd());
+      if (settings.enabled && settings.autoInject && settings.injectMode === "recent") {
+        const cacheKey = JSON.stringify({
+          cwd: ctx?.cwd ?? process.cwd(),
+          injectMode: settings.injectMode,
+          maxInject: settings.maxInject,
+          store: settings.store,
+        });
+        const seed = seedInjectCache(cacheKey, settings, "", ctx?.cwd ?? process.cwd(), ctx?.isProjectTrusted?.() === true)
+          .catch(() => { /* best-effort — before_agent_start will retry */ });
+        seedInFlight = seed; // test hook (awaitSeed) — pre-seed is awaitable too
+        void seed.finally(() => { if (seedInFlight === seed) seedInFlight = null; });
+      }
     }
   });
 
@@ -446,13 +472,27 @@ export default function evolveExtension(pi: ExtensionAPI) {
             .catch(() => { /* best-effort */ })
             .finally(() => { seedInFlight = null; });
           if (cached === null) {
-            // First injection attempt of the session: seed SYNCHRONOUSLY so the
-            // digest is present from message 1. Injecting it at message 2
-            // rewrites the system prompt and busts the provider's prompt cache
-            // (~full-prefix miss on a ~35k-token coding-agent prompt).
-            // Bounded by seedInjectCache's internal timeout race (3s).
-            await seed;
+            // First injection attempt of the session with no usable cache.
+            // recent mode: session_start pre-seeded in the background while
+            // the user typed — race that seed with a short grace budget.
+            // similar/both: no pre-seed (digest needs the prompt); this is the
+            // prompt-aware seed, raced against the same grace. If it misses,
+            // proceed WITHOUT the digest (header only) instead of blocking the
+            // send up to 3s; the seed continues and lands by the next turn.
+            // Cost of missing: one prompt-cache bust at turn 2 — cheaper than
+            // delaying the first message by a Munin round-trip.
+            let graceTimer: ReturnType<typeof setTimeout> | undefined;
+            const grace = new Promise<void>((resolve) => {
+              graceTimer = setTimeout(resolve, FIRST_SEED_GRACE_MS);
+            });
+            await Promise.race([seed, grace]);
+            if (graceTimer) clearTimeout(graceTimer);
             digest = injectCache?.key === cacheKey ? injectCache.digest : "";
+            if (!digest && !injectCache) {
+              // Grace missed (Munin still in flight): keep the seed referenced
+              // so tests (awaitSeed) and nothing else lose track of it.
+              seedInFlight = seed;
+            }
           } else {
             // TTL refresh: seed in the BACKGROUND — a mid-session round-trip
             // (~1.6s) must not block the turn. Content changes here are rare

@@ -591,7 +591,16 @@ export class A2AServer {
       // The onRegistered callback above announces success (immediately, or on
       // a later self-healing beat if the first register failed) — nothing to
       // do with start()'s return value.
-      await upstream.start(this.publicUrl());
+      // Fire-and-forget: upstream.start() → connect() → register can wait on
+      // a 10s network timeout (and reconnect in a loop) when the switchboard
+      // is unreachable. Awaiting it stalls session start (and the first
+      // prompt) for that entire window. The 60s heartbeat self-heals
+      // registration on its own, and the status callback above announces
+      // success/failure — awaiting buys nothing. Rejections are swallowed:
+      // start() never rejects (connect catches internally), but keep the
+      // handler so a future code change can't turn this into an unhandled
+      // rejection.
+      void upstream.start(this.publicUrl()).catch(() => { /* heartbeat retries */ });
     }
   }
 

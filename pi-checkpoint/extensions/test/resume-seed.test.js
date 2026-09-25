@@ -39,10 +39,14 @@ function setup(execImpl) {
     sessionManager: { getSessionId: () => "s1" },
     ui: { notify(m, t) { ctx.notifies.push({ m, t }); } },
   };
+  const agentStart = calls.find((x) => x.evt === "agent_start").handler;
+  const turnStart = calls.find((x) => x.evt === "turn_start").handler;
+  const turn = async () => { await agentStart({}, ctx); await turnStart({}, ctx); };
   return {
     pi: realPi,
     ctx,
-    turnStart: calls.find((x) => x.evt === "turn_start").handler,
+    turnStart,
+    turn,
     sessionStart: calls.find((x) => x.evt === "session_start").handler,
   };
 }
@@ -61,17 +65,17 @@ test("resumed session with same sessionId appends refs instead of overwriting", 
     if (args[0] === "stash" && args[1] === "create") return { stdout: "tree\n", stderr: "" };
     return { stdout: "", stderr: "" };
   });
-  const { pi, ctx, turnStart, sessionStart } = t;
+  const { pi, ctx, turnStart, turn, sessionStart } = t;
 
   // ── Session 1 ──
   await sessionStart({}, ctx);
-  await turnStart({}, ctx); // ref s1/0
-  await turnStart({}, ctx); // ref s1/1
+  await turn(); // ref s1/0
+  await turn(); // ref s1/1
   assert.deepEqual(updateRefs(pi), ["refs/pi-checkpoints/s1/0", "refs/pi-checkpoints/s1/1"]);
 
   // ── Resume: same sessionId, session_start fires again (simulates restart) ──
   await sessionStart({}, ctx);
-  await turnStart({}, ctx);
+  await turn();
   const written = updateRefs(pi);
   assert.equal(written.length, 3);
   assert.equal(written[2], "refs/pi-checkpoints/s1/2",
@@ -80,7 +84,7 @@ test("resumed session with same sessionId appends refs instead of overwriting", 
     "first session's refs were never rewritten");
 
   // Snapshot logic self-heals even if session_start was missed (different sid path).
-  await turnStart({}, ctx);
+  await turn();
   assert.equal(updateRefs(pi).length, 4);
   assert.equal(updateRefs(pi)[3], "refs/pi-checkpoints/s1/3");
 });
@@ -90,10 +94,10 @@ test("fresh session with no existing refs starts the counter at 0", async () => 
     if (args[0] === "stash" && args[1] === "create") return { stdout: "tree\n", stderr: "" };
     return { stdout: "", stderr: "" };
   });
-  const { pi, ctx, turnStart, sessionStart } = t;
+  const { pi, ctx, turnStart, turn, sessionStart } = t;
 
   await sessionStart({}, ctx);
-  await turnStart({}, ctx);
+  await turn();
   assert.deepEqual(updateRefs(pi), ["refs/pi-checkpoints/s1/0"], "no refs → counter seeded to 0");
 });
 
@@ -102,13 +106,13 @@ test("counter seeds past a gap in ref numbering (max + 1)", async () => {
     if (args[0] === "stash" && args[1] === "create") return { stdout: "tree\n", stderr: "" };
     return { stdout: "", stderr: "" };
   });
-  const { pi, ctx, turnStart, sessionStart } = t;
+  const { pi, ctx, turnStart, turn, sessionStart } = t;
 
   // Pre-existing refs with a numbering gap (e.g. after pruning) — seed = max + 1.
   pi.refs = new Set(["refs/pi-checkpoints/s1/0", "refs/pi-checkpoints/s1/5", "refs/pi-checkpoints/s1/2"]);
 
   await sessionStart({}, ctx);
-  await turnStart({}, ctx);
+  await turn();
   assert.deepEqual(updateRefs(pi), ["refs/pi-checkpoints/s1/6"], "seed = max existing index + 1");
 });
 
@@ -118,9 +122,9 @@ test("for-each-ref failure during seeding falls back to 0 and session still work
     if (args[0] === "stash" && args[1] === "create") return { stdout: "tree\n", stderr: "" };
     return { stdout: "", stderr: "" };
   });
-  const { pi, ctx, turnStart, sessionStart } = t;
+  const { pi, ctx, turnStart, turn, sessionStart } = t;
 
   await assert.doesNotReject(() => sessionStart({}, ctx));
-  await turnStart({}, ctx);
+  await turn();
   assert.deepEqual(updateRefs(pi), ["refs/pi-checkpoints/s1/0"]);
 });

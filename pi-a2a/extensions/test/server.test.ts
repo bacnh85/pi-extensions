@@ -1823,6 +1823,28 @@ assert.equal(sendTask(r).status.state, STATE_FAILED);
       assert.ok(urls.some((u) => u.includes("/register")), "register attempted: " + urls.join(", "));
     });
 
+    it("an unreachable gateway never blocks server.start() (fire-and-forget, 0.7.13)", async () => {
+      // A never-settling fetch simulates a black-holed switchboard. Pre-0.7.12
+      // start() awaited the register (10s network timeout) and stalled session
+      // start; it must now return immediately and let the heartbeat self-heal.
+      const cfg = DEFAULTS();
+      cfg.discovery.gateway = { enabled: true, url: "http://127.0.0.1:9920", token: "x" };
+      const port = await freePort();
+      cfg.server = { ...cfg.server, port };
+      const realFetch = globalThis.fetch;
+      (globalThis as any).fetch = () => new Promise(() => { /* black hole */ });
+      const server = new A2AServer({ cfg, cwd: tmpDir(), piDir: tmpDir(), runner: stubRunner("ok") });
+      try {
+        const t0 = Date.now();
+        await server.start();
+        const elapsed = Date.now() - t0;
+        assert.isBelow(elapsed, 5000, "register await would burn 10s+ here");
+      } finally {
+        (globalThis as any).fetch = realFetch;
+        await server.stop(); // bounded by the 1.5s dereg timeout, not the black hole
+      }
+    });
+
     it("registers to EACH enabled gateway in the gateways map (0.6.0)", async () => {
       const cfg = DEFAULTS();
       cfg.discovery.gateways = {

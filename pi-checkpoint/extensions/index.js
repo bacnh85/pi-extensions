@@ -46,6 +46,9 @@ export default function checkpointExtension(pi) {
   const redoBuffer = [];
   let sessionCounter = 0;
   let lastSessionId = null;
+  // True after a snapshot for the current agent run; reset on agent_start so
+  // per-round turn_start events don't re-snapshot (turn_start fires per round).
+  let snapshottedThisRun = false;
 
   function safeSid(sessionId) {
     return String(sessionId || "default").replace(/[^a-zA-Z0-9-]/g, "").slice(0, 64) || "default";
@@ -147,7 +150,21 @@ export default function checkpointExtension(pi) {
 
   pi.on("turn_start", async (_event, ctx) => {
     if (!isGitRepo(ctx?.cwd)) return; // no-op outside git
+    // Snapshot once per USER turn, not once per model round: pi emits
+    // turn_start again before every continuation round (agent-loop.js:108),
+    // so without this guard a 10-tool-call turn took ~10 git stash creates.
+    // The flag resets on agent_start (each new user prompt).
+    if (snapshottedThisRun) return;
+    snapshottedThisRun = true;
+    // Host sessions only: a2a inbound children (hasUI=false, mode="print")
+    // share this cwd and would snapshot the same repo concurrently
+    // (index.lock contention + task-* ref spam).
+    if (ctx && ctx.hasUI === false) return;
     await snapshot(ctx);
+  });
+
+  pi.on("agent_start", () => {
+    snapshottedThisRun = false;
   });
 
   pi.on("session_start", async (_event, ctx) => {
@@ -167,17 +184,41 @@ export default function checkpointExtension(pi) {
   });
 
   // Checkpoint refs live forever unless pruned. On session_start, delete refs
-  // older than REF_TTL_DAYS. Best-effort: any error is swallowed.
+  // older than REF_TTL_DAYS and cap each session's stack at MAX_REFS_PER_SESSION.
+  // Best-effort: any error is swallowed.
   const REF_TTL_DAYS = 30;
+  const MAX_REFS_PER_SESSION = 50;
   async function pruneOldRefs(ctx) {
     try {
       const cutoff = Math.floor(Date.now() / 1000) - REF_TTL_DAYS * 86400;
       const listed = await git(["for-each-ref", REF_NS, "--format=%(refname) %(committerdate:unix)"], ctx);
       if (listed?.failed || !listed?.stdout) return;
+      // Two-phase: collect first, then delete — keeps git calls batched and
+      // the loop body free of awaits-between-matches confusion.
+      const dead = new Set();
       for (const line of listed.stdout.split("\n")) {
         const m = line.match(/^(\S+) (\d+)$/);
-        if (m && parseInt(m[2], 10) < cutoff) await git(["update-ref", "-d", m[1]], ctx);
+        // A ref can be both old AND over-cap — the Set dedupes so it is
+        // deleted once (a second `update-ref -d` would fail benignly, but why).
+        if (m && parseInt(m[2], 10) < cutoff) dead.add(m[1]);
       }
+      // Per-session cap: sessions backed by long agentic runs (a2a task-
+      // children, deep coding sessions) can accumulate hundreds of refs each
+      // (~1000/day observed across 209 sessions). Keep the newest MAX_REFS
+      // per session, delete the rest — /undo depth beyond that is worthless.
+      const bySession = new Map();
+      for (const line of listed.stdout.split("\n")) {
+        const m = line.match(/^(\S+) (\d+)$/);
+        if (!m) continue;
+        const sid = m[1].split("/")[2];
+        if (!bySession.has(sid)) bySession.set(sid, []);
+        bySession.get(sid).push(m);
+      }
+      for (const refs of bySession.values()) {
+        refs.sort((a, b) => parseInt(b[2], 10) - parseInt(a[2], 10)); // newest first
+        for (const m of refs.slice(MAX_REFS_PER_SESSION)) dead.add(m[1]);
+      }
+      for (const ref of dead) await git(["update-ref", "-d", ref], ctx);
     } catch { /* best-effort */ }
   }
 

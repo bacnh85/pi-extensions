@@ -2,6 +2,17 @@
 
 All notable changes to `pi-web` will be documented in this file.
 
+## 0.17.5 (2026-09-25)
+
+### Fixed
+
+- **Failed `agy` install probe is now cached for the process lifetime** — the probe runs a
+  `spawnSync("agy", ["--version"])` that blocks the event loop up to 5s, but the result was
+  cached for only 60s, so sessions without a working `agy` binary could freeze the whole
+  TUI for up to 5s every minute whenever extract paths re-checked (latency report
+  2026-09-24). A failed probe now sticks for the process (a missing binary rarely appears
+  mid-session); successful probes keep the 60-min TTL so a late install is still picked up.
+
 ## 0.17.4 (2026-09-21)
 
 ### Fixed

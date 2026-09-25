@@ -146,6 +146,19 @@ describe("isAgyInstalled", () => {
     expect(isAgyInstalled()).to.be.true;
     expect(calls).to.equal(1);
   });
+
+  it("caches a failed probe for the process lifetime (no re-probe per TTL expiry)", () => {
+    const cp = _require("node:child_process");
+    let calls = 0;
+    cp.spawnSync = () => {
+      calls++;
+      return { status: 1 };
+    };
+    expect(isAgyInstalled()).to.be.false;
+    expect(isAgyInstalled()).to.be.false;
+    expect(isAgyInstalled()).to.be.false;
+    expect(calls).to.equal(1);
+  });
 });
 
 describe("parseAgyStructured", () => {

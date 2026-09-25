@@ -184,6 +184,56 @@ describe("pi-evolve extension", () => {
     expect(result.systemPrompt).to.include("the lesson");
   });
 
+  it("session_start pre-seeds the injection cache (recent mode only, ctx.cwd, trusted)", async () => {
+    // Creds in the project .env.local — the pre-seed must see them, which
+    // requires the cwd env walk (trusted === true).
+    writeFileSync(join(cwd, ".env.local"), "MUNIN_API_KEY=env-key\nMUNIN_PROJECT=env-project\n", "utf8");
+    let recentCalls = 0;
+    const originalRecent = (MuninClient.prototype as any).recent;
+    (MuninClient.prototype as any).recent = async function () {
+      recentCalls++;
+      return { data: { memories: [] } };
+    };
+    try {
+      const { handlers } = harness(cwd, { injectMode: "recent" });
+      // Munin is only resolvable with the cwd env walk → a trusted=false (or
+      // wrong-cwd) pre-seed would silently fall back to local JSONL and make
+      // zero recent calls.
+      handlers.session_start[0]({ reason: "new" }, { cwd, isProjectTrusted: () => true });
+      await awaitSeed();
+      expect(recentCalls).to.equal(1);
+      // First turn then TTL-hits: digest present immediately, no second fetch.
+      const first = await handlers.before_agent_start[0]({ systemPrompt: "BASE", prompt: "x" }, { cwd, isProjectTrusted: () => true });
+      expect(first.systemPrompt).to.include("pi-evolve: trajectory self-learning");
+      expect(recentCalls).to.equal(1);
+    } finally {
+      (MuninClient.prototype as any).recent = originalRecent;
+    }
+  });
+
+  it("session_start does NOT pre-seed in similar/both modes (prompt-aware seed at turn time)", async () => {
+    let searchCalls = 0;
+    const originalSearch = (MuninClient.prototype as any).search;
+    const originalRecent = (MuninClient.prototype as any).recent;
+    (MuninClient.prototype as any).search = async function () {
+      searchCalls++;
+      return { data: { memories: [] } };
+    };
+    (MuninClient.prototype as any).recent = async function () {
+      return { data: { memories: [] } };
+    };
+    try {
+      const { handlers } = harness(cwd, { injectMode: "both" });
+      handlers.session_start[0]({ reason: "new" }, { cwd, isProjectTrusted: () => true });
+      await awaitSeed();
+      expect(searchCalls).to.equal(0);
+      expect(_seedInFlightForTest()).to.equal(null);
+    } finally {
+      (MuninClient.prototype as any).search = originalSearch;
+      (MuninClient.prototype as any).recent = originalRecent;
+    }
+  });
+
   it("before_agent_start adds header even with no learnings", async () => {
     const { handlers } = harness(cwd);
     const result = await handlers.before_agent_start[0]({ systemPrompt: "BASE" }, { cwd });

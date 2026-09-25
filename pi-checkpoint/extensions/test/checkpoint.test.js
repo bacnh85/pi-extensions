@@ -120,12 +120,15 @@ test("snapshot captures refs on turn_start; /undo pops and restores", async () =
     },
   };
   checkpointExtension(realPi);
+  const agentStart = calls.find((c) => c.evt === "agent_start").handler;
   const turnStart = calls.find((c) => c.evt === "turn_start").handler;
   const undoCmd = calls.find((c) => c.cmd === "undo").opts;
   const c = ctx();
+  // One user turn = agent_start + turn_start (matches real pi event order).
+  const turn = async () => { await agentStart({}, c); await turnStart({}, c); };
 
-  await turnStart({}, c); // snapshot 0 → tree1
-  await turnStart({}, c); // snapshot 1 → tree1
+  await turn(); // snapshot 0 → tree1
+  await turn(); // snapshot 1 → tree1
   assert.equal(realPi.execCalls.filter((x) => x.args[0] === "update-ref").length, 2, "two refs created");
 
   await undoCmd.handler("1", c);
@@ -172,12 +175,14 @@ test("/undo to a clean checkpoint runs git checkout HEAD -- . (review P0: honest
     },
   };
   checkpointExtension(realPi);
+  const agentStart = calls.find((c) => c.evt === "agent_start").handler;
   const turnStart = calls.find((c) => c.evt === "turn_start").handler;
   const undoCmd = calls.find((c) => c.cmd === "undo").opts;
   const c = ctx();
+  const turn = async () => { await agentStart({}, c); await turnStart({}, c); };
 
-  await turnStart({}, c); // clean → empty checkpoint 0
-  await turnStart({}, c); // clean → empty checkpoint 1
+  await turn(); // clean → empty checkpoint 0
+  await turn(); // clean → empty checkpoint 1
   // Restore target is a null (clean) checkpoint: the turn started from HEAD,
   // so restoring means discarding tracked changes via `git checkout HEAD -- .`.
   await undoCmd.handler("1", c);
@@ -206,11 +211,13 @@ test("/checkpoint lists the stack", async () => {
     },
   };
   checkpointExtension(realPi);
+  const agentStart = calls.find((c) => c.evt === "agent_start").handler;
   const turnStart = calls.find((c) => c.evt === "turn_start").handler;
   const checkpointCmd = calls.find((c) => c.cmd === "checkpoint").opts;
   const c = ctx();
-  await turnStart({}, c);
-  await turnStart({}, c);
+  const turn = async () => { await agentStart({}, c); await turnStart({}, c); };
+  await turn();
+  await turn();
 
   await checkpointCmd.handler("", c);
   const report = c.notifies[c.notifies.length - 1].m;
@@ -258,13 +265,15 @@ test("session_start eagerly clears stale stack so /undo can't cross sessions (re
     },
   };
   checkpointExtension(realPi);
+  const agentStart = calls.find((c) => c.evt === "agent_start").handler;
   const turnStart = calls.find((c) => c.evt === "turn_start").handler;
   const sessionStart = calls.find((c) => c.evt === "session_start").handler;
   const undoCmd = calls.find((c) => c.cmd === "undo").opts;
 
   const sessA = ctx({ sessionId: "A" });
-  await turnStart({}, sessA); // A checkpoint 0
-  await turnStart({}, sessA); // A checkpoint 1
+  const turnA = async () => { await agentStart({}, sessA); await turnStart({}, sessA); };
+  await turnA(); // A checkpoint 0
+  await turnA(); // A checkpoint 1
   // Verify A has a stack by running /checkpoint.
   const checkpointCmd = calls.find((c) => c.cmd === "checkpoint").opts;
   await checkpointCmd.handler("", sessA);

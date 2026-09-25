@@ -1,6 +1,27 @@
 # Changelog
 
-## 0.3.6 (2026-09-24)
+## 0.3.7 (2026-09-25)
+
+### Fixed
+
+- **The session's first message no longer waits on Munin.** `session_start` now
+  pre-seeds the injection cache in the background while the user types, and the
+  first `before_agent_start` races that seed with an 800ms grace budget instead
+  of awaiting the full seed deadline (up to 3s). If the grace misses, the turn
+  proceeds header-only and the digest lands by turn 2 — one bounded prompt-cache
+  bust instead of blocking every fresh session's first send (latency report
+  2026-09-24). `injectTimeoutMs` (3s) is unchanged as the seed's internal
+  deadline; the user-facing wait is now capped at ~800ms. The pre-seed runs
+  only in `injectMode: "recent"` (the digest is prompt-independent there) with
+  the session's real cwd + project-trust state; `similar`/`both` modes keep the
+  turn-time prompt-aware seed under the same grace race, so a prompt-less
+  recent-only digest can never stick in the cache for the similar TTL.
+
+### Known limitation (honesty note, resolved)
+
+- The 0.3.6 note about synchronous first-turn seeding no longer applies: the
+  seed is fired at `session_start` (fire-and-forget) and the first turn only
+  waits up to the new 800ms grace.
 
 ### Fixed
 

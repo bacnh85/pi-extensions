@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.7 (2026-09-25)
+
+### Fixed
+
+- **Snapshots fire once per user turn, not once per model round.** pi re-emits
+  `turn_start` before every continuation round, so a 10-tool-call turn took ~10
+  `git stash create` + `update-ref` pairs. A `snapshottedThisRun` guard (reset
+  on `agent_start`) restores the documented per-turn granularity; undo/redo
+  semantics are unchanged (latency report 2026-09-24).
+- **Host sessions only**: a2a inbound child sessions (`hasUI=false`) sharing the
+  cwd no longer snapshot — they were racing the host's git calls on
+  `.git/index.lock` and spamming `task-*` refs.
+- **Per-session ref cap (50) added to pruning.** Long agentic sessions
+  accumulated hundreds of refs each (~6,572 refs / ~1,000/day observed across
+  209 sessions in one repo; single sessions of 467 refs). `pruneOldRefs` now
+  also keeps only the newest 50 refs per session id (30-day age rule unchanged).
+  Note: measured `stash create`-class git ops are only ~20ms on that repo —
+  this fix is hygiene + contention avoidance, not a latency fix.
+
 ## 0.1.6 (2026-09-24)
 
 ### Fixed

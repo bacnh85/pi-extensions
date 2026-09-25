@@ -21,15 +21,22 @@ export const AGY_MODEL = "gemini-3.7-flash-medium"; // ponytail: fixed default; 
 
 // Cache install status with a TTL — spawnSync blocks the event loop up to
 // AGY_PROBE_TIMEOUT_MS, and web_status/extract can call this repeatedly.
+// ponytail: failures are cached for the process lifetime — a slow/missing agy
+// must cost one 5s block max, not one per TTL expiry (mid-session freeze fix).
+// Re-check after a successful probe ages out so a late agy install is picked up.
 let agyInstalledCache: { ok: boolean; at: number } | null = null;
-const AGY_INSTALL_CACHE_TTL_MS = 60_000;
+const AGY_INSTALL_CACHE_TTL_MS = 60 * 60_000; // success TTL; failures stick for the process
 
 export function isAgyInstalled(): boolean {
-  if (agyInstalledCache && Date.now() - agyInstalledCache.at < AGY_INSTALL_CACHE_TTL_MS) {
-    return agyInstalledCache.ok;
+  if (agyInstalledCache) {
+    if (agyInstalledCache.ok) {
+      if (Date.now() - agyInstalledCache.at < AGY_INSTALL_CACHE_TTL_MS) return true;
+    } else {
+      return false; // failed probe: no re-probe this process (each costs up to 5s blocking)
+    }
   }
-  // ponytail: spawnSync is the simplest reliable probe; result is cached so the
-  // event-loop block happens at most once per 60s.
+  // ponytail: spawnSync is the simplest reliable probe; cached above — a
+  // failure blocks at most once per process, a success once per TTL.
   try {
     const r = cp.spawnSync("agy", ["--version"], { timeout: AGY_PROBE_TIMEOUT_MS, stdio: "ignore" });
     agyInstalledCache = { ok: r.status === 0, at: Date.now() };
