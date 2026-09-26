@@ -1,5 +1,5 @@
 ---
-name: agy-delegate
+name: agy
 description: >
   Delegate bulk implementation, scaffolding, repetitive refactors, and
   exhaustive test generation to the Antigravity CLI (agy).
@@ -7,7 +7,7 @@ argument-hint: "prompt=\"...\" [model=flash-low|flash-medium|flash-high|pro-low|
 license: MIT
 ---
 
-# agy-delegate
+# agy
 
 Use the `agy_execute` tool to offload large scaffolding, repetitive refactors,
 or exhaustive test generation via the Antigravity CLI.
@@ -18,7 +18,7 @@ or exhaustive test generation via the Antigravity CLI.
 
    ```bash
    curl -fsSL https://antigravity.google/cli/install.sh | bash
-   ````
+   ```
 
 2. Authenticate in a terminal (one-time):
 

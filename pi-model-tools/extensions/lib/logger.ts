@@ -3,7 +3,6 @@
  * Two levels: warn (always) and debug (PI_MODEL_TOOLS_DEBUG=1).
  */
 
-declare const process: { env: Record<string, string | undefined>; stderr: { write: (msg: string) => boolean } };
 
 type LogLevel = "warn" | "debug";
 

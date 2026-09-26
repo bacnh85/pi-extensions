@@ -95,7 +95,7 @@ function harness(
   flagsReady = true;
   const ctx = { cwd: options.cwd ?? process.cwd(), ui: { notify: () => {}, addAutocompleteProvider: () => {} } };
   const started = events.get("session_start")?.[0]({}, ctx);
-  return { tools, commands, events, flags, started, get activeTools() { return activeTools; } };
+  return { tools, commands, events, flags, started, setActiveTools: (names: string[]) => { activeTools = [...names]; }, get activeTools() { return activeTools; } };
 }
 
 async function run(tool: any, params: any) {
@@ -563,27 +563,30 @@ describe("before_agent_start search guidance", () => {
   const PHRASE = "Search tools: ffgrep/fffind";
 
   it("appends the ffgrep/fffind paragraph in default mode", async () => {
-    const { events, started } = harness(fakeFinder());
+    const { events, started, setActiveTools } = harness(fakeFinder());
     await started;
+    setActiveTools(["ffgrep", "fffind"]);
     const handler = events.get("before_agent_start")![0];
-    const result = await handler({ systemPrompt: "BASE", systemPromptOptions: { selectedTools: ["ffgrep", "fffind"] } });
+    const result = await handler({ systemPrompt: "BASE" });
     expect(result?.systemPrompt.startsWith("BASE")).to.equal(true);
     expect(result?.systemPrompt).to.include(PHRASE);
   });
 
   it("returns undefined when the fff tools are not active", async () => {
-    const { events, started } = harness(fakeFinder());
+    const { events, started, setActiveTools } = harness(fakeFinder());
     await started;
+    setActiveTools(["read", "bash"]);
     const handler = events.get("before_agent_start")![0];
-    const result = await handler({ systemPrompt: "BASE", systemPromptOptions: { selectedTools: ["read", "bash"] } });
+    const result = await handler({ systemPrompt: "BASE" });
     expect(result).to.equal(undefined);
   });
 
   it("returns undefined in override mode even with ffgrep listed", async () => {
-    const { events, started } = harness(fakeFinder(), "override");
+    const { events, started, setActiveTools } = harness(fakeFinder(), "override");
     await started;
+    setActiveTools(["ffgrep"]);
     const handler = events.get("before_agent_start")![0];
-    const result = await handler({ systemPrompt: "BASE", systemPromptOptions: { selectedTools: ["ffgrep"] } });
+    const result = await handler({ systemPrompt: "BASE" });
     expect(result).to.equal(undefined);
   });
 });

@@ -44,32 +44,6 @@ test("isGitRepo: true from a subdirectory of the repo root", () => {
 
 // ── Command wiring ────────────────────────────────────────────────────────
 
-function harness({ gitRepo = true, sessionStable = true } = {}) {
-  const pi = {
-    on() {},
-    registerCommand(name) {
-      this._cmds = this._cmds || {};
-      this._cmds[name] = name;
-    },
-    execCalls: [],
-    async exec(cmd, args, opts) {
-      this.execCalls.push({ cmd, args, opts });
-      // Simulate `git stash create`: return a fake tree the first time.
-      if (args[0] === "stash" && args[1] === "create") {
-        return { stdout: this.stashEmpty ? "" : "abc123\n", stderr: "" };
-      }
-      if (args[0] === "update-ref") return { stdout: "", stderr: "" };
-      if (args[0] === "checkout") return { stdout: "", stderr: "" };
-      return { stdout: "", stderr: "" };
-    },
-    stashEmpty: false,
-    gitRepo,
-    sessionStable,
-  };
-  checkpointExtension(pi);
-  return pi;
-}
-
 const TEMP_CWDS = [];
 process.on("exit", () => {
   for (const d of TEMP_CWDS) rmSync(d, { recursive: true, force: true });

@@ -1,70 +1,111 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isEvalCommand, isSafeRewrite } from "../safe-rewrite.js";
 
-// Security gate for RTK command rewrites: a rewrite may only prepend `rtk`
-// to the original command's first word, must never introduce shell operators,
-// and must never touch eval/script commands (node -e, python -c, ...).
+// Orchestration tests for index.ts: availability gating, env bypass, and the
+// safe-rewrite decision on the tool_call path, via a stubbed pi + ctx.
+// Module-level cache state (rtkAvailable/rtkLastCheckedAt) persists across
+// tests in this file — tests are ordered to lean on it, and session_start
+// (which re-checks unconditionally) re-establishes availability where needed.
 
-test("isSafeRewrite allows a plain rtk prepend", () => {
-  assert.equal(isSafeRewrite("git status", "rtk git status"), true);
-  assert.equal(isSafeRewrite("cargo build", "rtk cargo build"), true);
+function createHarness() {
+  const state = { versionCalls: 0, rewriteCalls: 0, rewritten: null, versionAvailable: false };
+  const handlers = {};
+  const ctx = {
+    hasUI: false,
+    cwd: process.cwd(),
+    signal: { aborted: false },
+    ui: { setStatus() {}, notify() {} },
+  };
+  const pi = {
+    registerCommand() {},
+    on(name, fn) {
+      handlers[name] = fn;
+    },
+    exec(cmd, args) {
+      if (args[0] === "--version") {
+        state.versionCalls++;
+        return state.versionAvailable
+          ? Promise.resolve({ code: 0, stdout: "rtk 0.46.0\n" })
+          : Promise.resolve({ code: 1, stdout: "" });
+      }
+      if (args[0] === "rewrite") {
+        state.rewriteCalls++;
+        return state.rewritten === null
+          ? Promise.reject(new Error("spawn failed"))
+          : Promise.resolve({ code: 3, stdout: state.rewritten + "\n", killed: false });
+      }
+      return Promise.resolve({ code: 0, stdout: "" });
+    },
+  };
+  return { pi, ctx, handlers, state };
+}
+
+async function fireToolCall(h, command) {
+  const event = { type: "tool_call", toolCallId: "t1", toolName: "bash", input: { command } };
+  await h.handlers.tool_call(event, h.ctx);
+  return event.input.command;
+}
+
+test("rtk unavailable: command passes through unchanged and availability is cached", async () => {
+  const h = createHarness();
+  h.state.versionAvailable = false;
+  const ext = (await import("../index.ts")).default;
+  ext(h.pi);
+
+  // session_start performs the initial availability check (as in a real session).
+  await h.handlers.session_start({}, h.ctx);
+
+  const afterFirst = await fireToolCall(h, "git status");
+  assert.equal(afterFirst, "git status");
+  assert.equal(h.state.versionCalls, 1);
+
+  // Second call within the 30s negative-cache window must not re-check.
+  const afterSecond = await fireToolCall(h, "ls -la");
+  assert.equal(afterSecond, "ls -la");
+  assert.equal(h.state.versionCalls, 1);
+  assert.equal(h.state.rewriteCalls, 0);
 });
 
-test("isSafeRewrite allows rewriting to a subcommand of the same first word", () => {
-  assert.equal(isSafeRewrite("git log", "rtk git log --oneline"), true);
+test("RTK_DISABLED=1: no rewrite even when rtk is available", async () => {
+  const h = createHarness();
+  h.state.versionAvailable = true;
+  const ext = (await import("../index.ts")).default;
+  ext(h.pi);
+
+  // Fresh session check establishes availability first.
+  await h.handlers.session_start({}, h.ctx);
+  process.env.RTK_DISABLED = "1";
+  try {
+    const after = await fireToolCall(h, "git status");
+    assert.equal(after, "git status");
+    assert.equal(h.state.rewriteCalls, 0);
+  } finally {
+    delete process.env.RTK_DISABLED;
+  }
 });
 
-test("isSafeRewrite rejects rewrites that change the first word", () => {
-  assert.equal(isSafeRewrite("git status", "rtk hg status"), false);
-  assert.equal(isSafeRewrite("ls -la", "rm -rf /"), false);
+test("safe rewrite path applies the rewritten command", async () => {
+  const h = createHarness();
+  h.state.versionAvailable = true;
+  h.state.rewritten = "rtk git status";
+  const ext = (await import("../index.ts")).default;
+  ext(h.pi);
+
+  await h.handlers.session_start({}, h.ctx);
+  const after = await fireToolCall(h, "git status");
+  assert.equal(after, "rtk git status");
+  assert.equal(h.state.rewriteCalls, 1);
 });
 
-test("isSafeRewrite rejects shell operators in the rewrite", () => {
-  assert.equal(isSafeRewrite("cat a", "rtk cat a | rm -rf /"), false);
-  assert.equal(isSafeRewrite("cat a", "rtk cat a; rm -rf /"), false);
-  assert.equal(isSafeRewrite("cat a", "rtk cat a > /etc/passwd"), false);
-  assert.equal(isSafeRewrite("cat a", "rtk cat a && rm -rf /"), false);
-  assert.equal(isSafeRewrite("cat a", "rtk cat `whoami`"), false);
-});
+test("unsafe rewrite (isSafeRewrite false) keeps the original command", async () => {
+  const h = createHarness();
+  h.state.versionAvailable = true;
+  h.state.rewritten = "evil -rf /";
+  const ext = (await import("../index.ts")).default;
+  ext(h.pi);
 
-test("isSafeRewrite rejects shell-injection constructs", () => {
-  // command substitution executes even though there is no operator char
-  assert.equal(isSafeRewrite("cat a", "rtk cat a $(rm -rf /)"), false);
-  assert.equal(isSafeRewrite("cat a", 'rtk cat a "$(rm -rf /)"'), false); // executes inside double quotes too
-  // subshell parens
-  assert.equal(isSafeRewrite("cat a", "rtk cat a (rm -rf /)"), false);
-  assert.equal(isSafeRewrite("cat a", "rtk (cat a)"), false);
-  // newline splits into a second command
-  assert.equal(isSafeRewrite("cat a", "rtk cat a\nrm -rf /"), false);
-  assert.equal(isSafeRewrite("cat a", "rtk cat a\rrm -rf /"), false);
-});
-
-test("isSafeRewrite still allows quoted parens and escaped chars", () => {
-  assert.equal(isSafeRewrite('git commit -m "fix (bug)"', 'rtk git commit -m "fix (bug)"'), true);
-});
-
-test("isSafeRewrite rejects rewriting eval/script commands", () => {
-  assert.equal(isSafeRewrite("node -e 'console.log(1)'", "rtk node -e 'console.log(1)'"), false);
-  assert.equal(isSafeRewrite("python -c 'print(1)'", "rtk python -c 'print(1)'"), false);
-  assert.equal(isSafeRewrite("git status", "rtk node -e 'pwn()'"), false);
-});
-
-test("isEvalCommand detects inline-script interpreter invocations", () => {
-  assert.equal(isEvalCommand("node -e 'console.log(1)'"), true);
-  assert.equal(isEvalCommand("python -c 'print(1)'"), true);
-  assert.equal(isEvalCommand("python3 --eval x"), true);
-  assert.equal(isEvalCommand("ruby -e 'puts 1'"), true);
-  assert.equal(isEvalCommand("/usr/local/bin/node --print 1"), true);
-  assert.equal(isEvalCommand("node -p process.version"), true);
-  assert.equal(isEvalCommand("php -r 'echo 1;'"), true);
-  assert.equal(isEvalCommand("perl -E 'say 1'"), true);
-  assert.equal(isEvalCommand("deno eval 'console.log(1)'"), true);
-});
-
-test("isEvalCommand does not flag plain script-file runs", () => {
-  assert.equal(isEvalCommand("node script.js"), false);
-  assert.equal(isEvalCommand("python manage.py migrate"), false);
-  assert.equal(isEvalCommand("npm test"), false);
-  assert.equal(isEvalCommand("deno run script.ts"), false);
+  await h.handlers.session_start({}, h.ctx);
+  const after = await fireToolCall(h, "git status");
+  assert.equal(after, "git status");
+  assert.equal(h.state.rewriteCalls, 1);
 });

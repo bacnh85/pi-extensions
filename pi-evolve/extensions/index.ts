@@ -39,8 +39,10 @@ const INJECT_TTL_MS = 5 * 60 * 1000; // 5 min — non-timeout results (incl. gen
 const INJECT_EMPTY_TTL_MS = 30 * 1000; // 30s — timeout results, self-healing retry
 // Grace budget for the first-turn seed race: session_start pre-seeded in the
 // background, so this only bounds the residual wait when the user submitted
-// within ~a second of session start.
-const FIRST_SEED_GRACE_MS = 800;
+// within ~a second of session start. 300ms (was 800): the largest single term
+// in the measured ~820ms prompt→agent_start; missing the grace costs one
+// prompt-cache bust at turn 2 (the designed fallback), not correctness.
+const FIRST_SEED_GRACE_MS = 300;
 // Fresh budget for the recent fallback after the similar search burned the
 // shared deadline — a slow search must not starve the recent fallback.
 // ponytail: 1s per the reviewer's suggestion; worst case dead-Munin turn is
@@ -108,7 +110,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
     ],
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, _onUpdate, ctx) {
-      const settings = readEvolveSettings(ctx.cwd);
+      const settings = readEvolveSettings(ctx.cwd, ctx?.isProjectTrusted?.() === true);
       if (!settings.enabled) {
         return { content: [{ type: "text" as const, text: "pi-evolve is disabled (evolve.enabled=false)." }] };
       }
@@ -172,7 +174,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
           details: { error: true },
         };
       }
-      const settings = readEvolveSettings(ctx.cwd);
+      const settings = readEvolveSettings(ctx.cwd, ctx?.isProjectTrusted?.() === true);
       if (!settings.enabled) {
         return { content: [{ type: "text" as const, text: "pi-evolve is disabled." }] };
       }
@@ -254,7 +256,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
   pi.registerCommand("evolve", {
     description: "Show pi-evolve status: buffer, last seal, learnings written, store backend.",
     handler: async (_args, ctx) => {
-      const settings = readEvolveSettings(ctx.cwd);
+      const settings = readEvolveSettings(ctx.cwd, ctx?.isProjectTrusted?.() === true);
       const backend = activeBackend({}, resolveStoreConfig(settings), ctx.cwd, ctx?.isProjectTrusted?.() === true);
       const status = settings.enabled ? "enabled" : "disabled";
       const seal = lastSealTs ? new Date(lastSealTs).toISOString() : "never";
@@ -290,7 +292,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
       // (none exists yet). In similar/both modes a prompt-less seed would
       // cache a recent-only digest that TTL-hits for 5 min — the first turn's
       // prompt-aware grace race instead (see before_agent_start).
-      const settings = readEvolveSettings(ctx?.cwd ?? process.cwd());
+      const settings = readEvolveSettings(ctx?.cwd ?? process.cwd(), ctx?.isProjectTrusted?.() === true);
       if (settings.enabled && settings.autoInject && settings.injectMode === "recent") {
         const cacheKey = JSON.stringify({
           cwd: ctx?.cwd ?? process.cwd(),
@@ -308,7 +310,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
 
   // Capture: tool call
   pi.on("tool_call", (event: any, ctx: any) => {
-    const settings = readEvolveSettings(ctx?.cwd);
+    const settings = readEvolveSettings(ctx?.cwd, ctx?.isProjectTrusted?.() === true);
     if (!settings.enabled) return;
     buffer.setCap(settings.bufferCap);
     const tool = String(event?.toolName ?? "unknown");
@@ -319,7 +321,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
   // Capture: tool result (error classification + v0.3 triage: inline hint,
   // stored-fix recall, repeat escalation, plan-mode deferral).
   pi.on("tool_result", async (event: any, ctx: any) => {
-    const settings = readEvolveSettings(ctx?.cwd);
+    const settings = readEvolveSettings(ctx?.cwd, ctx?.isProjectTrusted?.() === true);
     if (!settings.enabled || !settings.errorTriage) {
       // Triage off: still record basic ok/error status (no hint/recall).
       const tool0 = String(event?.toolName ?? "");
@@ -411,7 +413,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
 
   // Capture: usage per turn
   pi.on("turn_end", (event: any, ctx: any) => {
-    const settings = readEvolveSettings(ctx?.cwd);
+    const settings = readEvolveSettings(ctx?.cwd, ctx?.isProjectTrusted?.() === true);
     if (!settings.enabled) return;
     const usage = event?.message?.usage;
     if (usage && typeof usage === "object") {
@@ -424,7 +426,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
 
   // Capture: seal at agent end
   pi.on("agent_end", (_event: any, ctx: any) => {
-    const settings = readEvolveSettings(ctx?.cwd);
+    const settings = readEvolveSettings(ctx?.cwd, ctx?.isProjectTrusted?.() === true);
     if (!settings.enabled) return;
     sealedSnapshot = buffer.snapshot();
     lastSealTs = Date.now();
@@ -447,7 +449,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
 
   // Inject: recent/similar learnings digest at session start
   pi.on("before_agent_start", async (event: any, ctx: any) => {
-    const settings = readEvolveSettings(ctx?.cwd);
+    const settings = readEvolveSettings(ctx?.cwd, ctx?.isProjectTrusted?.() === true);
     if (!settings.enabled) return;
     // Always add the evolve header so the agent knows reflect/save exist.
     let prompt = `${INJECT_HEADER}\n\n---\n\n`;

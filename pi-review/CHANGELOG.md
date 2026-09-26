@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.14 (2026-09-26)
+
+### Fixed
+
+- **SAFE_REVIEW_TOOLS synced with pi-plan** (drift since pi-plan 0.12.0):
+  added `evolve_reflect`, `ux_audit`, `a2a_peers`, `a2a_list`, `a2a_discover`,
+  `a2a_status`, `a2a_history`, `unfold`, `recall` — read-only review agents
+  can now use the full toolset plan mode tells them to prefer.
+
 ## 0.2.13 (2026-09-24)
 
 ### Fixed

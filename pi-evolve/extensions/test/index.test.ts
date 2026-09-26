@@ -81,9 +81,9 @@ describe("pi-evolve extension", () => {
   it("applies evolve.bufferCap to the live buffer (was hardcoded 200)", async () => {
     const { handlers, tools } = harness(cwd, { bufferCap: 3 });
     for (let i = 0; i < 5; i++) {
-      handlers.tool_call[0]({ toolName: `tool${i}`, input: { n: i }, toolCallId: `c${i}` }, { cwd });
+      handlers.tool_call[0]({ toolName: `tool${i}`, input: { n: i }, toolCallId: `c${i}` }, { cwd, isProjectTrusted: () => true });
     }
-    const result = await tools.evolve_reflect.execute("id", {}, undefined, undefined, { cwd });
+    const result = await tools.evolve_reflect.execute("id", {}, undefined, undefined, { cwd, isProjectTrusted: () => true });
     expect(result.content[0].text).to.include("3 entries"); // buffer.size === 3
     expect(result.content[0].text).to.include("tool4"); // newest kept
     expect(result.content[0].text).to.not.include("tool0"); // oldest evicted
@@ -244,11 +244,11 @@ describe("pi-evolve extension", () => {
 
   it("respects evolve.enabled=false (disables capture + tool + inject)", async () => {
     const { handlers, tools } = harness(cwd, { enabled: false });
-    handlers.tool_call[0]({ toolName: "grep", input: { pattern: "foo" } }, { cwd });
-    const reflectResult = await tools.evolve_reflect.execute("id", {}, undefined, undefined, { cwd });
+    handlers.tool_call[0]({ toolName: "grep", input: { pattern: "foo" } }, { cwd, isProjectTrusted: () => true });
+    const reflectResult = await tools.evolve_reflect.execute("id", {}, undefined, undefined, { cwd, isProjectTrusted: () => true });
     expect(reflectResult.content[0].text).to.include("disabled");
     // Injection hook also skips when disabled.
-    const injectResult = await handlers.before_agent_start[0]({ systemPrompt: "BASE" }, { cwd });
+    const injectResult = await handlers.before_agent_start[0]({ systemPrompt: "BASE" }, { cwd, isProjectTrusted: () => true });
     expect(injectResult).to.equal(undefined);
   });
 
@@ -259,9 +259,9 @@ describe("pi-evolve extension", () => {
       { kind: "strategy", trigger: "t", lesson: "secret lesson text", anchors: [] },
       undefined,
       undefined,
-      { cwd },
+      { cwd, isProjectTrusted: () => true },
     );
-    const result = await handlers.before_agent_start[0]({ systemPrompt: "BASE" }, { cwd });
+    const result = await handlers.before_agent_start[0]({ systemPrompt: "BASE" }, { cwd, isProjectTrusted: () => true });
     expect(result.systemPrompt).to.include("pi-evolve: trajectory self-learning"); // header still present
     expect(result.systemPrompt).to.not.include("secret lesson text"); // no digest
   });

@@ -60,6 +60,15 @@ export const READ_ONLY_TOOLS: readonly string[] = [
   "serena_search_for_pattern", "serena_get_diagnostics_for_file",
   // Munin read-only
   "munin_search", "munin_get", "munin_list", "munin_recent", "munin_capabilities",
+  // pi-evolve read-only (reads the in-memory trajectory buffer; evolve_save is a mutation and stays out)
+  "evolve_reflect",
+  // pi-ux: ux_audit is pure computation over a CSS string — no fs/network side effects.
+  "ux_audit",
+  // A2A read-only discovery/polling; a2a_call/a2a_orchestrate can trigger remote
+  // work and stay behind confirmation.
+  "a2a_peers", "a2a_list", "a2a_discover", "a2a_status", "a2a_history",
+  // Accordion context folding — reads/restores the agent's own context, no repo mutation.
+  "unfold", "recall",
 ];
 export const MUTATION_TOOLS: readonly string[] = ["edit", "write"];
 export const EXECUTION_TOOLS: readonly string[] = ["bash"];

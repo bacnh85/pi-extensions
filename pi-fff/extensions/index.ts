@@ -942,7 +942,7 @@ export default function fffExtension(pi: ExtensionAPI) {
     if (currentMode === "override") return;
     // Skip when the fff tools aren't active for this turn (user disabled via
     // /tools) or init failed — don't advertise tools that can't run.
-    const active = event.systemPromptOptions?.selectedTools ?? pi.getActiveTools();
+    const active = pi.getActiveTools();
     if (!active.includes("ffgrep") && !active.includes("fffind")) return;
     return {
       systemPrompt:

@@ -1,7 +1,13 @@
 // Settings reader — reads the `evolve` key from settings.json directly.
 // ponytail: the SDK ExtensionAPI has NO getSetting/config (only registerFlag/getFlag
-// for boolean/string CLI flags). Structured config must be read from disk. Resolves
-// <cwd>/.pi/settings.json → ~/.pi/agent/settings.json, first one wins.
+// for boolean/string CLI flags). Structured config must be read from disk.
+// Resolution (project-trust gated, mirrors pi-selfskills' settingsCandidates — an
+// untrusted repo must not be able to re-enable evolve or set store:"local" to
+// steer learning writes into itself):
+//   trusted:   <cwd>/.pi/settings.json → <agentDir>/settings.json
+//   untrusted: <agentDir>/settings.json
+// agentDir = $PI_CODING_AGENT_DIR or ~/.pi/agent (falls back to ~/.pi/agents);
+// malformed JSON → defaults.
 import { readFileSync, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -32,27 +38,35 @@ const DEFAULTS: EvolveSettings = {
   recallStoredFixes: true,
 };
 
-/** Resolve the settings.json path: <cwd>/.pi/settings.json → ~/.pi/agent/settings.json. */
-export function resolveSettingsPath(cwd = process.cwd()): string | null {
-  const candidates = [
-    path.join(cwd, ".pi", "settings.json"),
-    ...settingsDirs().map((d) => path.join(d, "settings.json")),
-  ];
-  for (const c of candidates) {
-    if (existsSync(c)) return c;
-  }
-  return null;
-}
-
 function settingsDirs(): string[] {
   return process.env.PI_CODING_AGENT_DIR
     ? [process.env.PI_CODING_AGENT_DIR]
     : [path.join(os.homedir(), ".pi", "agent"), path.join(os.homedir(), ".pi", "agents")];
 }
 
-/** Read the `evolve` block from settings.json. Returns defaults when absent/unreadable. */
-export function readEvolveSettings(cwd = process.cwd()): EvolveSettings {
-  const file = resolveSettingsPath(cwd);
+/** Settings candidates in resolution order. <cwd>/.pi/settings.json is only
+ *  eligible when the project is trusted (fail closed). Assumes
+ *  ctx.isProjectTrusted exists (every supported pi version has it); a host
+ *  without the API would silently fall through to agent-dir settings/defaults. */
+function settingsCandidates(cwd: string, trusted: boolean): string[] {
+  return [
+    ...(trusted ? [path.join(cwd, ".pi", "settings.json")] : []),
+    ...settingsDirs().map((d) => path.join(d, "settings.json")),
+  ];
+}
+
+/** Resolve the settings.json path (first existing candidate wins). */
+export function resolveSettingsPath(cwd = process.cwd(), trusted = false): string | null {
+  for (const c of settingsCandidates(cwd, trusted)) {
+    if (existsSync(c)) return c;
+  }
+  return null;
+}
+
+/** Read the `evolve` block from settings.json. Returns defaults when absent/unreadable.
+ *  Untrusted projects: only the agent-dir settings are consulted. */
+export function readEvolveSettings(cwd = process.cwd(), trusted = false): EvolveSettings {
+  const file = resolveSettingsPath(cwd, trusted);
   if (!file) return { ...DEFAULTS };
   let parsed: any;
   try {

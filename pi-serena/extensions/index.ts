@@ -15,7 +15,6 @@ const MAX_CHARS_PARAM = Type.Optional(Type.Number({ description: "Max response c
 const TIMEOUT_MS_PARAM = Type.Optional(Type.Number({ description: "Timeout in ms." }));
 
 import { truncateText } from "./lib/truncate";
-export { truncateText, OUTPUT_MAX_BYTES, OUTPUT_MAX_LINES } from "./lib/truncate";
 
 const controlSchema = {
   project: PROJECT_PARAM,

@@ -1,5 +1,7 @@
 # Changelog
 
+All notable changes to `pi-sub` will be documented in this file.
+
 ## 0.1.50 (2026-09-24)
 
 - The disabled-usage hint no longer echoes the router key prefix/first/last
@@ -50,6 +52,16 @@
   output (`97%/3H` format, provider prefix dropped when windows exist);
   added upper clamp on `remaining` (percent < 0 previously rendered
   `R:105%`).
+
+## 0.1.45 (2026-09-21)
+
+- Router (yardmaster) general usage API support: `fetchRouterUsage` tries
+  `GET <baseUrl>/usage?provider=<prefix>` first (JSON: session/weekly
+  windows + credits); unknown slugs retry the aggregate; falls back to
+  OmniRoute's om-usage text flow for real OmniRoute routers. New exported
+  `parseGenericUsage` + `msCountdown`; tests + self-check. (Entry
+  reconstructed from commit `e5cc256b` — no changelog entry was recorded
+  at release time.)
 
 ## [0.1.44] - 2026-09-21
 
@@ -243,34 +255,6 @@
 - Self-check extended (17 assertions) and now exercises the real
   `routerUpstreamPrefix` (aliases + generic filter).
 
-## 0.1.27 (2026-08-22)
-
-- Router adapter now fetches real usage from OmniRoute instances: GET
-  `<origin>/api/usage/om-usage` (Bearer = router API key from auth.json or
-  ROUTER_API_KEY env). The plain-text report (Personal quota Daily/Weekly +
-  Provider quota Session/Weekly) is parsed into the footer R:/W: windows.
-  Non-OmniRoute routers 404 → fall back to the endpoint-only display.
-  When the per-key usage command is disabled, the footer shows a hint to
-  enable it in the OmniRoute dashboard (API Keys → the key).
-- New pure parser `parseOmniUsageText` with an env-gated self-check
-  (PI_SUB_SELF_CHECK=1) — pi-sub stays pack-only for CI.
-
-## 0.1.26 (2026-08-21)
-
-- Router adapter: reads `router.baseUrl` from `~/.pi/agent/settings.json`
-  (env `ROUTER_BASE_URL`/`NINE_ROUTER_BASE_URL`) now that pi-router moved the
-  endpoint URL out of the old `9router-config.json` (which is migrated away on
-  pi-router load). Footer shows for both new `router/` and legacy `9router/`
-  provider models.
-
-# Changelog
-
-## 0.1.33 (2026-08-29)
-
-### Added
-
-- `/sub` argument completion offers `refresh`.
-
 ## 0.1.29 (2026-08-15)
 
 ### Features
@@ -291,10 +275,19 @@
   `(Command Code key#…) R:100%/5H W:100%/7D M:$69.99`. The `/sub` detail view
   keeps the `Monthly: $X remaining` breakdown line.
 
-## 0.1.27 (2026-08-09)
+## 0.1.27 (2026-08-22)
 
 ### Features
 
+- Router adapter now fetches real usage from OmniRoute instances: GET
+  `<origin>/api/usage/om-usage` (Bearer = router API key from auth.json or
+  ROUTER_API_KEY env). The plain-text report (Personal quota Daily/Weekly +
+  Provider quota Session/Weekly) is parsed into the footer R:/W: windows.
+  Non-OmniRoute routers 404 → fall back to the endpoint-only display.
+  When the per-key usage command is disabled, the footer shows a hint to
+  enable it in the OmniRoute dashboard (API Keys → the key).
+- New pure parser `parseOmniUsageText` with an env-gated self-check
+  (PI_SUB_SELF_CHECK=1) — pi-sub stays pack-only for CI.
 - **Command Code now shows live usage windows.** The adapter fetches
   `https://api.commandcode.ai/alpha/billing/credits` with the same Provider
   API key used for `/provider/v1` models and renders the 5-hour and weekly
@@ -302,7 +295,7 @@
   `Monthly: $X remaining` balance line — matching what the `cmd /usage` CLI
   shows. Previously the footer showed session cost only.
 
-## 0.1.26 (2026-08-09)
+## 0.1.26 (2026-08-21)
 
 ### Features
 
@@ -312,6 +305,11 @@
   expose usage windows via its API key (the rolling-window data is
   web-session-cookie only), so live 5h/weekly meters are not shown — behavior
   matches `opencode-go` and `9router`.
+- Router adapter: reads `router.baseUrl` from `~/.pi/agent/settings.json`
+  (env `ROUTER_BASE_URL`/`NINE_ROUTER_BASE_URL`) now that pi-router moved the
+  endpoint URL out of the old `9router-config.json` (which is migrated away on
+  pi-router load). Footer shows for both new `router/` and legacy `9router/`
+  provider models.
 
 ## 0.1.25 (2026-08-07)
 
@@ -325,8 +323,6 @@
 ### Improvements
 
 - Patch version bump for release sync and package documentation update.
-
-All notable changes to `pi-sub` will be documented in this file.
 
 ## 0.1.23 (2026-07-30)
 

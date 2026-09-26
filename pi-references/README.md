@@ -68,6 +68,12 @@ String values are parsed automatically:
 ## Alias rules
 
 Reference aliases cannot be empty or contain `/`, whitespace, backticks, or commas.
+Dot segments are rejected: an alias of `.` or `..` is dropped (line ~107 of
+`extensions/index.js`), since `join(cacheRoot, "..")` would resolve the ref
+outside the cache root entirely.
+Branch names starting with `-` are dropped: a dashed branch in a repo ref
+(line ~190) could be parsed by `git clone` as an option (argument injection
+from config), so a branch like `-x` is silently not passed as `--branch`.
 
 ## Why
 

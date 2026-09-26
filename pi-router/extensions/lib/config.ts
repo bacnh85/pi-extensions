@@ -88,7 +88,7 @@ export function readStoredApiKey(): string | undefined {
 
 export function maskApiKey(key: string | undefined): string {
   if (!key) return "(not set)";
-  if (key.length <= 8) return key;
+  if (key.length <= 8) return `(${key.length} chars)`;
   return key.slice(0, 4) + "●".repeat(key.length - 8) + key.slice(-4);
 }
 

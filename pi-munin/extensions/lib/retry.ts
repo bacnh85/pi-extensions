@@ -14,5 +14,4 @@ export async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
-  throw new Error("Munin retry loop exhausted");
 }

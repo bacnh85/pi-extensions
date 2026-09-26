@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.22.6 (2026-09-26)
+
+### Fixed
+
+- **READ_ONLY_TOOLS synced with pi-plan** (drift since pi-plan 0.12.0): added
+  `evolve_reflect`, `ux_audit`, `a2a_peers`, `a2a_list`, `a2a_discover`,
+  `a2a_status`, `a2a_history`, `unfold`, `recall` — read-only research agents
+  (scout/planner/reviewer) can now use the full toolset plan mode tells them
+  to prefer. Mutating counterparts (`evolve_save`, `a2a_call`,
+  `a2a_orchestrate`) remain excluded.
+- CHANGELOG (0.6.0 backward-compatibility section) no longer claims a
+  `combineAbortSignals()` shim export from `runner.ts` — that export never
+  existed; `runner.ts` has always used `createCombinedAbortSignal()` from
+  `security.ts` directly.
+
 ## 0.22.5 (2026-09-21)
 
 - Widened Pi SDK peer range to `<0.88.0` (devDeps to `^0.87.0`); tested against Pi 0.87.0. No behavioral changes — the 0.87.0 audit found no affected code paths.

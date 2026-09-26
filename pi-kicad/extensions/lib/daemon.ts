@@ -20,14 +20,12 @@ import { rmSync } from "node:fs";
 import {
   buildDaemonConfig,
   generateKonnectToml,
-  type DaemonConfig,
 } from "./config.js";
 import {
   resolveConfig,
   buildKiCadEnv,
   type ResolvedConfig,
   type ResolveOptions,
-  DEFAULT_HTTP_PORT,
 } from "./discovery.js";
 import { probeHealth } from "./konnect-client.js";
 
@@ -311,6 +309,3 @@ export function getDaemon(): KonnectDaemon {
   if (!_daemon) _daemon = new KonnectDaemon();
   return _daemon;
 }
-
-export type { DaemonConfig };
-export { DEFAULT_HTTP_PORT };

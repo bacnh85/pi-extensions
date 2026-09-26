@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.19 (2026-09-26)
+
+### Fixed
+
+- **`files folder="/"` now lists root-level files only** (matching the
+  README's documented behavior). Previously the root listing dumped the
+  entire vault recursively. The full recursive listing is still available by
+  passing an explicit `recursive` token. New regression tests cover both
+  paths (root-only filter + explicit recursive).
+- **typebox peer swapped to the unscoped `typebox` package** — the host SDK
+  resolves the unscoped name (same fix pi-notebooklm shipped in 0.1.14);
+  removes the scoped `@sinclair/typebox` peer/devDep that never matched the
+  real host resolution.
+- Tool `description` now lists the full command set (~30 commands) instead
+  of a stale 6-command summary.
+
 ## 0.8.18 (2026-09-22)
 
 ### Fixed

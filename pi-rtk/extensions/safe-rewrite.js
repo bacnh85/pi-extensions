@@ -3,9 +3,12 @@
 // ponytail: kept in sync by index.ts import; do not inline copies back into index.ts.
 
 // ponytail: reject RTK rewrites that change the first word or add shell operators
-// Also reject rewrites of eval/script commands (node -e, python -c, etc.)
-// because RTK cannot safely transform arbitrary inline scripts.
-const SCRIPT_COMMAND_RE = /^(?:(?:\/[\w/.-]+)?\b(?:node|python|python3|ruby|perl|php|deno|bun|lua|perl6|raku|tclsh|groovy|julia|Rscript|ghci|dart|swift)\s+)(?:-\S+\s+)*(?:-[pecrE]{1,3}|--eval|--print|eval(?=\s|$))\b/;
+// Also reject rewrites of eval/script commands (node -e, python -c, bash -c, etc.)
+// because RTK cannot safely transform arbitrary inline scripts. Shell
+// interpreters (bash/sh/zsh/...) only match their eval form (-c); plain
+// `bash script.sh` is untouched. An optional `env` prefix (with flags or
+// VAR=value assignments) is skipped before the interpreter.
+const SCRIPT_COMMAND_RE = /^(?:env\s+(?:-\S+\s+|[A-Za-z_]\w*=\S*\s+)*)?(?:(?:\/[\w/.-]+)?\b(?:node|python|python3|ruby|perl|php|deno|bun|lua|perl6|raku|tclsh|groovy|julia|Rscript|ghci|dart|swift|bash|sh|zsh|ksh|fish|dash|ash|csh|tcsh)\s+)(?:-\S+\s+)*(?:-[pecrE]{1,3}|--eval|--print|eval(?=\s|$)|-c(?=\s|$))\b/;
 
 export function isEvalCommand(command) {
   return SCRIPT_COMMAND_RE.test(command.trim());

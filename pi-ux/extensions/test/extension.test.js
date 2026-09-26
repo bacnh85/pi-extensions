@@ -122,6 +122,18 @@ test("ux_audit tool renders 'n/a' for an invalid colour pair", async () => withT
   assert.match(out.content[0].text, /bad: n\/a/);
 }));
 
+test("ux_audit tool returns a formatted error for an unreadable path instead of throwing", async () => withTempConfig(async () => {
+  const { tools } = createPiHarness();
+  const out = await tools.get("ux_audit").execute(
+    "id",
+    { path: "/nonexistent/definitely-missing.css", pairs: [] },
+    undefined, undefined, { cwd: "." },
+  );
+  assert.equal(out.isError, true);
+  assert.match(out.content[0].text, /UX AUDIT ERROR/);
+  assert.match(out.content[0].text, /ENOENT/);
+}));
+
 test("/ux updates session mode and injects instructions", async () => withTempConfig(async () => {
   const { commands, events, appendedEntries } = createPiHarness();
   const ctx = createCommandContext();

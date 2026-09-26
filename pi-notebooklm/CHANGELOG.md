@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.15 (2026-09-26)
+
+### Fixed
+
+- File-mutation serialization now covers ALL output paths: a call with three
+  or more `-o`/`--output` flags previously queued only the first two, so a
+  concurrent call overlapping only on the third output file could run in
+  parallel with it. All output paths are now folded into one nested queue
+  chain; behavior is unchanged for 0, 1, and 2 paths.
+
+### Changed
+
+- CHANGELOG 0.1.14 correction: the typebox peer swap did not "align with the
+  sibling extension convention" at the time — siblings still used the scoped
+  `@sinclair/typebox` and aligned later (pi-agy 0.3.8).
+
 ## 0.1.14 (2026-09-24)
 
 ### Changed
@@ -7,8 +23,7 @@
 - Peer dependency swapped from `@sinclair/typebox` to `typebox` (unscoped),
   matching the host SDK — `@earendil-works/pi-coding-agent` bundles
   `typebox` and its dist imports `from "typebox"`, so the scoped package
-  never matched the real host. Also aligns with the sibling extension
-  convention. Dev dependency `@sinclair/typebox` dropped; `Type` resolves
+  never matched the real host. Dev dependency `@sinclair/typebox` dropped; `Type` resolves
   via the peer (peer auto-install / SDK).
 
 ## 0.1.13 (2026-09-22)

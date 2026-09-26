@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.18 (2026-09-26)
+
+### Fixed
+
+- **README retry claim scoped**: "retries transient worker timeout/restart
+  failures once" is true only for tools routed via `callWorkerAction`;
+  `serena_status`, `serena_list_tools`, and `/serena-dashboard` call the
+  worker directly with no retry. README now says so.
+- Cleanup: deleted the unused `export { truncateText, OUTPUT_MAX_BYTES,
+  OUTPUT_MAX_LINES }` re-export from `extensions/index.ts` (tests import
+  these from `./lib/truncate` directly; nothing imported them from the
+  entry).
+
 ## 0.9.17 (2026-09-24)
 
 ### Fixed

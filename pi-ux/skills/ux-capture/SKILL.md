@@ -5,7 +5,8 @@ description: >
   you just built via local headless Chrome vs web_screenshot, daemon
   reachability (localhost vs LAN IP vs host.docker.internal), SSRF-protected
   daemons, and cloudflared tunnels. Load when setting up render inspection or
-  when a UI screenshot capture fails.
+  when a UI screenshot capture fails. Covers WebGL/three.js pages (SwiftShader
+  capture flags + in-app WebGL guard).
 ---
 
 # UX Capture Playbook
@@ -60,6 +61,30 @@ web_interact url="http://localhost:5173" viewport={width:390,height:844} \
   broken when it isn't.
 - Steps stop at the first failure with the reason — a broken selector surfaces
   loudly instead of no-op'ing later steps.
+- **Authenticated dev routes need the token set BEFORE navigating**: the call
+  opens `url` then runs steps, so a deep link into a login-protected route
+  fetches before your token exists and bounces to the login page (you then
+  screenshot the login screen and blame the UI). Hop through the origin:
+  `{evaluate:"localStorage.setItem('token','…')"}`, `{wait_ms:400}`,
+  `{evaluate:"location.replace('/app?id=1')"}`, `{wait_ms:6000}`. The tool warns
+  that a navigating step means later steps run against the NEW document — order
+  the token step first, never after the navigation.
+- **Read the app's own error/status element** (`{evaluate:"(document.getElementById('error')||{}).textContent"}`)
+  before concluding the app is broken: a blank canvas can be an app-side failure
+  notice (bad fixture, failed fetch) that only the DOM text names.
+- **One action key per step**: a step object takes exactly ONE of
+  click/type/press/evaluate/wait_for/dialog/screenshot (plus optional `label`).
+  `wait_for` accepts a selector string OR a millisecond number, and `wait_ms`
+  is the flat alias for `wait_for: <number>` (mapped before validation) — but
+  it IS an action key, so it cannot ride along with another one
+  (`{screenshot:true, wait_ms:1500}` is rejected as two actions — make them two
+  steps). `{screenshot:false}` is the lone exception: a declined capture,
+  filtered out before validation.
+- **Slow steps — the budget is a top-level param, not a step key**: pass
+  `timeout_ms` on the `web_interact` CALL (default 60s, clamped 1s–600s); it
+  bounds each step and fails loudly with the reason instead of hanging. A step
+  object carrying `timeout_ms` is rejected as an unknown key. Raise it for
+  legitimately slow `evaluate` steps.
 - Clipboard readback on insecure origins: there is no clipboard API to read
   back with; `execCommand` returning true under a trusted click is the
   strongest available signal (grant permissions for secure origins).
@@ -69,6 +94,22 @@ with `--remote-debugging-port=0`, read `<profile>/DevToolsActivePort` for the
 ws URL, create targets over the websocket (`Target.createTarget` — not the
 `/json/new` HTTP endpoint, whose method flipped to PUT), attach with
 `flatten: true`.
+
+## WebGL pages (three.js / r3f / model-viewer)
+
+Headless Chrome without a GPU has no WebGL context: a three.js canvas throws
+on creation and — unguarded — the error boundary replaces the whole page with
+"Application error", so you screenshot a blank/error page and blame the app.
+
+1. **In the app**: probe first
+   (`document.createElement('canvas').getContext('webgl2') ?? …getContext('webgl')`)
+   and render a fallback message when absent. A GPU-less viewer must not crash
+   the route it lives on.
+2. **In the capture**: launch Chrome with software rendering —
+   `--enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader` — then
+   the canvas really renders and the screenshot shows the model. Verify with a
+   CDP probe (`canvas.getContext('webgl')`) before trusting a blank capture;
+   `gl:true` with an empty canvas means the scene, not the context, is broken.
 
 ## Layout probe (fallback for manual captures)
 

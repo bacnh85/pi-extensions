@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.9] - 2026-09-26
+
+- Fixed: whitespace-only stdout no longer swallows the stderr fallback in
+  `spawnAgy` — a stray newline on stdout with the real message on stderr now
+  resolves with the stderr text instead of near-empty output.
+
+## [0.3.8] - 2026-09-26
+
+- Fixed: `spawnAgy` no longer concatenates stderr into the resolved output on success — any stderr warning corrupted the JSON payload for plan/sandbox modes (silently degraded by `parseJsonResponse`). Success now resolves with stdout only; stderr is used only as a fallback when stdout is empty.
+- Fixed: broken four-backtick code fence in `skills/agy/SKILL.md` (everything after the install command rendered as one code block); skill `name:` aligned with the directory (`agy-delegate` → `agy`, matching sibling packages).
+- Changed: peer dependency swapped from `@sinclair/typebox` to unscoped `typebox`, matching the host SDK (`@earendil-works/pi-coding-agent` bundles and imports `typebox`), mirroring pi-notebooklm 0.1.14.
+
 ## [0.3.7] - 2026-09-24
 
 - Changed: `MODEL_MAP` (alias → machine model map) is now exported from `extensions/lib/cli.ts` — the integration smoke test derives its expected models from it instead of hardcoding machine names, eliminating drift when the map updates.

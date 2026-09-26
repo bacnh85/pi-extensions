@@ -31,7 +31,16 @@ function getVersion(cmd: string, args: string[]): string | undefined {
   } catch { return undefined; }
 }
 
-export function detectShell(kind: WindowsShellKind): ShellInfo {
+// ponytail: detection spawns where.exe + a version probe per kind — memoized at
+// module level so repeated getDefaultShell() calls (every exec/quote) cost zero
+// spawns. resetShellDetectionCache() forces re-detection (/shell command, tests).
+const detectionCache = new Map<WindowsShellKind, ShellInfo>();
+
+export function resetShellDetectionCache(): void {
+  detectionCache.clear();
+}
+
+function detectShellUncached(kind: WindowsShellKind): ShellInfo {
   switch (kind) {
     case "pwsh": {
       const exe = where("pwsh");
@@ -59,6 +68,14 @@ export function detectShell(kind: WindowsShellKind): ShellInfo {
       return { kind, displayName: "WSL", executable: exe || systemExe("wsl.exe"), available: !!exe, version: exe ? getVersion(exe, ["--status"]) : undefined };
     }
   }
+}
+
+export function detectShell(kind: WindowsShellKind): ShellInfo {
+  const hit = detectionCache.get(kind);
+  if (hit) return { ...hit };
+  const info = detectShellUncached(kind);
+  detectionCache.set(kind, info);
+  return { ...info };
 }
 
 export function detectAllShells(): ShellInfo[] {

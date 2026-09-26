@@ -8,7 +8,8 @@
  * 2. Opt-in permission auto-approve hook: shell commands that Jev is
  *    confident are reversible AND serve the task run without prompting.
  *    Static RISKY list first; never auto-denies; every failure falls back to
- *    the normal prompt. Default OFF; "observe" mode logs would-be decisions.
+ *    the normal prompt. Default ON in "enforce" mode (since 0.2.0); set
+ *    "mode": "observe" in settings to only log would-be decisions.
  *
  * Zero deps in the hot path, plain JS (pi-budget pattern). The /classifier-config
  * panel uses @bacnh85/pi-config-panel (declared dependency — the repo-wide

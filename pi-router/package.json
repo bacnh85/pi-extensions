@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-router",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Pi extension that connects to any OpenAI-compatible AI router (9router, omniroute, …) via its /v1 API.",
   "type": "module",
   "license": "MIT",

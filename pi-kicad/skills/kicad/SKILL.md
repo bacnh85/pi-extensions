@@ -119,7 +119,9 @@ around them where it can:
   - **⚠ Do NOT use `batch_connect_to_net`** — in Konnect v0.2.0 it places *bare*
     net labels at pin coords with **no wire stub**, so they FLOAT and do not
     connect. ERC won't catch it (passive pins aren't flagged) and
-    `list_schematic_nets` just reads label names. Always use `connect_to_net`.
+    `list_schematic_nets` just reads label names. This is a Konnect tool bug,
+    not a sequencing issue — batching does NOT make it safe. Always place
+    nets with `connect_to_net` (per pin, inside `kicad_batch`).
   - **Verify connectivity with `get_net_connectivity` or the kicad-cli netlist**
     (`generate_netlist`) — NOT `run_erc` alone (passive pins hide unconnected
     pins) and NOT `list_schematic_nets` (label names ≠ attached).
@@ -137,5 +139,6 @@ around them where it can:
   concurrent calls lose edits or fail with "No such file or directory" and can
   corrupt the file (duplicates, lost symbols). **Use `kicad_batch`** for any
   multi-step flow — it runs the ops strictly sequentially (each awaited). Inside
-  one Konnet tool, prefer the batch_* variants (e.g. `batch_connect_to_net` does
-  a whole net's pins in a single file write).
+  one Konnect tool, prefer the batch_* variants for multi-item edits (except
+  `batch_connect_to_net`, which is broken in v0.2.0 — see the warning above;
+  use `connect_to_net` per pin instead).

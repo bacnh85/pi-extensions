@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.2 (2026-09-26)
+
+### Fixed
+
+- `maskApiKey` printed short API keys (≤8 chars) in full in status output.
+  Short keys now show a `(N chars)` placeholder — no plaintext key is ever
+  returned.
+
 ## 1.2.1 (2026-09-25)
 
 ### Fixed

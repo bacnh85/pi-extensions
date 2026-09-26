@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.7 (2026-09-26)
+
+### Fixed
+
+- npm package now ships `extensions/package.json` (added to `files[]`) so the
+  extension keeps its `"type": "module"` setting when installed — without it,
+  Node may load `extensions/index.ts` as CommonJS and fail ESM module-type
+  resolution during extension loading (same fix as pi-router 1.1.11 and
+  pi-web 0.17.6).
+
 ## 0.2.6 (2026-09-24)
 
 ### Security

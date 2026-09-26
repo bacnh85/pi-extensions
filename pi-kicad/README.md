@@ -17,7 +17,7 @@ pi install npm:@bacnh85/pi-kicad
 | Tool | Purpose |
 |---|---|
 | `kicad_call` | Invoke any of Konnect's 185 tools by name (schematic capture, layout, routing, ERC/DRC, exports, design review, JLCPCB parts, Freerouting, reference circuits). |
-| `kicad_batch` | Run multiple Konnect tool calls **sequentially** in one shot (each op awaits the next, avoiding Konnect's same-file atomic-rename race). Returns a per-op summary; full parsed results in `details`. |
+| `kicad_batch` | Run multiple Konnect tool calls **sequentially** in one shot (each op awaits the next, avoiding Konnect's same-file atomic-rename race). Returns a per-op summary; full parsed results in `details` (each capped at the same 12k-char output budget as `kicad_call` — oversized results are truncated with a `…(truncated)` marker). |
 | `kicad_status` | Resolve the Konnect binary, `kicad-cli`, and IPC socket; start/health-check the daemon; report version + active tool count. Use first when something isn't working. |
 
 Konnect loads only a small toolset starter kit for context economy. Call

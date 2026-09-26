@@ -31,8 +31,9 @@ export async function loadUtilityConfig(ctx: ExtensionContext): Promise<UtilityC
   const global = await settings(path.join(getAgentDir(), "settings.json"));
   const project = ctx.isProjectTrusted() ? await settings(path.join(ctx.cwd, CONFIG_DIR_NAME, "settings.json")) : {};
   const config = { ...(global["pi-plan"] as Raw), ...(project["pi-plan"] as Raw) };
-  const btw = { ...((global["pi-plan"] as Raw)?.btw as Raw), ...(config.btw as Raw) };
-  const goal = { ...((global["pi-plan"] as Raw)?.goal as Raw), ...(config.goal as Raw) };
+  const asBlock = (v: unknown): Raw => (v && typeof v === "object" ? (v as Raw) : {});
+  const btw = { ...asBlock((global["pi-plan"] as Raw)?.btw), ...asBlock(config.btw) };
+  const goal = { ...asBlock((global["pi-plan"] as Raw)?.goal), ...asBlock(config.goal) };
   return { btw: { model: value(btw, "model") }, goal: { model: value(goal, "model"), maxTurns: numberValue(goal, "maxTurns") }, plansDir: value(config, "plansDir") };
 }
 

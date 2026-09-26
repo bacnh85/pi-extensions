@@ -554,27 +554,34 @@ describe("attachment removal flow", () => {
   });
 
   it("deleting a token from the prompt removes its chip and its attachment", async () => {
-    writeFileSync("/tmp/rm-a.png", PNG_BYTES);
-    writeFileSync("/tmp/rm-b.txt", "b\n");
-    const h = fullHarness();
+    const fileA = path.join(TMP, "rm-a.png");
+    const fileB = path.join(TMP, "rm-b.txt");
+    writeFileSync(fileA, PNG_BYTES);
+    writeFileSync(fileB, "b\n");
+    try {
+      const h = fullHarness();
 
-    const pasted: any = h.paste("\x1b[200~/tmp/rm-a.png /tmp/rm-b.txt\x1b[201~");
-    const tokenA = pasted.data.split(" ")[0];
-    const tokenB = pasted.data.split(" ")[1];
-    h.type(pasted.data);
-    assert.ok(h.widget![0].includes("·"), "both chips shown");
+      const pasted: any = h.paste(`\x1b[200~${fileA} ${fileB}\x1b[201~`);
+      const tokenA = pasted.data.split(" ")[0];
+      const tokenB = pasted.data.split(" ")[1];
+      h.type(pasted.data);
+      assert.ok(h.widget![0].includes("·"), "both chips shown");
 
-    // user deletes the second token → next keystroke prunes its chip
-    h.type(`${tokenA} look`);
-    assert.equal(h.widget!.length, 1, "single chip line");
-    assert.ok(h.widget![0].includes("rm-a.png"));
-    assert.ok(!h.widget![0].includes("rm-b.txt"), "removed chip is gone");
+      // user deletes the second token → next keystroke prunes its chip
+      h.type(`${tokenA} look`);
+      assert.equal(h.widget!.length, 1, "single chip line");
+      assert.ok(h.widget![0].includes("rm-a.png"));
+      assert.ok(!h.widget![0].includes("rm-b.txt"), "removed chip is gone");
 
-    // submit sends only the surviving image
-    const result: any = await h.submit();
-    assert.equal(result.images.length, 1);
-    assert.ok(!result.text.includes("rm-b"), "removed file is not attached");
-    assert.ok(!result.text.includes(tokenB), "removed token is gone");
+      // submit sends only the surviving image
+      const result: any = await h.submit();
+      assert.equal(result.images.length, 1);
+      assert.ok(!result.text.includes("rm-b"), "removed file is not attached");
+      assert.ok(!result.text.includes(tokenB), "removed token is gone");
+    } finally {
+      rmSync(fileA, { force: true });
+      rmSync(fileB, { force: true });
+    }
   });
 
   it("all tokens hand-deleted before submit → tray cleared, no stale chips", async () => {

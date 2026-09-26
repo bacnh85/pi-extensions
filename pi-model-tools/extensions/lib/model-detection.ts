@@ -5,7 +5,6 @@
  * Add a third family when a third family exists — no premature abstraction.
  */
 
-declare const process: { env: Record<string, string | undefined> };
 
 export type ModelFamily = "deepseek-v4" | "glm";
 

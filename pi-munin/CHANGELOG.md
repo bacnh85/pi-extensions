@@ -2,6 +2,14 @@
 
 All notable changes to `pi-munin` will be documented in this file.
 
+## 0.5.9 (2026-09-26)
+
+### Fixed
+
+- Cleanup: deleted the unreachable `throw new Error("Munin retry loop
+  exhausted")` after `withRetry`'s loop — the loop already rethrows at
+  `i === 3`, so the line after it could never execute.
+
 ## 0.5.8 (2026-09-24)
 
 ### Fixed

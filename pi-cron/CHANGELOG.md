@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.7 (2026-09-26)
+
+- **Behavior change:** unpinned jobs no longer fire into a session whose cwd
+  differs from the job's recorded `cwd`. Previously, whichever session ticked
+  first delivered the follow-up turn — so a job added in project A could run
+  its prompt under project B. A foreign-cwd session now skips the fire and
+  marks it `[FAIL: cwd mismatch …]` (visible in `cron list` / `logs`); retry
+  with `action:"run"` from the right cwd, or pin `model`/`thinking` to run
+  headless in `job.cwd` regardless of which session ticks. Pinned jobs are
+  unchanged (they already spawned with `cwd: job.cwd`).
+- Tests: new regression test for the cwd guard (`cwd-repro.test.ts`), wired
+  into the mocha spec glob (`*.test.ts`).
+- Docs: README gained a "Working directory" section describing the guard.
+
 ## 0.3.6 (2026-09-24)
 
 - **Bug fix:** a `saveJobs` throw after `markFired` re-fired due jobs on every

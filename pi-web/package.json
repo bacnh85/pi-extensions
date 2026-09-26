@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-web",
-  "version": "0.17.5",
+  "version": "0.17.6",
   "description": "Pi extension for web search, page extraction, Firecrawl scraping/crawling, Crawl4AI headless browser crawling, real-browser interaction (trusted click/type/evaluate via CDP), Gemini web-tier research, free upstream image generation (Gemini/ChatGPT web/Z.ai), and one-off ChatGPT-web/gateway chat.",
   "type": "module",
   "license": "MIT",
@@ -34,6 +34,7 @@
     "README.md",
     "CHANGELOG.md",
     "extensions/index.ts",
+    "extensions/package.json",
     "extensions/lib/",
     "extensions/types.d.ts",
     "skills/"

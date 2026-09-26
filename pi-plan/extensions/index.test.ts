@@ -1908,6 +1908,13 @@ describe("plansDir configuration", () => {
     assert.equal((await loadUtilityConfig(fakeCtx({ isProjectTrusted: () => false }))).plansDir, undefined);
   });
 
+  it("ignores non-object pi-plan.btw / pi-plan.goal values instead of spreading them", async () => {
+    writeSettings({ "pi-plan": { btw: "oops", goal: 42 } });
+    const cfg = await loadUtilityConfig(fakeCtx({ isProjectTrusted: () => false }));
+    assert.deepEqual(cfg.btw, { model: undefined });
+    assert.deepEqual(cfg.goal, { model: undefined, maxTurns: undefined });
+  });
+
   it("write_plan uses the configured flat dir", async () => {
     writeSettings({ "pi-plan": { plansDir: "docs/plans" } });
     const { handlers, toolDefs } = createFakePi(["read"], { plan: true });

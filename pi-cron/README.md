@@ -51,6 +51,13 @@ are refused. This is a time window, not in-flight immunity — a fired turn runn
 longer than 30s can still mutate. Treat fired prompts as trusted inputs, same as
 any tool call the session makes.
 
+**Working directory:** unpinned jobs only deliver into a session whose cwd matches the
+job's recorded `cwd`. A session opened elsewhere skips the fire and marks it
+`[FAIL: cwd mismatch …]` (visible in `cron list` / `logs`) instead of running the
+prompt against the wrong project. For cross-cwd reliability, pin
+`model`/`thinking` — pinned jobs run headless in `job.cwd` no matter which
+session ticks first.
+
 **Single session per agent dir:** the jobs store has no cross-process lock.
 Running multiple pi sessions that share an agent dir can double-fire jobs or
 lose concurrent edits — use one cron-active session per agent dir, or give

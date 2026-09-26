@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.6.4] - 2026-09-26
+
+- Fixed: `ux_audit` `execute()` now wraps `resolveAuditCss()` in try/catch — a missing/unreadable `path` returns a formatted `isError` result (`❌ UX AUDIT ERROR: …`) instead of a raw ENOENT throw.
+
 ## [0.6.3] - 2026-09-24
 
 - Fixed: `parseColor` now understands `rgb()`/`rgba()` and `hsl()`/`hsla()` (comma and space syntax, alpha dropped like 8-digit hex) — rgb/hsl pairs previously fell through as unparseable and bypassed APCA, falling back to the WCAG sidecar. Regression tests cover both a passing and a failing rgb pair feeding the gate.

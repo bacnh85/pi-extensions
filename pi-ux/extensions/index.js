@@ -204,7 +204,15 @@ export default function uxExtension(pi) {
     ],
     parameters: auditParametersSchema(),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const css = resolveAuditCss(params, ctx?.cwd);
+      let css;
+      try {
+        css = resolveAuditCss(params, ctx?.cwd);
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `❌ UX AUDIT ERROR: ${e.message}` }],
+          isError: true,
+        };
+      }
       const pairs = Array.isArray(params.pairs) ? params.pairs : [];
       const result = audit({ css, pairs });
       return {

@@ -2,6 +2,17 @@
 
 All notable changes to `pi-rtk` will be documented in this file.
 
+## [0.2.6] - 2026-09-26
+
+- Fix: the eval gate now covers the shell interpreter family (`bash`/`sh`/
+  `zsh`/`ksh`/`fish`/`dash`/`ash`/`csh`/`tcsh` with `-c`) and `env`-prefixed
+  interpreters (`env node -e …`, `env -i bash -c …`). Previously `rtk bash -c
+  '<arbitrary script>'` passed the safety gate despite the gate's intent that
+  RTK never touch inline scripts. Plain script-file runs (`bash deploy.sh`,
+  `env CI=1 npm test`) stay allowed.
+- Tests: untracked `safe-rewrite.test.js` committed and extended with the new
+  interpreter/env cases (10 → 23 tests).
+
 ## [0.2.5] - 2026-09-22
 
 - Fix: `isSafeRewrite` now rejects command substitution (`$(…)`), subshell

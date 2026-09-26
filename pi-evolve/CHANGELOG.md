@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.9 (2026-09-26)
+
+- Changed: first-turn injection grace `FIRST_SEED_GRACE_MS` 800ms → 300ms —
+  the largest single term in the measured ~820ms prompt→agent_start window.
+  Missing the grace costs one prompt-cache bust at turn 2 (the designed
+  fallback), never correctness. Measured during the 2026-09-26 startup
+  latency investigation (extensions total ~205ms; model first-token
+  dominates).
+- Docs: `config.ts` notes that the trust gate assumes `ctx.isProjectTrusted`
+  exists (every supported pi version has it); a hypothetical host without the
+  API falls through to agent-dir settings/defaults.
+
+## 0.3.8 (2026-09-26)
+
+### Security
+
+- **Settings trust gate (P1).** `readEvolveSettings` read `<cwd>/.pi/settings.json` with no project-trust check, so an untrusted repo could override the user's global `evolve.enabled: false` or set `store: "local"` to steer learning writes into itself (`.pi/evolve/learnings.jsonl` inside the untrusted checkout). The candidate list now mirrors pi-selfskills' `settingsCandidates`: `<cwd>/.pi/settings.json` is only read when the session reports the project trusted (`ctx.isProjectTrusted() === true`, fail-closed); the agent-dir settings (`$PI_CODING_AGENT_DIR/settings.json`, else `~/.pi/agent/settings.json`) are always read. All call sites in `extensions/index.ts` (2 tools, `/evolve` command, all event hooks) now thread the trusted flag from ctx.
+- Complements the 0.3.2 cwd `.env*` trust gate on the store path.
+- Tests: new `extensions/test/config.test.ts` (malformed JSON → defaults, missing file → defaults, trust gating both ways, `$PI_CODING_AGENT_DIR` fallback + precedence, per-field type guards); existing settings tests updated to present a trusted session. 99 → 109.
+
 ## 0.3.7 (2026-09-25)
 
 ### Fixed
@@ -16,15 +36,6 @@
   the session's real cwd + project-trust state; `similar`/`both` modes keep the
   turn-time prompt-aware seed under the same grace race, so a prompt-less
   recent-only digest can never stick in the cache for the similar TTL.
-
-### Known limitation (honesty note, resolved)
-
-- The 0.3.6 note about synchronous first-turn seeding no longer applies: the
-  seed is fired at `session_start` (fire-and-forget) and the first turn only
-  waits up to the new 800ms grace.
-
-### Fixed
-
 - **`categorizeError` now matches edit errors verbatim from the harness.** The
   regex assumed `old ?text` (optional single space), but pi emits `old_text`
   (snake_case) and other variants (`old text`, `oldtext`, bare `text must be
@@ -33,13 +44,11 @@
   guidance. Separator is now `[_ ]?` on each `old?text` phrase; the bare
   `text must be unique` alternative is kept. Test covers all five variants.
 
-### Known limitation (honesty note)
-
-- The seed-learnings cache is seeded SYNCHRONOUSLY on the first injection
-  attempt of the session (0.3.1's non-blocking change only covers TTL hits and
-  background refreshes). On an unresponsive Munin backend this can block the
-  first turn by up to the 3s seed deadline (~3-4s observed); turns 2+ remain
-  non-blocking.
+The first entry above supersedes 0.3.1's synchronous first-turn seeding: the
+seed fires at `session_start` (fire-and-forget) and the first turn only waits
+up to the new 800ms grace. On an unresponsive Munin backend, versions before
+this fix could block the first turn by up to the 3s seed deadline (~3-4s
+observed); turns 2+ were never affected.
 
 ## 0.3.5 (2026-09-22)
 
@@ -126,7 +135,7 @@
 - **Inline error hints (Layer 1).** When a tool call errors, the `tool_result`
   is augmented with an actionable diagnosis (`path_not_found` → "Discover the
   exact path with find first"). Categorizer upgraded from the 6-bucket
-  `{category}` shape to pi-model-tools' 9-bucket `{category, hint}`
+  `{category}` shape to pi-model-tools' 9-bucket (now 8 — see 0.3.5 docs fix) `{category, hint}`
   (`edit_mismatch`/`rate_limit`/`timeout`/`validation`/`path_not_found`/
   `tool_not_found`/`api_error`/`unknown`), with `edit_mismatch` precedence.
 - **Stored-fix recall (Layer 2).** On error, searches stored recovery learnings

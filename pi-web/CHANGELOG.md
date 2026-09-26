@@ -2,6 +2,15 @@
 
 All notable changes to `pi-web` will be documented in this file.
 
+## 0.17.6 (2026-09-26)
+
+### Fixed
+
+- npm package now ships `extensions/package.json` (added to `files[]`,
+  positioned after `extensions/index.ts` as in pi-router) so the extension
+  keeps its `"type": "module"` setting when installed — without it, Node may
+  load `extensions/index.ts` as CommonJS and fail ESM module-type resolution.
+
 ## 0.17.5 (2026-09-25)
 
 ### Fixed

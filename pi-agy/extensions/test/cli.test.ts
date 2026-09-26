@@ -254,12 +254,26 @@ describe("spawnAgy", () => {
     expect(capturedOpts.timeout).to.equal(65_000);
   });
 
-  it("resolves with combined stdout+stderr on success", async () => {
-    makeMock({ stdout: "done", stderr: "warn: something" });
+  it("resolves with stdout only on success — stderr must not corrupt JSON payloads", async () => {
+    makeMock({ stdout: '{"status":"ok","response":"done"}', stderr: "warn: something" });
     const ac = new AbortController();
     const result = await spawnAgy({ prompt: "test", dir: "/tmp", timeout_ms: 60_000 }, ac.signal);
-    expect(result).to.include("done");
-    expect(result).to.include("warn: something");
+    expect(result).to.equal('{"status":"ok","response":"done"}');
+    expect(parseJsonResponse(result)).to.equal("done");
+  });
+
+  it("falls back to stderr on success when stdout is empty", async () => {
+    makeMock({ stdout: "", stderr: "warn: only diagnostics" });
+    const ac = new AbortController();
+    const result = await spawnAgy({ prompt: "test", dir: "/tmp", timeout_ms: 60_000 }, ac.signal);
+    expect(result).to.equal("warn: only diagnostics");
+  });
+
+  it("falls back to stderr on success when stdout is whitespace-only", async () => {
+    makeMock({ stdout: "\n", stderr: "warn: real message" });
+    const ac = new AbortController();
+    const result = await spawnAgy({ prompt: "test", dir: "/tmp", timeout_ms: 60_000 }, ac.signal);
+    expect(result).to.equal("warn: real message");
   });
 
   it("bounds captured output", async () => {

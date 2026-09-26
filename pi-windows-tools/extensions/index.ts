@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { detectShell, detectAllShells, getDefaultShell } from "./lib/shell-detect";
+import { detectShell, detectAllShells, getDefaultShell, resetShellDetectionCache } from "./lib/shell-detect";
 import type { WindowsShellKind } from "./lib/shell-detect";
 import { executeCommand as execCmd } from "./lib/shell-exec";
 import type { ExecOptions } from "./lib/shell-exec";
@@ -153,6 +153,7 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
     const arg = (a || "").trim().toLowerCase();
     if (arg) {
       if (!["pwsh", "powershell", "cmd", "git-bash", "wsl"].includes(arg)) { ctx?.ui?.notify?.("Invalid shell", "warning"); return; }
+      resetShellDetectionCache(); // freshly-installed shells must be discoverable
       const info = detectShell(arg as WindowsShellKind);
       if (!info.available) { ctx?.ui?.notify?.(`${info.displayName} unavailable.`, "warning"); return; }
       process.env.PI_WINDOWS_SHELL = arg;

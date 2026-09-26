@@ -33,6 +33,11 @@ it again"`; good: `"Run npm test in this repo and summarize failures"`.
 `disable` are refused. A fired turn running longer than 30s can still mutate —
 never write job prompts that schedule further jobs.
 
+**Working directory:** unpinned jobs deliver only into a session whose cwd
+matches the job's `cwd`; a foreign-cwd session marks the fire
+`[FAIL: cwd mismatch …]`. Pin `model`/`thinking` for cross-cwd reliability
+(pinned jobs run headless in `job.cwd`).
+
 ## Managing
 
 - `cron action:"list"` — name, schedule, next/last fire, enabled.

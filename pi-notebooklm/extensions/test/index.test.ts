@@ -1271,3 +1271,58 @@ describe("tool execution", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Output-path serialization — every -o path must be queued, not just [0]/[1]
+// ---------------------------------------------------------------------------
+
+describe("output-path serialization", () => {
+  let registered: any = null;
+
+  const mockCtx: any = { cwd: "/test/cwd" };
+  const mockSignal = { aborted: false };
+
+  it("serializes a 3-output-path call against a call overlapping only on the third path", async () => {
+    let active = 0;
+    let maxActive = 0;
+    let openGate: (() => void) | undefined;
+    let gated = true;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+
+    const mockPi: any = {
+      registerTool(def: any) {
+        registered = def;
+      },
+      exec() {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        if (gated) {
+          return gate.then(() => {
+            active--;
+            return { stdout: "ok", stderr: "", code: 0 };
+          });
+        }
+        active--;
+        return Promise.resolve({ stdout: "ok", stderr: "", code: 0 });
+      },
+    };
+    const { default: ext } = await import("../index.js");
+    ext(mockPi);
+
+    const argsA = ["source", "fulltext", "<src>", "-o", "a.md", "-o", "b.md", "-o", "c.md"];
+    const argsB = ["source", "fulltext", "<src>", "-o", "c.md"];
+    const pA = registered.execute("id", { args: argsA }, mockSignal, undefined, mockCtx);
+    const pB = registered.execute("id", { args: argsB }, mockSignal, undefined, mockCtx);
+
+    // Give the (broken) implementation time to overlap if serialization is missing
+    await new Promise((r) => setTimeout(r, 20));
+    expect(maxActive).to.equal(1); // B must wait on c.md while A holds it
+
+    gated = false;
+    openGate!();
+    await Promise.all([pA, pB]);
+    expect(maxActive).to.equal(1);
+  });
+});

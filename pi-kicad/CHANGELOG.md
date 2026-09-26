@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.10 - 2026-09-26
+
+- Fixed: SKILL.md wiring guidance no longer contradicts itself — the ⚠ warning
+  about `batch_connect_to_net` (bare floating labels in Konnect v0.2.0) is now
+  scoped to calling it outside `kicad_batch`; inside a batch (strictly
+  sequential ops) the batch_* variants remain preferred. Also fixed
+  "Konnet" → "Konnect" typos.
+- Docs: README `kicad_batch` row no longer promises untruncated "full parsed
+  results" — results are capped at the 12k-char budget since 0.1.9.
+- Cleanup: deleted the unused `export type { DaemonConfig }` and
+  `export { DEFAULT_HTTP_PORT }` re-exports from `extensions/lib/daemon.ts`
+  (nothing imported them from that module).
+
 ## 0.1.9 - 2026-09-24
 
 - Fixed: `kicad_batch` caps each entry in `details.results[]` at the same

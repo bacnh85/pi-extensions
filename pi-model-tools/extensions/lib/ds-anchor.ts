@@ -15,7 +15,6 @@
  * catalog rather than breaking the session.
  */
 
-declare const process: { env: Record<string, string | undefined> };
 
 /** Byte-identical to the DeepSeek Harness Minimal persona (do not edit). */
 export const MINIMAL_SYSTEM_PROMPT = "You are a helpful software engineer assistant.";

@@ -1,6 +1,6 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import { detectAllShells, detectShell, getDefaultShell } from "../lib/shell-detect";
+import { detectAllShells, detectShell, getDefaultShell, resetShellDetectionCache } from "../lib/shell-detect";
 import type { WindowsShellKind } from "../lib/shell-detect";
 
 describe("shell-detect", function () {
@@ -42,5 +42,16 @@ describe("shell-detect", function () {
     const def = getDefaultShell();
     expect(def.kind).to.be.a("string");
     expect(def.available).to.be.true;
+  });
+
+  it("detectShell is memoized and resetShellDetectionCache clears the cache", function () {
+    const first = detectShell("cmd");
+    const second = detectShell("cmd");
+    expect(second.kind).to.equal(first.kind);
+    expect(second.executable).to.equal(first.executable);
+    resetShellDetectionCache();
+    const third = detectShell("cmd");
+    expect(third.kind).to.equal("cmd");
+    expect(third.executable).to.be.a("string").and.not.empty;
   });
 });

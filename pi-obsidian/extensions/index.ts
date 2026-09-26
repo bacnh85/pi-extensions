@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 
 import { execObsidian } from "./lib/cli";
 import {
@@ -627,7 +627,8 @@ export function listFilesRecursive(
   folder: string,
   vault?: string,
   timeoutMs = 30_000,
-  exec: (args: string[], formatJson?: boolean, timeoutMs?: number) => { stdout: string; stderr: string; parsed: unknown } = execObsidian
+  exec: (args: string[], formatJson?: boolean, timeoutMs?: number) => { stdout: string; stderr: string; parsed: unknown } = execObsidian,
+  rootOnly = false
 ): string {
   const args: string[] = [];
   if (vault) args.push(`vault=${vault}`);
@@ -635,8 +636,10 @@ export function listFilesRecursive(
   // match "012 Notes/…". Match the empty folder (root), the folder itself, or
   // paths strictly under folder+"/". (Trailing "/" is trimmed so both
   // "Notes" and "Notes/" behave identically.)
+  // rootOnly: paths with no "/" — root-level entries only (files folder="/").
   const f = JSON.stringify(folder.replace(/\/+$/, ""));
-  args.push("eval", `code=app.vault.getFiles().filter(p=>!${f}||p.path===${f}||p.path.startsWith(${f}+'/')).map(p=>p.path).sort().join('\\n')`);
+  const match = rootOnly ? "!p.path.includes('/')" : `!${f}||p.path===${f}||p.path.startsWith(${f}+'/')`;
+  args.push("eval", `code=app.vault.getFiles().filter(p=>${match}).map(p=>p.path).sort().join('\\n')`);
   const out = exec(args, false, timeoutMs).stdout.trim();
   return out || "No files found.";
 }
@@ -1075,7 +1078,7 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "obsidian",
     label: "Run Obsidian CLI Command",
-    description: "Run an Obsidian CLI command on the vault. Commands: read, write, search, tasks, tags, eval.",
+    description: "Run an Obsidian CLI command on the vault. Commands: read, write, create, append, prepend, delete, move, rename, search, files, tasks, task-create, tags, tag-rename, properties, property:set, property:rename, backlinks, outline, links, history, diff, vault, templates, create-from-template, frontmatter:wrap, bookmarks, plugins, daily:read/append/prepend, eval.",
     promptSnippet: "Run an Obsidian CLI command on the vault",
     promptGuidelines: [
       "Use obsidian—not bash, read, write, edit, ls, find, or grep—for every operation on files in an Obsidian vault; pass vault=<name> if it is not the focused vault.",
@@ -1162,7 +1165,13 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
         const folder = flags.folder ?? "";
         const isRoot = folder === "/" || folder === "";
         if (isRoot || raw.includes("recursive")) {
-          return listFilesRecursive(isRoot ? "" : folder, v, timeoutMs);
+          // Root without an explicit `recursive` token lists only root-level
+          // entries (no "/") — the full vault dump was a bug (issue: README
+          // promises "Root-level files"). Explicit `recursive` keeps the full
+          // listing. parseCliString token match avoids substring false-
+          // positives (same guard as validate-tags).
+          const explicitRecursive = parseCliString(raw).includes("recursive");
+          return listFilesRecursive(isRoot ? "" : folder, v, timeoutMs, execObsidian, isRoot && !explicitRecursive);
         }
         const args: string[] = [];
         if (v) args.push(`vault=${v}`);

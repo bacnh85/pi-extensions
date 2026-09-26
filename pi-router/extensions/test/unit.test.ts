@@ -127,7 +127,10 @@ describe("config", () => {
     const key = "sk-12345678";
     assert.equal(maskApiKey(key), key.slice(0, 4) + "●".repeat(key.length - 8) + key.slice(-4));
     assert.equal(maskApiKey(undefined), "(not set)");
-    assert.equal(maskApiKey("short"), "short");
+    assert.equal(maskApiKey(""), "(not set)");
+    assert.equal(maskApiKey("short"), "(5 chars)");
+    assert.equal(maskApiKey("12345678"), "(8 chars)");
+    assert.equal(maskApiKey("x".repeat(9)), "xxxx●xxxx");
   });
 });
 

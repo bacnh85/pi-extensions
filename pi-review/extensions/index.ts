@@ -26,6 +26,10 @@ export const SAFE_REVIEW_TOOLS = new Set([
   "serena_find_symbol", "serena_find_declaration", "serena_find_implementations",
   "serena_find_referencing_symbols", "serena_search_for_pattern", "serena_get_diagnostics_for_file",
   "munin_search", "munin_get", "munin_list", "munin_recent", "munin_capabilities",
+  "evolve_reflect",
+  "ux_audit",
+  "a2a_peers", "a2a_list", "a2a_discover", "a2a_status", "a2a_history",
+  "unfold", "recall",
 ]);
 
 type ThinkingLevel = (typeof THINKING_LEVELS)[number];

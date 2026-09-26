@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2] - 2026-09-26
+
+- Cleanup: dropped the redundant local `declare const process` from
+  `lib/model-detection.ts`, `lib/logger.ts`, `lib/ds-anchor.ts`, and
+  `lib/guidance.ts` (same rationale as 0.9.1's bash-auto-bg.ts removal:
+  @types/node is a devDependency and tsconfig pins `types: ["node"]`).
+
 ## [0.9.1] - 2026-09-24
 
 - Fixed: fractional `PI_MODEL_TOOLS_BASH_AUTO_BG_SECS` values (e.g. `"0.5"`)

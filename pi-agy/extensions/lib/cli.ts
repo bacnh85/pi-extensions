@@ -297,16 +297,19 @@ export function spawnAgy(options: AgyOptions, signal: AbortSignal): Promise<stri
     child.on("close", (code: number | null, sig: string | null) => {
       done(() => {
         const out = Buffer.concat(stdout).toString("utf8");
-        const err = Buffer.concat(stderr).toString("utf8");
-        const combined = out + (err ? `\n${err}` : "");
+        const errText = Buffer.concat(stderr).toString("utf8");
 
         if (sig === "SIGTERM" || sig === "SIGKILL" || code === null) {
           reject(new Error(`agy was cancelled (${sig || "timeout"})`));
         } else if (code !== 0) {
-          const detail = (err || out).slice(0, 2000).trim();
+          const detail = (errText || out).slice(0, 2000).trim();
           reject(new Error(`agy exited with code ${code}:\n${detail || "(no output)"}`));
         } else {
-          resolve(combined);
+          // stdout may be JSON (--output-format json) — concatenating stderr into it
+          // corrupts the payload for parseJsonResponse. Fall back to stderr only
+          // when stdout has no non-whitespace content; otherwise stderr is
+          // diagnostic-only.
+          resolve(out.trim().length > 0 ? out : errText);
         }
       });
     });

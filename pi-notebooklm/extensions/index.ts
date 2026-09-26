@@ -610,15 +610,15 @@ export default function piNotebooklmExtension(pi: ExtensionAPI) {
       // File mutation queue: serialize concurrent writes to the same path
       // -------------------------------------------------------------------
       const outputPaths = extractOutputPaths(args, ctx.cwd);
-      if (outputPaths.length === 1) {
-        return withFileMutationQueue(outputPaths[0], doExec);
+      if (outputPaths.length === 0) {
+        return doExec();
       }
-      if (outputPaths.length > 1) {
-        return withFileMutationQueue(outputPaths[0], async () =>
-          withFileMutationQueue(outputPaths[1], doExec),
-        );
-      }
-      return doExec();
+      // Serialize across ALL output paths (multiple -o flags nest one queue per
+      // path); withFileMutationQueue(p, fn) for a single path is the base case.
+      return outputPaths.reduceRight(
+        (next, p) => () => withFileMutationQueue(p, next),
+        doExec,
+      )();
     },
   });
 }

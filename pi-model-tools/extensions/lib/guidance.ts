@@ -8,7 +8,6 @@
  * tool-selection accuracy without them).
  */
 
-declare const process: { env: Record<string, string | undefined> };
 
 // ── Config toggles ──
 

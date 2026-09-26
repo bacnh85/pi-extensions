@@ -217,6 +217,12 @@ describe("listFilesRecursive folder segment matching", () => {
     expect(cap.code()).to.not.include('"Notes/"');
   });
 
+  it("rootOnly filter matches only paths without a slash (files folder='/' regression)", () => {
+    const cap = captureListCode();
+    listFilesRecursive("", undefined, 100, cap.fake as any, true);
+    expect(runCapturedListEval(cap.code())).to.equal("01.md");
+  });
+
   it("returns 'No files found.' on empty output", () => {
     const r = listFilesRecursive("01", undefined, 100, fakeExecFor(""));
     expect(r).to.equal("No files found.");
@@ -1441,6 +1447,43 @@ it("issue #21: write/create/overwrite without content= or content_from= errors i
       // Pre-fix: NaN reached spawnSync → ERR_OUT_OF_RANGE RangeError.
       const r = await tool.execute("test-id", { run: "files missing-property=created vault=t", timeout_ms: NaN });
       expect(JSON.stringify(r)).to.include("ok"); // stub ran via the fallback timeout
+    } finally {
+      process.env.PATH = oldPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("files folder='/' lists only root-level entries; explicit recursive lists everything (stub CLI)", async function () {
+    this.timeout(10_000);
+    const { default: piObsidianExtension } = await import("../index.js");
+    let tool: any = null;
+    const mockPi: any = { registerTool(t: any) { tool = t; }, on() {} };
+    piObsidianExtension(mockPi);
+    const dir = mkdtempSync(join(tmpdir(), "pi-obsidian-rootfiles-"));
+    const oldPath = process.env.PATH;
+    try {
+      // Stub CLI: echoes its eval code arg; stdout is then re-evaluated against
+      // the stubbed app.vault — same eval-capture technique as the
+      // listFilesRecursive unit tests above.
+      writeFileSync(join(dir, "obsidian"), "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in code=*) printf '%s' \"${a#code=}\";; esac; done\n");
+      chmodSync(join(dir, "obsidian"), 0o755);
+      process.env.PATH = `${dir}:${oldPath ?? ""}`;
+      const vaultFiles = ["01.md", "01/a.md", "012 Notes/c.md"];
+      const runAgainstVault = (code: string) =>
+        new Function("app", `return ${code}`)({ vault: { getFiles: () => vaultFiles.map((path) => ({ path })) } }) as string;
+      const sentCodes: string[] = [];
+      for (const run of ['files folder="/"', 'files folder="/" recursive']) {
+        const r = await tool.execute("test-id", { run });
+        sentCodes.push(String(r.content[0].text));
+      }
+      // Root: filter must be the no-slash rootOnly predicate.
+      expect(sentCodes[0]).to.include("!p.path.includes('/')");
+      expect(sentCodes[0]).to.not.include("startsWith");
+      // Recursive: the segment-boundary predicate is back.
+      expect(sentCodes[1]).to.include("startsWith");
+      // And each expression yields the right listing against the stub vault.
+      expect(runAgainstVault(sentCodes[0])).to.equal("01.md");
+      expect(runAgainstVault(sentCodes[1]).split("\n")).to.deep.equal([...vaultFiles].sort());
     } finally {
       process.env.PATH = oldPath;
       rmSync(dir, { recursive: true, force: true });

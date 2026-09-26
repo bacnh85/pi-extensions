@@ -485,6 +485,16 @@ export default function cronExtension(pi: ExtensionAPI) {
     if (isPinned(job)) {
       runHeadless(job, { spawnFn: spawn, send, state, logsDir: join(dir, "logs"), jobsDir: dir, timeoutMs: settings.timeoutMs });
     } else {
+      // ponytail: unpinned fires execute in THIS session — a session whose cwd
+      // differs from job.cwd would run the prompt against the wrong project.
+      // Skip + mark FAIL (visible in `cron list` / logs). Retry with
+      // action:"run" from the right cwd, or pin model/thinking to run headless
+      // in job.cwd no matter which session ticks first.
+      const sessionCwd = process.cwd();
+      if (job.cwd !== sessionCwd) {
+        setJobResult(dir, job.name, "fail", `cwd mismatch: job expects ${job.cwd}, session is ${sessionCwd}`);
+        return;
+      }
       const delivered = deliverFire(send, state, job);
       setJobResult(dir, job.name, delivered ? "ok" : "fail", delivered ? undefined : "delivery failed");
     }

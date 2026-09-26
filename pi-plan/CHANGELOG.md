@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.1 (2026-09-26)
+
+### Fixed
+
+- `loadUtilityConfig` spread `pi-plan.btw`/`pi-plan.goal` from settings.json
+  without checking they are objects — a string or number value produced
+  garbage keys. Non-object values are now ignored (pi-advisor `parseBlock`
+  pattern).
+
 ## 0.15.0 (2026-09-25)
 
 - **Jev plan gate (opt-in, default off)** — in plan mode's bash confirm tier, pi-plan now asks pi-classifier's Jev decision model whether the command is read-only and needed for planning; only a confident yes auto-allows (enforce mode), and every other outcome (disabled, risky-list command, low score, HTTP error, timeout) falls back to the normal approval prompt. Jev can only reduce prompts — write-disposition commands stay hard-blocked before the gate runs, risky commands never reach Jev, headless confirm-tier commands stay blocked, and every verdict is audited to `classifier.log` (`source: "plan-gate"`). Enable with `classifier.planGate.enabled: true` (observe mode is the default posture after enabling); verdicts are cached per command+cwd and a mid-session observe→enforce flip applies to cached verdicts. New dependency `@bacnh85/pi-classifier` (static import; the copy is side-effect-free, so it does not activate the classifier extension a second time).
