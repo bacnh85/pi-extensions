@@ -45,6 +45,37 @@ jobs:
           print(f"All lockfile entries carry integrity hashes.")
           EOF
 
+      # Version-table guard: the root README.md/AGENTS.md tables drift on every
+      # release batch (each package bumps independently, and neither tests nor
+      # typechecks read the tables). Every pi-*/package.json version must match
+      # both tables exactly — the release notes are wrong otherwise.
+      - name: Verify version tables match package.json
+        run: |
+          python3 - <<'EOF'
+          import glob, json, re, sys
+          pkgs = {}
+          for pkg in sorted(glob.glob('pi-*/package.json')):
+              name = pkg.split('/')[0]
+              pkgs[name] = json.load(open(pkg))['version']
+          patterns = {
+              'AGENTS.md': lambda n: re.compile(r'\| \*\*' + re.escape(n) + r'\*\* \|([^|]*)\|'),
+              'README.md': lambda n: re.compile(r'\| \[`@bacnh85/' + re.escape(n) + r'`\]\(\./' + re.escape(n) + r'\) \|([^|]*)\|'),
+          }
+          bad = []
+          for table, make in patterns.items():
+              text = open(table).read()
+              for name, version in pkgs.items():
+                  match = make(name).search(text)
+                  if not match:
+                      bad.append(f"{table}: missing row for {name}")
+                  elif match.group(1) != f" {version} ":
+                      bad.append(f"{table}: {name} shows {match.group(1).strip()}, package.json is {version}")
+          if bad:
+              print("Version table drift:"); [print(" -", b) for b in bad]
+              sys.exit(1)
+          print(f"Version tables match all {len(pkgs)} packages.")
+          EOF
+
       - uses: dorny/paths-filter@9d7afb8d214ad99e78fbd4247752c4caed2b6e4c # v4.0.0
         id: filter
         with:

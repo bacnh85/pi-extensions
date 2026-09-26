@@ -15,6 +15,7 @@ import { access, mkdir, readFile, rename, unlink, writeFile } from "node:fs/prom
 import path from "node:path";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
 import { isOverloadError } from "./lib/fallback";
+import { detectWorkspaceConflict, describeConflict, removeLease, writeLease, type WorkspaceConflict } from "./lib/workspace-guard";
 import { captureRewindCheckpoint, restoreRewindCheckpoint, rewindToFlowBaseline, snapshotUntrackedFiles, validateRewindCheckpoint, type RewindCheckpoint } from "./lib/lifecycle";
 import { BLOCKED_TOOLS, READ_ONLY_TOOLS } from "./lib/plan-tools";
 import { loadUtilityConfig, parseModel } from "./lib/utility-config";
@@ -41,6 +42,10 @@ const PLAN_EXECUTE_COMMAND = "plan-execute";
 // ponytail: keep in sync with pi-review/extensions/index.ts REVIEW_EVENT
 const REVIEW_EVENT = "pi-review:run";
 const MAX_REVIEW_PASSES = 3;
+/** pi-subagent's public one-request/one-response service event (keep in sync
+ *  with pi-subagent/extensions/service.ts SUBAGENT_REQUEST_EVENT). Used by
+ *  worktree isolation to run implement/fix in an isolated child. */
+const SUBAGENT_REQUEST_EVENT = "pi-subagent:run";
 const REVIEW_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
 const REVIEW_HARD_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_DIRTY_PATCH_BYTES = 50 * 1024;
@@ -94,6 +99,9 @@ interface FlowState {
   initialUntrackedSnapshotVersion?: 1;
   phase: FlowPhase;
   reviewPass: number;
+  /** Worktree isolation: implement/fix run in a pi-subagent worktree child
+   *  instead of the host session. Recorded at flow start. */
+  execution?: "host" | "worktree";
   verificationSummary?: string;
   reviewFindings?: ReviewFinding[];
   blockingFindings?: ReviewFinding[];
@@ -125,7 +133,17 @@ interface PlanPreferences {
   goalModel?: string;
   /** Ordered fallback model refs (provider/id) tried on overload/rate-limit. */
   fallbackModels?: string[];
+  /** Autonomous flow: approve a written plan and run plan→implement→verify→
+   *  review→fix without a human keypress (default false). */
+  autoFlow?: boolean;
+  /** Workspace collision policy for autonomous runs: "block" (default),
+   *  "warn", or "off". */
+  workspaceGuard?: WorkspaceGuardPolicy;
+  /** Route implement/fix through a pi-subagent worktree child (default off). */
+  flowIsolation?: "worktree" | "off";
 }
+
+type WorkspaceGuardPolicy = "block" | "warn" | "off";
 
 interface WritePlanParams {
   title?: string;
@@ -147,6 +165,10 @@ interface PlanQuestionParams {
 
 function isThinkingLevel(value: string): value is ThinkingLevel {
   return (THINKING_LEVELS as readonly string[]).includes(value);
+}
+
+function isWorkspaceGuardPolicy(value: unknown): value is WorkspaceGuardPolicy {
+  return value === "block" || value === "warn" || value === "off";
 }
 
 function isPlanStatus(value: string | undefined): value is PlanStatus {
@@ -483,6 +505,12 @@ function classifySegment(seg: string): CommandDisposition {
     return isSedReadOnly(inspection) ? "read" : "confirm";
   }
   if (/^tee\b/i.test(inspection)) return "write";
+  // perl/ruby in-place edits are the `sed -i` equivalent: `perl -pi -e 's/a/b/' f`
+  // (also -i, -ni, -pi.bak with an attached backup suffix). Live-caught: it
+  // reached the confirm tier and a "user" approval silently mutated a file
+  // during read-only planning. A flag cluster without `i` (`-ne`, `-e`, `-c`)
+  // only writes stdout and stays at the generic interpreter tier.
+  if (/^(?:\S+\/)?(?:perl|ruby)\b/i.test(inspection) && /(?:^|\s)-[a-zA-Z]*i[a-zA-Z]*(?:[.\w]+)?(?:\s|$)/i.test(inspection)) return "write";
   // tar: list (-t, --list) and stdout-extract (-x…O, -O, --to-stdout) only read.
   // Bare -x extracts to the filesystem → confirm; writers (-c) → confirm.
   if (/^tar\b/i.test(inspection)) {
@@ -517,8 +545,13 @@ function parsePreferences(parsed: Record<string, any> | undefined): PlanPreferen
     fallbackModels: Array.isArray(parsed.fallbackModels)
       ? parsed.fallbackModels.filter((m: unknown): m is string => typeof m === "string" && m.trim().length > 0)
       : undefined,
+    autoFlow: typeof parsed.autoFlow === "boolean" ? parsed.autoFlow : undefined,
+    workspaceGuard: isWorkspaceGuardPolicy(parsed.workspaceGuard) ? parsed.workspaceGuard : undefined,
+    flowIsolation: parsed.flowIsolation === "worktree" || parsed.flowIsolation === "off" ? parsed.flowIsolation : undefined,
   };
-  if (parsed.version === 3) {
+  if (parsed.version === 3 || parsed.version === undefined) {
+    // Missing version = hand-written settings (the README examples carry no
+    // version key) — treat as the current shape rather than ignoring the file.
     return { ...base, planThinking: isThinkingLevel(parsed.planThinking) ? parsed.planThinking : undefined };
   }
   // v2: per-mode defaults + per-model map. Keep the plan thinking level; drop
@@ -658,6 +691,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   let executionHandoff = false;
   let flow: FlowState | undefined;
   let flowController: AbortController | undefined;
+  /** Abort controller for an in-flight worktree isolation child (implement/fix). */
+  let isolationController: AbortController | undefined;
+  /** This session's own file, excluded from workspace-conflict scans. */
+  let leaseOwnSessionFile: string | undefined;
   let preferences: PlanPreferences | undefined;
   let plansDir = DEFAULT_PLAN_DIR;
   let reviewTimer: ReturnType<typeof setTimeout> | undefined;
@@ -880,6 +917,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       flow = undefined;
       flowController?.abort();
       flowController = undefined;
+      isolationController?.abort();
+      isolationController = undefined;
       if (reviewTimer) clearTimeout(reviewTimer);
       reviewTimer = undefined;
       lastPlanPath = undefined;
@@ -1047,6 +1086,174 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     );
   }
 
+  /** Worktree isolation is opt-in and only meaningful when pi-subagent is
+   *  loaded (its service answers SUBAGENT_REQUEST_EVENT). */
+  function flowIsolationEnabled(): boolean {
+    return preferences?.flowIsolation === "worktree";
+  }
+
+  /** Drop a stale `/plan-approve` prefill before auto-starting, so a later
+   *  typed command cannot be concatenated onto it (a prefilled editor plus a
+   *  typed command produced "Usage: /plan-approve …" in live testing).
+   *  Untouched unless the editor holds exactly that command. */
+  function clearApprovalPrefill(ctx: ExtensionContext): void {
+    if (ctx.hasUI && ctx.ui.getEditorText?.().trim() === "/plan-approve") ctx.ui.setEditorText("");
+  }
+
+  /** Capture the git baseline the flow diffs against (shared by host and
+   *  worktree execution). Returns an error string instead of notifying so the
+   *  caller keeps the message style. */
+  async function captureFlowBaseline(ctx: ExtensionContext): Promise<{ state: Omit<FlowState, "phase" | "reviewPass"> } | { error: string }> {
+    const [head, dirty, cachedPatch, unstagedPatch, untracked] = await Promise.all([
+      pi.exec("git", ["rev-parse", "HEAD"], { timeout: 5_000 }),
+      pi.exec("git", ["status", "--porcelain"], { timeout: 5_000 }),
+      pi.exec("git", ["diff", "--cached", "--binary", "HEAD"], { timeout: 30_000 }),
+      pi.exec("git", ["diff", "--binary"], { timeout: 30_000 }),
+      pi.exec("git", ["ls-files", "--others", "--exclude-standard"], { timeout: 5_000 }),
+    ]);
+    if (head.code !== 0 || !head.stdout.trim()) {
+      return { error: "Cannot create workflow: git repository not found (rev-parse HEAD failed)." };
+    }
+    if (dirty.code !== 0) {
+      return { error: "Cannot create workflow: could not capture git status." };
+    }
+    if (cachedPatch.code !== 0 || unstagedPatch.code !== 0) {
+      return { error: "Cannot create workflow: initial dirty patch could not be captured." };
+    }
+    if (Buffer.byteLength(cachedPatch.stdout, "utf8") + Buffer.byteLength(unstagedPatch.stdout, "utf8") > MAX_DIRTY_PATCH_BYTES) {
+      return { error: `Cannot create workflow: initial dirty patch exceeds ${MAX_DIRTY_PATCH_BYTES / 1024} KB. Commit, stash, or reduce existing changes first.` };
+    }
+    let initialUntrackedSnapshot: string;
+    try {
+      initialUntrackedSnapshot = await snapshotUntrackedFiles(ctx.cwd);
+    } catch (error) {
+      return { error: `Cannot create workflow: untracked file snapshot failed (required for change tracking). ${String(error)}` };
+    }
+    return {
+      state: {
+        baseline: head.stdout.trim(),
+        initialDirty: dirty.stdout.trim(),
+        initialCachedPatch: cachedPatch.stdout,
+        initialUnstagedPatch: unstagedPatch.stdout,
+        initialUntracked: untracked.code === 0 ? untracked.stdout.trim() : undefined,
+        initialUntrackedSnapshot,
+        initialUntrackedSnapshotVersion: 1,
+      },
+    };
+  }
+
+  /** Text of the last assistant message in a pi-subagent result (the marker
+   *  contract lives there, not in the host transcript). */
+  function resultAssistantText(result: any): string {
+    const messages = Array.isArray(result?.messages) ? result.messages : [];
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+      const text = message.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("");
+      if (text.trim()) return text;
+    }
+    return "";
+  }
+
+  /** Plan content for an isolated child. A fresh worktree is a `git checkout
+   *  HEAD`, so untracked files (and `.agents/` typically is untracked) do not
+   *  exist there — the plan must be inlined, not referenced by path. */
+  async function isolatedPlanBlock(relativePlan: string): Promise<string> {
+    if (!lastPlanPath) return `The approved plan is at ${relativePlan}.`;
+    try {
+      const content = await readFile(lastPlanPath, "utf8");
+      const capped = content.length > 80_000 ? `${content.slice(0, 80_000)}\n\n(plan truncated at 80 KB)` : content;
+      return `The approved plan was written to ${relativePlan}. That path is untracked and therefore ABSENT from your isolated worktree — the full plan is inlined below:\n\n<<<PLAN\n${capped}\nPLAN`;
+    } catch {
+      return `The approved plan is at ${relativePlan}.`;
+    }
+  }
+
+  /** Dispatch one implement/fix phase to a worktree-isolated pi-subagent child.
+   *  The child's diff is merged (3-way) into the host checkout on success; the
+   *  child's final text carries the verification marker. Conflicts and failed
+   *  runs stop the flow — never silently continue. */
+  async function runIsolatedPhase(ctx: ExtensionContext, phase: "implement" | "fix"): Promise<void> {
+    if (!flow || !lastPlanPath) return;
+    const relativePlan = relativeToCwd(ctx.cwd, lastPlanPath);
+    const planBlock = await isolatedPlanBlock(relativePlan);
+    const findings = flow.blockingFindings ?? [];
+    const task = phase === "implement"
+      ? `Execute the approved plan. Keep the implementation scoped to the plan, update it if reality differs materially, and run the verification described there.\n\n${planBlock}\n\nFinish your response with [verification: pass] after listing exact checks and outcomes, or [verification: fail] with the blocker.`
+      : `Independent review found blocking issues:\n${JSON.stringify(findings, null, 2)}\n\nFix only these evidenced issues to their expected behavior and acceptance criteria, rerun affected checks, and finish with [verification: pass] or [verification: fail].\n\n${planBlock}`;
+
+    const id = crypto.randomUUID();
+    isolationController?.abort();
+    const controller = new AbortController();
+    isolationController = controller;
+    flowController = controller;
+    ctx.ui.notify(`Workflow ${phase}: running isolated in a git worktree (pi-subagent)…`, "info");
+
+    const response = await new Promise<{ ok: boolean; result?: any; error?: string }>((resolve) => {
+      let settled = false;
+      let accepted = false;
+      const done = (value: { ok: boolean; result?: any; error?: string }) => { if (!settled) { settled = true; resolve(value); } };
+      controller.signal.addEventListener("abort", () => done({ ok: false, error: "Isolated phase cancelled" }), { once: true });
+      pi.events.emit(SUBAGENT_REQUEST_EVENT, {
+        id,
+        agent: "worker",
+        task,
+        cwd: ctx.cwd,
+        readOnly: false,
+        sandbox: "worktree",
+        merge: "3way",
+        instructions: "Implement in the isolated worktree. Do not commit; leave changes in the working tree.",
+        signal: controller.signal,
+        accept: () => { accepted = true; return true; },
+        respond: (reply: any) => {
+          if (reply?.id !== id) return;
+          done(reply?.ok === true ? { ok: true, result: reply.result } : { ok: false, error: reply?.error ?? "pi-subagent failed" });
+        },
+      });
+      // No listener accepted the event: fail closed (mirrors requestFlowReview).
+      queueMicrotask(() => { if (!accepted) done({ ok: false, error: "pi-subagent is unavailable" }); });
+    });
+    if (isolationController === controller) isolationController = undefined;
+    if (flowController === controller) flowController = undefined;
+    if (!flow || flow.phase !== phase) return; // stopped/rewound while awaiting
+    if (!response.ok) {
+      flow.phase = "stopped";
+      persistState();
+      updateFooter(ctx);
+      ctx.ui.notify(`Workflow stopped: ${response.error}`, "error");
+      return;
+    }
+    const result = response.result ?? {};
+    if (result.mergeStatus === "conflict") {
+      flow.phase = "stopped";
+      persistState();
+      updateFooter(ctx);
+      ctx.ui.notify(`Workflow stopped: isolated ${phase} patch conflicted with this workspace. ${String(result.mergeError ?? "").slice(0, 400)}`, "error");
+      return;
+    }
+    if (result.mergeStatus !== "applied") {
+      // Older pi-subagent without request-level sandbox: the child edited the
+      // shared checkout instead of an isolated worktree. Fail closed.
+      flow.phase = "stopped";
+      persistState();
+      updateFooter(ctx);
+      ctx.ui.notify(`Workflow stopped: isolation unavailable (pi-subagent did not run ${phase} in a worktree). Update @bacnh85/pi-subagent or set pi-plan.flowIsolation to "off".`, "error");
+      return;
+    }
+    const verification = resultAssistantText(result);
+    flow.verificationSummary = verification.slice(-2_000);
+    if (!/\[verification:\s*pass\]/i.test(verification) || /\[verification:\s*fail\]/i.test(verification)) {
+      flow.phase = "stopped";
+      persistState();
+      updateFooter(ctx);
+      ctx.ui.notify(/\[verification:\s*fail\]/i.test(verification)
+        ? "Workflow stopped: verification failed."
+        : "Workflow stopped: verification evidence marker missing.", "error");
+      return;
+    }
+    await advanceFlowAfterVerification(ctx);
+  }
+
   async function beginNewSessionExecution(
     ctx: ExtensionCommandContext,
     withFlow = false,
@@ -1063,49 +1270,12 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     const parentSession = ctx.sessionManager.getSessionFile();
     const priorFlow = flow;
     if (withFlow) {
-      const [head, dirty, cachedPatch, unstagedPatch, untracked] = await Promise.all([
-        pi.exec("git", ["rev-parse", "HEAD"], { timeout: 5_000 }),
-        pi.exec("git", ["status", "--porcelain"], { timeout: 5_000 }),
-        pi.exec("git", ["diff", "--cached", "--binary", "HEAD"], { timeout: 30_000 }),
-        pi.exec("git", ["diff", "--binary"], { timeout: 30_000 }),
-        pi.exec("git", ["ls-files", "--others", "--exclude-standard"], { timeout: 5_000 }),
-      ]);
-      if (head.code !== 0 || !head.stdout.trim()) {
-        ctx.ui.notify("Cannot create workflow: git repository not found (rev-parse HEAD failed).", "error");
+      const captured = await captureFlowBaseline(ctx);
+      if ("error" in captured) {
+        ctx.ui.notify(captured.error, "error");
         return;
       }
-      if (dirty.code !== 0) {
-        ctx.ui.notify("Cannot create workflow: could not capture git status.", "error");
-        return;
-      }
-      if (cachedPatch.code !== 0 || unstagedPatch.code !== 0) {
-        ctx.ui.notify("Cannot create workflow: initial dirty patch could not be captured.", "error");
-        return;
-      }
-      const initialCachedPatch = cachedPatch.stdout;
-      const initialUnstagedPatch = unstagedPatch.stdout;
-      if (Buffer.byteLength(initialCachedPatch, "utf8") + Buffer.byteLength(initialUnstagedPatch, "utf8") > MAX_DIRTY_PATCH_BYTES) {
-        ctx.ui.notify(`Cannot create workflow: initial dirty patch exceeds ${MAX_DIRTY_PATCH_BYTES / 1024} KB. Commit, stash, or reduce existing changes first.`, "error");
-        return;
-      }
-      let initialUntrackedSnapshot: string;
-      try {
-        initialUntrackedSnapshot = await snapshotUntrackedFiles(ctx.cwd);
-      } catch (error) {
-        ctx.ui.notify(`Cannot create workflow: untracked file snapshot failed (required for change tracking). ${String(error)}`, "error");
-        return;
-      }
-      flow = {
-        baseline: head.stdout.trim(), // head.code === 0 && stdout non-empty guaranteed above
-        initialDirty: dirty.stdout.trim(), // dirty.code === 0 guaranteed above
-        initialCachedPatch,
-        initialUnstagedPatch,
-        initialUntracked: untracked.code === 0 ? untracked.stdout.trim() : undefined,
-        initialUntrackedSnapshot,
-        initialUntrackedSnapshotVersion: 1,
-        phase: "implement",
-        reviewPass: 0,
-      };
+      flow = { ...captured.state, phase: "implement", reviewPass: 0, execution: flowIsolationEnabled() ? "worktree" : "host" };
     }
     const state: PlanState = {
       enabled: false,
@@ -1118,6 +1288,12 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
     executionHandoff = true;
     try {
+      if (withFlow && flow?.execution === "worktree") {
+        persistState();
+        updateFooter(ctx);
+        await runIsolatedPhase(ctx, "implement");
+        return;
+      }
       const result = await ctx.newSession({
         parentSession,
         setup: async (sessionManager) => { sessionManager.appendCustomEntry("pi-plan", state); },
@@ -1271,6 +1447,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
   async function advanceFlow(ctx: ExtensionContext): Promise<void> {
     if (!flow || !["implement", "fix"].includes(flow.phase)) return;
+    // Worktree isolation drives its own loop from the child's response; the
+    // host session never carries the marker contract, so a host settle must
+    // not advance (or stop) the flow.
+    if (flow.execution === "worktree") return;
     const verification = latestAssistantText(ctx);
     flow.verificationSummary = verification.slice(-2_000);
     if (/\[verification:\s*fail\]/i.test(verification) || !/\[verification:\s*pass\]/i.test(verification)) {
@@ -1282,7 +1462,14 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
         : "Workflow stopped: verification evidence marker missing.", "error");
       return;
     }
+    await advanceFlowAfterVerification(ctx);
+  }
 
+  /** Post-verification tail of the flow loop: review → fix/done/stoppped.
+   *  Shared by host execution (marker from the transcript) and worktree
+   *  isolation (marker from the child result). */
+  async function advanceFlowAfterVerification(ctx: ExtensionContext): Promise<void> {
+    if (!flow) return;
     flow.phase = "review";
     flow.reviewPass++;
     persistState();
@@ -1316,7 +1503,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
           ? `Workflow complete. Verification recorded; independent review clean on pass ${flow.reviewPass}.`
           : `Workflow complete. Verification recorded; ${findings.length} non-blocking review finding(s) preserved in result details on pass ${flow.reviewPass}.`,
         display: true,
-        details: flow,
+        details: { ...flow, auto: preferences?.autoFlow === true },
       });
       return;
     }
@@ -1331,6 +1518,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     flow.phase = "fix";
     persistState();
     updateFooter(ctx);
+    if (flow.execution === "worktree") {
+      await runIsolatedPhase(ctx, "fix");
+      return;
+    }
     pi.sendUserMessage(`Independent review found blocking issues:\n${JSON.stringify(blocking, null, 2)}\n\nFix only these evidenced issues to their expected behavior and acceptance criteria, rerun affected checks, and finish with [verification: pass] or [verification: fail].`, { deliverAs: "followUp" });
   }
 
@@ -1366,6 +1557,12 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     if (mode === "current") {
       await beginCurrentSessionExecution(ctx, relativePlan);
       return;
+    }
+    // Human-approved flows are never blocked, but a concurrent session is worth
+    // naming before an autonomous loop starts mutating the shared checkout.
+    const conflicts = await checkWorkspaceConflicts(ctx);
+    if (conflicts.length > 0) {
+      ctx.ui.notify(`Another Pi session may be working in this workspace (${conflicts.map(describeConflict).join("; ")}). Enable pi-plan.flowIsolation \"worktree\" to run isolated.`, "warning");
     }
     await leavePlanMode(ctx, true);
     lastPlanStatus = "approved";
@@ -1761,6 +1958,72 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerCommand("plan-auto", {
+    description: "Arm autonomous flow and enter plan mode: /plan-auto [on|off|status] — then ask for the task",
+    getArgumentCompletions: (prefix) => {
+      const q = prefix.trim().toLowerCase();
+      const items = ["on", "off", "status"]
+        .filter((k) => k.startsWith(q))
+        .map((k) => ({ value: k, label: k }));
+      return items.length > 0 ? items : null;
+    },
+    handler: async (args, ctx) => {
+      if (!preferences) preferences = { version: 3 };
+      const arg = args.trim().toLowerCase();
+      if (arg && arg !== "on" && arg !== "off" && arg !== "status") {
+        ctx.ui.notify("Usage: /plan-auto [on|off|status]", "warning");
+        return;
+      }
+      const enabled = preferences.autoFlow === true;
+      if (arg === "status") {
+        ctx.ui.notify(
+          `auto-flow: ${enabled ? "on" : "off"} · guard: ${preferences.workspaceGuard ?? "block"} · isolation: ${preferences.flowIsolation ?? "off"}`,
+          "info",
+        );
+        return;
+      }
+      const next = arg === "off" ? false : true; // bare /plan-auto arms (and enters plan mode)
+      const previous = preferences.autoFlow;
+      preferences.autoFlow = next;
+      try {
+        await savePreferences(preferences);
+      } catch (error) {
+        preferences.autoFlow = previous;
+        ctx.ui.notify(`Could not save auto-flow setting: ${String(error)}`, "error");
+        return;
+      }
+      updateFooter(ctx);
+      // Bare /plan-auto is the practical entry point: arm + enter plan mode in
+      // one step so the next user message is planned and executed unattended.
+      if (!arg && next && !planModeEnabled && !isFlowActive()) {
+        await enterPlanMode(ctx);
+        ctx.ui.notify(
+          "Autonomous flow armed. Describe the task — the plan is approved and executed without a keypress.",
+          "info",
+        );
+        return;
+      }
+      // Arming while a plan is already written: start immediately, still gated
+      // by the workspace guard. (A written plan may still be awaiting the
+      // approval prefill in plan mode, or plan mode may already be left.)
+      if (next && lastPlanPath && !isFlowActive()) {
+        lastPlanStatus = "approved";
+        persistState();
+        if (!(await workspaceGuardAllows(ctx))) return;
+        clearApprovalPrefill(ctx);
+        pi.sendUserMessage("/plan-approve flow", { expandPromptTemplates: true });
+        ctx.ui.notify("Automatic flow armed and started.", "info");
+        return;
+      }
+      ctx.ui.notify(
+        next
+          ? "Automatic flow armed: the next written plan executes and loops without a keypress."
+          : "Automatic flow disarmed.",
+        "info",
+      );
+    },
+  });
+
   pi.registerCommand("flow", {
     description: "Show or stop the active plan workflow",
     handler: async (args, ctx) => {
@@ -1768,6 +2031,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       if (command === "stop" && flow && !["done", "stopped"].includes(flow.phase)) {
         // abort listener resolves the pending review and cleans up its timer/controller
         flowController?.abort();
+        isolationController?.abort();
         flow.phase = "stopped";
         persistState();
         updateFooter(ctx);
@@ -1775,7 +2039,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
         return;
       }
       if (command !== "status") return ctx.ui.notify("Usage: /flow status|stop", "warning");
-      ctx.ui.notify(flow ? `flow: ${flow.phase} · review ${flow.reviewPass}/${MAX_REVIEW_PASSES}` : "No workflow state.", "info");
+      ctx.ui.notify(flow ? `flow: ${flow.phase} · review ${flow.reviewPass}/${MAX_REVIEW_PASSES} · ${flow.execution ?? "host"}${preferences?.autoFlow ? " · auto" : ""}` : "No workflow state.", "info");
     },
   });
 
@@ -1996,6 +2260,11 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     plansDir = cfg.plansDir ?? DEFAULT_PLAN_DIR;
     if (!preferences) preferences = { version: 3 };
 
+    // Workspace lease: lets a sibling session detect this one before starting
+    // an autonomous flow. Best effort — never breaks a session.
+    leaseOwnSessionFile = ctx.sessionManager?.getSessionFile?.();
+    void writeLease({ pid: process.pid, cwd: ctx.cwd, sessionFile: leaseOwnSessionFile, startedAt: Date.now() }, getAgentDir());
+
     // ponytail: restore state from current branch (shared with session_tree)
     restoreStateFromBranch(ctx);
 
@@ -2027,6 +2296,47 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     clearPlanWidget(ctx);
     installRewindShortcut(ctx);
   });
+
+  pi.on("session_shutdown", async () => {
+    await removeLease(process.pid, getAgentDir());
+    isolationController?.abort();
+  });
+
+  /** Workspace collision check for autonomous flows. Returns the conflicts
+   *  (empty = clear). `enabled` gates on the policy preference. */
+  async function checkWorkspaceConflicts(ctx: ExtensionContext): Promise<WorkspaceConflict[]> {
+    const policy = preferences?.workspaceGuard ?? "block";
+    if (policy === "off") return [];
+    try {
+      return await detectWorkspaceConflict(ctx.cwd, process.pid, leaseOwnSessionFile, { agentDir: getAgentDir() });
+    } catch {
+      return []; // detection failure must not block a run (advisory signal)
+    }
+  }
+
+  /** Guard result for the autonomous path: true = proceed. Blocks (default)
+   *  or warns per policy; never blocks human-approved flows. */
+  async function workspaceGuardAllows(ctx: ExtensionContext): Promise<boolean> {
+    const conflicts = await checkWorkspaceConflicts(ctx);
+    if (conflicts.length === 0) return true;
+    const who = conflicts.map(describeConflict).join("; ");
+    // Isolation is the escape hatch: implement/fix run in a worktree child, so
+    // a concurrent session cannot race the shared checkout.
+    if (flowIsolationEnabled()) {
+      ctx.ui.notify(`Workspace conflict detected (${who}) — running isolated in a git worktree.`, "info");
+      return true;
+    }
+    const policy = preferences?.workspaceGuard ?? "block";
+    if (policy === "block") {
+      ctx.ui.notify(
+        `Automatic flow blocked: another Pi session is active in this workspace (${who}). Close it, set pi-plan.workspaceGuard to "warn", or enable pi-plan.flowIsolation \"worktree\" to run isolated.`,
+        "error",
+      );
+      return false;
+    }
+    ctx.ui.notify(`Automatic flow continuing with a workspace conflict (${who}).`, "warning");
+    return true;
+  }
 
   pi.on("model_select", async (event, ctx) => {
     lastCtx = ctx;
@@ -2146,6 +2456,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     // the enterPlanMode re-entry discard).
     flowController?.abort();
     flowController = undefined;
+    isolationController?.abort();
+    isolationController = undefined;
     if (reviewTimer) clearTimeout(reviewTimer);
     reviewTimer = undefined;
     if (planModeEnabled) {
@@ -2354,10 +2666,11 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       const relativePlan = lastPlanPath
         ? relativeToCwd(ctx.cwd, lastPlanPath)
         : `${expandPlansDir(plansDir)}/<timestamp>-<title>.md`;
+      const autoFlowArmed = preferences?.autoFlow === true;
       return {
         systemPrompt:
           _event.systemPrompt +
-          `\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- Bash commands that write to files (redirect, heredoc, sed -i, tee, cp/mv/rm, etc.) or contain command substitution are hard-blocked. Read-only bash commands (ls, grep, find, git status) run automatically — including pipelines/chains whose every segment is read-only (e.g. \`grep foo src | head\`). Test/build/package scripts and other unknown executables require confirmation.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${ASK_USER_QUESTION_TOOL} for consequential open decisions with 2-4 clear options, a recommended default, and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${ASK_USER_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- Do not use ${ASK_USER_QUESTION_TOOL} to offer approve / execute / implement options. Execution is initiated only by /plan-approve (prefilled after the plan is written); ask_user_question is for unresolved clarifying questions only.\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${expandPlansDir(plansDir)}/. Current/next plan path: ${relativePlan}\n${specGateActive && specPath ? `- An active draft specification is at ${relativeToCwd(ctx.cwd, specPath)}. Read it before refining or approving it; workspace writes remain locked until /specs-approve.\n` : ""}- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
+          `\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- Bash commands that write to files (redirect, heredoc, sed -i, tee, cp/mv/rm, etc.) or contain command substitution are hard-blocked. Read-only bash commands (ls, grep, find, git status) run automatically — including pipelines/chains whose every segment is read-only (e.g. \`grep foo src | head\`). Test/build/package scripts and other unknown executables require confirmation.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${ASK_USER_QUESTION_TOOL} for consequential open decisions with 2-4 clear options, a recommended default, and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${ASK_USER_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- Do not use ${ASK_USER_QUESTION_TOOL} to offer approve / execute / implement options. Execution is initiated only by ${autoFlowArmed ? "pi-plan itself (autonomous flow is armed — the plan is approved and executed automatically)" : "/plan-approve (prefilled after the plan is written)"}; ask_user_question is for unresolved clarifying questions only.${autoFlowArmed ? "\n- Autonomous flow is ARMED: after ${PLAN_TOOL} writes the plan, pi-plan approves and executes it without user input. Do not tell the user to press Enter or run /plan-approve; state that execution starts automatically." : ""}\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${expandPlansDir(plansDir)}/. Current/next plan path: ${relativePlan}\n${specGateActive && specPath ? `- An active draft specification is at ${relativeToCwd(ctx.cwd, specPath)}. Read it before refining or approving it; workspace writes remain locked until /specs-approve.\n` : ""}- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
       };
     }
   });
@@ -2370,6 +2683,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
    * Instead of showing the picker here (ctx is ExtensionContext — no
    * newSession()), prefill /plan-approve so the command handler runs with
    * the proper ExtensionCommandContext that has newSession().
+   *
+   * Autonomous mode (pi-plan.autoFlow) instead dispatches the same command
+   * through pi.sendUserMessage(..., {expandPromptTemplates:true}) so the
+   * command handler runs without a human keypress.
    */
   pi.on("agent_settled", async (_event, ctx) => {
     if (flow && !planModeEnabled && ["implement", "fix"].includes(flow.phase)) {
@@ -2383,13 +2700,22 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     if (
       !planModeEnabled ||
       !planReadyForReview ||
-      !lastPlanPath ||
-      !ctx.hasUI
+      !lastPlanPath
     )
       return;
 
     planReadyForReview = false;
     persistState();
+    if (preferences?.autoFlow && ctx.mode !== "print") {
+      if (!(await workspaceGuardAllows(ctx))) return;
+      // Clear any stale approval prefill so a later typed command cannot be
+      // concatenated onto it (auto-start needs no editor interaction).
+      clearApprovalPrefill(ctx);
+      pi.sendUserMessage("/plan-approve flow", { expandPromptTemplates: true });
+      ctx.ui.notify("Automatic flow: plan approved, executing (pi-plan.autoFlow).", "info");
+      return;
+    }
+    if (!ctx.hasUI) return;
     // ponytail: prefill command — command handler (ExtensionCommandContext)
     // owns the picker and newSession() call.
     ctx.ui.setEditorText("/plan-approve");

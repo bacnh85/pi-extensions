@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.23.0 (2026-09-26)
+
+### Added
+
+- **Request-level `sandbox: "worktree"` + `merge: "3way"` on the
+  `pi-subagent:run` service contract.** A service caller (e.g. pi-plan's flow
+  isolation) can now override the named agent's sandbox for one run: the child
+  executes in an isolated git worktree and the diff is returned as
+  `result.patch` with `result.mergeStatus` (`applied`/`conflict`). Non-success
+  runs never auto-merge. Existing callers are unaffected — `pi-review`'s
+  `readOnly: true` dispatch keeps its read-only tool set, and an absent
+  `sandbox` field falls back to the agent frontmatter.
+
 ## 0.22.6 (2026-09-26)
 
 ### Fixed

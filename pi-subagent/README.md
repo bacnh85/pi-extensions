@@ -369,7 +369,9 @@ The raw `stopReason` from the Pi SDK is preserved in the result.
 
 ## Extension contract
 
-`pi-subagent` owns the `pi-subagent:run` event contract for one named-agent request. `pi-review` uses it for isolated review. Requests use an immediate boolean `accept()` claim and exactly one `respond()` callback; this suppresses duplicate responders while missing services and timeouts remain caller-controlled.
+`pi-subagent` owns the `pi-subagent:run` event contract for one named-agent request. `pi-review` uses it for isolated review; `pi-plan` uses it for worktree-isolated flow execution. Requests use an immediate boolean `accept()` claim and exactly one `respond()` callback; this suppresses duplicate responders while missing services and timeouts remain caller-controlled.
+
+A request may carry `sandbox: "worktree"` (and `merge: "3way"`) to override the named agent's sandbox for that run: the child executes in an isolated git worktree and the captured diff is returned as `result.patch`, with `result.mergeStatus` reporting the 3-way apply back to the parent checkout (`applied` or `conflict`; non-successful runs never merge).
 
 ## Changelog
 

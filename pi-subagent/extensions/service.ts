@@ -23,6 +23,12 @@ export interface SubagentRunRequest {
   timeout?: number;
   instructions?: string;
   readOnly?: boolean;
+  /** Override the agent's sandbox for this run. "worktree" isolates the child
+   *  in a sibling checkout; the resulting diff is returned as result.patch. */
+  sandbox?: "worktree";
+  /** With sandbox:"worktree", apply the captured diff to the parent checkout
+   *  via git apply --3way after a successful run. */
+  merge?: "3way";
   signal?: AbortSignal;
   accept?: () => boolean;
   respond: (response: SubagentRunResponse) => void;
@@ -43,6 +49,10 @@ export async function runNamedAgent(options: {
   signal?: AbortSignal;
   /** When true, only read-only tools are permitted regardless of agent.sandbox. */
   readOnly?: boolean;
+  /** Per-run sandbox override (e.g. "worktree" from a service caller). */
+  sandbox?: "worktree";
+  /** With sandbox:"worktree", apply the captured diff to the parent checkout. */
+  merge?: "3way";
   /** Trusted opt-out for child cwd outside the workspace (from getTrustedConfig). */
   allowExternalCwd?: boolean;
   onMessage?: (result: SubAgentResult) => void;
@@ -113,7 +123,8 @@ export async function runNamedAgent(options: {
     runAttempt: (model, thinkingLevel) =>
       runSubAgent({
         cwd: safeCwd.path,
-        sandbox: options.agent.sandbox === "worktree" ? "worktree" : undefined,
+        sandbox: options.sandbox ?? (options.agent.sandbox === "worktree" ? "worktree" : undefined),
+        merge: options.merge,
         systemPrompt: contract ? `${options.agent.systemPrompt}\n\n## Task Contract\n${contract}` : options.agent.systemPrompt,
         task: options.task,
         tools: toolValidation.tools,

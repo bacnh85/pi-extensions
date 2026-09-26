@@ -45,6 +45,10 @@ export const BLOCKED_TOOLS = new Set([
   // pi-model-tools diff-style file mutation — same treatment as edit/write;
   // a plan-mode model should never patch files (9 pointless confirm prompts/14d).
   "apply_patch",
+  // pi-model-tools file editor (create/str_replace/insert) — a direct source
+  // mutator like edit/write. Live-caught: it fell to the per-tool confirm tier
+  // (9 pointless prompts) because it was missing here.
+  "str_replace_editor",
   // Serena file mutation
   "serena_replace_symbol_body", "serena_insert_before_symbol",
   "serena_insert_after_symbol", "serena_rename_symbol",

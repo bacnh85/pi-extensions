@@ -416,6 +416,22 @@ describe("workspace utility commands", () => {
     assert.equal(result, undefined, "approval releases the write gate");
   });
 
+  it("hard-blocks str_replace_editor and apply_patch end-to-end in plan mode", async () => {
+    // Live-caught: str_replace_editor was missing from BLOCKED_TOOLS, so it fell
+    // to the per-tool confirm tier and an approval silently mutated a file
+    // during read-only planning.
+    const { handlers } = createFakePi(["read", "str_replace_editor", "apply_patch"], { plan: true });
+    const ctx = fakeCtx({ hasUI: true });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+    for (const tool of ["str_replace_editor", "apply_patch"]) {
+      const r: any = await tc({ toolName: tool, input: { command: "str_replace", path: "x", file_text: "y" } }, ctx);
+      assert.ok(r?.block, `${tool} must be hard-blocked in plan mode`);
+      assert.match(r.reason ?? "", /not available in plan mode/);
+    }
+  });
+
   it("reports the implementation prompt outside TUI", async () => {
     const { commands, handlers } = createFakePi(["read"]);
     const specPath = path.join(TMP, ".agents", "specs", "spec.md");
@@ -970,7 +986,7 @@ describe("plan-mode tool lists", () => {
   });
 
   it("hard-blocks known source mutators", () => {
-    for (const tool of ["edit", "write",
+    for (const tool of ["edit", "write", "apply_patch", "str_replace_editor",
       "serena_replace_symbol_body", "serena_insert_before_symbol",
       "serena_rename_symbol", "serena_replace_content",
       "munin_store", "munin_delete",
@@ -1242,6 +1258,12 @@ describe("tool gating in plan mode", () => {
     ["sed long option", "sed --in-place 's/foo/bar/g' file.txt"],
     ["sed write", "sed -n '1w output.txt' input.txt"],
     ["sed glued w write", "sed -n '1wout' input.txt"],
+    // perl/ruby in-place edits (the sed -i equivalent) — live-caught mutating a
+    // file during plan mode via the confirm tier.
+    ["perl -pi -e", "perl -pi -e 's/a - b/a + b/' math.js"],
+    ["perl -i -pe", "perl -i -pe 's/a - b/a + b/' math.js"],
+    ["perl -pi.bak", "perl -pi.bak -e 's/a - b/a + b/' math.js"],
+    ["ruby -i", "ruby -i -pe 'gsub(/a - b/, \"a + b\")' math.js"],
     ["tee", "echo data | tee output.txt"],
     ["find delete", "find . -delete"],
     ["find exec", "find . -exec touch marker +"],
@@ -3865,5 +3887,532 @@ describe("slash-argument completions", () => {
     assert.deepEqual(thinking.map((i) => i.value), ["xhigh"]);
     const thinkingAll = commands["plan-thinking"].getArgumentCompletions("") as Array<{ value: string }>;
     assert.ok(thinkingAll.some((i) => i.value === "clear") && !thinkingAll.some((i) => i.value === "-g"));
+  });
+});
+
+describe("autonomous flow (autoFlow) + workspace guard", () => {
+  it("agent_settled dispatches /plan-approve flow when autoFlow is on", async () => {
+    writePrefs(JSON.stringify({ version: 3, autoFlow: true }));
+    const { handlers, toolDefs, sentMessages } = createFakePi(["read"], { plan: true });
+
+    let prefillText = "";
+    const ctx = fakeCtx({
+      cwd: TMP,
+      ui: {
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        setEditorText: (text: string) => { prefillText = text; },
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await toolDefs.write_plan.execute("c1", { title: "Auto", content: "# Auto\nWork." }, undefined, undefined, ctx);
+    await handlers.agent_settled?.[0]({}, ctx);
+
+    assert.equal(prefillText, "", "auto mode must not prefill the editor");
+    assert.equal(sentMessages.length, 1, "auto mode dispatches the approval command");
+    assert.equal(sentMessages[0].content, "/plan-approve flow");
+    assert.equal(sentMessages[0].options?.expandPromptTemplates, true, "command routing requires expandPromptTemplates");
+  });
+
+  it("auto-start clears a stale /plan-approve prefill before dispatching", async () => {
+    writePrefs(JSON.stringify({ version: 3, autoFlow: true }));
+    const { handlers, toolDefs, sentMessages } = createFakePi(["read"], { plan: true });
+
+    // Editor still holds the manual prefill (e.g. the user armed auto-flow after
+    // the plan was written); a typed command would concatenate onto it.
+    let editorText = "/plan-approve";
+    const edits: string[] = [];
+    const ctx = fakeCtx({
+      cwd: TMP,
+      ui: {
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        getEditorText: () => editorText,
+        setEditorText: (text: string) => { editorText = text; edits.push(text); },
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await toolDefs.write_plan.execute("c1", { title: "Stale", content: "# Stale\nWork." }, undefined, undefined, ctx);
+    await handlers.agent_settled?.[0]({}, ctx);
+
+    assert.deepEqual(edits, [""], "the stale prefill is cleared, and only that write happens");
+    assert.equal(editorText, "", "editor is empty after auto-start");
+    assert.equal(sentMessages.length, 1, "auto-start still dispatches");
+    assert.equal(sentMessages[0].content, "/plan-approve flow");
+  });
+
+  it("auto-start leaves unrelated editor content untouched", async () => {
+    writePrefs(JSON.stringify({ version: 3, autoFlow: true }));
+    const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+
+    let editorText = "half-typed note";
+    let getEditorCalls = 0;
+    const edits: string[] = [];
+    const ctx = fakeCtx({
+      cwd: TMP,
+      ui: {
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        getEditorText: () => { getEditorCalls++; return editorText; },
+        setEditorText: (text: string) => { editorText = text; edits.push(text); },
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await toolDefs.write_plan.execute("c1", { title: "Keep", content: "# Keep\nWork." }, undefined, undefined, ctx);
+    await handlers.agent_settled?.[0]({}, ctx);
+
+    assert.ok(getEditorCalls > 0, "the clear check really inspected the editor (guards against a vacuous test)");
+    assert.deepEqual(edits, [], "non-prefill content is never overwritten");
+    assert.equal(editorText, "half-typed note");
+  });
+
+  it("autoFlow off keeps the human prefill path", async () => {
+    writePrefs(JSON.stringify({ version: 3 }));
+    const { handlers, toolDefs, sentMessages } = createFakePi(["read"], { plan: true });
+
+    let prefillText = "";
+    const ctx = fakeCtx({
+      cwd: TMP,
+      ui: {
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        setEditorText: (text: string) => { prefillText = text; },
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await toolDefs.write_plan.execute("c1", { title: "Manual", content: "# Manual\nWork." }, undefined, undefined, ctx);
+    await handlers.agent_settled?.[0]({}, ctx);
+
+    assert.ok(prefillText.includes("/plan-approve"), "manual mode prefills");
+    assert.equal(sentMessages.length, 0, "manual mode sends nothing");
+  });
+
+  it("blocks the automatic flow when another live session owns the workspace", async () => {
+    writePrefs(JSON.stringify({ version: 3, autoFlow: true }));
+    const { handlers, toolDefs, sentMessages, commands } = createFakePi(["read"], { plan: true });
+
+    // Plant a lease owned by a provably-live pid (this test process's parent).
+    const agentDir = path.join(TMP, ".pi", "agent");
+    const leaseDir = path.join(agentDir, "pi-plan_leases");
+    mkdirSync(leaseDir, { recursive: true });
+    writeFileSync(path.join(leaseDir, "999999.json"), JSON.stringify({ pid: process.pid, cwd: TMP, startedAt: 1 }));
+    // Own pid is excluded by production code; the probe must see it as alive,
+    // so patch it to claim any *other* pid is alive too.
+    const realKill = process.kill;
+    (process as any).kill = (pid: number, signal?: any) => {
+      if (signal === 0 && pid === process.pid) return true;
+      return realKill.call(process, pid, signal);
+    };
+
+    const notices: Array<{ message: string; type?: string }> = [];
+    const ctx = fakeCtx({
+      cwd: TMP,
+      ui: {
+        setStatus: () => {}, setWidget: () => {}, notify: (message: string, type?: string) => notices.push({ message, type }),
+        setEditorText: () => {},
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+
+    try {
+      await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+      // The lease file is keyed 999999 but claims this pid; the guard excludes
+      // the process's own pid (`process.pid`), so plant a foreign-looking pid
+      // that the patched probe reports alive.
+      const foreignPid = process.pid + 100000;
+      writeFileSync(path.join(leaseDir, `${foreignPid}.json`), JSON.stringify({ pid: foreignPid, cwd: TMP, startedAt: 1 }));
+      (process as any).kill = (pid: number, signal?: any) => {
+        if (signal === 0 && pid === foreignPid) return true;
+        return realKill.call(process, pid, signal);
+      };
+
+      await toolDefs.write_plan.execute("c1", { title: "Guard", content: "# Guard\nWork." }, undefined, undefined, ctx);
+      await handlers.agent_settled?.[0]({}, ctx);
+      assert.equal(sentMessages.length, 0, "blocked flow must not dispatch the approval command");
+      assert.ok(notices.some((n) => n.type === "error" && /blocked/.test(n.message)), "block is reported");
+
+      // warn policy proceeds
+      writePrefs(JSON.stringify({ version: 3, autoFlow: true, workspaceGuard: "warn" }));
+      await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+      await toolDefs.write_plan.execute("c2", { title: "Guard2", content: "# Guard2\nWork." }, undefined, undefined, ctx);
+      await handlers.agent_settled?.[0]({}, ctx);
+      assert.equal(sentMessages.length, 1, "warn policy proceeds");
+
+      // isolation is the escape hatch from block
+      writePrefs(JSON.stringify({ version: 3, autoFlow: true, flowIsolation: "worktree" }));
+      await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+      await toolDefs.write_plan.execute("c3", { title: "Guard3", content: "# Guard3\nWork." }, undefined, undefined, ctx);
+      await handlers.agent_settled?.[0]({}, ctx);
+      assert.equal(sentMessages.length, 2, "worktree isolation lets the flow proceed");
+    } finally {
+      (process as any).kill = realKill;
+      rmSync(leaseDir, { recursive: true, force: true });
+    }
+  });
+
+  it("/plan-auto on starts immediately when a plan is already written", async () => {
+    writePrefs(JSON.stringify({ version: 3 }));
+    const { commands, handlers, toolDefs, sentMessages } = createFakePi(["read"], { plan: true });
+    const notices: string[] = [];
+    const ctx = fakeCtx({
+      cwd: TMP,
+      ui: { setStatus: () => {}, setWidget: () => {}, notify: (m: string) => notices.push(m), theme: { fg: (_s: string, t: string) => t } },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await toolDefs.write_plan.execute("c1", { title: "Arm", content: "# Arm\nWork." }, undefined, undefined, ctx);
+
+    await commands["plan-auto"].handler("on", ctx);
+    assert.equal(sentMessages.length, 1, "arming with a written plan dispatches approval");
+    assert.equal(sentMessages[0].content, "/plan-approve flow");
+    assert.ok(notices.some((n) => /started/.test(n)));
+  });
+
+  it("bare /plan-auto arms auto-flow AND enters plan mode (practical entry point)", async () => {
+    writePrefs(JSON.stringify({ version: 3 }));
+    const { commands, handlers, entries } = createFakePi(["read"], { plan: false });
+    const notices: string[] = [];
+    const ctx = fakeCtx({
+      cwd: TMP,
+      ui: { setStatus: () => {}, setWidget: () => {}, notify: (m: string) => notices.push(m), theme: { fg: (_s: string, t: string) => t } },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    await commands["plan-auto"].handler("", ctx);
+
+    // armed
+    const saved = JSON.parse(readFileSync(prefsPath(), "utf8"));
+    assert.equal(saved["pi-plan"].autoFlow, true, "bare /plan-auto arms auto-flow");
+    // entered plan mode (persisted state)
+    const last = entries.filter((e: any) => e.customType === "pi-plan").at(-1);
+    assert.equal(last?.data?.enabled, true, "bare /plan-auto enters plan mode");
+    // and says what happens next, without requiring a second command
+    assert.ok(notices.some((n) => /Autonomous flow armed/.test(n)), "explains the next step");
+  });
+
+  it("/plan-auto on with an already-written plan does not re-enter plan mode", async () => {
+    writePrefs(JSON.stringify({ version: 3 }));
+    const { commands, handlers, toolDefs, sentMessages } = createFakePi(["read"], { plan: true });
+    const ctx = fakeCtx({
+      cwd: TMP,
+      ui: { setStatus: () => {}, setWidget: () => {}, notify: () => {}, theme: { fg: (_s: string, t: string) => t } },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await toolDefs.write_plan.execute("c1", { title: "Armed", content: "# Armed\nWork." }, undefined, undefined, ctx);
+    await commands["plan-auto"].handler("on", ctx);
+    assert.equal(sentMessages.length, 1, "existing plan starts immediately");
+    assert.equal(sentMessages[0].content, "/plan-approve flow");
+  });
+
+  it("/plan-auto on with a written plan clears the prefill before starting", async () => {
+    writePrefs(JSON.stringify({ version: 3 }));
+    const { commands, handlers, toolDefs, sentMessages } = createFakePi(["read"], { plan: true });
+
+    // Plan already written → the manual prefill sits in the editor.
+    let editorText = "/plan-approve";
+    const edits: string[] = [];
+    const ctx = fakeCtx({
+      cwd: TMP,
+      ui: {
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        getEditorText: () => editorText,
+        setEditorText: (text: string) => { editorText = text; edits.push(text); },
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await toolDefs.write_plan.execute("c1", { title: "Arm", content: "# Arm\nWork." }, undefined, undefined, ctx);
+
+    await commands["plan-auto"].handler("on", ctx);
+
+    assert.deepEqual(edits, [""], "arming clears the stale prefill");
+    assert.equal(editorText, "", "editor ends empty");
+    assert.equal(sentMessages.length, 1, "and still dispatches the start");
+    assert.equal(sentMessages[0].content, "/plan-approve flow");
+  });
+
+  it("/plan-auto on leaves unrelated editor content alone", async () => {
+    writePrefs(JSON.stringify({ version: 3 }));
+    const { commands, handlers, toolDefs } = createFakePi(["read"], { plan: true });
+    let editorText = "my own draft";
+    const edits: string[] = [];
+    const ctx = fakeCtx({
+      cwd: TMP,
+      ui: {
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        getEditorText: () => editorText,
+        setEditorText: (text: string) => { editorText = text; edits.push(text); },
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await toolDefs.write_plan.execute("c1", { title: "Arm", content: "# Arm\nWork." }, undefined, undefined, ctx);
+
+    await commands["plan-auto"].handler("on", ctx);
+    assert.deepEqual(edits, [], "unrelated editor content is never overwritten");
+    assert.equal(editorText, "my own draft");
+  });
+
+  it("/plan-auto persists the toggle and reports status", async () => {
+    writePrefs(JSON.stringify({ version: 3 }));
+    const { commands, handlers } = createFakePi([]);
+    const notices: string[] = [];
+    const ctx = fakeCtx({
+      cwd: TMP,
+      ui: { setStatus: () => {}, setWidget: () => {}, notify: (m: string) => notices.push(m), theme: { fg: (_s: string, t: string) => t } },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    await commands["plan-auto"].handler("status", ctx);
+    assert.match(notices.at(-1)!, /auto-flow: off/);
+    assert.match(notices.at(-1)!, /guard: block/);
+    assert.match(notices.at(-1)!, /isolation: off/);
+
+    await commands["plan-auto"].handler("on", ctx);
+    const saved = JSON.parse(readFileSync(prefsPath(), "utf8"));
+    assert.equal(saved["pi-plan"].autoFlow, true);
+
+    await commands["plan-auto"].handler("off", ctx);
+    const savedOff = JSON.parse(readFileSync(prefsPath(), "utf8"));
+    assert.equal(savedOff["pi-plan"].autoFlow, false);
+  });
+
+  it("parses the new preference keys and rejects bad values", async () => {
+    writePrefs(JSON.stringify({ version: 3, autoFlow: true, workspaceGuard: "warn", flowIsolation: "worktree" }));
+    const { commands, handlers } = createFakePi([]);
+    const notices: string[] = [];
+    const ctx = fakeCtx({
+      cwd: TMP,
+      ui: { setStatus: () => {}, setWidget: () => {}, notify: (m: string) => notices.push(m), theme: { fg: (_s: string, t: string) => t } },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await commands["plan-auto"].handler("status", ctx);
+    assert.match(notices.at(-1)!, /auto-flow: on/);
+    assert.match(notices.at(-1)!, /guard: warn/);
+    assert.match(notices.at(-1)!, /isolation: worktree/);
+
+    writePrefs(JSON.stringify({ version: 3, autoFlow: "yes", workspaceGuard: "nuke", flowIsolation: "maybe" }));
+    const failCtx = fakeCtx({
+      cwd: TMP,
+      ui: { setStatus: () => {}, setWidget: () => {}, notify: (m: string) => notices.push(m), theme: { fg: (_s: string, t: string) => t } },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, failCtx);
+    await commands["plan-auto"].handler("status", failCtx);
+    assert.match(notices.at(-1)!, /auto-flow: off/, "non-boolean autoFlow rejected");
+    assert.match(notices.at(-1)!, /guard: block/, "unknown guard policy falls back to block");
+    assert.match(notices.at(-1)!, /isolation: off/, "unknown isolation falls back to off");
+  });
+
+  it("flow status reports execution mode and auto flag", async () => {
+    writePrefs(JSON.stringify({ version: 3, autoFlow: true }));
+    const state = createFakePi([]);
+    const notices: string[] = [];
+    const flowCwd = createGitRepo("pi-plan-status-");
+    const planPath = path.join(flowCwd, "plan.md");
+    writeFileSync(planPath, "# Plan");
+    const ctx = fakeCtx({
+      cwd: flowCwd,
+      sessionManager: {
+        getBranch: () => [{
+          type: "custom",
+          customType: "pi-plan",
+          data: {
+            enabled: false,
+            lastPlanPath: planPath,
+            lastPlanStatus: "approved",
+            flow: { phase: "review", reviewPass: 1, execution: "worktree", baseline: "abc", initialDirty: "", initialUntrackedSnapshot: "[]" },
+          },
+        }],
+      },
+      ui: { setStatus: () => {}, setWidget: () => {}, notify: (m: string) => notices.push(m), theme: { fg: (_s: string, t: string) => t } },
+    });
+    await state.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await state.commands["flow"].handler("status", ctx);
+    assert.match(notices.at(-1)!, /worktree/);
+    assert.match(notices.at(-1)!, /auto/);
+  });
+});
+
+describe("worktree-isolated flow execution (pi-plan.flowIsolation)", () => {
+  it("dispatches implement to a worktree-sandboxed subagent and advances to review", async () => {
+    writePrefs(JSON.stringify({ version: 3, flowIsolation: "worktree" }));
+    const state = createFakePi(["read"], { plan: true });
+    let isolationRequest: any;
+    let reviewEvent: any;
+    state.onEmit = (event, data) => {
+      if (event === "pi-subagent:run") {
+        isolationRequest = data;
+        assert.ok(data.accept(), "isolation dispatch accepted");
+        data.respond({
+          id: data.id,
+          ok: true,
+          result: {
+            mergeStatus: "applied",
+            messages: [{ role: "assistant", content: [{ type: "text", text: "Done. [verification: pass]" }] }],
+          },
+        });
+      }
+      if (event === "pi-review:run") {
+        reviewEvent = data;
+        assert.ok(data.accept());
+        data.respond({ id: data.id, ok: true, result: { summary: "clean", findings: [] } });
+      }
+    };
+
+    const flowCwd = createGitRepo("pi-plan-iso-");
+    const ctx = fakeCtx({ hasUI: true, cwd: flowCwd });
+    await state.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await state.toolDefs.write_plan.execute("c1", { title: "Iso", content: "# Iso\nWork." }, undefined, undefined, ctx);
+    await state.commands["plan-approve"].handler("flow", ctx);
+
+    assert.ok(isolationRequest, "implement dispatched to pi-subagent");
+    assert.equal(isolationRequest.sandbox, "worktree");
+    assert.equal(isolationRequest.merge, "3way");
+    assert.equal(isolationRequest.agent, "worker");
+    assert.match(isolationRequest.task, /\[verification: pass\]/, "marker contract travels with the task");
+
+    assert.ok(reviewEvent, "review runs after a successful merge");
+    const last = state.entries.at(-1);
+    assert.equal(last?.data?.flow?.phase, "done");
+    assert.equal(last?.data?.flow?.execution, "worktree");
+  });
+
+  it("stops the flow when the isolated merge conflicts", async () => {
+    writePrefs(JSON.stringify({ version: 3, flowIsolation: "worktree" }));
+    const state = createFakePi(["read"], { plan: true });
+    state.onEmit = (event, data) => {
+      if (event === "pi-subagent:run") {
+        data.accept();
+        data.respond({ id: data.id, ok: true, result: { mergeStatus: "conflict", mergeError: "patch does not apply" } });
+      }
+    };
+
+    const flowCwd = createGitRepo("pi-plan-iso-conflict-");
+    const noticeList: Array<{ message: string; type?: string }> = [];
+    const ctx = fakeCtx({
+      hasUI: true, cwd: flowCwd,
+      ui: { setStatus: () => {}, setWidget: () => {}, notify: (message: string, type?: string) => noticeList.push({ message, type }), theme: { fg: (_s: string, t: string) => t } },
+    });
+    await state.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await state.toolDefs.write_plan.execute("c1", { title: "Iso", content: "# Iso\nWork." }, undefined, undefined, ctx);
+    await state.commands["plan-approve"].handler("flow", ctx);
+
+    assert.equal(state.entries.at(-1)?.data?.flow?.phase, "stopped");
+    assert.ok(noticeList.some((n) => /conflicted/.test(n.message)), "conflict is reported");
+  });
+
+  it("fails closed when pi-subagent never accepts the isolation dispatch", async () => {
+    writePrefs(JSON.stringify({ version: 3, flowIsolation: "worktree" }));
+    const state = createFakePi(["read"], { plan: true });
+    // No onEmit handler → no listener, like a pi-subagent-less install.
+
+    const flowCwd = createGitRepo("pi-plan-iso-missing-");
+    const noticeList: Array<{ message: string; type?: string }> = [];
+    const ctx = fakeCtx({
+      hasUI: true, cwd: flowCwd,
+      ui: { setStatus: () => {}, setWidget: () => {}, notify: (message: string, type?: string) => noticeList.push({ message, type }), theme: { fg: (_s: string, t: string) => t } },
+    });
+    await state.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await state.toolDefs.write_plan.execute("c1", { title: "Iso", content: "# Iso\nWork." }, undefined, undefined, ctx);
+    await state.commands["plan-approve"].handler("flow", ctx);
+
+    assert.equal(state.entries.at(-1)?.data?.flow?.phase, "stopped");
+    assert.ok(noticeList.some((n) => /pi-subagent is unavailable/.test(n.message)));
+  });
+
+  it("stops when the isolated child finishes without the verification marker", async () => {
+    writePrefs(JSON.stringify({ version: 3, flowIsolation: "worktree" }));
+    const state = createFakePi(["read"], { plan: true });
+    state.onEmit = (event, data) => {
+      if (event === "pi-subagent:run") {
+        data.accept();
+        data.respond({
+          id: data.id,
+          ok: true,
+          result: { mergeStatus: "applied", messages: [{ role: "assistant", content: [{ type: "text", text: "I changed things but did not verify." }] }] },
+        });
+      }
+    };
+
+    const flowCwd = createGitRepo("pi-plan-iso-nomarker-");
+    const noticeList: Array<{ message: string }> = [];
+    const ctx = fakeCtx({
+      hasUI: true, cwd: flowCwd,
+      ui: { setStatus: () => {}, setWidget: () => {}, notify: (message: string) => noticeList.push({ message }), theme: { fg: (_s: string, t: string) => t } },
+    });
+    await state.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await state.toolDefs.write_plan.execute("c1", { title: "Iso", content: "# Iso\nWork." }, undefined, undefined, ctx);
+    await state.commands["plan-approve"].handler("flow", ctx);
+
+    assert.equal(state.entries.at(-1)?.data?.flow?.phase, "stopped");
+    assert.ok(noticeList.some((n) => /marker missing/.test(n.message)));
+  });
+
+  it("inlines the plan for the isolated child (untracked .agents/ is absent from a fresh worktree)", async () => {
+    writePrefs(JSON.stringify({ version: 3, flowIsolation: "worktree" }));
+    const state = createFakePi(["read"], { plan: true });
+    let isolationRequest: any;
+    state.onEmit = (event, data) => {
+      if (event === "pi-subagent:run") {
+        isolationRequest = data;
+        data.accept();
+        data.respond({
+          id: data.id,
+          ok: true,
+          result: { mergeStatus: "applied", messages: [{ role: "assistant", content: [{ type: "text", text: "Done. [verification: pass]" }] }] },
+        });
+      }
+      if (event === "pi-review:run") {
+        data.accept();
+        data.respond({ id: data.id, ok: true, result: { summary: "clean", findings: [] } });
+      }
+    };
+
+    const flowCwd = createGitRepo("pi-plan-iso-inline-");
+    const ctx = fakeCtx({ hasUI: true, cwd: flowCwd });
+    await state.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await state.toolDefs.write_plan.execute("c1", { title: "Inline", content: "# Inline\nDo the thing." }, undefined, undefined, ctx);
+    await state.commands["plan-approve"].handler("flow", ctx);
+
+    assert.ok(isolationRequest, "implement dispatched");
+    assert.match(isolationRequest.task, /<<<PLAN/, "plan content is inlined for the child");
+    assert.match(isolationRequest.task, /Do the thing\./, "plan body travels with the task");
+    assert.match(isolationRequest.task, /\[verification: pass\]/, "marker contract still present");
+  });
+
+  it("worktree mode ignores host settles (no double-advance)", async () => {
+    writePrefs(JSON.stringify({ version: 3, flowIsolation: "worktree" }));
+    const state = createFakePi(["read"], { plan: true });
+    let dispatchCount = 0;
+    state.onEmit = (event, data) => {
+      if (event === "pi-subagent:run") {
+        dispatchCount++;
+        data.accept();
+        data.respond({
+          id: data.id,
+          ok: true,
+          result: { mergeStatus: "applied", messages: [{ role: "assistant", content: [{ type: "text", text: "Done. [verification: pass]" }] }] },
+        });
+      }
+      if (event === "pi-review:run") {
+        data.accept();
+        data.respond({ id: data.id, ok: true, result: { summary: "clean", findings: [] } });
+      }
+    };
+
+    const flowCwd = createGitRepo("pi-plan-iso-settle-");
+    const ctx = fakeCtx({ hasUI: true, cwd: flowCwd });
+    await state.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    await state.toolDefs.write_plan.execute("c1", { title: "Iso", content: "# Iso\nWork." }, undefined, undefined, ctx);
+    await state.commands["plan-approve"].handler("flow", ctx);
+    assert.equal(dispatchCount, 1, "one implement dispatch");
+
+    // A stray host settle must not re-enter the isolated flow.
+    await state.handlers.agent_settled?.[0]({}, ctx);
+    assert.equal(dispatchCount, 1, "host settle does not dispatch");
+    assert.equal(state.entries.at(-1)?.data?.flow?.phase, "done", "flow state untouched by the stray settle");
   });
 });

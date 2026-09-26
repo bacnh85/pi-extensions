@@ -26,9 +26,10 @@ pi --plan
 | Command / shortcut | Description |
 | --- | --- |
 | `/plan` | Toggle plan mode. |
+| `/plan-auto [on|off|status]` | Autonomous flow. Bare `/plan-auto` arms it **and enters plan mode** — the next message you send is planned and executed unattended. |
 | `/plan-approve [current|new|flow]` | Open approval choices or execute a specific handoff through Pi's command router. |
 | `/plan-execute new|flow` | Backward-compatible alias: jump straight to fresh-session execution (`new`) or the implement→verify→review workflow (`flow`) for the last approved plan. |
-| `/flow status` | Show the active workflow phase and review pass. |
+| `/flow status` | Show the active workflow phase, review pass, execution mode, and auto flag. |
 | `/flow stop` | Abort review and stop the active workflow. |
 | `/handoff <goal>` | Summarize the session into a reviewable prompt and start a focused new Pi session linked to the parent. |
 | `/rewind` | Select a saved prompt checkpoint and restore its code, conversation, or both. |
@@ -62,6 +63,71 @@ Non-blocking review findings do not enter the fix loop, but remain available in 
 `/handoff <goal>` summarizes the current session (seeded with the active plan/workflow state) into a focused, self-contained prompt, lets you review and edit it, then starts a **new Pi session** linked to the parent so the next agent can continue without the old context window. It does not carry plan mode or flow state into the new session — use `/plan-approve new|flow` to continue the same plan execution. `/rewind` captures the current Git workspace before each normal user prompt and presents the latest 100 reachable checkpoints. Select a checkpoint to restore its conversation, code, or both; code restore stashes current staged, unstaged, and untracked work, then restores the checkpoint's tracked patch and untracked-file snapshot (up to 1 MB). The checkpoint's tracked patch is stored externally with no size limit — an unbounded-storage property of `/rewind` checkpoints only; workflow creation instead caps the initial tracked dirty patch it snapshots at 50 KB (`MAX_DIRTY_PATCH_BYTES`), so commit or stash larger working trees before starting a workflow. It requires Git with unchanged `HEAD`, refuses committed divergence, and can overwrite concurrent or external changes to files restored by Pi.
 
 Fresh-session replacement is intentionally initiated by `/plan-approve`: extension-originated messages bypass Pi's slash-command router and cannot call command-only session APIs. The automated choice requires `pi-review` and `pi-subagent`. It never resets files or Git state; initial dirty paths are recorded for reviewer context. Untracked content snapshots are lossless up to 1 MB (separate from the tracked dirty patch, which has no size limit — payloads are stored in external files under `~/.pi/agent/pi-plan/checkpoints/`) and fail closed above it. The implementer must report exact checks with `[verification: pass]` or `[verification: fail]`.
+
+### Autonomous flow (no keypress)
+
+The practical usage is two steps, one command:
+
+```
+/plan-auto                 # arm + enter plan mode
+<describe the task>        # from here it runs unattended
+```
+
+`/plan-auto` (no argument) arms `pi-plan.autoFlow` and enters plan mode in one
+step; the next message you send is researched, planned, approved, implemented,
+verified, independently reviewed, and fixed — no keypress in between. From a
+terminal it is a single launch too:
+
+```bash
+pi --plan --no-session "Fix the failing test in math.js"   # --plan starts in plan mode
+```
+
+(When auto-flow is already armed in settings, `pi --plan "<task>"` is enough.)
+
+When a plan is written, pi-plan dispatches `/plan-approve flow` through Pi's
+command router itself, so the full implement → verify → review → fix loop runs
+unattended. The implementer still must finish with `[verification: pass]`; a
+missing or failed marker stops the flow, and blocking review findings loop back
+as fix turns up to the three-pass cap.
+
+Variants: `/plan-auto on|off` toggles the persisted setting (with a plan already
+written, `on` starts it immediately); `/plan-auto status` reports the settings;
+with auto-flow armed, `/plan` still works normally if you want a manual-
+approval review instead.
+
+Three settings control autonomous runs (global `~/.pi/agent/settings.json`,
+`pi-plan` key):
+
+| Setting | Values | Default | Meaning |
+| --- | --- | --- | --- |
+| `autoFlow` | `true`/`false` | `false` | Approve a written plan and run the flow without a keypress. |
+| `workspaceGuard` | `block`/`warn`/`off` | `block` | What to do when another live Pi session is detected in this workspace. |
+| `flowIsolation` | `worktree`/`off` | `off` | Run implement/fix in a git worktree through pi-subagent. |
+
+**Workspace guard.** Every session writes a lease (`~/.pi/agent/pi-plan_leases/<pid>.json`)
+and dead leases are garbage-collected via a pid liveness probe; when no lease
+matches, recently-modified session files for the same cwd are the fallback
+signal. When a conflict is detected during an *automatic* start, `block`
+(default) refuses to run — the message names the conflicting session and points
+at the two ways forward: close it, set `warn`, or enable `flowIsolation`.
+*Human-approved* flows (`/plan-approve` typed by you) are never blocked; they
+just receive a warning.
+
+**Worktree isolation.** `pi-plan.flowIsolation: "worktree"` runs each
+implement/fix phase in an isolated git worktree via [pi-subagent](../pi-subagent/)
+(`worker` agent, `sandbox: worktree`, `merge: "3way"`). The child's verified diff
+is merged back to your checkout only on success; a merge conflict, a missing
+verification marker, or a pi-subagent that does not honor worktree isolation
+stops the flow instead of writing to the shared checkout. Requires
+`@bacnh85/pi-subagent` and its per-run `sandbox` support (0.23.0+); an agent is
+not run in the shared checkout when isolation was requested and unavailable.
+Isolation also satisfies the workspace guard: a conflicting session no longer
+blocks, because implement/fix never touch the shared checkout.
+
+A Pi session cannot change its own working directory, so host-session
+relocation into a worktree is not possible from an extension — isolation is
+always through the child. Environment note: the flow's reviews still run in the
+host checkout against the merged diff.
 
 ## Tool gating in plan mode
 

@@ -327,6 +327,8 @@ export default function (pi: ExtensionAPI) {
       instructions: request.instructions,
       signal: request.signal,
       readOnly: request.readOnly,
+      sandbox: request.sandbox,
+      merge: request.merge,
       allowExternalCwd: getTrustedConfig(ctx).allowExternalCwd,
       onMessage: (result) => threadStore.updateThread(thread.id, { result }),
       onProgress: (progress) => { threadStore.updateProgress(thread.id, progress); request.onProgress?.(progress); },

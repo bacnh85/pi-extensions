@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.16.0 (2026-09-26)
+
+- **Autonomous flow (`pi-plan.autoFlow`, opt-in, default off).** A written plan
+  can now be approved and executed with no keypress: pi-plan dispatches
+  `/plan-approve flow` through Pi's command router from the settle handler, so
+  the full implement → verify → review → fix loop runs unattended. The
+  verification-marker hard stop, the three-review-pass cap, and fail-closed
+  review errors are unchanged. Toggle with `/plan-auto [on|off|status]`; bare
+  `/plan-auto` is the practical entry point — it arms the setting **and enters
+  plan mode**, so the next message is planned and executed unattended. The
+  plan-mode prompt tells the model execution is automatic (no "press Enter"
+  instruction) while auto-flow is armed.
+- **Workspace collision guard (`pi-plan.workspaceGuard`, default `block`).**
+  Each session writes a pid lease under `~/.pi/agent/pi-plan_leases/` (dead
+  leases GC'd via a liveness probe); recently-modified session files for the
+  same cwd are the fallback signal. An automatic start is refused when another
+  live session is detected, with the conflicting session named; human-approved
+  flows only warn. `/flow status` reports the policy state.
+- **Worktree-isolated flow execution (`pi-plan.flowIsolation: "worktree"`,
+  default off).** Implement/fix phases dispatch to a pi-subagent child running
+  in an isolated git worktree, with the verified diff merged back on success.
+  Merge conflicts, missing verification markers, and installs that cannot honor
+  isolation stop the flow instead of writing to the shared checkout. Isolation
+  also satisfies the workspace guard.
+
 ## 0.15.1 (2026-09-26)
 
 ### Fixed
