@@ -45,32 +45,42 @@ jobs:
           print(f"All lockfile entries carry integrity hashes.")
           EOF
 
-      # Release drift report: list packages whose committed version is not yet
-      # on npm. Informational (main pushes publish in the `ci` job) — exists so a
-      # version stranded by an earlier failed run is called out instead of
-      # silently sitting unpublished (pi-plan 0.16.3 went missing that way).
-      - name: Report package versions not yet on npm
+      # Release drift report: for every package, confirm the committed version is
+      # actually installable from npm. Checks the TARBALL, not `npm view`/
+      # dist-tags — metadata and dist-tags update before the CDN serves the
+      # artifact, so a metadata-only check reports success while `npm install`
+      # would 404 (pi-plan 0.16.3 and pi-ux 0.6.5 both hit that window).
+      # Informational (publishes happen in the `ci` job): turns a silently
+      # stranded release into a visible run-summary line.
+      - name: Report package versions not yet downloadable from npm
         if: github.event_name == 'push'
         continue-on-error: true
         run: |
           python3 - <<'EOF'
-          import glob, json, re, subprocess
-          rows = []
+          import glob, json, urllib.error, urllib.request
+          rows, ok = [], 0
           for pkg in sorted(glob.glob('pi-*/package.json')):
               name = pkg.split('/')[0]
               meta = json.load(open(pkg))
               npmname, ver = meta.get('name'), meta['version']
               if not npmname:
                   continue
-              out = subprocess.run(['npm', 'view', npmname, 'version'], capture_output=True, text=True)
-              latest = out.stdout.strip() if out.returncode == 0 else ''
-              if latest != ver:
-                  rows.append(f"  {name}: committed {ver}, npm {latest or 'none'}")
+              url = f"https://registry.npmjs.org/{npmname}/-/{npmname.split('/')[-1]}-{ver}.tgz"
+              try:
+                  req = urllib.request.Request(url, method='HEAD')
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      if r.status == 200:
+                          ok += 1
+                          continue
+                      rows.append(f"  {name}: HTTP {r.status}")
+              except urllib.error.HTTPError as e:
+                  rows.append(f"  {name}: committed {ver}, tarball HTTP {e.code} (not installable)")
+              except Exception as e:
+                  rows.append(f"  {name}: {type(e).__name__}: {e}")
           if rows:
-              print("NOT PUBLISHED (this run's matrix will publish them if their paths changed):")
+              print("NOT INSTALLABLE FROM NPM (matrix publishes only if this run changed the package):")
               print("\n".join(rows))
-          else:
-              print("Every committed version is already on npm.")
+          print(f"{ok}/{ok + len(rows)} committed versions are downloadable.")
           EOF
 
       - uses: dorny/paths-filter@9d7afb8d214ad99e78fbd4247752c4caed2b6e4c # v4.0.0
