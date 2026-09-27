@@ -2,7 +2,7 @@
 
 ## [0.6.5] - 2026-09-27
 
-> Republished after the CI version-table guard fix (matrix had aborted before this job ran).
+> Republished after the CI version-table guard fix (matrix had aborted before this job ran); second attempt after npm dropped the first upload during processing.
 
 - `ux-presets`, `ux-routing`, and `ux-capture` are reference-only skills and now
   carry `disable-model-invocation: true`, dropping them from the system-prompt
