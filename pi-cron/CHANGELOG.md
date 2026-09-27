@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.8 (2026-09-26)
+
+- Tests: `cwd-repro.test.ts` is now hermetic — saves and strips
+  `PI_CRON_DISABLED` for the test body and restores it in the existing
+  `finally`. Previously a cron-fired (headless) session that ran `npm test`
+  with the env var exported failed spuriously: the loop guard refused
+  `action:"add"`.
+
 ## 0.3.7 (2026-09-26)
 
 - **Behavior change:** unpinned jobs no longer fire into a session whose cwd

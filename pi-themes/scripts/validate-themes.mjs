@@ -31,7 +31,10 @@ const requiredExport = Object.keys(reference.export ?? {}).sort();
 let failed = false;
 const names = new Set();
 const isColorValue = (v, vars) =>
-  typeof v === "number" || v === "" || /^#[0-9A-Fa-f]{6}$/.test(v) || vars.has(v);
+  (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 255)
+  || v === ""
+  || /^#[0-9A-Fa-f]{6}$/.test(v)
+  || vars.has(v);
 
 for (const file of files) {
   let theme;
@@ -64,6 +67,19 @@ for (const file of files) {
   if (exportExtra.length) fail(`unknown export tokens: ${exportExtra.join(", ")}`);
 
   const vars = new Set(Object.keys(theme.vars ?? {}));
+  // Vars carry the literal values — a var referencing another var is circular,
+  // and non-color junk ("red", 999) must not slip through keys-only validation.
+  for (const [name, value] of Object.entries(theme.vars ?? {})) {
+    if (vars.has(value)) {
+      fail(`vars.${name}: var-to-var reference ${JSON.stringify(value)} — vars must carry literal values`);
+    } else if (
+      !(typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 255)
+      && value !== ""
+      && !/^#[0-9A-Fa-f]{6}$/.test(value)
+    ) {
+      fail(`vars.${name}: invalid value ${JSON.stringify(value)} (expected 6-digit hex, integer 0-255, or "" for terminal default)`);
+    }
+  }
   for (const [token, value] of Object.entries(theme.colors ?? {})) {
     if (!isColorValue(value, vars)) {
       fail(`colors.${token}: unresolved value ${JSON.stringify(value)}`);

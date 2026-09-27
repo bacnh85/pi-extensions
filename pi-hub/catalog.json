@@ -30,6 +30,11 @@
     "description": "Git-backed undo/redo for Pi — snapshots file state at each turn into a dedicated ref namespace, so /undo rolls back the last message AND its file changes. Fills PI's gap vs OpenCode's git-backed /undo /redo (PI has conversation-level /tree but not file-state snapshots)."
   },
   {
+    "name": "@bacnh85/pi-classifier",
+    "dir": "pi-classifier",
+    "description": "System One decision models (TypeSafe Jev) for Pi — classify tool for typed probabilistic answers, an opt-in Jev-gated permission auto-approve hook for shell commands (static risky list first, never auto-denies, fails safe, observe mode), and a /classifier-config panel with decision-model discovery from the router."
+  },
+  {
     "name": "@bacnh85/pi-commandcode",
     "dir": "pi-commandcode",
     "description": "Pi extension that connects to Command Code's OpenAI-compatible Provider API."

@@ -2,6 +2,27 @@
 
 All notable changes to `pi-web` will be documented in this file.
 
+## 0.17.7 (2026-09-26)
+
+- **Security: `isLocalUrl` now recognizes IPv4-mapped IPv6 addresses** (both the
+  dotted `::ffff:127.0.0.1` and URL-canonicalized hex `::ffff:7f00:1` forms),
+  closing an SSRF-guard gap for `web_image` downloads from custom gateways,
+  including redirect-hop re-validation.
+- `web_crawl` full mode: the 100-URL-cap truncation note is prepended, not
+  appended — `truncateText` cuts from the front and previously removed exactly
+  that note on a maxed-out crawl.
+- `web_search` `freshness` is no longer silently dropped on the default SearXNG
+  path: `pw`/`pm`/`py` forward as `time_range` (explicit date ranges remain
+  Brave-only).
+- `web_crawl` full mode enforces the documented 100-URL cap (truncation noted
+  in the output).
+- Package now ships `extensions/scripts/` so the README's smoke-test commands
+  run from an installed copy.
+- README: document `CRAWL4AI_API_TIMEOUT_MS` / `FIRECRAWL_TIMEOUT_MS` and the
+  shared per-call override params (`firecrawl_api_key`/`_api_url`,
+  `crawl4ai_api_url`/`_api_token`, `timeout_ms`); `parseSizeParam` accept/reject
+  branches now unit-tested.
+
 ## 0.17.6 (2026-09-26)
 
 ### Fixed

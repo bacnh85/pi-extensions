@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.11 - 2026-09-26
+
+- Catalog: added the missing `pi-classifier` entry — `pi-hub add pi-classifier`
+  now resolves to `npm:@bacnh85/pi-classifier` instead of falling through to
+  an unscoped (unvetted) npm name, and the interactive picker lists it.
+- Added a catalog completeness test: every monorepo package with a `pi` key
+  must have a catalog entry (guards future drift).
+- Package ships `extensions/package.json` (module-type marker, consistent with
+  sibling packages).
+
 ## 0.1.10 - 2026-09-24
 
 - Fixed: interactive install now prints a failure summary (`N install(s)

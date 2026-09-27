@@ -96,10 +96,17 @@ describe("review parsing and shell gate", () => {
     assert.equal(isReadOnlyBash("git branch --list"), true, "branch list");
     assert.equal(isReadOnlyBash("git branch --show-current"), true, "branch show-current");
     assert.equal(isReadOnlyBash("git show --output=/tmp/out HEAD"), false, "show --output");
+    assert.equal(isReadOnlyBash("git diff --ext-diff"), false, "diff --ext-diff runs external diff drivers");
+    assert.equal(isReadOnlyBash("git log -p --textconv"), false, "log --textconv runs textconv filters");
+    assert.equal(isReadOnlyBash("git diff --text"), false, "--text (unique-prefix abbrev of --textconv) runs the driver");
+    assert.equal(isReadOnlyBash("git diff --ext"), false, "--ext (abbrev of --ext-diff) is driver-inviting");
+    assert.equal(isReadOnlyBash("git diff --stat @{u}"), true, "diff --stat upstream ok");
     assert.equal(isReadOnlyBash("git log --oneline --output=/tmp/log"), false, "log --output");
     assert.equal(isReadOnlyBash("git diff --output=/tmp/patch"), false, "diff --output");
     assert.equal(isReadOnlyBash("git show HEAD"), true, "show ok");
     assert.equal(isReadOnlyBash("git log --oneline -5"), true, "log ok");
+    assert.equal(isReadOnlyBash("git diff --text"), false, "--text (unique-prefix abbrev of --textconv) runs the driver");
+    assert.equal(isReadOnlyBash("git diff --ext"), false, "--ext (abbrev of --ext-diff) is driver-inviting");
     assert.equal(isReadOnlyBash("awk -i inplace '1' tracked.txt"), false, "awk inplace");
     assert.equal(isReadOnlyBash("sed -n 'w output.txt' input.txt"), false, "sed w command");
     assert.equal(isReadOnlyBash("sed 'w /tmp/out' input"), false, "sed w path");
@@ -119,6 +126,24 @@ describe("review parsing and shell gate", () => {
     // Package managers can execute repository-controlled lifecycle scripts.
     for (const command of ["npm test", "npm pack --dry-run", "npm audit", "yarn test", "pnpm test"]) {
       assert.equal(isReadOnlyBash(command), false, `${command} blocked`);
+    }
+  });
+
+  it("textconv-armed repo: patch-rendering git commands need explicit driver-off flags", async () => {
+    const mod = await import("../index");
+    mod.setTextconvArmed(true);
+    try {
+      const { isReadOnlyBash: armed } = mod;
+      assert.equal(armed("git diff"), false, "git diff runs configured textconv by default");
+      assert.equal(armed("git show"), false, "git show renders a patch");
+      assert.equal(armed("git log -p"), false, "log -p renders patches");
+      assert.equal(armed("git diff --no-textconv"), true, "explicit --no-textconv is safe");
+      assert.equal(armed("git show --no-ext-diff"), true, "explicit --no-ext-diff is safe");
+      assert.equal(armed("git status --short"), true, "status never renders patches");
+      assert.equal(armed("git log --oneline -5"), true, "log without -p shows no patches");
+      assert.equal(armed("git rev-parse HEAD"), true, "rev-parse is patch-free");
+    } finally {
+      mod.setTextconvArmed(false);
     }
   });
 

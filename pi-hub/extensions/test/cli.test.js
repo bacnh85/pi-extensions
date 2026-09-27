@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { readSettingsPackages, resolveSource, searchCatalog, mergeResults, main } from "../../cli.js";
@@ -169,4 +169,28 @@ test("remove rejects -l/--local — only valid with add", async () => {
   assert.equal(code, 1, "exit code 1 on flag misuse");
   assert.equal(logs.length, 1, "error only — no `pi remove` ran");
   assert.match(logs[0], /-l\/--local is only valid with add — remove takes package names/);
+});
+
+test("resolveSource: pi-classifier resolves to scoped npm (catalog drift regression)", () => {
+  assert.equal(resolveSource("pi-classifier"), "npm:@bacnh85/pi-classifier");
+});
+
+test("catalog completeness: every monorepo pi-package has a catalog entry", () => {
+  const root = path.resolve(import.meta.dirname, "..", "..", "..");
+  const catalog = JSON.parse(readFileSync(path.resolve(import.meta.dirname, "..", "..", "catalog.json"), "utf8"));
+  const dirs = new Set(catalog.map((c) => c.dir));
+  // pi-hub is the installer itself; pi-config-panel is a library, not installable (0.1.4 policy).
+  const skipped = new Set(["pi-hub", "pi-config-panel", "node_modules"]);
+  const missing = [];
+  for (const ent of readdirSync(root, { withFileTypes: true })) {
+    if (!ent.isDirectory() || skipped.has(ent.name) || !ent.name.startsWith("pi-")) continue;
+    let pj;
+    try {
+      pj = JSON.parse(readFileSync(path.join(root, ent.name, "package.json"), "utf8"));
+    } catch {
+      continue;
+    }
+    if (pj.pi) missing.push(ent.name);
+  }
+  for (const dir of missing) assert.ok(dirs.has(dir), `${dir} has a "pi" key but no pi-hub catalog entry — add it to catalog.json`);
 });

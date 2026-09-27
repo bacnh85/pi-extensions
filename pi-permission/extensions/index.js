@@ -138,6 +138,47 @@ function toolSubject(toolName, input) {
   return "";
 }
 
+/**
+ * Normalized match subjects for path tools. Rules are matched against the
+ * traversal-normalized relative form AND the absolute form — never the raw
+ * string: raw matching let `src/../../x` satisfy `src/*` (`*` crosses `/`,
+ * `..` was never resolved) and let absolute `/proj/private/k` slip past a
+ * relative `private/*` deny. Falls back to the raw string if resolution
+ * throws (exotic inputs must not crash the gate).
+ */
+export function normalizedSubjects(raw, cwd, home) {
+  const s = String(raw || "");
+  if (!s.trim()) return { rel: "", abs: "" }; // subject-less call stays subject-less
+  try {
+    // Drive-letter input/cwd (C:\… or C:/…) resolves under path.win32 even on
+    // a posix host — WSL-boundary rules and cross-platform configs stay sane.
+    const P = /^[A-Za-z]:[/\\]/.test(s) || /^[A-Za-z]:[/\\]/.test(cwd || "") ? nodePath.win32 : nodePath;
+    const root = P.resolve(cwd || process.cwd());
+    const abs = P.resolve(root, expandHome(s, home));
+    const rel = P.relative(root, abs) || ".";
+    return { rel, abs };
+  } catch {
+    return { rel: s, abs: s };
+  }
+}
+
+// Per-pattern subject selection: relative patterns match the normalized
+// relative subject, absolute/~/patterns match the absolute form (keeps a
+// scoped allow from being overridden by its own `*` fallback matching the
+// other subject form). Insertion order + last-match-wins preserved.
+function resolvePathAction(toolRules, rel, abs, home) {
+  let action = null;
+  for (const [pattern, val] of Object.entries(toolRules)) {
+    const pat = home ? expandHome(pattern, home) : pattern;
+    // Absolute = posix `/…` OR win32 drive-letter `C:\…`/`C:/…` (nodePath is
+    // platform-correct in production; the drive-letter test covers rules
+    // written for a Windows cwd from any host).
+    const subject = pat.startsWith("/") || /^[A-Za-z]:[/\\]/.test(pat) ? abs : rel;
+    if (wildcardToRegex(pat).test(subject)) action = val;
+  }
+  return action;
+}
+
 function resolve(p, cwd, ppath = nodePath) {
   if (!p) return "";
   // node:path resolve normalizes `..` — the old hand-rolled join left it in
@@ -331,7 +372,12 @@ export default function permissionExtension(pi) {
         action = toolRules;
         matchedRule = toolName + " (whole)";
       } else {
-        action = resolveRule(toolRules, toolSubject(toolName, input), home);
+        if (PATH_TOOLS.has(toolName)) {
+          const { rel, abs } = normalizedSubjects(input?.path, ctx.cwd, home);
+          action = resolvePathAction(toolRules, rel, abs, home);
+        } else {
+          action = resolveRule(toolRules, toolSubject(toolName, input), home);
+        }
         matchedRule = toolName;
       }
     }
@@ -357,7 +403,10 @@ export default function permissionExtension(pi) {
     // Session promotions only suppress the "ask" prompt — an explicit deny
     // (tool rule or global, possibly tightened mid-session after a re-read)
     // always wins.
-    if (sessionAllowed(toolName, toolSubject(toolName, input))) return undefined;
+    const sessionSubject = PATH_TOOLS.has(toolName)
+      ? normalizedSubjects(input?.path, ctx.cwd, home).rel
+      : toolSubject(toolName, input);
+    if (sessionAllowed(toolName, sessionSubject)) return undefined;
 
     // ── "ask" ───────────────────────────────────────────────────────
     if (yolo || auto) return undefined; // auto-approve (--yolo or --auto)
@@ -368,7 +417,7 @@ export default function permissionExtension(pi) {
     }
 
     try {
-      const subject = toolSubject(toolName, input);
+      const subject = sessionSubject;
       // Subject-less tools (no command/path to key on) get no remember options.
       const options = subject
         ? ["Allow once", "Allow for this session", "Add to permanent allowlist", "Deny"]

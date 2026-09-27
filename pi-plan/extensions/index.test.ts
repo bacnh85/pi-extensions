@@ -525,6 +525,18 @@ describe("workspace utility commands", () => {
     assert.ok(result?.block);
     assert.match(result?.reason ?? "", /specs gate/);
   });
+
+  it("specs gate allows read-classified bash and blocks writes (write gate, not a read gate)", async () => {
+    const { handlers } = createFakePi(["read", "bash"], {});
+    const ctx = fakeCtx({ sessionManager: { getBranch: () => [{ type: "custom", customType: "pi-plan", data: { enabled: true, specGateActive: true, specGatePlanMode: false, specPath: path.join(TMP, ".agents", "specs", "spec.md") } }] } });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+    assert.equal(await tc({ toolName: "bash", input: { command: "git status --short" } }, ctx), undefined, "read-classified bash auto-allows under specs gate");
+    const result = await tc({ toolName: "bash", input: { command: "rm x" } }, ctx);
+    assert.ok(result?.block);
+    assert.match(result?.reason ?? "", /specs gate/);
+  });
 });
 
 describe("plan-mode guidance", () => {
@@ -1415,6 +1427,38 @@ describe("tool gating in plan mode", () => {
     assert.equal(confirmations, 0);
   });
 
+  it("hard-blocks git external-diff/textconv driver execution (arbitrary exec via config)", async () => {
+    const { handlers } = createFakePi(["read", "bash"], { plan: true });
+    const ctx = fakeCtx({
+      hasUI: true,
+      ui: {
+        confirm: async () => false,
+        select: async () => null, editor: async () => "",
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+    for (const cmd of [
+      'git -c diff.external="touch /tmp/pwned" diff',
+      "git -c diff.external=touch diff",
+      "git -c diff.mycmd.command='sh -c x' diff",
+      "git diff --ext-diff",
+      "git log -p --ext-diff",
+      "git show --textconv",
+      "git log -p --textconv",
+    ]) {
+      const result = await tc({ toolName: "bash", input: { command: cmd } }, ctx);
+      assert.ok(result?.block, `${cmd} blocked`);
+    }
+    // Disabling the drivers stays readable, as do cosmetic -c keys.
+    assert.equal(await tc({ toolName: "bash", input: { command: "git --no-pager diff --no-ext-diff" } }, ctx), undefined);
+    assert.equal(await tc({ toolName: "bash", input: { command: "git diff --no-textconv" } }, ctx), undefined);
+    assert.equal(await tc({ toolName: "bash", input: { command: "git -c color.ui=always diff" } }, ctx), undefined);
+  });
+
   it("requires confirmation for awk (Turing-complete interpreter)", async () => {
     let confirmations = 0;
     const { handlers } = createFakePi(["read", "bash"], { plan: true });
@@ -1435,6 +1479,32 @@ describe("tool gating in plan mode", () => {
       assert.equal(await tc({ toolName: "bash", input: { command: cmd } }, ctx), undefined, `${cmd} confirmed then allowed`);
     }
     assert.equal(confirmations, 3, "every awk command required confirmation");
+  });
+
+  it("env-assignment prefix on a git command never classifies as read (GIT_EXTERNAL_DIFF arm)", async () => {
+    const { handlers } = createFakePi(["read", "bash"], { plan: true });
+    let confirmations = 0;
+    const ctx = fakeCtx({
+      hasUI: true,
+      ui: {
+        confirm: async () => { confirmations++; return false; },
+        select: async () => { confirmations++; return "Deny"; }, editor: async () => "",
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+    // GIT_EXTERNAL_DIFF executes with NO flag — the env-prefix form must land
+    // in the confirm tier (prompt → Deny → blocked), never auto-allow.
+    for (const cmd of ["GIT_EXTERNAL_DIFF=/tmp/evil git diff", "GIT_EXTERNAL_DIFF=sh git show"]) {
+      const before = confirmations;
+      const result = await tc({ toolName: "bash", input: { command: cmd } }, ctx);
+      assert.ok(confirmations > before && result?.block, `${cmd} must prompt and not auto-allow`);
+    }
+    // Plain env-prefixed reads are unaffected (FOO=1 with a read command).
+    assert.equal(await tc({ toolName: "bash", input: { command: "FOO=1 git status --short" } }, ctx), undefined, "FOO=1 git status stays read");
   });
 
   it("requires confirmation for ambiguous sed forms, xargs interpreters, and one-off scripts", async () => {
@@ -1726,7 +1796,7 @@ describe("Jev plan gate", () => {
       server.close();
       if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   }
 

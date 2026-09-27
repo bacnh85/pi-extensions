@@ -72,6 +72,10 @@ const DESTRUCTIVE_BASH_PATTERNS = [
   /\b(npm|yarn|pnpm|pip)\s+(install|uninstall|update|upgrade|add|remove|ci|link|publish|version)\b/i,
   /\bgit\s+(add|commit|push|pull|merge|rebase|reset|checkout|switch|stash|cherry-pick|revert|tag|init|clone|clean|restore|notes|config)\b/i,
   /\bgit\s+branch\s+(?!--(?:list|all|remote|merged|no-merged|contains|show-current)\b)/i,
+  // git diff/log: execute user-configured diff drivers. Unique-prefix
+  // abbreviations count too — git accepts `--text` for --textconv, which runs
+  // the driver (verified live).
+  /\s--(?:ext|text)[\w-]*/i,
   /--output(?:=|\s)/i,
   /\bfind\b[^\n]*-(delete|exec|execdir|ok|okdir|fprint[f0]?|fls)\b/i,
   // rg/fd are clap CLIs. rg accepts unambiguous long-prefix abbreviations
@@ -98,6 +102,21 @@ export function parseReviewArgs(args: string): { thinking: ThinkingLevel; target
     : { thinking: "high", target: args.trim() };
 }
 
+/** True when this repo configures a diff driver (diff.<drv>.textconv etc.).
+ *  Probed at review start (and unit-test settable) — patch-rendering git
+ *  commands then need explicit --no-ext-diff/--no-textconv to auto-allow. */
+export let textconvArmed = false;
+export function setTextconvArmed(v: boolean): void { textconvArmed = v; }
+export async function probeTextconvArmed(cwd: string): Promise<void> {
+  try {
+    const { execFile } = await import("node:child_process");
+    const stdout = await new Promise<string>((resolve, reject) => {
+      execFile("git", ["config", "--get-regexp", "\\.(textconv|driver)$"], { cwd }, (err, out) => (err ? reject(err) : resolve(String(out))));
+    });
+    textconvArmed = stdout.trim().length > 0;
+  } catch { textconvArmed = false; }
+}
+
 export function isReadOnlyBash(command: string): boolean {
   // Reject multiline commands — the classification regexes are single-line only
   if (/[\r\n]/.test(command)) return false;
@@ -107,6 +126,18 @@ export function isReadOnlyBash(command: string): boolean {
   if (DESTRUCTIVE_BASH_PATTERNS.some((pattern) => pattern.test(inspection))) return false;
   // Read-only git subcommands
   if (/^git\s+/i.test(inspection)) {
+    // diff/show/log render patches → textconv drivers run BY DEFAULT when a
+    // repo .gitattributes names a driver (probe at review start sets
+    // textconvArmed). Only auto-allow them when drivers are explicitly off.
+    // Verified driver-executing forms (clean-room probe): `git diff` (dirty
+    // worktree or staged content, bare or vs a rev), `git show [rev]`,
+    // `git log -p/--patch`, `git blame|annotate <path>`. Summary-only forms
+    // (--stat/--numstat/--shortstat), `git log` without -p, and
+    // status/rev-parse/ls-files never render a patch.
+    const rendersPatch = /^git\s+(?:\S+\s+)*(?:diff\b(?!.*\s--(?:stat|numstat|shortstat)\b)|show\b(?!.*\s--(?:stat|numstat|shortstat)\b)|log\b(?=.*(?:\s-p\b|\s--patch\b|--patch\b))|blame\b|annotate\b)/i;
+    if (textconvArmed && rendersPatch.test(inspection) && !/--(?:no-ext-diff|no-textconv)\b/i.test(inspection)) {
+      return false;
+    }
     return /^git\s+(status|rev-parse|diff|show|log|ls-files)\b/i.test(inspection)
       || /^git\s+branch\s+--(?:list|all|remote|merged|no-merged|contains|show-current)\b/i.test(inspection);
   }
@@ -433,6 +464,7 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
     restorePending = false;
     toolsBeforeReview = undefined;
     thinkingBeforeReview = undefined;
+    void probeTextconvArmed(ctx.cwd); // best-effort: driver-aware bash gating
     setStatus(ctx);
   });
 

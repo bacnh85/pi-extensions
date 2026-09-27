@@ -170,13 +170,13 @@ function harness({ rules = {}, flags = {}, hasUI = true, getFlagThrows = false }
   return pi;
 }
 
-function ctx({ hasUI = true, selectChoice = "Allow once" } = {}) {
+function ctx({ hasUI = true, selectChoice = "Allow once", cwd = "/proj", home = "/home/user" } = {}) {
   const notifies = [];
   let selected = selectChoice;
   return {
     hasUI,
-    cwd: "/proj",
-    home: "/home/user",
+    cwd,
+    home,
     notifies,
     ui: {
       notify(m, t) {
@@ -601,4 +601,39 @@ test("stale runner (getFlag throws at load) never crashes handlers (regression)"
   assert.equal(result, undefined, "ask → Allow once → allow");
   const second = await pi.handler(call, c);
   assert.equal(second, undefined, "second call handled identically");
+});
+
+// ── Scoped path-rule normalization (2026-09-26 nightly) ──────────────────────
+// Regression: raw-subject matching let `src/../../x` satisfy `src/*` and let
+// absolute paths slip past relative denies. Rules now match the normalized
+// relative form AND the absolute form.
+
+test("scoped write allow cannot be bypassed with ../ traversal", async () => {
+  const pi = harness({ rules: { write: { "*": "deny", "src/*": "allow" } } });
+  const result = await pi.handler({ toolName: "write", input: { path: "src/../../outside.txt" } }, ctx());
+  assert.ok(result?.block, "src/../../outside.txt must NOT match src/*");
+  assert.match(result?.reason ?? "", /denied by permission rule/);
+});
+
+test("absolute path still matches a relative scoped deny", async () => {
+  const pi = harness({ rules: { read: { "*": "allow", "private/*": "deny" } } });
+  // ctx().cwd = /proj → /proj/private/key.pem normalizes to private/key.pem.
+  const result = await pi.handler({ toolName: "read", input: { path: "/proj/private/key.pem" } }, ctx());
+  assert.ok(result?.block, "/proj/private/key.pem must match private/* deny");
+  assert.match(result?.reason ?? "", /denied by permission rule/);
+});
+
+test("legitimate in-scope path still allowed under scoped rules", async () => {
+  const pi = harness({ rules: { write: { "*": "deny", "src/*": "allow" } } });
+  const result = await pi.handler({ toolName: "write", input: { path: "src/a.ts" } }, ctx());
+  assert.equal(result, undefined, "src/a.ts stays allowed");
+});
+
+test("win32 drive-letter absolute pattern matches the absolute subject (deny fires)", async () => {
+  // Regression (0.2.7 review): `pat.startsWith("/")` only recognized posix
+  // absolutes — a `C:\private\*` deny was matched against the RELATIVE subject
+  // and never fired on Windows.
+  const pi = harness({ rules: { read: { "*": "allow", "C:\\private\\*": "deny" } } });
+  const result = await pi.handler({ toolName: "read", input: { path: "C:\\private\\key.pem" } }, ctx({ cwd: "C:\\proj", ppath: win32 }));
+  assert.ok(result?.block, "win32 drive-letter deny must fire on the absolute subject");
 });

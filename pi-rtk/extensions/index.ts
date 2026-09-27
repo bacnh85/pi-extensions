@@ -41,7 +41,11 @@ function isRtkDisabled(): boolean {
 
 function updateStatus(ctx: ExtensionContext): void {
   const envDisabled = isRtkDisabled();
-  ctx.ui.setStatus(RTK_STATUS_KEY, sessionEnabled && !envDisabled ? "rtk ✓" : "rtk ✗");
+  // Honest footer: ✓ only when enabled AND the binary is not known-missing.
+  // rtkAvailable === undefined (not yet checked) shows ✓ optimistically and
+  // flips on the first check; === false shows ⚠ (rewrites pass through).
+  const on = sessionEnabled && !envDisabled;
+  ctx.ui.setStatus(RTK_STATUS_KEY, !on ? "rtk ✗" : rtkAvailable === false ? "rtk ⚠" : "rtk ✓");
 }
 
 function notifyRtkUnavailable(ctx: ExtensionContext, message: string): void {
@@ -108,6 +112,7 @@ async function rewriteCommand(pi: ExtensionAPI, command: string, ctx: ExtensionC
     if (signal?.aborted) return null;
     rtkAvailable = false;
     rtkLastCheckedAt = Date.now();
+    updateStatus(ctx);
     notifyRtkUnavailable(ctx, "[pi-rtk] rtk rewrite failed to start; shell command rewrites will pass through unchanged");
     return null;
   }
@@ -115,6 +120,7 @@ async function rewriteCommand(pi: ExtensionAPI, command: string, ctx: ExtensionC
   rtkAvailable = true;
   rtkLastCheckedAt = Date.now();
   rtkUnavailableNotified = false;
+  updateStatus(ctx);
   if (result.killed) return null;
   // rtk rewrite exit codes: 0 = no rewrite (empty stdout), 1 = error,
   // 3 = successful rewrite (rewritten command in stdout).
@@ -197,6 +203,7 @@ export default function piRtkExtension(pi: ExtensionAPI) {
     rtkUnavailableNotified = false;
     updateStatus(ctx);
     await checkRtkAvailable(pi, ctx);
+    updateStatus(ctx); // reflect what the availability check found
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {

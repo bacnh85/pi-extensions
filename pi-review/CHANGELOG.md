@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.15 (2026-09-26)
+
+- Security: the review-mode read-only bash gate now rejects `git diff --ext-diff`
+  and `git log -p --textconv` (they execute user-configured external diff
+  drivers / textconv filters). `--no-ext-diff` / `--no-textconv` (disabling)
+  remain allowed. Regression tests added.
+- Security (review round): unique-prefix flag abbreviations (`--text` =
+  `--textconv`, verified live) are also rejected; and when the repo configures
+  a diff driver (probed at review start), patch-rendering commands (`git diff`,
+  `git show`, `git log -p`, `git blame`) are allowed only with an explicit
+  `--no-ext-diff`/`--no-textconv` — textconv runs by default on patch output.
+
 ## 0.2.14 (2026-09-26)
 
 ### Fixed

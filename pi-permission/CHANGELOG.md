@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.7 (2026-09-26)
+
+- **Security: scoped path rules now match normalized subjects.** Path-tool
+  rules (`read`/`write`/`edit`/`grep`/`find`/`ls`) are matched against the
+  traversal-normalized relative form and the absolute form instead of the raw
+  string: `write src/../../.bashrc` can no longer satisfy a `src/*` allow, and
+  an absolute `/proj/private/key.pem` now matches a relative `private/*` deny.
+  Relative patterns match the relative subject, absolute/`~` patterns the
+  absolute form; insertion order + last-match-wins semantics unchanged.
+  Session-remember and allowlist keys use the same normalized subject.
+- Absolute-pattern recognition covers win32 drive-letter forms (`C:\…`), and
+  drive-letter paths/cwds resolve under `path.win32` even on a posix host —
+  a `C:\private\*` deny previously matched nothing.
+
 ## 0.2.6 (2026-09-24)
 
 ### Fixed

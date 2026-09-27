@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.16.1 (2026-09-26)
+
+- **Security: git external-diff/textconv drivers no longer auto-allowed as read.**
+  `git -c diff.*=… diff`, `git diff --ext-diff`, `git log -p --ext-diff`, and
+  `git show --textconv` execute arbitrary commands (diff drivers from `-c`
+  config or user gitconfig) and now classify as write (blocked in plan mode).
+  Disabling flags (`--no-ext-diff`, `--no-textconv`) and cosmetic keys
+  (`git -c color.ui=always diff`) stay read-classified.
+- **Security: driver-aware gating (review round).** Two further holes closed:
+  (1) `GIT_EXTERNAL_DIFF=… git diff` armed the env-var driver through the
+  env-assignment stripping — any `GIT_*=` prefix on a git command now
+  classifies confirm instead of read (other env prefixes like `FOO=1` are
+  unaffected). (2) Textconv drivers run BY DEFAULT on patch-rendering commands
+  (`git diff`, `git show`, `git log -p`, `git blame`) with no flag — when the
+  repo actually configures a driver (probed once per session via `git config
+  --get-regexp \.(textconv|driver)$`), those subcommands drop to the confirm
+  tier unless `--no-ext-diff`/`--no-textconv` is present; driver-free repos
+  see zero behavior change.
+- The `/specs` gate now classifies bash instead of blanket-blocking it: read
+  commands (`ls`, `git status`) run during spec refinement, write commands
+  still block until `/specs-approve` (the gate is a write gate, as documented).
+- Test hygiene: `withJevStub` teardown retries tmpdir removal (macOS ENOTEMPTY
+  flake); new regression tests for both fixes.
+
 ## 0.16.0 (2026-09-26)
 
 - **Autonomous flow (`pi-plan.autoFlow`, opt-in, default off).** A written plan

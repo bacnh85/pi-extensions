@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.6 (2026-09-26)
+
+- Fixed: `normalizeReference` type-guards `path`/`repository`/`branch`/`description`
+  — malformed-but-parseable config (`{"docs": {"path": 42}}`) now yields an invalid
+  reference (skipped) instead of throwing a TypeError that killed session start.
+
 ## 0.1.5 (2026-09-24)
 
 ### Fixed

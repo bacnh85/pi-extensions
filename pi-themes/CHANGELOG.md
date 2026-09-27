@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 - 2026-09-26
+
+- Theme validator now checks `vars` VALUES, not just names: each var must be a
+  6-digit hex, an integer 0–255, or `""` (terminal default); var-to-var
+  references are rejected. Previously `{"vars":{"accent":"red"}}` or
+  out-of-range numbers (e.g. `999`) passed validation and shipped broken.
+- Added regression tests (`node --test`) for bad, out-of-range, and valid var
+  values.
+
 ## 0.2.0 - 2026-09-10
 
 Added `pi-catppuccin-mocha` — Catppuccin Mocha palette, chosen to blend Pi panes with

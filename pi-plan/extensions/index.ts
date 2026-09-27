@@ -11,6 +11,7 @@ import {
   withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { execFile } from "node:child_process";
 import { access, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PLAN_MODE_SERENA_GUIDANCE } from "./lib/guidance";
@@ -321,14 +322,57 @@ const GIT_TAG_READ_ONLY = new RegExp(`${GIT_PREFIX}tag\\s+(?:--list\\b|-\\w*l\\b
 const GIT_REMOTE_READ_ONLY = new RegExp(`${GIT_PREFIX}remote(?:\\s+(?:-[va]+|show\\b|get-url\\b)[^\\n]*)?$`, "i");
 const GIT_CONFIG_READ_ONLY = new RegExp(`${GIT_PREFIX}config\\s+(?:--(?:get|get-regexp|get-all|list)|-l)\\b`, "i");
 const GIT_REFLOG_READ_ONLY = new RegExp(`${GIT_PREFIX}reflog(?:\\s+show\\b.*)?$`, "i");
+const GIT_EXTERNAL_DRIVER = /(?:\s--(?!no-)(?:ext-diff|textconv)\b)|(?:\s-c\s+["']?diff\.)/i;
+
+// Patch-rendering subcommands run configured diff drivers (textconv is
+// default-on for diff/show/log -p/blame when a repo .gitattributes names a
+// driver the user's gitconfig defines). GIT_EXTERNAL_DRIVER catches only the
+// flag-invited forms; when a driver is actually configured in this repo, these
+// subcommands drop to the confirm tier unless the run explicitly disables the
+// drivers. Probed once per session (session_start); empty in most repos →
+// zero behavior change. // ponytail: confirm tier, not per-driver parsing.
+const GIT_PATCH_SUBCOMMANDS = /^(?:git\s+(?:-C\s+\S+\s+|-c\s+\S+=\S+\s+|--no-pager\s+)*)(?:diff|show|log|blame|annotate)\b/i;
+const GIT_DRIVERS_DISABLED = /--(?:no-ext-diff|no-textconv)\b/i;
+let repoHasDiffDriver = false;
+
+async function probeDiffDrivers(cwd: string): Promise<void> {
+  repoHasDiffDriver = false;
+  try {
+    const stdout = await new Promise<string>((resolve, reject) => {
+      execFile("git", ["config", "--get-regexp", "\\.(textconv|driver)$"], { cwd }, (err, out) => (err ? reject(err) : resolve(String(out))));
+    });
+    repoHasDiffDriver = stdout.trim().length > 0;
+  } catch { /* no driver configured (exit 1) or git unavailable */ }
+}
 
 function isGitReadOnly(inspection: string): boolean {
+  // External diff/textconv drivers execute arbitrary commands (from user
+  // gitconfig or injected via `-c diff.*=`); never auto-allow them as read.
+  // `--no-ext-diff`/`--no-textconv` (disabling drivers) remain safe.
+  if (GIT_EXTERNAL_DRIVER.test(inspection)) return false;
   return GIT_READ_ONLY.test(inspection)
     || GIT_BRANCH_READ_ONLY.test(inspection)
     || GIT_TAG_READ_ONLY.test(inspection)
     || GIT_REMOTE_READ_ONLY.test(inspection)
     || GIT_CONFIG_READ_ONLY.test(inspection)
     || GIT_REFLOG_READ_ONLY.test(inspection);
+}
+
+/** Diff-driver-aware git classification: read → confirm when patch-rendering
+ *  commands could execute a configured driver (and the env-prefix form, which
+ *  can arm GIT_EXTERNAL_DIFF, is never a plain read). */
+function classifyGitSegment(inspection: string, gitEnvArmed: boolean): CommandDisposition {
+  // GIT_* env assignments on a git command can arm GIT_EXTERNAL_DIFF, which
+  // executes with NO flag. Other env prefixes (FOO=1, LANG=C) stay read —
+  // blanket-confirming them would re-create the env-prefix prompt flood the
+  // ENV_ASSIGNMENT stripping was built to fix. (PAGER/CORE_PAGER need a tty;
+  // agent bash has none. GIT_ASKPASS/GIT_SSH_COMMAND fire only on network
+  // subcommands, already write-classified.)
+  if (gitEnvArmed) return "confirm";
+  if (!GIT_DRIVERS_DISABLED.test(inspection) && repoHasDiffDriver && GIT_PATCH_SUBCOMMANDS.test(inspection)) {
+    return "confirm";
+  }
+  return isGitReadOnly(inspection) ? "read" : "write";
 }
 
 // Resolve whether a named subagent is read-only (safe to auto-allow in plan mode).
@@ -477,15 +521,17 @@ function xargsPayload(inspection: string): string {
 
 function classifySegment(seg: string): CommandDisposition {
   let inspection = seg;
+  let gitEnvArmed = false;
   for (;;) {
     const stripped = inspection.replace(ENV_ASSIGNMENT, "").replace(FLOW_KEYWORD, "");
     if (stripped === inspection) break;
+    if (/^\s*GIT_[A-Z_]*=/.test(inspection)) gitEnvArmed = true;
     inspection = stripped;
   }
   inspection = inspection.replace(/^\S*\/(?=[^/\s]+(?:\s|$))/, "").trim();
   if (!inspection) return "read"; // bare env assignment — sets a variable, writes nothing
   if (/^git\s+/i.test(inspection)) {
-    return isGitReadOnly(inspection) ? "read" : "write";
+    return classifyGitSegment(inspection, gitEnvArmed);
   }
   // xargs executes a payload command — classify the payload, not xargs itself:
   // `grep -l x | xargs grep y` reads, `| xargs rm` still hits the writer tier,
@@ -2255,6 +2301,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     // extension process) — same clearing discipline as the sibling packages.
     clearPlanSessionAllows();
     lastCtx = ctx;
+    void probeDiffDrivers(ctx.cwd); // best-effort: textconv-aware bash gating
     preferences = await loadPreferences();
     const cfg = await loadUtilityConfig(ctx);
     plansDir = cfg.plansDir ?? DEFAULT_PLAN_DIR;
@@ -2524,7 +2571,18 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     if (!planModeEnabled) return;
     if (specGateActive && !READ_ONLY_TOOLS.has(event.toolName) && event.toolName !== ASK_USER_QUESTION_TOOL && event.toolName !== PLAN_TOOL) {
-      return { block: true, reason: "pi-plan: /specs gate is active. Run /specs-approve before workspace writes." };
+      // The specs gate is a WRITE gate (per README): bash still classifies — reads
+      // run (spec refinement needs repo access), writes block until /specs-approve,
+      // confirm-tier keeps the normal prompt below.
+      if (isToolCallEventType("bash", event)) {
+        const disposition = classifyCommand(event.input.command || "");
+        if (disposition === "read") return;
+        if (disposition === "write") {
+          return { block: true, reason: "pi-plan: /specs gate is active. Run /specs-approve before workspace writes." };
+        }
+      } else {
+        return { block: true, reason: "pi-plan: /specs gate is active. Run /specs-approve before workspace writes." };
+      }
     }
 
     // ponytail: hard-blocked mutators never available

@@ -99,6 +99,13 @@ test("normalizeReference: rejects def with neither path nor repository", () => {
   assert.equal(normalizeReference("x", { description: "no path" }, "/proj", "/cache"), null);
 });
 
+test("normalizeReference: rejects non-string path/repository/branch/description", () => {
+  assert.equal(normalizeReference("x", { path: 42 }, "/proj", "/cache"), null);
+  assert.equal(normalizeReference("x", { repository: {} }, "/proj", "/cache"), null);
+  assert.equal(normalizeReference("x", { repository: "o/r", branch: 7 }, "/proj", "/cache"), null);
+  assert.equal(normalizeReference("x", { path: "../d", description: 99 }, "/proj", "/cache"), null);
+});
+
 test("normalizeReference: hidden flag respected", () => {
   const r = normalizeReference("x", { path: "../d", hidden: true }, "/proj", "/cache");
   assert.equal(r.hidden, true);

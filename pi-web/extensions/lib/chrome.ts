@@ -80,6 +80,19 @@ export function isLocalUrl(raw: string): boolean {
   if (host === "localhost" || host.endsWith(".localhost")) return true;
   if (host === "::1") return true;
   if (host.includes(":")) {
+    // IPv4-mapped IPv6 is its embedded IPv4 — loopback/link-local/private
+    // mapped forms must not slip past the SSRF guard. new URL canonicalizes
+    // ::ffff:127.0.0.1 to hex form (::ffff:7f00:1), so accept both shapes.
+    const tail = host.startsWith("::ffff:") ? host.slice(7) : null;
+    if (tail) {
+      const dotted = tail.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+      if (dotted) return isLocalUrl(`http://${dotted[1]}/`);
+      const hex = tail.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+      if (hex) {
+        const bits = (parseInt(hex[1], 16) << 16) | parseInt(hex[2], 16);
+        return isLocalUrl(`http://${(bits >>> 24) & 0xff}.${(bits >>> 16) & 0xff}.${(bits >>> 8) & 0xff}.${bits & 0xff}/`);
+      }
+    }
     // IPv6 ULA fc00::/7 and link-local fe80::/10 are private too.
     if (/^f[cd]/.test(host) || /^fe[89ab]/.test(host)) return true;
     return false;

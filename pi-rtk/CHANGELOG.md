@@ -2,6 +2,13 @@
 
 All notable changes to `pi-rtk` will be documented in this file.
 
+## [0.2.7] - 2026-09-26
+
+- Honest status footer: `rtk ✓` now only shows when the binary is not
+  known-missing — a failed/unavailable rewrite flips the indicator to `rtk ⚠`
+  (rewrites pass through unchanged) instead of leaving a misleading ✓. Status
+  updates after each availability check, not just at session start.
+
 ## [0.2.6] - 2026-09-26
 
 - Fix: the eval gate now covers the shell interpreter family (`bash`/`sh`/

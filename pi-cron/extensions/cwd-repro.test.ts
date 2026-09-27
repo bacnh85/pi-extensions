@@ -29,6 +29,11 @@ describe("cwd guard — unpinned fires must not run in a foreign-cwd session", (
     const sessionCwd = realpathSync(mkdtempSync(join(tmpdir(), "pi-cron-cwd-session-")));
 
     const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+    // Hermetic: a cron-fired headless session exports PI_CRON_DISABLED=1, which
+    // makes the mutation loop-guard refuse action:"add". Save + strip it for the
+    // test body; restore it in the finally below.
+    const prevCronDisabled = process.env.PI_CRON_DISABLED;
+    delete process.env.PI_CRON_DISABLED;
     const prevCwd = process.cwd();
     process.env.PI_CODING_AGENT_DIR = agentDir;
     const sent: unknown[] = [];
@@ -76,6 +81,11 @@ describe("cwd guard — unpinned fires must not run in a foreign-cwd session", (
     } finally {
       process.chdir(prevCwd);
       process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+      if (prevCronDisabled === undefined) {
+        delete process.env.PI_CRON_DISABLED;
+      } else {
+        process.env.PI_CRON_DISABLED = prevCronDisabled;
+      }
     }
   });
 });

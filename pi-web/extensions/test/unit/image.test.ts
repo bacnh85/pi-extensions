@@ -1041,3 +1041,13 @@ describe("toImageBlock mime mapping", () => {
     expect(block.type).to.equal("image");
   });
 });
+
+describe("parseSizeParam", () => {
+  it("passes valid WxH through, rejects junk", async () => {
+    const { parseSizeParam } = await import("../../index");
+    expect(parseSizeParam("960x1728")).to.equal("960x1728");
+    expect(parseSizeParam(undefined)).to.equal(undefined);
+    expect(() => parseSizeParam("96x96")).to.throw(/invalid size/i);
+    expect(() => parseSizeParam("foo")).to.throw(/invalid size/i);
+  });
+});

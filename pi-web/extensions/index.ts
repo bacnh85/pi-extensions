@@ -140,7 +140,7 @@ Rules: Firecrawl Search is weak on domain-specific queries — prefer SearXNG/Br
 // ---------------------------------------------------------------------------
 
 /** Validate a requested image size: WxH, 3-4 digits each. Present-but-invalid throws (never silently generates a square). */
-function parseSizeParam(value: unknown): string | undefined {
+export function parseSizeParam(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   const s = String(value);
   if (!/^\d{3,4}x\d{3,4}$/.test(s)) throw new Error(`invalid size "${s}": expected WxH with 3-4 digits each, e.g. 960x1728`);
@@ -304,13 +304,17 @@ export default function piWebExtension(pi: ExtensionAPI) {
 
       if (mode === "full") {
         // Crawl4AI mode
-        const urls = (params.urls as string[]) || (params.url ? [params.url as string] : []);
-        if (!urls.length) throw new Error("Either url or urls parameter is required for crawl.");
+        const rawUrls = (params.urls as string[]) || (params.url ? [params.url as string] : []);
+        if (!rawUrls.length) throw new Error("Either url or urls parameter is required for crawl.");
+        const urls = rawUrls.slice(0, 100); // documented cap
+        const truncated = rawUrls.length > urls.length ? ` (truncated from ${rawUrls.length} to the 100-URL cap)` : "";
         const config = loadCrawl4aiConfig(params as Record<string, unknown>, cwd, trusted);
         const browserConfig = params.browser_config as Record<string, unknown> | undefined;
         const crawlerConfig = params.crawler_config as Record<string, unknown> | undefined;
         const result = await fetchCrawl4aiCrawl(config, urls, browserConfig, crawlerConfig, signal);
-        const text = formatCrawl4aiResult(result as unknown as Record<string, unknown>, maxChars);
+        // Note BEFORE the body: truncateText cuts from the front, so a tail-appended
+        // note is exactly what a maxed-out crawl would lose.
+        const text = truncated + formatCrawl4aiResult(result as unknown as Record<string, unknown>, maxChars);
         return { content: [{ type: "text" as const, text: truncateText(text) }], details: result };
       }
 

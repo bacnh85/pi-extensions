@@ -32,6 +32,10 @@ describe("isLocalUrl", () => {
     "http://[::1]:8080",
     "http://[fd00::1]:3000",
     "http://[fe80::1]:3000",
+    "http://[::ffff:127.0.0.1]:8080",
+    "http://[::ffff:7f00:1]:8080", // hex form — WHATWG URL canonicalization shape
+    "http://[::ffff:169.254.169.254]/",
+    "http://[::ffff:10.0.0.5]/",
     "file:///Users/me/project/index.html",
   ];
   for (const url of local) {

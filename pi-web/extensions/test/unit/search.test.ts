@@ -112,6 +112,32 @@ describe("searchWithDiagnostics", () => {
     expect(calls[0]).to.include("searxng.test");
   });
 
+  it("forwards freshness pw/pm/py to SearXNG as time_range", async () => {
+    const calls = installMockFetch((url) => {
+      if (url.startsWith("http://searxng.test/search")) {
+        return jsonResponse({ results: [{ title: "SearXNG", url: "https://example.com", content: "Snippet" }] });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+
+    const result = await searchWithDiagnostics({ query: "homelab ansible ideas", freshness: "pw" });
+    expect(result.selectedBackend).to.equal("searxng");
+    expect(calls[0]).to.include("time_range=pw");
+
+    // Explicit date ranges are Brave-only — no time_range on the SearXNG call.
+    const calls2 = installMockFetch((url) => {
+      if (url.startsWith("http://searxng.test/search")) {
+        return jsonResponse({ results: [] });
+      }
+      if (url.startsWith("https://api.search.brave.com/")) {
+        return jsonResponse({ web: { results: [] } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    await searchWithDiagnostics({ query: "homelab ansible ideas", freshness: "2026-01-01to2026-01-31" });
+    expect(calls2[0]).to.not.include("time_range=");
+  });
+
   it("captures backend errors and falls through to Firecrawl last", async () => {
     installMockFetch((url) => {
       if (url.startsWith("http://searxng.test/search")) return jsonResponse({ results: [] });

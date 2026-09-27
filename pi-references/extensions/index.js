@@ -72,6 +72,13 @@ export function normalizeReference(alias, def, cwd, cacheRoot) {
 
   const obj = typeof def === "string" ? parseShorthand(def) : { ...def };
   if (!obj || typeof obj !== "object") return null;
+  // Type-guard optional fields: malformed-but-parseable config (e.g. {"path": 42},
+  // {"repository": {}}) must yield an invalid reference (null, skipped at startup)
+  // instead of a TypeError downstream.
+  if (obj.path !== undefined && typeof obj.path !== "string") return null;
+  if (obj.repository !== undefined && typeof obj.repository !== "string") return null;
+  if (obj.branch !== undefined && typeof obj.branch !== "string") return null;
+  if (obj.description !== undefined && typeof obj.description !== "string") return null;
 
   const out = {
     alias,

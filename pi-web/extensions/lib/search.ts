@@ -93,8 +93,11 @@ async function searchSearxng(params: SearchParams): Promise<SearchResult[]> {
     cwdFromContext(params._ctx ?? {}),
     includeProjectEnv(params._ctx ?? {}),
   );
+  // freshness pw/pm/py maps to SearXNG time_range; explicit date ranges stay
+  // Brave-only (SearXNG has no date-interval param) and are dropped here.
+  const timeRange = params.freshness === "pw" || params.freshness === "pm" || params.freshness === "py" ? params.freshness : undefined;
   const raw = await fetchSearxngResults(
-    { query: params.query, count: params.count ?? 5, engines: params.engines, timeout_ms: params.timeout_ms } as Record<string, unknown>,
+    { query: params.query, count: params.count ?? 5, engines: params.engines, time_range: timeRange, timeout_ms: params.timeout_ms } as Record<string, unknown>,
     cfg.baseUrl,
     params.signal,
   );

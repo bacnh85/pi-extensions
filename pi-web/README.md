@@ -27,9 +27,11 @@ Variables:
 | `BRAVE_API_KEY` | No (1) | — | Brave Search API key |
 | `SEARXNG_BASE_URL` | No | `http://127.0.0.1:8888` | Self-hosted SearXNG |
 | `FIRECRAWL_API_URL` | No | `https://api.firecrawl.dev/v2` | Self-hosted or hosted |
+| `FIRECRAWL_TIMEOUT_MS` | No | `60000` | Firecrawl request timeout (integer ≥ 1000) |
 | `FIRECRAWL_API_KEY` | No (2) | — | Required for hosted Firecrawl |
 | `CRAWL4AI_API_URL` | No | `http://127.0.0.1:11235` | Self-hosted Crawl4AI |
 | `CRAWL4AI_API_TOKEN` | No (3) | — | Required if Crawl4AI auth enabled |
+| `CRAWL4AI_API_TIMEOUT_MS` | No | `60000` | Crawl4AI request timeout (integer ≥ 1000) |
 | `GEMINI_WEB_SECURE_1PSID` | No (4) | — | `__Secure-1PSID` cookie from gemini.google.com — enables authed `web_research` (Deep Research) |
 | `GEMINI_WEB_PROXY` | No | — | Proxy URL for Gemini web calls (escape hatch if Google blocks the IP) |
 | `GEMINI_WEB_SECURE_1PSIDTS` | No (5) | — | Rotating `__Secure-1PSIDTS` cookie — bootstrap only; keep the source browser session closed so it isn't superseded (see "Keeping the session alive") |
@@ -64,6 +66,8 @@ Secrets are never printed; `web_status` reports only presence/source.
 When any `web_*` tool is active, pi-web injects a condensed backend-selection protocol (SearXNG → Brave → Firecrawl ordering, Firecrawl precision/scrape caveats, source-citation rule) into the system prompt via a `before_agent_start` hook. This travels with the package — no edits to `~/.pi/agent/AGENTS.md` are required — and carries zero overhead when pi-web is not loaded.
 
 ## Tools
+
+Shared per-call overrides (in addition to each tool's own params): Firecrawl-backed tools (`web_map`, `web_crawl` light) accept `firecrawl_api_key` / `firecrawl_api_url`; Crawl4AI-backed tools (`web_extract` full/agy, `web_crawl` full, `web_screenshot`, `web_pdf`) accept `crawl4ai_api_url` / `crawl4ai_api_token`; every tool accepts `timeout_ms`. These override the env configuration for that single call.
 
 ### `web_search` — Unified search
 
