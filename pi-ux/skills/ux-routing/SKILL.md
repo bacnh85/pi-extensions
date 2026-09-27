@@ -1,5 +1,6 @@
 ---
 name: ux-routing
+disable-model-invocation: true
 description: >
   Reference table for dividing UX work across models in the Pi ecosystem —
   who defines the DESIGN.md scaffold, who generates variants, who renders and

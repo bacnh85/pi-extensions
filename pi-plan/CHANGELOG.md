@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.2 (2026-09-27)
+
+- **Fix: concurrent `ask_user_question` calls no longer hang.** The TUI has a
+  single modal dialog slot; two parallel tool calls both awaited
+  `ctx.ui.select` and stalled ("No result provided") until user intervention.
+  Invocations now serialize through a promise chain — the second dialog opens
+  once the first settles, and both calls return answers. A guideline was
+  added telling the model to ask one question per turn instead.
+
 ## 0.16.1 (2026-09-26)
 
 - **Security: git external-diff/textconv drivers no longer auto-allowed as read.**

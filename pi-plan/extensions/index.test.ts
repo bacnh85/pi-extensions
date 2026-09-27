@@ -3257,6 +3257,51 @@ describe("ask_user_question validation", () => {
     assert.equal(res.details?.answer, "A");
   });
 
+  it("serializes concurrent ask_user_question calls (single modal dialog slot)", async () => {
+    // Regression guard for the parallel-tool-calls hang: two ask_user_question
+    // calls in one assistant turn must not race for the single ctx.ui.select
+    // modal — the second dialog opens only after the first resolves, and both
+    // return answers.
+    const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
+    const ctx = fakeCtx({ hasUI: true });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    let inDialog = 0;
+    let maxConcurrent = 0;
+    const order: string[] = [];
+    let resolveFirst!: (v: string) => void;
+    const firstGate = new Promise<string>((r) => { resolveFirst = r; });
+    ctx.ui.select = async (title: string) => {
+      inDialog++;
+      maxConcurrent = Math.max(maxConcurrent, inDialog);
+      order.push(`enter:${title}`);
+      if (title.includes("First")) {
+        const answer = await firstGate; // hold the first dialog open
+        inDialog--;
+        order.push("exit:First");
+        return answer;
+      }
+      inDialog--;
+      order.push("exit:Second");
+      return "Second answer";
+    };
+
+    const qd = toolDefs.ask_user_question;
+    const p1 = qd.execute("c1", { question: "First?", options: [{ label: "A" }, { label: "B" }] }, undefined, undefined, ctx);
+    const p2 = qd.execute("c2", { question: "Second?", options: [{ label: "C" }, { label: "D" }] }, undefined, undefined, ctx);
+
+    // Give the queue a tick: only the first dialog may be open so far.
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(maxConcurrent, 1, "second select must not start before the first resolves");
+
+    resolveFirst("A");
+    const [r1, r2] = await Promise.all([p1, p2]);
+    assert.equal(maxConcurrent, 1, "dialogs never overlapped");
+    assert.equal(r1.details?.answer, "A");
+    assert.equal(r2.details?.answer, "Second answer");
+    assert.deepEqual(order, ["enter:First?", "exit:First", "enter:Second?", "exit:Second"]);
+  });
+
   it("rejects blank label at execute", async () => {
     const { handlers, toolDefs } = createFakePi(["read"], { plan: true });
     const ctx = fakeCtx({ hasUI: false });

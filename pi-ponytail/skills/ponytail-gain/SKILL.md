@@ -1,5 +1,6 @@
 ---
 name: ponytail-gain
+disable-model-invocation: true
 description: >
   Show ponytail's measured impact as a compact scoreboard: less code, less
   cost, more speed, from the benchmark medians. One-shot display, not a

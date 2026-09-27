@@ -2,6 +2,47 @@
 
 All notable changes to `pi-sub` will be documented in this file.
 
+## 0.1.51 (2026-09-27)
+
+### Features
+
+- New `/context` command: Claude Code-style context-window breakdown —
+  total/window/% with a block bar, per-section system-prompt costs
+  (tools/rules/docs/project_context/skills/…), top tool-cost attribution by
+  owning package (`pi-web 9.2k · 11 tools`), memory files, skills, messages,
+  reserved budget (16k compaction reserve + model max output), and free
+  space, plus data-driven pruning recommendations. Totals come from
+  `ctx.getContextUsage()` when known; section splits use the SDK's chars/4
+  `estimateTokens` heuristic and are labeled as estimates (unknown right
+  after compaction / before the first model response — the panel says so).
+  TUI-only; other modes get a notify fallback.
+- `/context` layout aligned with OMP/Claude's panel: model · used/window,
+  a three-slice bar (`█ used · ▒ autocompact · ░ free`), an "Estimated usage
+  by category" block with per-tool lines, and a **disjoint** bottom pair —
+  free space now excludes the autocompact buffer, matching Pi's trigger
+  (`tokens > contextWindow - reserveTokens`). The reserve is resolved from
+  `compaction.modelOverrides["provider/id"].reserveTokens` →
+  `compaction.reserveTokens` → 16384 (the same order as Pi's
+  settings-manager), and reads `disabled` when `compaction.enabled` is false.
+  Model output is no longer counted as reserved — Pi only caps it inside
+  summarization, so the previous `Reserved = reserve + maxTokens` line
+  overstated withheld context.
+- `/context` now posts its panel **into the transcript** (a `pi-sub-context`
+  custom message with a registered renderer) instead of opening a dismissable
+  overlay, so — like OMP — it stays visible above the input while you work.
+  The renderer receives the live theme, so category glyphs keep their colors;
+  tool/package labels are shortened to a readable segment (`pi-web` instead of
+  the full path or `@bacnh85/pi-web`); long lines are ellipsis-clamped to width.
+  Renders inline in OMP's layout:  a 4×10 waffle grid (`⛁` used,
+  `⛶` free, `⛝` autocompact buffer — tinted per category) with model name,
+  `model[window]` and `used/window tokens (pct)` to its right, followed by a
+  disjoint glyph-prefixed category block and collapsible-looking detail lists
+  (system-prompt sections, top tools, top packages). Categories are now truly
+  **disjoint** — context files and skills are split out of "System prompt" so
+  no row double-counts — and token/percent formatting follows OMP house style
+  (`5.3K`, `21K`, `1m`, `<0.1%`). Slices ≥0.5% of the window always get one
+  grid cell so small weights stay visible.
+
 ## 0.1.50 (2026-09-24)
 
 - The disabled-usage hint no longer echoes the router key prefix/first/last

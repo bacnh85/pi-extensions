@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.5] - 2026-09-27
+
+- `ux-presets`, `ux-routing`, and `ux-capture` are reference-only skills and now
+  carry `disable-model-invocation: true`, dropping them from the system-prompt
+  skills section (~0.5k tokens per fresh session). They remain available via
+  `/skill:<name>` and by reading their SKILL.md paths; `ux-design` gained
+  explicit path pointers to all three.
+
 ## [0.6.4] - 2026-09-26
 
 - Fixed: `ux_audit` `execute()` now wraps `resolveAuditCss()` in try/catch — a missing/unreadable `path` returns a formatted `isError` result (`❌ UX AUDIT ERROR: …`) instead of a raw ENOENT throw.

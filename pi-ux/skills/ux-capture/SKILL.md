@@ -1,5 +1,6 @@
 ---
 name: ux-capture
+disable-model-invocation: true
 description: >
   Capture playbook for the pi-ux render-and-inspect loop: screenshotting a UI
   you just built via local headless Chrome vs web_screenshot, daemon

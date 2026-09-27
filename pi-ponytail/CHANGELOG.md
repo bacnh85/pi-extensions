@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.16 (2026-09-27)
+
+### Changed
+
+- `ponytail-help` and `ponytail-gain` are one-shot display cards and now carry
+  `disable-model-invocation: true`, dropping them from the system-prompt skills
+  section (~0.25k tokens per fresh session). Invoke via `/skill:ponytail-help`
+  / `/skill:ponytail-gain`; the main `ponytail` skill now lists all sibling
+  skill paths so they stay discoverable.
+
 ## 0.1.15 (2026-09-24)
 
 ### Fixed

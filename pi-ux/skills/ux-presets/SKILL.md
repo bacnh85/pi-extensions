@@ -1,5 +1,6 @@
 ---
 name: ux-presets
+disable-model-invocation: true
 description: >
   Reference design-system presets for ux-design. Anti-slop shortcuts: instead of
   inventing tokens, elevation, and state contracts from scratch, reuse one of

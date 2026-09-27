@@ -155,6 +155,64 @@ and `/sub` reports the provider/model and speed instead of usage windows.
 | `/sub` | Show detailed subscription usage for the current supported provider. |
 | `/sub status` | Same as `/sub`. |
 | `/sub refresh` | Force a usage refresh, then show details. |
+| `/context` | Show a context-window breakdown: total/window/% with a bar, per-section system-prompt costs, tool-schema cost by package, memory files, skills, messages, reserved budget, and free space (TUI only). |
+
+`/context` prints its panel **inline in the transcript** (above the input, like OMP's),
+so it stays visible while you keep working instead of vanishing on the next keypress.
+It renders a 4×10 waffle grid where
+`⛁` is used context, `⛶` is free space and `⛝` is the autocompact buffer, followed
+by a disjoint per-category breakdown. Totals come from Pi's own
+`getContextUsage()`; category splits use the SDK's chars/4 estimate, and the
+buffer/free rows are disjoint (free space **excludes** the buffer, matching Pi's
+trigger `tokens > contextWindow − reserveTokens`):
+
+```text
+Context Usage
+
+⛁⛁⛁⛁⛁⛁⛁⛁⛁⛁  GLM-5.3 (197K context)
+⛁⛶⛶⛶⛶⛶⛶⛶⛶⛶  glm-5.3[197K]
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶  41K/197K tokens (20.9%)
+⛶⛶⛶⛶⛶⛶⛶⛝⛝⛝  Estimated usage by category
+
+ ⛁ System prompt: 12K tokens (6.3%)
+ ⛁ System tools: 4.3K tokens (2.2%)
+ ⛁ System context: 2.1K tokens (1.1%)
+ ⛁ Skills: 3.8K tokens (1.9%)
+ ⛁ Messages: 150 tokens (<0.1%)
+ ⛁ Unattributed: 18K tokens (9.3%)
+ ⛶ Free space: 139K tokens (70.8%)
+ ⛝ Autocompact buffer: 16K tokens (8.3%)
+
+System prompt (18K):
+  rules: 7.5K
+  tools: 4.0K
+  skills: 3.8K
+  project_context: 2.1K
+  docs: 600
+  preamble: 300
+  cwd: 9
+
+Tools (54):
+  tool0: 80
+  tool1: 80
+  tool2: 80
+  tool3: 80
+  tool4: 80
+  @bacnh85/pi-web: 1.6K · 20 tools
+  pi: 1.5K · 19 tools
+  @bacnh85/pi-model-tools: 1.2K · 15 tools
+
+Recommendations:
+- Skills section is 3.8K tokens — disable-model-invocation on reference-only skills.
+```
+
+Categories are disjoint — context files and skills are split out of "System
+prompt", so the rows add up to the window. The buffer reads `disabled` when
+`compaction.enabled` is false, and honors
+`compaction.modelOverrides["provider/id"].reserveTokens` / `compaction.reserveTokens`
+from `settings.json` (the same resolution Pi uses), so the number shown is the
+number Pi will actually trigger at. Slices worth ≥0.5% always get at least one
+grid cell, so a fresh session still shows its weight visually.
 
 When Pi OpenAI Codex auth is available, `/sub` shows the active account usage and speed:
 

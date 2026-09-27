@@ -1817,6 +1817,12 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   // ponytail: typed helper avoids `as const` on every content block
   const textBlock = (text: string) => ({ type: "text" as const, text });
 
+  // ctx.ui.select is not reentrant — the TUI has a single modal dialog slot.
+  // Two ask_user_question calls in one assistant turn (parallel tool calls)
+  // race for it and both stall. Serialize through a promise chain: the second
+  // call waits for the first to settle, then opens its own dialog.
+  let askQuestionQueue: Promise<unknown> = Promise.resolve();
+
   async function executeAskQuestion(
     _toolCallId: string,
     params: unknown,
@@ -1912,7 +1918,23 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     "Don't ask what's discoverable from repo.",
     "Respect user's stated preference.",
     "Provide a recommended option when one choice is clearly preferable.",
+    "Never issue multiple ask_user_question calls in the same turn — ask one question, await the answer, then decide.",
   ];
+
+  /** Serialized ask_user_question: second concurrent call waits for the first's
+   *  dialog to close (single modal slot), then shows its own. */
+  function executeAskQuestionQueued(
+    toolCallId: string,
+    params: unknown,
+    signal: unknown,
+    onUpdate: unknown,
+    ctx: ExtensionContext,
+  ) {
+    const run = () => executeAskQuestion(toolCallId, params, signal, onUpdate, ctx);
+    const result = askQuestionQueue.then(run, run); // run regardless of a prior failure
+    askQuestionQueue = result.catch(() => {}); // keep the chain alive on rejection
+    return result;
+  }
 
   pi.registerTool({
     name: ASK_USER_QUESTION_TOOL,
@@ -1924,7 +1946,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     promptGuidelines: askQuestionGuidelines,
     parameters: buildAskQuestionSchema(),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      return executeAskQuestion(toolCallId, params, signal, onUpdate, ctx);
+      return executeAskQuestionQueued(toolCallId, params, signal, onUpdate, ctx);
     },
   });
 

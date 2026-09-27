@@ -238,7 +238,9 @@ Same effort. One is a page; the other is a template.
 
 ## Model routing
 
-The who-does-what table lives in the `ux-routing` skill (not injected). Always
+The who-does-what table lives in the `ux-routing` skill
+(`pi-ux/skills/ux-routing/SKILL.md` — reference-only, read by path when
+delegating or routing UX work; same for `ux-presets` and `ux-capture`). Always
 true: **the deterministic gate reviews; a multimodal model looks at its own
 render; taste lives in the direction brief, not the model choice.**
 

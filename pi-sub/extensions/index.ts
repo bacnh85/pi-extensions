@@ -1,4 +1,4 @@
-import { readStoredCredential, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_COMPACTION_SETTINGS, estimateTokens, readStoredCredential, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -49,6 +49,8 @@ loadEnvFiles();
 
 const STATUS_KEY = "pi-sub";
 const MESSAGE_TYPE = "pi-sub-status";
+/** /context panel message type — rendered inline in the transcript (OMP-style). */
+const MESSAGE_TYPE_CONTEXT = "pi-sub-context";
 const USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
 export const REFRESH_INTERVAL_MS = 60_000;
 const REFRESH_TTL_MS = 30_000;
@@ -1545,6 +1547,368 @@ function buildDetails(snapshot: SubscriptionUsageSnapshot | undefined, state: St
   return lines.join("\n");
 }
 
+// ============================================================================
+// /context — context-window breakdown (Claude Code style panel)
+// ============================================================================
+
+/** Formatting helpers for the /context panel (OMP house style: 5.3K, 21K, 1m). */
+export function formatCtxTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}K`;
+  return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}m`;
+}
+
+/** OMP-style percentage: `<0.1%` for non-zero slivers, one decimal otherwise. */
+export function formatCtxPercent(tokens: number, contextWindow: number): string {
+  if (!(contextWindow > 0)) return "?";
+  const pct = (tokens / contextWindow) * 100;
+  if (pct > 0 && pct < 0.1) return "<0.1%";
+  return `${pct.toFixed(1)}%`;
+}
+
+/** Waffle-chart glyphs, matching OMP's vocabulary. */
+const WAFFLE_FILLED = "⛁";
+const WAFFLE_FREE = "⛶";
+const WAFFLE_BUFFER = "⛝";
+
+/** OMP's signature waffle grid: `rows × cols` cells over the window, painted in
+ *  slice order (used categories → free → autocompact buffer).
+ *
+ *  Cells are allocated by share of the window, with a **minimum of one cell per
+ *  slice worth ≥0.5%** — deliberate visibility scaling, the same choice OMP
+ *  makes (their 2%-used grid still lights up a third of the cells). Any
+ *  shortfall or overflow is absorbed by the largest slice, so the grid always
+ *  fills exactly `rows × cols` cells. */
+export function ctxWaffle(
+  slices: { tokens: number; glyph: string }[],
+  contextWindow: number,
+  cols = 10,
+  rows = 4,
+): string[] {
+  const cells = cols * rows;
+  if (!(contextWindow > 0)) return Array.from({ length: rows }, () => WAFFLE_FREE.repeat(cols));
+  const MIN_SHARE = 0.005;
+  const alloc = slices.map((s) => {
+    const tokens = Math.max(0, s.tokens);
+    if (tokens <= 0) return 0;
+    const share = tokens / contextWindow;
+    return share < MIN_SHARE ? 1 : Math.max(1, Math.round(share * cells));
+  });
+  // Overflow swallows from the largest slice first (never below one cell).
+  let total = alloc.reduce((a, b) => a + b, 0);
+  while (total > cells) {
+    const biggest = alloc.indexOf(Math.max(...alloc));
+    if (alloc[biggest] <= 1) break;
+    alloc[biggest] -= 1;
+    total -= 1;
+  }
+  // Underflow pads the LARGEST slice — with a well-formed breakdown that is free
+  // space. Never the last slice: that would inflate the autocompact buffer (a
+  // fixed reserve) whenever a category figure is underestimated.
+  if (total < cells && alloc.length > 0) {
+    const biggest = alloc.indexOf(Math.max(...alloc));
+    alloc[biggest] += cells - total;
+  }
+  const glyphs = alloc.flatMap((count, i) => Array.from({ length: count }, () => slices[i].glyph));
+  const out: string[] = [];
+  for (let r = 0; r < rows; r++) out.push(glyphs.slice(r * cols, (r + 1) * cols).join(""));
+  return out;
+}
+
+/** Token cost of one tool as the prompt carries it: description + JSON
+ *  parameter schema + guidelines, chars/4 (same heuristic as estimateTokens). */
+function toolTokens(t: { description: string; parameters: unknown; promptGuidelines?: string[] }): number {
+  let chars = t.description.length + JSON.stringify(t.parameters ?? {}).length;
+  if (t.promptGuidelines) chars += t.promptGuidelines.join("\n").length;
+  return Math.ceil(chars / 4);
+}
+
+/** Short, readable source label: `sourceInfo.source` is a filesystem path for
+ *  locally-linked packages and a package spec for installed ones — both reduce
+ *  to the last segment (`../../pi-web` and `@bacnh85/pi-web` → `pi-web`),
+ *  leaving built-in single-segment names untouched. */
+export function shortSource(source: string): string {
+  const parts = source.split("/").filter((p) => p && p !== "." && p !== "..");
+  return parts[parts.length - 1] ?? source;
+}
+
+/** Parse `<name>…</name>` skill entries out of the skills prompt section. */
+function countSkills(skillsSection: string): number {
+  const matches = skillsSection.match(/<skill>[\s\S]*?<\/skill>/g);
+  return matches ? matches.length : 0;
+}
+
+/** Effective compaction reserve for the active model: pi resolves
+ *  `compaction.modelOverrides["provider/id"].reserveTokens` → `compaction.reserveTokens`
+ *  → default 16384 (settings-manager getCompactionReserveTokens). Mirrors that
+ *  order so the panel shows the number pi will actually use. */
+export function resolveReserveTokens(settings: unknown, model?: { provider?: string; id?: string }): number {
+  const compaction = (settings as { compaction?: { reserveTokens?: unknown; modelOverrides?: Record<string, unknown> } } | undefined)?.compaction;
+  const override = model?.provider && model?.id
+    ? (compaction?.modelOverrides?.[`${model.provider}/${model.id}`] as { reserveTokens?: unknown } | undefined)?.reserveTokens
+    : undefined;
+  for (const candidate of [override, compaction?.reserveTokens]) {
+    if (typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0) return candidate;
+  }
+  return DEFAULT_COMPACTION_SETTINGS.reserveTokens;
+}
+
+function readCompactionSettings(): unknown {
+  try {
+    const dir = process.env.PI_CODING_AGENT_DIR?.trim() || path.join(os.homedir(), ".pi", "agent");
+    return JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf8"));
+  } catch {
+    return undefined; // no settings file → defaults
+  }
+}
+
+export interface ContextBreakdownInput {
+  ctx: {
+    getContextUsage(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
+    getSystemPrompt(): string;
+    sessionManager: { buildSessionProjection(): { messages: unknown[] } };
+  };
+  /** From pi.getAllTools() — command contexts do not expose it; the closure does. */
+  allTools: { name: string; description: string; parameters: unknown; promptGuidelines?: string[]; sourceInfo: { source: string } }[];
+  /** From pi.getActiveTools(). */
+  activeTools: string[];
+  model?: { provider?: string; id?: string; name?: string; maxTokens?: number; contextWindow?: number };
+  /** Parsed ~/.pi/agent/settings.json — resolves the effective compaction reserve. */
+  settings?: unknown;
+}
+
+export interface ContextBreakdown {
+  contextWindow: number;
+  usedTokens: number | null;
+  percent: number | null;
+  /** `provider/id` of the active model, for the header line. */
+  modelLabel?: string;
+  /** Human-readable model name, e.g. "GLM-5.3". */
+  modelName?: string;
+  systemPrompt: { total: number; sections: Record<string, number> };
+  tools: { total: number; activeCount: number; registeredCount: number; bySource: Record<string, { tokens: number; count: number }> };
+  /** Per-tool costs, descending — powers the "top tools" list. */
+  toolCosts: { name: string; tokens: number; source: string }[];
+  skills: { total: number; count: number };
+  memoryFiles: { total: number; files: { name: string; tokens: number }[] };
+  messages: { total: number; count: number };
+  /** Disjoint category totals for the panel (no overlap, sum ≤ window):
+   *  system prompt/context split out of the sections, plus tools, messages,
+   *  autocompact buffer, free space. */
+  categories: { label: string; tokens: number; glyph: string }[];
+  /** Compaction reserve — pi triggers at `tokens > window - compaction`. A hard
+   *  slice of the window (the "autocompact buffer" in Claude/OMP terms), NOT
+   *  additive with free space. */
+  reserved: { compaction: number };
+  /** Window left before compaction triggers: `window - used - reserve`. */
+  freeSpace: number;
+  /** True when compaction is disabled in settings (reserve is not enforced). */
+  compactionDisabled: boolean;
+}
+
+/** Build the full context-window breakdown for /context. Pure over ctx getters.
+ *  Exported for tests. Token figures are chars/4 estimates except usedTokens,
+ *  which is the authoritative ctx.getContextUsage() total when known. */
+export function computeContextBreakdown(input: ContextBreakdownInput): ContextBreakdown {
+  const { ctx, allTools, activeTools, model } = input;
+  const usage = ctx.getContextUsage();
+  const contextWindow = model?.contextWindow ?? usage?.contextWindow ?? 0;
+  const usedTokens = usage?.tokens ?? null;
+  const percent = usage?.percent ?? null;
+
+  // System prompt: prefer the structured sections replayed on the transcript's
+  // leading system message (exactly what the model sees); fall back to the
+  // whole-prompt blob before the first turn records sections.
+  const sections: Record<string, number> = {};
+  let systemTotal = 0;
+  let haveSections = false;
+  let sysRawSkills = "";
+  try {
+    const messages = ctx.sessionManager.buildSessionProjection().messages as Array<{ role?: string; sections?: Record<string, string | null> }>;
+    const sys = messages.find((m) => m.role === "system");
+    if (sys?.sections) {
+      haveSections = true;
+      for (const [name, content] of Object.entries(sys.sections)) {
+        if (!content) continue;
+        if (name === "skills") sysRawSkills = content;
+        const tokens = Math.ceil(content.length / 4);
+        sections[name] = (sections[name] ?? 0) + tokens;
+        systemTotal += tokens;
+      }
+    }
+  } catch { /* projection unavailable — fall back to blob */ }
+  if (!haveSections) {
+    // No transcript system message yet (nothing has been sent). The rendered
+    // prompt is the only source; keep it as one bucket and let the tool/skill
+    // figures below still populate, so a first-turn /context is still useful.
+    systemTotal = Math.ceil(ctx.getSystemPrompt().length / 4);
+  }
+
+  const tools = allTools;
+  const activeSet = new Set(activeTools);
+  const bySource: Record<string, { tokens: number; count: number }> = {};
+  const toolCosts: { name: string; tokens: number; source: string }[] = [];
+  let toolsTotal = 0;
+  for (const t of tools) {
+    const cost = toolTokens(t);
+    toolsTotal += cost;
+    const src = t.sourceInfo?.source ?? "unknown";
+    const bucket = (bySource[src] ??= { tokens: 0, count: 0 });
+    bucket.tokens += cost;
+    bucket.count += 1;
+    toolCosts.push({ name: t.name, tokens: cost, source: src });
+  }
+  toolCosts.sort((a, b) => b.tokens - a.tokens);
+
+  const skillsRaw = sysRawSkills;
+  const memorySectionTokens = (sections.project_context ?? 0) + (sections.addendum ?? 0);
+
+  let messagesTotal = 0;
+  let messagesCount = 0;
+  try {
+    for (const m of ctx.sessionManager.buildSessionProjection().messages as Array<{ role?: string }>) {
+      if (m.role === "system") continue; // counted above as systemPrompt
+      messagesTotal += estimateTokens(m as Parameters<typeof estimateTokens>[0]);
+      messagesCount += 1;
+    }
+  } catch { /* no projection */ }
+
+  // pi's trigger: shouldCompact → tokens > contextWindow - reserveTokens. The
+  // reserve is a hard slice of the window, not a cost added on top; model output
+  // is NOT reserved (pi only caps it inside summarization).
+  const compactionDisabled = (input.settings as { compaction?: { enabled?: unknown } } | undefined)?.compaction?.enabled === false;
+  const reserved = { compaction: resolveReserveTokens(input.settings, model) };
+  const withheld = compactionDisabled ? 0 : reserved.compaction;
+
+  // Disjoint partition for the waffle + category lines (OMP model). Sections
+  // count each once: context files and skills leave the system-prompt bucket so
+  // nothing is double-counted against the window.
+  //
+  // The prompt-side rows are near-exact character counts of text we can see
+  // (sections, tool schemas), so they are reported as measured. The Messages row
+  // is the weak estimate: chars/4 also reads thinking blocks and cache-unwritten
+  // content, so on real sessions it lands tens of percent ABOVE the provider's
+  // authoritative input count. Messages is therefore reported as the RESIDUAL
+  // (`used − prompt rows`), which absorbs both that over-count and any tokens we
+  // cannot attribute at all — and keeps every row ≤ the headline total.
+  const contextTokens = memorySectionTokens;
+  const skillsTokens = sections.skills ?? 0;
+  const corePromptTokens = Math.max(0, systemTotal - contextTokens - skillsTokens);
+  const promptTokens = corePromptTokens + toolsTotal + contextTokens + skillsTokens;
+  const messagesRow = usedTokens !== null
+    // Capped so a stale figure reporting more tokens than the window can hold
+    // still yields a partition that fits.
+    ? Math.min(Math.max(0, usedTokens - promptTokens), Math.max(0, contextWindow - withheld - promptTokens))
+    : messagesTotal;
+  // Occupancy basis: the authoritative count when known, estimates otherwise.
+  // `max` guards the post-compaction case where prompt estimates alone exceed a
+  // momentarily tiny measured total.
+  const occupied = Math.max(usedTokens ?? 0, promptTokens + messagesRow);
+  const freeSpace = Math.max(0, contextWindow - Math.min(occupied, contextWindow - withheld) - withheld);
+  const categories = [
+    { label: "System prompt", tokens: corePromptTokens, glyph: "⛁" },
+    { label: "System tools", tokens: toolsTotal, glyph: "⛁" },
+    { label: "System context", tokens: contextTokens, glyph: "⛁" },
+    { label: "Skills", tokens: skillsTokens, glyph: "⛁" },
+    { label: "Messages", tokens: messagesRow, glyph: WAFFLE_FILLED },
+    { label: "Free space", tokens: freeSpace, glyph: WAFFLE_FREE },
+    // The reserve is the LAST slice of the window (pi compacts at
+    // `tokens > window - reserve`), so it renders after free space.
+    ...(compactionDisabled ? [] : [{ label: "Autocompact buffer", tokens: reserved.compaction, glyph: WAFFLE_BUFFER }]),
+  ];
+
+  return {
+    contextWindow,
+    usedTokens,
+    percent,
+    modelLabel: model && "provider" in model && model.provider ? `${model.provider}/${model.id ?? "?"}` : undefined,
+    modelName: model && "name" in model ? model.name : undefined,
+    systemPrompt: { total: systemTotal, sections },
+    tools: { total: toolsTotal, activeCount: activeSet.size, registeredCount: tools.length, bySource },
+    toolCosts,
+    skills: { total: sections.skills ?? 0, count: countSkills(skillsRaw) },
+    memoryFiles: {
+      total: memorySectionTokens,
+      files: Object.entries(sections)
+        .filter(([name]) => name === "project_context" || name === "addendum")
+        .map(([name, tokens]) => ({ name, tokens })),
+    },
+    messages: { total: messagesTotal, count: messagesCount },
+    categories,
+    reserved,
+    freeSpace,
+    compactionDisabled,
+  };
+}
+
+/** Render the /context panel in OMP's layout: waffle grid + model info to its
+ *  right, then a disjoint "Estimated usage by category" block, then detail
+ *  lists and pruning recommendations. */
+export function renderContextPanel(b: ContextBreakdown): string[] {
+  const k = formatCtxTokens;
+  const pct = (n: number) => ` (${formatCtxPercent(n, b.contextWindow)})`;
+  const lines: string[] = ["Context Usage", ""];
+
+  if (b.usedTokens === null) {
+    lines.push(
+      "Context usage: exact totals unknown (right after compaction or before the first model response).",
+      "Run /context again after the next reply for authoritative numbers. Category splits are estimates.",
+      "",
+    );
+  }
+  const used = b.usedTokens ?? b.systemPrompt.total + b.tools.total + b.messages.total;
+
+  // ── Header: waffle on the left (10 cols), model + totals on the right ──
+  // Painted in window order: used categories → free → autocompact buffer.
+  const waffleSlices = b.categories.map((c) => ({ tokens: c.tokens, glyph: c.glyph }));
+  const grid = ctxWaffle(waffleSlices, b.contextWindow, 10, 4);
+  const right = [
+    b.modelName ? `${b.modelName}${b.contextWindow > 0 ? ` (${k(b.contextWindow)} context)` : ""}` : undefined,
+    // OMP shows the bare model id with the window bracketed: `glm-5.3[1m]`.
+    b.modelLabel ? `${b.modelLabel.split("/").pop()}${b.contextWindow > 0 ? `[${k(b.contextWindow)}]` : ""}` : undefined,
+    `${k(used)}/${k(b.contextWindow)} tokens (${formatCtxPercent(used, b.contextWindow)})`,
+    "Estimated usage by category",
+  ];
+  for (let r = 0; r < grid.length; r++) {
+    const rightText = right[r];
+    lines.push(rightText ? `${grid[r]}  ${rightText}` : grid[r]);
+  }
+  for (const extra of right.slice(grid.length)) if (extra) lines.push("            " + extra);
+  lines.push("");
+
+  // ── Disjoint category block (glyph-prefixed, OMP style) ──
+  for (const c of b.categories) {
+    lines.push(` ${c.glyph} ${c.label}: ${k(c.tokens)} token${c.tokens === 1 ? "" : "s"}${pct(c.tokens)}`);
+  }
+  if (b.compactionDisabled) lines.push(" ⛶ Autocompact buffer: disabled (compaction.enabled=false)");
+
+  // ── Detail: system-prompt sections, top tools, per-package attribution ──
+  const sectionNames = Object.keys(b.systemPrompt.sections).sort((x, y) => b.systemPrompt.sections[y] - b.systemPrompt.sections[x]);
+  if (sectionNames.length > 1) {
+    lines.push("", `Prompt sections (${k(b.systemPrompt.total)}):`);
+    for (const name of sectionNames) lines.push(`  ${name}: ${k(b.systemPrompt.sections[name])}`);
+  }
+  if (b.toolCosts.length > 0) {
+    lines.push("", `Tools (${b.tools.registeredCount}${b.tools.activeCount !== b.tools.registeredCount ? ` · ${b.tools.activeCount} active` : ""}):`);
+    for (const t of b.toolCosts.slice(0, 5)) lines.push(`  ${t.name}: ${k(t.tokens)}`);
+    const top = Object.entries(b.tools.bySource).sort((x, y) => y[1].tokens - x[1].tokens).slice(0, 3);
+    for (const [src, s] of top) lines.push(`  ${shortSource(src)}: ${k(s.tokens)} · ${s.count} tool${s.count === 1 ? "" : "s"}`);
+  }
+
+  const recs: string[] = [];
+  if (b.tools.total > b.contextWindow * 0.4) {
+    recs.push(`Tool schemas are ${k(b.tools.total)} tokens (${formatCtxPercent(b.tools.total, b.contextWindow)} of window) — consider setActiveTools pruning.`);
+  }
+  if (b.memoryFiles.total > 3000) {
+    recs.push(`Context files are ${k(b.memoryFiles.total)} tokens — consider trimming AGENTS.md.`);
+  }
+  if (b.skills.total > 2000) {
+    recs.push(`Skills section is ${k(b.skills.total)} tokens — disable-model-invocation on reference-only skills.`);
+  }
+  if (recs.length > 0) lines.push("", "Recommendations:", ...recs.map((r) => `- ${r}`));
+  return lines;
+}
+
 export default function (pi: ExtensionAPI) {
   const state: State = { lastRefreshAt: 0, refreshGeneration: 0, cumulativeOutput: 0, cumulativeDurationMs: 0, cumulativeCost: 0 };
 
@@ -1641,6 +2005,52 @@ export default function (pi: ExtensionAPI) {
         if (!isStaleCtxError(error)) throw error;
         selfDisarm(state);
       }
+    },
+  });
+
+  // Transcript renderer for /context: pi renders this inline in the scrollback
+  // (above the editor), like OMP's panel, instead of a dismissable overlay. The
+  // renderer receives the live theme, so the category glyphs keep their colors
+  // and the panel stays visible while you keep working.
+  // Optional-call guard: matches pi-a2a/pi-subagent/pi-advisor, and keeps older
+  // SDK builds (and minimal test harnesses) loadable.
+  pi.registerMessageRenderer?.<{ lines: string[] }>(MESSAGE_TYPE_CONTEXT, (message, _opts, theme) => {
+    try {
+      const fg = theme?.fg ? (c: string, s: string) => theme.fg(c as never, s) : (s: string) => s;
+      const body = (message.details as { lines?: string[] } | undefined)?.lines
+        ?? (typeof message.content === "string" ? message.content.split("\n") : []);
+      const clamp = (line: string, width: number) => {
+        if (width <= 0 || [...line].length <= width) return line;
+        // Ellipsis rather than a mid-word slice — this is a display clamp, not data loss.
+        const chars = [...line];
+        return chars.length <= width ? line : chars.slice(0, Math.max(0, width - 1)).join("") + "…";
+      };
+      return {
+        render: (width: number) => body.map((l) => clamp(l, width)).map((line) => {
+          // Tint the category glyph; keep the numeric body plain for contrast.
+          const m = line.match(/^(\s*)([⛁⛶⛝])( .*)$/);
+          if (!m) return fg("customMessageText", line);
+          const tint = m[2] === "⛶" ? "dim" : m[2] === "⛝" ? "warning" : "accent";
+          return `${m[1]}${fg(tint, m[2])}${fg("customMessageText", m[3])}`;
+        }),
+        invalidate: () => {},
+      };
+    } catch {
+      return undefined; // pi-tui unavailable → fall back to default rendering
+    }
+  });
+
+  pi.registerCommand("context", {
+    description: "Show a context-window breakdown: system prompt, tools, memory files, skills, messages, reserved, free space.",
+    handler: async (_args, ctx) => {
+      // getAllTools/getActiveTools live on the ExtensionAPI closure — command
+      // contexts (ExtensionCommandContext) do not expose them.
+      const b = computeContextBreakdown({ ctx, allTools: pi.getAllTools(), activeTools: pi.getActiveTools(), model: ctx.model as ContextBreakdownInput["model"], settings: readCompactionSettings() });
+      const lines = renderContextPanel(b);
+      // display:true → shown in the transcript (above the editor, like OMP).
+      // `content` is the plain-text fallback for renderer-less builds and
+      // non-TUI modes; `details.lines` feeds the themed transcript renderer.
+      pi.sendMessage({ customType: MESSAGE_TYPE_CONTEXT, content: lines.join("\n"), display: true, details: { lines } });
     },
   });
 

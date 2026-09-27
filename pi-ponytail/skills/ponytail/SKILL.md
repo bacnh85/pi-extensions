@@ -85,6 +85,11 @@ Pattern: `[code] → skipped: [X], add when [Y].`
 | **full** | The ladder enforced. Stdlib and native first. Shortest diff, shortest explanation. Default. |
 | **ultra** | YAGNI extremist. Deletion before addition. Ship the one-liner and challenge the rest of the requirement in the same breath. |
 
+Sibling skills (not in the model's routing view — read by path on demand):
+`ponytail-help` (mode/command reference card), `ponytail-gain` (impact
+scoreboard), `ponytail-review`/`ponytail-audit`/`ponytail-debt` (review + debt
+workflows) under `pi-ponytail/skills/<name>/SKILL.md`.
+
 Example: "Add a cache for these API responses."
 - lite: "Done, cache added. FYI: `functools.lru_cache` covers this in one line if you'd rather not own a cache class."
 - full: "`@lru_cache(maxsize=1000)` on the fetch function. Skipped custom cache class, add when lru_cache measurably falls short."

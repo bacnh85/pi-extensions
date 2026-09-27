@@ -2,291 +2,133 @@
 
 Monorepo of Pi-native extension packages that register tools and skills directly
 into the Pi coding agent, each in its own npm package under `@bacnh85/`.
+Full version history lives in each package's package.json/CHANGELOG; per-package
+detail lives in `pi-<name>/README.md`.
 
 ## Packages
 
-| Package | Version | Description |
-|---------|---------|-------------|
-| **pi-router** | 1.2.2 | Connect to any OpenAI-compatible AI router (9router, omniroute, …) via its /v1 API; API key via built-in /login, URL in settings.json (`/router-config` panel), models auto-cached in models-store.json and auto-refreshed (15-min TTL, all session modes). |
-| **pi-commandcode** | 0.2.7 | Connect to Command Code's OpenAI-compatible Provider API; API key via built-in `/login`, base URL in settings.json (`/commandcode-config` panel), models auto-cached. |
-| **pi-classifier** | 0.2.0 | System One decision models (TypeSafe Jev) — `classify` tool, `/classifier-config` panel with decision-model discovery (`GET /v1/systemone/models`), opt-in Jev-gated permission auto-approve. |
-| **pi-checkpoint** | 0.1.7 | Git-backed undo/redo — snapshots file state per turn into a dedicated ref namespace so `/undo` rolls back a message AND its file changes. |
-| **pi-cron** | 0.3.8 | Scheduled jobs — cron-style jobs fire a prompt into the live session while pi is running (30s timer, past-due catch-up, loop guard); per-job model/thinking pins run headless; `cron export` emits crontab lines for 24/7 coverage. |
-| **pi-notify** | 0.1.6 | Desktop notifications and sounds — fires on task completion, errors, and questions; cross-platform (macOS/Linux/Windows + terminal OSC). |
-| **pi-references** | 0.1.6 | External context roots — alias sibling dirs or git repos as `@docs`/`@sdk`; auto-clones repos and injects descriptions into agent context. |
-| **pi-budget** | 0.1.5 | Spend cap enforcement — `--budget <usd>` aborts the agent at the cap; companion to pi-sub (render vs enforce). |
-| **pi-init** | 0.1.5 | Guided AGENTS.md generation — `/init` scans the repo and generates/updates AGENTS.md with build/test/lint commands, architecture, and conventions. |
-| **pi-permission** | 0.2.7 | Granular permission system — config-driven allow/ask/deny rules per tool with wildcard patterns, external-directory boundary, and a doom-loop guard. |
-| **pi-agy** | 0.3.9 | Google Antigravity CLI bridge for delegated implementation, scaffolding, refactors, and test generation. |
-| **pi-fff** | 0.8.3 | FFF-powered fuzzy file and content search for Pi. |
-| **pi-kicad** | 0.1.10 | KiCad CAD-design extension — drive schematic capture and PCB layout via the Konnect binary over a local HTTP daemon (no MCP SDK). |
-| **pi-model-tools** | 0.9.3 | Unified tool-wrapping, argument repair, reasoning management, DeepSeek V4 guidance + Super Power Mode, defensive leak-cleaning, edit mismatch repair, a Codex-style apply_patch diff tool, and bash auto-background with anti-poll guidance (OMP 18.2.8 parity). |
-| **pi-munin** | 0.5.9 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and confirmed cross-project sharing. |
-| **pi-evolve** | 0.3.9 | Trajectory-based self-learning loop — captures tool-call trajectories, reflects to extract learnings, persists to Munin or local JSONL, injects recent learnings into future sessions. |
-| **pi-selfskills** | 0.3.5 | Skill self-improvement — one `skill_manage` tool (list/read/patch/create/write/delete/restore) to patch loaded skills and create new ones (user- or project-rooted), with a writable-root allowlist, SDK validation, and content-addressed backups. |
-| **pi-a2a** | 0.7.13 | A2A Protocol v1.0 bidirectional — Pi distributes tasks to remote agents (Hermes, ADK, LangChain, any A2A peer), exposes itself as an A2A-callable agent, self-declares for local session discovery (file registry + enriched Agent Card + mDNS), registers with **multiple a2a-switchboard gateways** (`discovery.gateways`), shows inbound task activity in the host TUI, and has an interactive config panel. |
-| **pi-config-panel** | 0.1.9 | Shared interactive config-panel kernel (library) — arrow-key toggle/edit overlay panels (`PanelRow`/`PanelGroup` + `ConfigPanelModel` TUI shell) via `ctx.ui.custom`; powers `/a2a-config`, `/commandcode-config`, `/router-config`. |
-| **pi-hub** | 0.1.11 | Interactive installer CLI — `npx @bacnh85/pi-hub` browses the @bacnh85 catalog, searches npm `keywords:pi-package`, multi-selects, and shells out to `pi install`. |
-| **pi-attachments** | 0.3.7 | Image and file attachments — drops/pastes become `[[attach:name]]` chips resolving to readable `📎` path references (images attach as real ImageContent parts; text read on demand). Large text pastes (logs, JSON ≥ 10 lines / 2000 chars) collapse to a paste file + chip. Paste clipboard files with `alt+shift+v`. |
-| **pi-notebooklm** | 0.1.15 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
-| **pi-obsidian** | 0.8.19 | Obsidian vault integration for Pi. |
-| **pi-advisor** | 0.3.5 | OMP-style automatic advisor — a second model reviews each settled turn and injects severity-routed steering notes (all notes steer as a follow-up turn; cooldown nits defer to a next-turn card, immune-turn cooldown, emission guard), ordered multi-model fallback chain (`pi-advisor.models`, per-entry `:level` thinking pins, `/advisor models` panel editor); plus the on-demand advisor consult moved from pi-plan. |
-| **pi-plan** | 0.16.1 | Plan mode with read-only gating and plan → implement → verify → review workflow; global plan-mode model/thinking (`/plan-model`, `/plan-thinking` — normal mode stays stock Pi); fallback model chain on overload. |
-| **pi-ponytail** | 0.1.15 | Lazy senior dev mode — YAGNI/stdlib-first coding discipline. Fork of [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). |
-| **pi-review** | 0.2.15 | Isolated read-only code review with corrected same-session fallback. |
-| **pi-rtk** | 0.2.7 | Bash command token rewriting through RTK. |
-| **pi-serena** | 0.9.18 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
-| **pi-sub** | 0.1.50 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
-| **pi-themes** | 0.2.1 | Pi TUI theme collection — Ayu variants (dark, mirage, light) + Catppuccin Mocha; pure-themes package (no extension code). |
-| **pi-subagent** | 0.23.0 | Isolated in-process subagents with parallel/chain modes, inspectable threads, git worktree isolation (`sandbox: worktree`), live progress widget, background mode, role-based model routing (`@fast`/`@coder`/`@smart` + `subagent.roles`/`subagent.agentThinking` settings, `/subagent roles` editor), opt-in auto-review after coding turns (`subagent.autoReview`), and herdr pane delegation (`runner: "herdr"` + `herdr` control tool) when pi runs inside herdr. |
-| **pi-web** | 0.17.8 | Unified web tools — search (SearXNG, Brave, Firecrawl), extraction (JSDOM, Firecrawl, Crawl4AI), site mapping/crawling, screenshots/PDFs with local headless-Chrome capture (inline PNGs for multimodal models; honest sub-500px device emulation + reduced-motion), real-browser interaction (`web_interact`: trusted click/type/evaluate/wait + scrollWidth probe via zero-dep CDP), Gemini web-tier research, image generation (ChatGPT web / Gemini web / Z.ai / custom), and one-off ChatGPT-web/gateway chat. |
-| **pi-windows-tools** | 0.5.9 | Windows-native tool manipulation — shell profiles, path conversion, command execution, WSL bridge, safety policy, audit log, and developer tool discovery. |
-| **pi-ux** | 0.6.4 | Anti-slop UI/UX design discipline — anchors a lintable DESIGN.md, derives a design direction (mood, type voice, color mood, signature element) with a positive Direction playbook (typography pairings, color-mood construction, composition anatomy), ships presets + style-direction starters (Editorial/Ledger/Warm consumer), runs deterministic slop-audit gates (APCA contrast + tokens + states + slop/taste tells + reduced-motion; accepts a file `path` so CSS is audited verbatim), vision render-inspect loop with LOOK checklist + interaction verify via pi-web `web_interact`, works with text-only models. |
+| Package | Description |
+|---------|-------------|
+| **pi-router** | Connect to any OpenAI-compatible AI router via its /v1 API; `/login` for the key, `/router-config` panel, models auto-cached + refreshed. |
+| **pi-commandcode** | Command Code's OpenAI-compatible Provider API; `/login`, `/commandcode-config` panel, models auto-cached. |
+| **pi-classifier** | System One decision models (Jev) — `classify` tool, `/classifier-config`, opt-in Jev-gated permission auto-approve. |
+| **pi-checkpoint** | Git-backed undo/redo — `/undo` rolls back a message AND its file changes. |
+| **pi-cron** | Scheduled jobs — cron-style prompts fire into the live session; `cron export` emits crontab lines. |
+| **pi-notify** | Desktop notifications + sounds on completion, errors, questions; cross-platform. |
+| **pi-references** | External context roots — alias sibling dirs/repos as `@docs`/`@sdk`. |
+| **pi-budget** | Spend cap enforcement — `--budget <usd>` aborts the agent at the cap. |
+| **pi-init** | Guided AGENTS.md generation (`/init`). |
+| **pi-permission** | Config-driven allow/ask/deny permission rules per tool with wildcards + external-dir boundary. |
+| **pi-agy** | Google Antigravity CLI bridge for delegated implementation/refactors/tests. |
+| **pi-fff** | FFF-powered fuzzy file and content search. |
+| **pi-kicad** | KiCad CAD-design extension via the Konnect binary over a local HTTP daemon. |
+| **pi-model-tools** | Tool-wrapping, argument repair, DeepSeek/GLM guidance, apply_patch diff tool, bash auto-background. |
+| **pi-munin** | Munin long-term memory as native Pi tools (search/get/store/list/delete/share…). |
+| **pi-evolve** | Trajectory self-learning — reflects on tool-call trajectories, persists learnings, injects them later. |
+| **pi-selfskills** | Skill self-improvement — one `skill_manage` tool to patch/create skills with backups. |
+| **pi-a2a** | A2A Protocol v1.0 bidirectional — distribute tasks to remote agents, expose Pi as an A2A agent, mDNS + gateway discovery, config panel. |
+| **pi-config-panel** | Shared interactive config-panel kernel (library) powering the `/…-config` panels. |
+| **pi-hub** | Installer CLI — `npx @bacnh85/pi-hub` browses the catalog and shells to `pi install`. |
+| **pi-attachments** | Drops/pastes → `[[attach:name]]` chips + real image attachments. |
+| **pi-notebooklm** | Google NotebookLM — notebooks, sources, chat, research, Studio artifacts via CLI bridge. |
+| **pi-obsidian** | Obsidian vault integration. |
+| **pi-advisor** | OMP-style automatic advisor — a second model reviews each turn and injects steering notes; on-demand consult. |
+| **pi-plan** | Plan mode with read-only gating and plan → implement → verify → review workflow. |
+| **pi-ponytail** | Lazy senior dev mode — YAGNI/stdlib-first discipline. Fork of DietrichGebert/ponytail. |
+| **pi-review** | Isolated read-only code review. |
+| **pi-rtk** | Bash command token rewriting through RTK. |
+| **pi-serena** | Serena semantic code tools (symbols, references, diagnostics) via a persistent worker. |
+| **pi-sub** | Subscription usage footer + `/context` breakdown. |
+| **pi-subagent** | Isolated in-process subagents — parallel/chain, worktree isolation, background, role routing, herdr delegation. |
+| **pi-web** | Unified web tools — search, extraction, crawl, screenshots/PDFs, real-browser interaction, research, image gen, chat. |
+| **pi-windows-tools** | Windows-native shell/WSL/path tools + safety policy. |
+| **pi-ux** | Anti-slop UI/UX discipline — DESIGN.md tokens, direction brief, render-inspect loop, ux_audit gate. |
+| **pi-themes** | Pi TUI theme collection (pure themes, no extension code). |
 
 ## Repository Structure
 
-```
-pi-extensions/
-  pi-agy/               # TS extension + skill for Antigravity CLI bridge
-  pi-notebooklm/        # TS extension + skill for NotebookLM CLI bridge
-  pi-ponytail/          # JS extension + hooks + 6 sub-skills
-  pi-serena/            # TS extension + worker + Python bridge
-  pi-ux/                # JS extension + hook + skill for anti-slop UI/UX design discipline
-  pi-munin/             # TS extension + lib/helpers + skill + references
-  pi-evolve/            # TS extension + lib/buffer+store+inject + skill for trajectory self-learning
-  pi-selfskills/        # TS extension + lib (config/paths/skillfile/backup) + skill for skill self-improvement
-  pi-a2a/               # TS extension + lib (protocol/client/server/config/security/persistence/registry/mdns/discovery/activity/config-panel rows) for A2A Protocol v1.0
-pi-config-panel/      # TS library package — shared config-panel kernel (no pi field; consumed as a dependency)
-  pi-attachments/       # TS extension — paste/drag files → 📎 path references + real image attachments
-  pi-cron/              # TS extension — scheduled jobs (cron) firing into the live session; crontab export
-  pi-hub/               # standalone zero-dep CLI (npx @bacnh85/pi-hub) — interactive pi package installer, not loaded by pi
-  pi-plan/              # TS extension for plan mode + workflow integration
-  pi-advisor/            # TS extension — OMP-style automatic advisor (turn-end reviewer + consult tool)
-  pi-subagent/          # TS extension for isolated SDK subagents
-  pi-review/            # TS extension for isolated/local code review
-  pi-fff/               # TS extension for FFF-powered find/grep/autocomplete
-  pi-rtk/               # TS extension for RTK bash command rewriting
-  pi-model-tools/        # TS extension for unified tool-wrapping + DeepSeek guidance + Super Power Mode (DeepSeek V4 + GLM)
-   pi-router/            # TS extension to connect to any OpenAI-compatible AI router.
-  pi-commandcode/       # TS extension for Command Code Provider API.
-  pi-classifier/        # JS extension for System One decision models (Jev) + permission auto-approve.
-  pi-budget/            # JS extension for spend-cap enforcement (--budget <usd>).
-  pi-sub/               # TS extension for subscription usage footer
-  pi-themes/            # JSON theme files — pure-themes package (no extension code)
-  pi-init/              # JS extension for guided AGENTS.md generation (/init)
-  pi-permission/        # JS extension for config-driven allow/ask/deny permission rules
-  pi-checkpoint/        # JS extension for git-backed /undo /redo tied to turns
-  pi-notify/            # JS extension for desktop notifications + sounds
-  pi-references/        # JS extension for external context roots (@docs, @sdk)
-  .github/workflows/    # ci.yml (matrix, GitHub-hosted runners)
-  .agents/skills/       # shared skills (skill-creator)
-  .env.local            # shared dev credentials (gitignored)
-  .gitignore            # .agents/, .env.*, node_modules/, .pi/, .serena/, images/
-```
+One directory per package (`pi-<name>/`), plus `.github/workflows/ci.yml`
+(single CI workflow), `.agents/skills/` (shared skills), and gitignored
+`.env.local` (shared dev credentials). `pi-hub` is a standalone CLI, not
+loaded by pi; `pi-config-panel` is a library dependency (no `pi` field);
+`pi-themes` ships only `themes/*.json`.
 
 ## Package Structure
 
-Every package follows the same layout:
-
 ```
 pi-<name>/
-  package.json          # name, version, files[], scripts, pi field, keywords
-  README.md             # docs, install, commands, configuration
-  CHANGELOG.md          # version history and release entries
-  .gitignore            # node_modules/ and .env.*
-
-  extensions/           # Pi extension entrypoint and supporting modules
-    index.ts            # default export: function(pi: ExtensionAPI) — .ts or .js
-    package.json        # { "type": "module" }
-    test/               # tests co-located with extension code
-      *.test.ts         # .ts or .js, matching extension entrypoint
-
-  skills/               # skill sub-skills, each in its own directory
-
-  # OR (pure-themes package like pi-themes): themes/*.json + previews/ + LICENSE,
-  # no extensions/ or skills/ dirs. pi.themes in package.json points at ./themes.
-    <name>/SKILL.md     # YAML frontmatter + markdown body
-
-  hooks/                # (optional) shared modules for extensions + skills
-    *.ts                # .ts or .js, matching extension entrypoint
+  package.json          # "pi": { "extensions": ["./extensions/index.ts"], "skills": ["./skills"] }
+  extensions/index.ts   # default export: function(pi: ExtensionAPI) — .ts or .js
+  extensions/package.json  # { "type": "module" }
+  extensions/test/      # tests co-located with extension code
+  skills/<name>/SKILL.md  # YAML frontmatter + markdown body
+  CHANGELOG.md, README.md
 ```
 
-**Key conventions:**
-
-- `package.json` root: `"pi": { "extensions": ["./extensions/index.ts"], "skills": ["./skills"] }` — entrypoint extension matches the file (`.ts` or `.js`)
-- `files` in package.json includes `"CHANGELOG.md"`, `"README.md"`, source files, etc. (Pi loads source directly).
-- Every package has a standalone `CHANGELOG.md` for user-facing release history.
-- `publishConfig.access: "public"` for scoped packages.
-- `extensions/package.json` is just `{ "type": "module" }` to opt into ESM.
-- Extension code is **plain JS** (pi-ponytail pattern) or **TypeScript** (pi-serena, pi-web, pi-munin) — use TS when the package has sdks/deps that benefit from types.
-- Tests live in `extensions/test/` — pi-ponytail uses `node --test` (no framework); others use mocha+tsx.
-- Skills in `skills/<name>/SKILL.md` with YAML frontmatter — one directory per skill.
-- Root AGENTS.md is the package-level version of the convention file (see pi-ponytail/AGENTS.md).
+Conventions: `files[]` includes source + CHANGELOG + README (Pi loads source
+directly); `publishConfig.access: "public"`; extension code is plain JS or
+TypeScript (TS when deps benefit from types); tests are unit-style — pi-ponytail
+uses `node --test` (no framework), the rest mocha+tsx with `.mocharc.yml`.
+Pure-theme packages (pi-themes) have no extensions/ or skills/ dirs.
 
 ## Common Patterns
 
 - Extensions export a default function accepting `(pi: ExtensionAPI)`.
-- Tools are registered with `pi.registerTool()` using TypeBox schemas.
+- Tools register with `pi.registerTool()` using TypeBox schemas.
 - Commands register with `pi.registerCommand()`.
-- Hooks (before_agent_start, tool_call, etc.) modify system prompts or intercept tool calls.
+- Hooks (before_agent_start, tool_call, …) modify prompts or intercept calls.
 
 ## Testing
 
 ```bash
-# All packages
-npm test
-
-# Individual package
-cd pi-<name> && npm test
-
-# Test runners (follow package conventions):
-# pi-agy:        cd extensions && mocha                (mocha + tsx)
-# pi-notebooklm: cd extensions && mocha                (mocha + tsx)
-# pi-ponytail:   node --test extensions/test/*.test.js (no framework, plain JS)
-# pi-ux:        node --test extensions/test/*.test.js (no framework, plain JS)
-# pi-budget:    node --test extensions/test/*.test.js (no framework, plain JS)
-# pi-init:       node --test extensions/test/*.test.js (no framework, plain JS)
-# pi-permission: node --test extensions/test/*.test.js (no framework, plain JS)
-# pi-checkpoint: node --test extensions/test/*.test.js (no framework, plain JS)
-# pi-notify:     node --test extensions/test/*.test.js (no framework, plain JS)
-# pi-references: node --test extensions/test/*.test.js (no framework, plain JS)
-# pi-cron:       cd extensions && npx mocha                (mocha + tsx)
-# pi-evolve:     cd extensions && npx mocha                (mocha + tsx)
-# pi-selfskills:  cd extensions && npx mocha                (mocha + tsx)
-# pi-a2a:        cd extensions && mocha                    (mocha + tsx)
-# pi-serena:     cd extensions && mocha                (mocha + tsx)
-# pi-web:        cd extensions && mocha                (mocha + tsx, ESM)
-# pi-munin:      npm test                             (mocha + tsx; script cds into extensions/)
-# pi-plan:       cd extensions && mocha                (mocha + tsx)
-# pi-advisor:    cd extensions && mocha                (mocha + tsx)
-# pi-subagent:   cd extensions && mocha                (mocha + tsx)
-# pi-review:     cd extensions && mocha                (mocha + tsx)
-# pi-rtk:        npm test && npm pack --dry-run      (node --test + packaging check)
-# pi-sub:        cd pi-sub && npm test            (node --import tsx --test; npm ci auto-installs SDK peer)
-# pi-themes:     npm test                               (theme validator + packaging check; pure-themes, no extension code)
-# pi-router:     node --import tsx --test extensions/test/unit.test.ts (node:test + tsx)
-# pi-commandcode: node --import tsx --test extensions/test/*.test.ts (node:test + tsx)
+npm test                      # all packages (root)
+cd pi-<name> && npm test      # one package — script is in its package.json
 ```
 
-Test files use unit-test style (no fixture frameworks, consistent with ponytail
-rules for simplicity). Config goes in `.mocharc.yml` (`tsx` require + `test/**/*.test.ts`
-spec). pi-ponytail uses `node --test` with no mocha or tsx dependency at all.
+Runner styles: mocha+tsx runs via `cd extensions && npx mocha`;
+plain-JS packages (pi-ponytail, pi-ux, pi-budget, pi-init, pi-permission,
+pi-checkpoint, pi-notify, pi-references) use `node --test`;
+pi-rtk also runs `npm pack --dry-run`; pi-themes validates themes + packaging.
+Check the package's `test` script rather than guessing.
 
 ## CI/CD
 
-A single `.github/workflows/ci.yml` workflow runs on GitHub-hosted runners:
-
-- **Triggers:** push to `main`, pull requests, and manual `workflow_dispatch`.
-- **Runner matrix:** Linux on `ubuntu-latest` for all packages.
-- **Changed-package detection:** `dorny/paths-filter` builds a dynamic matrix so only affected packages are tested.
-- **Test commands:** pi-ponytail uses `node --test`; pi-rtk uses `npm test && npm pack --dry-run`; all others use `npm ci && npm test` (with `npm run typecheck` for TypeScript packages).
-- **Publishing:** On push to `main`, each changed package is published to npm if its version differs from the registry version.
-
-### Pi version bumps
-
-After each Pi minor release, verify extensions against the new SDK:
-
-1. Check the Pi CHANGELOG for "Breaking Changes" that affect extension APIs (TypeBox imports, ExtensionAPI exports, etc.).
-2. Widen peer caps `<0.x.0` → `<0.(x+1).0` in every package with a bounded peer — keep the existing floor, change only the cap. Find them with: `grep -l 'pi-coding-agent": "[^"]*<' pi-*/package.json` (7 as of 2026-09-12: `pi-advisor`, `pi-attachments`, `pi-cron`, `pi-plan`, `pi-review`, `pi-sub`, `pi-subagent` — re-run the grep rather than trusting this list).
-3. Bump their devDeps from `^0.x.0` to `^0.(x+1).0`.
-4. Patch-version-bump + CHANGELOG every package the grep lists (peer ranges ship in the published artifact, so a cap change is a version change).
-5. Refresh lockfiles in all packages so `npm ci` installs the new SDK — then
-   backfill nested integrity hashes. npm quirk: `npm install` re-idealization
-   strips `integrity` from nested
-   `node_modules/@earendil-works/pi-coding-agent/node_modules/*` entries, which
-   fails CI's "Verify lockfile integrity coverage" guard (bit us on 0.85.0 and
-   0.85.1). For every entry with `resolved` but no `integrity`, inject the
-   authoritative hash and assert the resolved URL matches the registry tarball:
-
-   ```bash
-   npm view @earendil-works/<pkg>@<version> dist.integrity
-   ```
-
-   `npm ci` accepts and preserves hand-added hashes; `npm install` strips them
-   again — re-run the backfill after any install in this repo.
-6. Run tests and typecheck; verify the installed SDK version per package.
+`.github/workflows/ci.yml`: push to main / PRs / manual dispatch, Linux
+`ubuntu-latest`; `dorny/paths-filter` builds a dynamic matrix so only affected
+packages test; on main each changed package publishes to npm if its version
+differs. Pi SDK peer caps: see `docs/pi-version-bumps.md` for the bump
+procedure (including the nested-lockfile integrity backfill).
 
 ## Development discipline (ponytail)
 
-This monorepo uses **ponytail** — lazy senior dev mode. The ladder below runs on every change, not just at audit time.
-
-### The ladder
-
-Stop at the first rung that holds:
-
-1. **YAGNI** — Does this need to exist at all? Speculative need = skip, say so. If a feature request describes a symptom and the root cause is already fixed elsewhere, don't build it.
-2. **Already in this codebase?** — A helper, util, type, or pattern that already lives here → reuse it. Look before you write.
-3. **Stdlib does it?** — Use it. `fs.readFileSync`, `URL`, `Intl`, `Set`, `Map` — Node.js stdlib covers most needs.
-4. **Native platform feature covers it?** — CSS over JS lib, HTML input types over picker components, DB constraints over app-level validation.
-5. **Already-installed dependency?** — Use it. Never add a new one for what a few lines can do.
-6. **One line?** — One line.
-7. **Only then:** minimum code that works.
-
-### Enforce between changes
-
-Before adding the *next* thing, re-read what you just built and ask: *what here is unnecessary?* If you can delete something without breaking tests, delete it. If a simplification makes the diff shorter, ship the simplification.
-
-**Bug fix = root cause, not symptom.** Fix it once where all callers route through, not patching only the path the ticket names.
-
-### Mark shortcuts
-
-Mark deliberate simplifications with a `ponytail:` comment so the shortcut reads as intent, not ignorance:
-```typescript
-// ponytail: global lock, per-account locks if throughput matters
-```
-
-### Tests
-
-Non-trivial logic (a branch, a loop, a parser, a money/security path) leaves ONE runnable check behind — the smallest thing that fails if the logic breaks. Trivial one-liners need no test.
+Active by default — full ladder in the ponytail skill. Summary: YAGNI → reuse
+what's in this codebase → stdlib → native platform → installed dependency →
+one line → minimum code. Bug fix = root cause, not symptom. Mark deliberate
+shortcuts with a `ponytail:` comment. Non-trivial logic leaves one runnable check.
 
 ## Tool guidelines for agents writing / modifying extensions
 
-- TypeBox schemas go alongside the tool registration (see existing `parameters`).
-- `promptSnippet` and `promptGuidelines` are used by the model for tool selection.
-- Shared control params (`project`, `context`, `timeout_ms`) are extracted via
-  `stripControlParams()` (pi-serena) or handled per-tool (pi-web, pi-munin).
-- File-mutation tools use `withFileMutationQueue` (from `@earendil-works/pi-coding-agent`)
-  or lock by file path to avoid concurrent edits.
-- Environment discovery follows: process env → cwd `.env.local` → cwd `.env` →
-  Pi global config `.env.local` → `.env`. Implemented in each package's config module.
-- Skills use SKILL.md with YAML frontmatter under `skills/<name>/SKILL.md`.
-- Never hardcode API URLs/keys; always load through config modules.
-- **Config placement rule**: non-secret config lives in `settings.json` under
-  the extension's key (`router.baseUrl`, `commandcode.baseUrl`, `a2a`, …);
-  secrets/API keys live in `auth.json` via Pi's `/login` (`apiKey: "$ENV"`
-  provider pattern). Never write secrets or a repo-controlled
-  `.pi/settings.json` from extension code.
-- **Interactive config panels** use the shared kernel in
-  `@bacnh85/pi-config-panel` (`openConfigPanel`, `row`, `makeOnAction`) —
-  don't fork the TUI shell per extension. Each extension ships only its row
-  builder; provider extensions follow the pi-router pattern for live apply
-  (re-register provider → `modelRegistry.refresh` → keep active model).
-- Keep each package focused on one capability area — tools, commands, skills.
+- TypeBox schemas go alongside the tool registration; `promptSnippet`/`promptGuidelines` feed model tool selection.
+- File-mutation tools use `withFileMutationQueue` (from `@earendil-works/pi-coding-agent`) or lock by file path.
+- Environment discovery: process env → cwd `.env.local` → cwd `.env` → Pi global config `.env.local` → `.env`.
+- **Config placement rule**: non-secret config in `settings.json` under the extension's key; secrets in `auth.json` via `/login`. Never write secrets or a repo-controlled `.pi/settings.json` from extension code.
+- **Interactive config panels** use `@bacnh85/pi-config-panel` (`openConfigPanel`, `row`, `makeOnAction`) — don't fork the TUI shell.
+- Keep each package focused on one capability area.
 
 ## Adding a new package
 
-To add a new extension package to this monorepo:
-
-1. Create `pi-<name>/` with the standard layout:
-   - `package.json` — set `"pi": { "extensions": ["./extensions/index.ts"] }`, `"publishConfig.access": "public"`, appropriate peer/dev deps, `files[]` including source files + `CHANGELOG.md` + `README.md`.
-   - `extensions/index.ts` — default export `(pi: ExtensionAPI) => { /* register tools/commands/hooks */ }`.
-   - `extensions/package.json` — `{ "type": "module" }` for ESM support.
-   - `extensions/test/*.test.ts` — tests co-located with the extension code.
-   - `skills/<name>/SKILL.md` — optional skill with YAML frontmatter.
-   - `CHANGELOG.md` — one per package with version history.
-2. Add the package to the CI matrix in `.github/workflows/ci.yml` (paths-filter entry + `all` array entry with the appropriate test command + typecheck step if TypeScript).
-3. Add the package row to the table in this file and in `README.md`.
+1. Create `pi-<name>/` with the standard layout above (`publishConfig.access: "public"`, peer/dev deps, `files[]`).
+2. Add a CI matrix entry in `.github/workflows/ci.yml` (paths-filter + `all` array with test command + typecheck if TS).
+3. Add a row to the package table here and in `README.md`.
 
 ### Agent-specific guidelines
 
-- **Serena** is the primary code-navigation tool for symbols/references — prefer it over grep for code searches.
-- **Subagents** (scout for recon, tester for verification) can parallelize read-heavy exploration.
-- **Munin** stores/reuses durable knowledge across sessions — use `munin_search` before non-trivial work.
-- **Ponytail** is active by default — apply the ladder (YAGNI → stdlib → native → dependency → one line → minimum code).
-- Lockfiles must be refreshed (not just `npm ci`) when the Pi SDK version changes — verify installed SDK version per package before trusting test results.
+- **Serena** is the primary code-navigation tool — prefer it over grep for symbol/reference searches.
+- **Subagents** (scout/tester) parallelize read-heavy exploration.
+- **Munin** stores/reuses durable knowledge — `munin_search` before non-trivial work.
+- **Ponytail** runs on every change.
+- Lockfiles must be refreshed (not just `npm ci`) when the Pi SDK version changes.
 
-## Release Process
+## Release process
 
-1. Update `version` in the package's `package.json`.
-2. Merge to main → publish workflow auto-publishes to npm if version differs.
-3. `@bacnh85/` scoped packages, public access.
+See `docs/release.md` — bump the version, merge to main, publish workflow handles npm.
