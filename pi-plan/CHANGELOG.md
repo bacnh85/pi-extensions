@@ -2,7 +2,8 @@
 
 ## 0.16.3 (2026-09-28)
 
-> Republished after the CI version-table guard fix (matrix had aborted before this job ran).
+> Republished — the fix commit aborted at the version-table guard (README table
+> not bumped), so the publish matrix never ran for 0.16.3.
 
 - **Fix: `/btw` answers are now visible in RPC clients (PiDeck).** The answer
   was only persisted as a custom entry, which just the pi TUI renders — RPC
