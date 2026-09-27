@@ -45,10 +45,12 @@ jobs:
           print(f"All lockfile entries carry integrity hashes.")
           EOF
 
-      # Version-table guard: the root README.md/AGENTS.md tables drift on every
-      # release batch (each package bumps independently, and neither tests nor
-      # typechecks read the tables). Every pi-*/package.json version must match
-      # both tables exactly — the release notes are wrong otherwise.
+      # Version-table guard: the root README.md table drifts on every release
+      # batch (each package bumps independently, and neither tests nor
+      # typechecks read the table). Every pi-*/package.json version must match
+      # the README row exactly — the release notes are wrong otherwise. AGENTS.md
+      # no longer carries versions (single source of truth = package.json), and
+      # the check below fails if a version column is reintroduced there.
       - name: Verify version tables match package.json
         run: |
           python3 - <<'EOF'
@@ -57,8 +59,9 @@ jobs:
           for pkg in sorted(glob.glob('pi-*/package.json')):
               name = pkg.split('/')[0]
               pkgs[name] = json.load(open(pkg))['version']
+          # AGENTS.md intentionally carries no version column (versions live in each
+          # package.json) — only the root README keeps one, so it is the table checked.
           patterns = {
-              'AGENTS.md': lambda n: re.compile(r'\| \*\*' + re.escape(n) + r'\*\* \|([^|]*)\|'),
               'README.md': lambda n: re.compile(r'\| \[`@bacnh85/' + re.escape(n) + r'`\]\(\./' + re.escape(n) + r'\) \|([^|]*)\|'),
           }
           bad = []
@@ -72,6 +75,13 @@ jobs:
                       bad.append(f"{table}: {name} shows {match.group(1).strip()}, package.json is {version}")
           if bad:
               print("Version table drift:"); [print(" -", b) for b in bad]
+              sys.exit(1)
+          # AGENTS.md must not reintroduce per-package version numbers (a second
+          # source of truth that drifts); the CI-guardable home is README.md.
+          agents = open('AGENTS.md').read()
+          stale = sorted(n for n, v in pkgs.items() if re.search(r'\|\s*\*\*' + re.escape(n) + r'\*\*\s*\|\s*' + re.escape(v) + r'\s*\|', agents))
+          if stale:
+              print("AGENTS.md has a version column again (remove it; versions live in package.json):", stale)
               sys.exit(1)
           print(f"Version tables match all {len(pkgs)} packages.")
           EOF
