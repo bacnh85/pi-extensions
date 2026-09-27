@@ -574,6 +574,7 @@ describe("btw", () => {
   it("injects transcript context and persists a non-LLM answer", async () => {
     const { commands, entries, customMessages } = createFakePi(["read"]);
     let capturedContext: any;
+    const notifications: string[] = [];
     const response: any = {
       async *[Symbol.asyncIterator]() { yield { type: "text_delta", delta: "You discussed file.ts." }; },
       result: async () => ({ stopReason: "stop", content: [{ type: "text", text: "You discussed file.ts." }] }),
@@ -593,7 +594,7 @@ describe("btw", () => {
       },
       sessionManager: { getBranch: () => [message], getEntries: () => [message], getLeafId: () => "1", getSessionFile: () => "/test/session.jsonl" },
       isProjectTrusted: () => false,
-      ui: { setWidget: (...args: unknown[]) => { widgetCalls.push(args); } },
+      ui: { setWidget: (...args: unknown[]) => { widgetCalls.push(args); }, notify: (msg: string) => { notifications.push(msg); } },
     });
 
     await commands.btw.handler("What file were we discussing?", ctx);
@@ -608,6 +609,32 @@ describe("btw", () => {
     assert.equal(typeof entries[0].data.timestamp, "number");
     assert.equal(customMessages.length, 0, "BTW answer does not enter LLM context");
     assert.equal(widgetCalls.length, 0, "BTW no longer renders a transient widget");
+  });
+
+  it("notifies the answer in non-TUI modes so RPC clients can show it", async () => {
+    const { commands, entries } = createFakePi(["read"]);
+    const notifications: Array<{ message: string; type?: string }> = [];
+    const response: any = {
+      async *[Symbol.asyncIterator]() { yield { type: "text_delta", delta: "It was file.ts." }; },
+      result: async () => ({ stopReason: "stop", content: [{ type: "text", text: "It was file.ts." }] }),
+    };
+    const ctx = fakeCtx({
+      mode: "rpc",
+      hasUI: true,
+      modelRegistry: {
+        getAvailable: () => [], find: () => ({ provider: "test", id: "m", contextWindow: 16_384 }),
+        getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "key", headers: {}, env: {} }),
+        getRegisteredProviderConfig: () => ({ streamSimple: () => response }),
+      },
+      sessionManager: { getBranch: () => [], getEntries: () => [], getLeafId: () => "1", getSessionFile: () => "/test/session.jsonl" },
+      isProjectTrusted: () => false,
+      ui: { notify: (message: string, type?: string) => { notifications.push({ message, type }); } },
+    });
+
+    await commands.btw.handler("What file?", ctx);
+
+    assert.equal(entries.length, 1, "answer still persisted");
+    assert.deepEqual(notifications, [{ message: "It was file.ts.", type: "warning" }]);
   });
 
   it("does not persist a cancelled TUI request", async () => {
@@ -628,6 +655,23 @@ describe("btw", () => {
     assert.deepEqual(notifications, ["BTW cancelled."]);
   });
 
+  it("renders only the card on the TUI success path — no notify", async () => {
+    const { commands, entries } = createFakePi(["read"]);
+    const notifications: string[] = [];
+    const ctx = fakeCtx({
+      mode: "tui",
+      sessionManager: { getBranch: () => [], getEntries: () => [], getLeafId: () => "1", getSessionFile: () => "/test/session.jsonl" },
+      ui: {
+        custom: async () => ({ answer: "file.ts" }),
+        notify: (message: string) => { notifications.push(message); },
+      },
+    });
+
+    await commands.btw.handler("What file?", ctx);
+    assert.equal(entries.length, 1);
+    assert.deepEqual(notifications, [], "TUI success must not notify — the card is the only surface");
+  });
+
   it("recalls the latest answer from the current branch", async () => {
     const { commands } = createFakePi(["read"]);
     let editorTitle = "";
@@ -644,6 +688,23 @@ describe("btw", () => {
     await commands.btw.handler("", ctx);
     assert.ok(editorTitle.startsWith("BTW recall:"));
     assert.equal(editorContent, "file.ts");
+  });
+
+  it("recalls via notification in non-TUI modes", async () => {
+    const { commands } = createFakePi(["read"]);
+    const notifications: Array<{ message: string; type?: string }> = [];
+    const ctx = fakeCtx({
+      mode: "rpc",
+      hasUI: true,
+      sessionManager: {
+        getBranch: () => [{ type: "custom", customType: "pi-plan-btw", data: { query: "What file?", answer: "file.ts", timestamp: 1 } }],
+        getSessionFile: () => "/test/session.jsonl",
+      },
+      ui: { notify: (message: string, type?: string) => { notifications.push({ message, type }); } },
+    });
+
+    await commands.btw.handler("", ctx);
+    assert.deepEqual(notifications, [{ message: "file.ts", type: "warning" }]);
   });
 });
 

@@ -1,8 +1,15 @@
 # Changelog
 
-## 0.16.2 (2026-09-27)
+## 0.16.3 (2026-09-28)
 
 > Republished after the CI version-table guard fix (matrix had aborted before this job ran).
+
+- **Fix: `/btw` answers are now visible in RPC clients (PiDeck).** The answer
+  was only persisted as a custom entry, which just the pi TUI renders — RPC
+  and print modes showed nothing. Non-TUI modes now also notify the answer
+  (and the no-query recall path uses the same visible level).
+
+## 0.16.2 (2026-09-27)
 
 - **Fix: concurrent `ask_user_question` calls no longer hang.** The TUI has a
   single modal dialog slot; two parallel tool calls both awaited

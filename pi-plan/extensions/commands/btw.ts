@@ -95,7 +95,7 @@ export function registerBtw(pi: ExtensionAPI): void {
       if (!query) {
         const previous = latestBtw(ctx);
         if (!previous) return ctx.ui.notify("No previous BTW to recall. Use /btw <query>.", "info");
-        if (ctx.mode !== "tui") return ctx.ui.notify(previous.answer, "info");
+        if (ctx.mode !== "tui") return ctx.ui.notify(previous.answer, "warning");
         await ctx.ui.editor(`BTW recall: ${previous.query.slice(0, 80)}`, previous.answer);
         return;
       }
@@ -129,6 +129,8 @@ export function registerBtw(pi: ExtensionAPI): void {
       if ("cancelled" in result) return ctx.ui.notify("BTW cancelled.", "info");
       if ("error" in result) return ctx.ui.notify(`BTW failed: ${String(result.error)}`, "error");
       pi.appendEntry<BtwEntry>(BTW_ENTRY, { query, answer: result.answer, timestamp: Date.now() });
+      // Custom entries are only rendered by the TUI entry renderer; RPC/print clients would show nothing.
+      if (ctx.mode !== "tui") ctx.ui.notify(result.answer, "warning");
     },
   });
 }

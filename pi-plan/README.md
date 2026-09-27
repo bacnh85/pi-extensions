@@ -189,7 +189,7 @@ Optional Pi settings (global `~/.pi/agent/settings.json` or trusted project `.pi
 
 `/btw` injects a compact snapshot of the current session transcript as context, so it can answer questions about files read, decisions made, and things discussed earlier. It uses an isolated model call with no tool access. Completed answers render as durable transcript cards that remain visible after dismissal and are excluded from the primary agent's LLM context.
 
-`/btw` without a query recalls the latest answer from the current session branch, including after reload or resume.
+`/btw` without a query recalls the latest answer from the current session branch, including after reload or resume. In non-TUI clients (RPC, e.g. PiDeck) the answer arrives as a notification, since durable transcript cards are rendered only by the pi TUI.
 
 Optional Pi settings also select where plans are written (`pi-plan.plansDir`). The default is `.agents/plans` (relative to the workspace `cwd`); the `{yyyymm}` placeholder expands to the current month so plans auto-archive into monthly subfolders without any user scripts:
 
