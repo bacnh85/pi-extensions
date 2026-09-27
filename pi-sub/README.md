@@ -170,7 +170,7 @@ trigger `tokens > contextWindow − reserveTokens`):
 Context Usage
 
 ⛁⛁⛁⛁⛁⛁⛁⛁⛁⛁  GLM-5.3 (197K context)
-⛁⛶⛶⛶⛶⛶⛶⛶⛶⛶  glm-5.3[197K]
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶  glm-5.3[197K]
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶  41K/197K tokens (20.9%)
 ⛶⛶⛶⛶⛶⛶⛶⛝⛝⛝  Estimated usage by category
 
@@ -178,12 +178,11 @@ Context Usage
  ⛁ System tools: 4.3K tokens (2.2%)
  ⛁ System context: 2.1K tokens (1.1%)
  ⛁ Skills: 3.8K tokens (1.9%)
- ⛁ Messages: 150 tokens (<0.1%)
- ⛁ Unattributed: 18K tokens (9.3%)
+ ⛁ Messages: 18K tokens (9.4%)
  ⛶ Free space: 139K tokens (70.8%)
  ⛝ Autocompact buffer: 16K tokens (8.3%)
 
-System prompt (18K):
+Prompt sections (18K):
   rules: 7.5K
   tools: 4.0K
   skills: 3.8K
@@ -198,16 +197,19 @@ Tools (54):
   tool2: 80
   tool3: 80
   tool4: 80
-  @bacnh85/pi-web: 1.6K · 20 tools
-  pi: 1.5K · 19 tools
-  @bacnh85/pi-model-tools: 1.2K · 15 tools
+  pi: 2.7K · 34 tools
+  pi-web: 1.6K · 20 tools
 
 Recommendations:
 - Skills section is 3.8K tokens — disable-model-invocation on reference-only skills.
 ```
 
 Categories are disjoint — context files and skills are split out of "System
-prompt", so the rows add up to the window. The buffer reads `disabled` when
+prompt", so the rows add up to the window. Prompt rows are measured character
+counts; **Messages is the residual** (`used − prompt rows`), because the chars/4
+estimate also counts thinking blocks and cache-unwritten content and so
+over-reports real sessions by 24–40% (measured). That keeps every row ≤ the
+headline total and makes the whole panel reconcile. The buffer reads `disabled` when
 `compaction.enabled` is false, and honors
 `compaction.modelOverrides["provider/id"].reserveTokens` / `compaction.reserveTokens`
 from `settings.json` (the same resolution Pi uses), so the number shown is the

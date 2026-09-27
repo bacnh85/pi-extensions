@@ -27,6 +27,11 @@ All notable changes to `pi-sub` will be documented in this file.
   Model output is no longer counted as reserved — Pi only caps it inside
   summarization, so the previous `Reserved = reserve + maxTokens` line
   overstated withheld context.
+- `/context` rows are reconciled to the measured total: prompt rows are measured
+  character counts and **Messages is the residual** (`used − prompt rows`), since
+  chars/4 also counts thinking blocks and cache-unwritten content and so
+  over-reports real sessions by 24–40% (measured across session logs). Every row
+  is therefore ≤ the headline total, and the rows sum to the window exactly.
 - `/context` now posts its panel **into the transcript** (a `pi-sub-context`
   custom message with a registered renderer) instead of opening a dismissable
   overlay, so — like OMP — it stays visible above the input while you work.
