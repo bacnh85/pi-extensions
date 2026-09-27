@@ -2,6 +2,8 @@
 
 ## [0.6.5] - 2026-09-27
 
+> Republished after the CI version-table guard fix (matrix had aborted before this job ran).
+
 - `ux-presets`, `ux-routing`, and `ux-capture` are reference-only skills and now
   carry `disable-model-invocation: true`, dropping them from the system-prompt
   skills section (~0.5k tokens per fresh session). They remain available via

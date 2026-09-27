@@ -2,6 +2,8 @@
 
 ## 0.1.16 (2026-09-27)
 
+> Republished after the CI version-table guard fix (matrix had aborted before this job ran).
+
 ### Changed
 
 - `ponytail-help` and `ponytail-gain` are one-shot display cards and now carry

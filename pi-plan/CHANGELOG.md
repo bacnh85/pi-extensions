@@ -2,6 +2,8 @@
 
 ## 0.16.2 (2026-09-27)
 
+> Republished after the CI version-table guard fix (matrix had aborted before this job ran).
+
 - **Fix: concurrent `ask_user_question` calls no longer hang.** The TUI has a
   single modal dialog slot; two parallel tool calls both awaited
   `ctx.ui.select` and stalled ("No result provided") until user intervention.
