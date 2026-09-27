@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.9.3] - 2026-09-27
+
+Session-mined tool-call hardening (2026-09 harness analysis: 337 sessions,
+177 edit failures): nested `old_text`/`new_text` snake_case inside `edits[]`
+was the #2 edit-failure class (23 hits) and every multi-miss edit failed at
+least twice before the apply_patch nudge.
+
+- **`PI_MODEL_TOOLS_NO_FIRST_TOOL_HINTS=1`**: new kill switch for the
+  prompt-aware first-tool hints (bash-first / find-first / clone-first).
+  Same-model A/B (glm-5.3-flash, 5v5 run-task sessions): hint ON = bash-first
+  5/5, 1 tool call; hint OFF = ls→read→bash 5/5, 3 calls — the hint still
+  earns its keep; knob exists to re-verify that periodically.
+- **Nested param-alias repair**: `PARAM_ALIASES` now also applies inside
+  nested objects/arrays (`edits[0].old_text → oldText`, `new_text → newText`),
+  schema-guided at each level with the same safety rules as top-level
+  (target key absent, required in schema, value type matches). Runs in
+  `prepareArguments`, so it fires BEFORE validation (tool_call hooks never
+  see schema-invalid args).
+- **No-op edit guard**: an edit whose `oldText === newText` now fails fast
+  with the index (`edits[N] is a no-op`) instead of the post-hoc
+  "might indicate special characters" message.
+- **apply_patch escalation after the FIRST miss** on a file (was 2) — the
+  trim-tolerant retry has already run by that point; session evidence: 8/8
+  next-call success after the nudge, max retry depth 3 when gated at 2.
+
 ## [0.9.2] - 2026-09-26
 
 - Cleanup: dropped the redundant local `declare const process` from

@@ -84,6 +84,7 @@ import {
   applyPatchPreferenceGuidance,
   selectionGuidanceEnabled,
   strictSerenaEnabled,
+  firstToolHintsDisabled,
   superPowerModeEnabled,
   superPowerPromptContent,
 } from "./lib/guidance.ts";
@@ -190,6 +191,12 @@ function wrapToolDefinition(base: any, factory: (cwd: string) => any, shouldRepa
       // edit: try once; on a match-failure, retry once with trim-tolerant
       // matching (copying actual file bytes) before giving up with a richer
       // error that shows the nearest region.
+      // No-op guard: oldText === newText produces zero change; the core only
+      // reports it post-hoc as "might indicate special characters". Fail fast
+      // with the index so the model fixes targeting instead of re-sending.
+      const noopIdx = (Array.isArray(params?.edits) ? params.edits : typeof params?.oldText === "string" ? [{ oldText: params.oldText, newText: params.newText }] : [])
+        .findIndex((e: any) => isRecord(e) && e.oldText === e.newText);
+      if (noopIdx !== -1) throw new Error(`edits[${noopIdx}] is a no-op: oldText equals newText. The replacement produces no change — check which region you meant to target.`);
       try {
         const result = await freshDef.execute(toolCallId, params, signal, onUpdate, ctx);
         editMismatchCounts?.delete(resolvePath(cwd, typeof params?.path === "string" ? params.path : ""));
@@ -234,11 +241,13 @@ function wrapToolDefinition(base: any, factory: (cwd: string) => any, shouldRepa
         const failing = edits[Math.min(parseFailedEditIndex(message), edits.length - 1)];
         const nearest = failing ? nearestBlock(fileContent, stripReadContamination(failing.oldText).text) : "";
         // Session mining: 26% of mismatches fail again on retry (wrong content,
-        // not whitespace). Escalate to apply_patch after the second miss on the
-        // same file — different strategy beats a third exact-match attempt.
+        // not whitespace). Escalate after the FIRST miss on the same file — the
+        // trim-tolerant retry has already run by this point, so a second exact-
+        // match attempt almost never recovers (2026-09: 8/8 next-call success
+        // after the nudge; max observed retry depth 3 when gated at 2).
         const misses = editMismatchCounts ? (editMismatchCounts.get(resolvePath(cwd, filePath)) ?? 0) + 1 : 1;
         editMismatchCounts?.set(resolvePath(cwd, filePath), misses);
-        const escalate = misses >= 2 && (!activeToolNames || activeToolNames().includes("apply_patch"))
+        const escalate = misses >= 1 && (!activeToolNames || activeToolNames().includes("apply_patch"))
           ? `\n\nedit has failed ${misses}× on this file. Switch to apply_patch with a small V4D diff (context + -/+ lines) — it does not require exact oldText.`
           : "";
         throw new Error(nearest ? `${message}\n\n${nearest}${escalate}` : `${message}${escalate}`);
@@ -606,9 +615,10 @@ export default function (pi: ExtensionAPI) {
 
     // Prompt-aware first-tool hints — ALL families (correctness, not steering).
     // Per-turn dynamic (depend on the current prompt) → user-message tail.
+    // PI_MODEL_TOOLS_NO_FIRST_TOOL_HINTS=1 disables (A/B testing knob).
     const activeForHint = Array.isArray(event.systemPromptOptions?.selectedTools) && event.systemPromptOptions.selectedTools.length > 0
       ? event.systemPromptOptions.selectedTools : pi.getActiveTools();
-    if (activeForHint.includes("bash")) {
+    if (!firstToolHintsDisabled() && activeForHint.includes("bash")) {
       const runHint = runTaskFirstToolHint(event.prompt || "");
       if (runHint) dynamicParts.push(runHint);
       const ghHint = githubCloneFirstToolHint(event.prompt || "");

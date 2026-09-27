@@ -577,7 +577,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
             screenshot: Type.Optional(Type.Boolean({ description: "Capture a PNG now; the last screenshot is returned inline. false = no-op here (the automatic final screenshot still runs)." })),
             dialog: Type.Optional(Type.String({ description: '"accept" or "dismiss" — the answer for the NEXT native dialog (confirm/alert/prompt/beforeunload); default auto-dismiss.' })),
             label: Type.Optional(Type.String({ description: "Optional label shown on the step's result line." })),
-          }, { description: "One action per step object — set exactly one action field. Actions run in order and stop at the first failure. Omit for open + screenshot + probe only." })),
+          }, { description: "One action per step object — set exactly one action field (click OR type OR press OR evaluate OR wait_for OR wait_ms OR screenshot OR dialog); extra action fields are auto-split into separate steps. Omit for open + screenshot + probe only." })),
       ),
       viewport: Type.Optional(
         Type.Object({
@@ -614,6 +614,9 @@ export default function piWebExtension(pi: ExtensionAPI) {
         signal,
       });
       const lines = [`Interaction: ${url}`];
+      if (result.splitSteps) {
+        lines.push(`Note: ${result.splitSteps} multi-action step(s) were auto-split into one-step-per-action (order preserved).`);
+      }
       result.outcomes.forEach((o, i) => {
         const value = o.ok && o.value !== undefined ? ` = ${JSON.stringify(o.value)}` : "";
         lines.push(`${i + 1}. ${o.label} → ${o.ok ? `ok${value}` : `FAILED: ${o.error}`}${o.dialogs ? ` [${o.dialogs.join("; ")}]` : ""}`);

@@ -2,6 +2,16 @@
 
 All notable changes to `pi-web` will be documented in this file.
 
+## 0.17.8 (2026-09-27)
+
+- **`web_interact`: multi-action steps auto-split instead of rejected.**
+  Session mining (2026-09): 42/51 web_interact failures were "Each step must
+  have exactly one action key" — models routinely write `{click, screenshot}`.
+  `validateSteps` now deterministically splits a multi-action step into
+  sequential one-action steps (model's written order preserved) and the tool
+  result notes the split; steps with an unknown key still fail with the step
+  index in the message.
+
 ## 0.17.7 (2026-09-26)
 
 - **Security: `isLocalUrl` now recognizes IPv4-mapped IPv6 addresses** (both the

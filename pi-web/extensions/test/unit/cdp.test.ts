@@ -7,6 +7,7 @@
  */
 
 import { expect } from "chai";
+import assert from "node:assert";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -191,10 +192,23 @@ describe("validateSteps", () => {
     ]);
   });
 
-  it("rejects zero, multiple, or unknown action keys", () => {
-    expect(() => validateSteps([{}] as any)).to.throw(/exactly one action key/);
-    expect(() => validateSteps([{ click: "#a", press: "Enter" } as any])).to.throw(/exactly one action key/);
-    expect(() => validateSteps([{ scroll: "#a" } as any])).to.throw(/exactly one action key/);
+  it("rejects zero or unknown action keys", () => {
+    expect(() => validateSteps([{}] as any)).to.throw(/steps\[0\] must have exactly one action key/);
+    expect(() => validateSteps([{ scroll: "#a" } as any])).to.throw(/steps\[0\] must have exactly one action key/);
+  });
+
+  it("auto-splits multi-action steps into sequential steps, order preserved", () => {
+    const steps = [{ click: "#a", press: "Enter" }] as any[];
+    const split = validateSteps(steps);
+    assert.strictEqual(split, 1);
+    assert.deepStrictEqual(steps, [{ click: "#a" }, { press: "Enter" }]);
+    const mixed = [{ click: "#x", screenshot: true, wait_for: "#y" }] as any[];
+    assert.strictEqual(validateSteps(mixed), 1);
+    assert.deepStrictEqual(mixed, [{ click: "#x" }, { screenshot: true }, { wait_for: "#y" }]);
+  });
+
+  it("still rejects multi-action steps that also carry an unknown key", () => {
+    expect(() => validateSteps([{ click: "#a", scroll: "#b" } as any])).to.throw(/steps\[0\] must have exactly one action key/);
   });
 
   it("rejects malformed payloads", () => {

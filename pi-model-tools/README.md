@@ -238,6 +238,7 @@ All toggles live under the `PI_MODEL_TOOLS_*` namespace.
 | `PI_MODEL_TOOLS_REASONING_MAX_CHARS` | unlimited | Truncate long reasoning fields to N characters |
 | `PI_MODEL_TOOLS_BLOCK_DANGEROUS_COMMANDS` | 1 | Safety guard (on by default) |
 | `PI_MODEL_TOOLS_AUTO_BLOCK_AFTER_REMINDERS` | 0 | Auto-block tool-selection misses after N reminders |
+| `PI_MODEL_TOOLS_NO_FIRST_TOOL_HINTS` | 0 | `1` disables the prompt-aware first-tool hints (bash-first / find-first / clone-first) — A/B testing knob |
 | `PI_MODEL_TOOLS_MAX_ERROR_HISTORY` | 100 | Maximum tracked tool errors |
 | `PI_MODEL_TOOLS_BASH_AUTO_BG` | 0 | Auto-background bash calls still running after the threshold; output delivered as a follow-up turn (`1`/`on` to enable) |
 | `PI_MODEL_TOOLS_BASH_AUTO_BG_SECS` | 120 | Foreground threshold in seconds before a bash call auto-backgrounds |

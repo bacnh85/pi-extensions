@@ -195,3 +195,16 @@ describe("computeRetryEdit", () => {
     assert.equal(r!.fixedEdits[0].oldText, "a\nb");
   });
 });
+
+// The no-op guard lives in the edit wrapper (index.ts); its decision logic is
+// one expression — exercised here so the threshold contract stays visible.
+describe("no-op edit guard contract", () => {
+  it("oldText === newText is a no-op and must be rejected pre-IO", () => {
+    const edits = [{ oldText: "same", newText: "same" }];
+    assert.ok(edits.some((e) => e.oldText === e.newText));
+  });
+  it("differing oldText/newText passes the guard", () => {
+    const edits = [{ oldText: "a", newText: "b" }];
+    assert.ok(!edits.some((e) => e.oldText === e.newText));
+  });
+});

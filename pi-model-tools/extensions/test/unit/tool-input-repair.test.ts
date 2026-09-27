@@ -176,6 +176,46 @@ describe("repairToolArguments — param-name aliases (cross-harness)", () => {
     const result = repairToolArguments("write", Type.Object({ path: Type.String() }), { file_text: "x", path: "a" });
     assert.strictEqual(result.repaired, false);
   });
+
+  it("repairs nested edits[] old_text/new_text → oldText/newText (Cursor habit)", () => {
+    // The 23-hit schema-failure class mined from 2026-09 sessions.
+    const editSchema = Type.Object({
+      path: Type.String(),
+      edits: Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() })),
+    });
+    const result = repairToolArguments("edit", editSchema, {
+      path: "a.ts",
+      edits: [{ old_text: "foo", new_text: "bar" }],
+    });
+    assert.strictEqual(result.repaired, true);
+    assert.ok(result.repairs.includes("param-alias"));
+    assert.deepStrictEqual(result.args, { path: "a.ts", edits: [{ oldText: "foo", newText: "bar" }] });
+  });
+
+  it("leaves type-mismatched nested alias in place but still renames the valid sibling (partial, like top-level)", () => {
+    const editSchema = Type.Object({
+      path: Type.String(),
+      edits: Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() })),
+    });
+    const args = { path: "a.ts", edits: [{ old_text: 42, new_text: "bar" }] };
+    const result = repairToolArguments("edit", editSchema, args);
+    assert.strictEqual(result.repaired, true);
+    const edit = (result.args as any).edits[0];
+    assert.strictEqual(edit.old_text, 42); // type mismatch → untouched
+    assert.strictEqual(edit.newText, "bar"); // valid type → renamed
+    assert.ok(!("new_text" in edit));
+  });
+
+  it("does not rename nested alias when the target key is already present", () => {
+    const editSchema = Type.Object({
+      path: Type.String(),
+      edits: Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() })),
+    }, { additionalProperties: false });
+    const args = { path: "a.ts", edits: [{ oldText: "keep", old_text: "junk", newText: "x" }] };
+    const result = repairToolArguments("edit", editSchema, args);
+    assert.strictEqual(result.repaired, false);
+    assert.deepStrictEqual(result.args, args);
+  });
 });
 
 describe("unwrapDegenerateMarkdownAutolink", () => {

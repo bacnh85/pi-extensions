@@ -230,14 +230,26 @@ export type InteractStep =
 
 const STEP_KEYS = ["click", "type", "press", "evaluate", "wait_for", "dialog", "screenshot"];
 
-/** Exactly one known action key per step, so bad input fails before Chrome launches. */
-export function validateSteps(steps: InteractStep[]): void {
-  for (const step of steps) {
+/** Exactly one known action key per step, so bad input fails before Chrome launches.
+ *  Returns the number of multi-action steps that were auto-split. */
+export function validateSteps(steps: InteractStep[]): number {
+  let splitSteps = 0;
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
     const keys = Object.keys(step).filter((k) => STEP_KEYS.includes(k));
     const unknown = Object.keys(step).filter((k) => !STEP_KEYS.includes(k) && k !== "label");
+    // Session mining (2026-09): 42/51 web_interact failures were multi-action
+    // steps (e.g. {click, screenshot}). Deterministic split: keep each action
+    // key as its own step in the model's written order, sharing label/timeout.
+    if (keys.length > 1 && unknown.length === 0) {
+      const split = keys.map((k) => ({ [k]: (step as any)[k] }) as InteractStep);
+      steps.splice(i, 1, ...split);
+      splitSteps++;
+      continue; // re-examine the spliced-in steps in place
+    }
     if (keys.length !== 1 || unknown.length > 0) {
       throw new Error(
-        `Each step must have exactly one action key (${STEP_KEYS.join(", ")}); got: ${JSON.stringify(step)}`,
+        `steps[${i}] must have exactly one action key (${STEP_KEYS.join(", ")}); got: ${JSON.stringify(step)}`,
       );
     }
     const key = keys[0];
@@ -257,6 +269,7 @@ export function validateSteps(steps: InteractStep[]): void {
       throw new Error(`dialog step needs "accept" or "dismiss"; got: ${JSON.stringify(step)}`);
     }
   }
+  return splitSteps;
 }
 
 /** Unwrap Runtime.evaluate's {result:{result:{value}}} — and surface exceptions loudly. */
@@ -509,6 +522,8 @@ export interface InteractionResult {
   dialogs?: string[];
   /** Set when a step triggered a navigation — later steps ran on the NEW document. */
   navigatedTo?: string;
+  /** Steps that were multi-action on input and were auto-split by validateSteps. */
+  splitSteps?: number;
 }
 
 /**
@@ -525,7 +540,7 @@ export async function runInteraction(opts: InteractionOpts): Promise<Interaction
       (s as { wait_ms?: number }).wait_ms !== undefined ? { wait_for: (s as { wait_ms: number }).wait_ms } : s,
     )
     .filter((s) => (s as { screenshot?: unknown }).screenshot !== false); // {screenshot:false} = declined capture
-  validateSteps(steps);
+  const splitSteps = validateSteps(steps);
   if (opts.signal?.aborted) throw new Error("Aborted before launch");
 
   const browser = await launchCdp({ wsFactory: opts.wsFactory });
@@ -659,6 +674,7 @@ export async function runInteraction(opts: InteractionOpts): Promise<Interaction
       probe,
       ...(dialogs.length ? { dialogs } : {}),
       ...(navigatedTo ? { navigatedTo } : {}),
+      ...(splitSteps > 0 ? { splitSteps } : {}),
     };
   } finally {
     opts.signal?.removeEventListener("abort", onAbort);

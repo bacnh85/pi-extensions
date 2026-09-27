@@ -19,6 +19,15 @@ export function strictSerenaEnabled(env: Record<string, string | undefined> = pr
   return /^(1|true|yes|on)$/i.test(env.PI_MODEL_TOOLS_STRICT_SERENA ?? "");
 }
 
+/**
+ * Disable the prompt-aware first-tool hints (bash-first / find-first / clone-first).
+ * Default OFF (hints on) — set PI_MODEL_TOOLS_NO_FIRST_TOOL_HINTS=1 to disable,
+ * e.g. for A/B measuring whether the hints still earn their keep.
+ */
+export function firstToolHintsDisabled(env: Record<string, string | undefined> = process.env): boolean {
+  return /^(1|true|yes|on)$/i.test(env.PI_MODEL_TOOLS_NO_FIRST_TOOL_HINTS ?? "");
+}
+
 // ── Selection guidance (memoized per active-tool set) ──
 
 const guidanceCache = new Map<string, string>();

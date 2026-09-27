@@ -33,6 +33,10 @@ const PARAM_ALIASES: Readonly<Record<string, string>> = {
   file_text: "content",
   text: "content",
   body: "content",
+  // Nested edit payloads (Cursor-trained snake_case inside edits[]): the top
+  // 5 measured causes of edit schema-validation failures (2026-09 sessions).
+  old_text: "oldText",
+  new_text: "newText",
 };
 
 const ALIASABLE_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls", "bash"]);
@@ -220,6 +224,30 @@ function tryParamAliases(toolName: string, schema: unknown, args: unknown): Repa
     delete args[wrong];
     applied = "param-alias";
   }
+  // Nested objects/arrays (e.g. edit's edits[] items): same rename rule,
+  // schema-guided at each level. Replaces the live "must have required
+  // properties oldText, newText" failure class (23 hits / 14 days).
+  const visit = (current: unknown, currentSchema: unknown): void => {
+    if (Array.isArray(current)) {
+      for (const item of current) visit(item, isRecord(currentSchema) ? (currentSchema as any).items : undefined);
+      return;
+    }
+    if (!isRecord(current) || !isRecord(currentSchema)) return;
+    const req = Array.isArray(currentSchema.required) ? currentSchema.required : [];
+    const props = isRecord(currentSchema.properties) ? currentSchema.properties : {};
+    for (const [wrong, right] of Object.entries(PARAM_ALIASES)) {
+      if (!(wrong in current) || right in current || !req.includes(right) || !Object.hasOwn(props, right)) continue;
+      const value = current[wrong];
+      const valueType = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+      const types = schemaTypes(props[right]);
+      if (types.length > 0 && !types.includes(valueType)) continue;
+      current[right] = value;
+      delete current[wrong];
+      applied = "param-alias";
+    }
+    for (const [k, v] of Object.entries(current)) visit(v, props[k]);
+  };
+  visit(args, schema);
   return applied;
 }
 
