@@ -45,45 +45,32 @@ jobs:
           print(f"All lockfile entries carry integrity hashes.")
           EOF
 
-      # Version-table guard: the root README.md table drifts on every release
-      # batch (each package bumps independently, and neither tests nor
-      # typechecks read the table). Every pi-*/package.json version must match
-      # the README row exactly — the release notes are wrong otherwise. AGENTS.md
-      # no longer carries versions (single source of truth = package.json), and
-      # the check below fails if a version column is reintroduced there.
-      - name: Verify version tables match package.json
+      # Release drift report: list packages whose committed version is not yet
+      # on npm. Informational (main pushes publish in the `ci` job) — exists so a
+      # version stranded by an earlier failed run is called out instead of
+      # silently sitting unpublished (pi-plan 0.16.3 went missing that way).
+      - name: Report package versions not yet on npm
+        if: github.event_name == 'push'
+        continue-on-error: true
         run: |
           python3 - <<'EOF'
-          import glob, json, re, sys
-          pkgs = {}
+          import glob, json, re, subprocess
+          rows = []
           for pkg in sorted(glob.glob('pi-*/package.json')):
               name = pkg.split('/')[0]
-              pkgs[name] = json.load(open(pkg))['version']
-          # AGENTS.md intentionally carries no version column (versions live in each
-          # package.json) — only the root README keeps one, so it is the table checked.
-          patterns = {
-              'README.md': lambda n: re.compile(r'\| \[`@bacnh85/' + re.escape(n) + r'`\]\(\./' + re.escape(n) + r'\) \|([^|]*)\|'),
-          }
-          bad = []
-          for table, make in patterns.items():
-              text = open(table).read()
-              for name, version in pkgs.items():
-                  match = make(name).search(text)
-                  if not match:
-                      bad.append(f"{table}: missing row for {name}")
-                  elif match.group(1) != f" {version} ":
-                      bad.append(f"{table}: {name} shows {match.group(1).strip()}, package.json is {version}")
-          if bad:
-              print("Version table drift:"); [print(" -", b) for b in bad]
-              sys.exit(1)
-          # AGENTS.md must not reintroduce per-package version numbers (a second
-          # source of truth that drifts); the CI-guardable home is README.md.
-          agents = open('AGENTS.md').read()
-          stale = sorted(n for n, v in pkgs.items() if re.search(r'\|\s*\*\*' + re.escape(n) + r'\*\*\s*\|\s*' + re.escape(v) + r'\s*\|', agents))
-          if stale:
-              print("AGENTS.md has a version column again (remove it; versions live in package.json):", stale)
-              sys.exit(1)
-          print(f"Version tables match all {len(pkgs)} packages.")
+              meta = json.load(open(pkg))
+              npmname, ver = meta.get('name'), meta['version']
+              if not npmname:
+                  continue
+              out = subprocess.run(['npm', 'view', npmname, 'version'], capture_output=True, text=True)
+              latest = out.stdout.strip() if out.returncode == 0 else ''
+              if latest != ver:
+                  rows.append(f"  {name}: committed {ver}, npm {latest or 'none'}")
+          if rows:
+              print("NOT PUBLISHED (this run's matrix will publish them if their paths changed):")
+              print("\n".join(rows))
+          else:
+              print("Every committed version is already on npm.")
           EOF
 
       - uses: dorny/paths-filter@9d7afb8d214ad99e78fbd4247752c4caed2b6e4c # v4.0.0
@@ -180,6 +167,55 @@ jobs:
             }));
 
             core.setOutput('matrix', JSON.stringify({ include }));
+
+  # Docs consistency (README version table). Deliberately NOT a dependency of
+  # the release matrix: a stale table is a docs bug, and gating the matrix on
+  # it silently strands publishes (pi-plan 0.16.3 shipped exactly that way).
+  version-tables:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Version-table guard: the root README.md table drifts on every release
+      # batch (each package bumps independently, and neither tests nor
+      # typechecks read the table). Every pi-*/package.json version must match
+      # the README row exactly — the release notes are wrong otherwise. AGENTS.md
+      # no longer carries versions (single source of truth = package.json), and
+      # the check below fails if a version column is reintroduced there.
+      - name: Verify version tables match package.json
+        run: |
+          python3 - <<'EOF'
+          import glob, json, re, sys
+          pkgs = {}
+          for pkg in sorted(glob.glob('pi-*/package.json')):
+              name = pkg.split('/')[0]
+              pkgs[name] = json.load(open(pkg))['version']
+          # AGENTS.md intentionally carries no version column (versions live in each
+          # package.json) — only the root README keeps one, so it is the table checked.
+          patterns = {
+              'README.md': lambda n: re.compile(r'\| \[`@bacnh85/' + re.escape(n) + r'`\]\(\./' + re.escape(n) + r'\) \|([^|]*)\|'),
+          }
+          bad = []
+          for table, make in patterns.items():
+              text = open(table).read()
+              for name, version in pkgs.items():
+                  match = make(name).search(text)
+                  if not match:
+                      bad.append(f"{table}: missing row for {name}")
+                  elif match.group(1) != f" {version} ":
+                      bad.append(f"{table}: {name} shows {match.group(1).strip()}, package.json is {version}")
+          if bad:
+              print("Version table drift:"); [print(" -", b) for b in bad]
+              sys.exit(1)
+          # AGENTS.md must not reintroduce per-package version numbers (a second
+          # source of truth that drifts); the CI-guardable home is README.md.
+          agents = open('AGENTS.md').read()
+          stale = sorted(n for n, v in pkgs.items() if re.search(r'\|\s*\*\*' + re.escape(n) + r'\*\*\s*\|\s*' + re.escape(v) + r'\s*\|', agents))
+          if stale:
+              print("AGENTS.md has a version column again (remove it; versions live in package.json):", stale)
+              sys.exit(1)
+          print(f"Version tables match all {len(pkgs)} packages.")
+          EOF
 
   # Test and publish only the changed packages
   ci:
