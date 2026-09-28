@@ -212,6 +212,11 @@ export default function piRtkExtension(pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event) => {
     if (!rewritingEnabled()) return;
+    // Truth gate: when the binary is known-missing, rewrites pass through —
+    // don't tell the model its commands are rewritten. Re-checked every turn,
+    // so once the 30s re-probe flips rtkAvailable back to true, the note
+    // is injected again on subsequent turns.
+    if (rtkAvailable === false) return;
     return {
       systemPrompt: event.systemPrompt +
         "\n\nYour bash commands are transparently rewritten through RTK for token savings. " +

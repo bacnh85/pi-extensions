@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.8 - 2026-09-28
+
+- Docs + tests: README's "On every `turn_start`" claim corrected to the
+  actual behavior — snapshots fire once per **user turn** (at the turn's first
+  `turn_start`; continuation rounds are not re-snapshotted). Added a
+  regression test for the `hasUI === false` hostless-session skip.
+
 ## 0.1.7 (2026-09-25)
 
 ### Fixed

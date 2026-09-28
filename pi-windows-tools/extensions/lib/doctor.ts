@@ -1,7 +1,12 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import * as os from "node:os";
 import { join } from "node:path";
 import { getDefaultShell } from "./shell-detect";
+
+const execFileP = promisify(execFile);
+// ponytail: single cap for every doctor probe; per-probe knobs if a tool hangs.
+const PROBE_TIMEOUT_MS = 3000;
 
 const systemExe = (name: string) => join(process.env.SystemRoot || "C:\\Windows", "System32", name);
 
@@ -11,13 +16,17 @@ export interface DoctorReport {
   tools: ToolInfo[]; wslDistros: string[]; longPathsEnabled: boolean | null; developerMode: boolean | null;
 }
 
-function which(cmd: string): string | null {
-  try { return execFileSync(systemExe("where.exe"), [cmd], { cwd: os.homedir(), encoding: "utf8", timeout: 3000 }).split(/\r?\n/)[0]?.trim() || null; } catch { return null; }
+async function firstLine(cmd: string, args: string[]): Promise<string | null> {
+  try {
+    const { stdout } = await execFileP(cmd, args, { cwd: os.homedir(), encoding: "utf8", timeout: PROBE_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
+    return stdout.split(/\r?\n/)[0]?.trim() || null;
+  } catch { return null; }
 }
-function checkTool(name: string, cmd: string, va: string[] = ["--version"]): ToolInfo {
-  const p = which(cmd); let v: string | undefined;
-  if (p) try { v = execFileSync(p, va, { encoding: "utf8", timeout: 3000 }).split(/\r?\n/)[0]?.trim(); } catch {}
-  return { name, found: !!p, path: p || undefined, version: v };
+
+async function checkTool(name: string, cmd: string, va: string[] = ["--version"]): Promise<ToolInfo> {
+  const p = await firstLine(systemExe("where.exe"), [cmd]);
+  const v = p ? await firstLine(p, va) : null;
+  return { name, found: !!p, path: p || undefined, version: v || undefined };
 }
 
 export function parseWslDistros(output: Buffer | string): string[] {
@@ -25,32 +34,46 @@ export function parseWslDistros(output: Buffer | string): string[] {
   const text = buffer[0] === 0xff && buffer[1] === 0xfe || buffer.subarray(1, 16).some(byte => byte === 0) ? buffer.toString("utf16le") : buffer.toString("utf8");
   return text.replace(/^\uFEFF/, "").split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.toLowerCase().includes("noinstall") && !s.startsWith("Windows"));
 }
-function wslDistros(): string[] {
-  try { return parseWslDistros(execFileSync(systemExe("wsl.exe"), ["-l", "-q"], { cwd: os.homedir(), timeout: 5000 })); } catch { return []; }
-}
-function regDword(key: string, val: string): boolean | null {
+// wsl.exe emits UTF-16LE — execFile with encoding "utf8" mangles it, so read
+// the raw Buffer (no encoding) and let parseWslDistros detect the BOM.
+async function wslDistros(): Promise<string[]> {
   try {
-    const out = execFileSync(systemExe("reg.exe"), ["query", key, "/v", val], { cwd: os.homedir(), encoding: "utf8", timeout: 3000 });
-    const m = out.match(new RegExp(`${val}\\s+REG_DWORD\\s+(0x[0-9a-f]+)`, "i"));
+    const { stdout } = await execFileP(systemExe("wsl.exe"), ["-l", "-q"], { cwd: os.homedir(), timeout: 5000, maxBuffer: 1024 * 1024 });
+    return parseWslDistros(stdout);
+  } catch { return []; }
+}
+async function regDword(key: string, val: string): Promise<boolean | null> {
+  try {
+    const { stdout } = await execFileP(systemExe("reg.exe"), ["query", key, "/v", val], { cwd: os.homedir(), encoding: "utf8", timeout: PROBE_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
+    const m = stdout.match(new RegExp(`${val}\\s+REG_DWORD\\s+(0x[0-9a-f]+)`, "i"));
     return m ? parseInt(m[1], 16) === 1 : null;
   } catch { return null; }
 }
 
-export function runDoctor(): DoctorReport {
+const TOOL_PROBES: [string, string][] = [
+  ["pwsh", "pwsh"], ["powershell", "powershell"], ["cmd", "cmd"],
+  ["git", "git"], ["bash (Git Bash)", "bash"], ["wsl", "wsl"],
+  ["node", "node"], ["npm", "npm"], ["pnpm", "pnpm"],
+  ["yarn", "yarn"], ["python", "python"], ["py launcher", "py"],
+  ["dotnet", "dotnet"], ["cmake", "cmake"], ["ninja", "ninja"],
+  ["winget", "winget"], ["choco", "choco"], ["scoop", "scoop"],
+  ["ssh", "ssh"], ["msbuild", "msbuild"], ["cl", "cl"],
+  ["devenv", "devenv"], ["reg", "reg"], ["sc", "sc"], ["netsh", "netsh"],
+  ["wt (Windows Terminal)", "wt"],
+];
+
+export async function runDoctor(): Promise<DoctorReport> {
   const osInfo = { os: os.type(), osVersion: os.release(), architecture: os.arch() };
-  const tools = [
-    checkTool("pwsh", "pwsh"), checkTool("powershell", "powershell"), checkTool("cmd", "cmd"),
-    checkTool("git", "git"), checkTool("bash (Git Bash)", "bash"), checkTool("wsl", "wsl"),
-    checkTool("node", "node"), checkTool("npm", "npm"), checkTool("pnpm", "pnpm"),
-    checkTool("yarn", "yarn"), checkTool("python", "python"), checkTool("py launcher", "py"),
-    checkTool("dotnet", "dotnet"), checkTool("cmake", "cmake"), checkTool("ninja", "ninja"),
-    checkTool("winget", "winget"), checkTool("choco", "choco"), checkTool("scoop", "scoop"),
-    checkTool("ssh", "ssh"), checkTool("msbuild", "msbuild"), checkTool("cl", "cl"),
-    checkTool("devenv", "devenv"), checkTool("reg", "reg"), checkTool("sc", "sc"), checkTool("netsh", "netsh"),
-    checkTool("wt (Windows Terminal)", "wt"),
-  ];
+  // ponytail: Promise.all — 26 where.exe/version probes in parallel beat a
+  // sequential ~30s worst case; reg.exe handles are cheap.
+  const tools = await Promise.all(TOOL_PROBES.map(([name, cmd]) => checkTool(name, cmd)));
   const wslTool = tools.find(t => t.name === "wsl");
-  return { ...osInfo, defaultShell: getDefaultShell().kind, tools, wslDistros: wslTool?.found ? wslDistros() : [], longPathsEnabled: regDword("HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem", "LongPathsEnabled"), developerMode: regDword("HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock", "AllowDevelopmentWithoutDevLicense") };
+  const [distros, longPathsEnabled, developerMode] = await Promise.all([
+    wslTool?.found ? wslDistros() : Promise.resolve([] as string[]),
+    regDword("HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem", "LongPathsEnabled"),
+    regDword("HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock", "AllowDevelopmentWithoutDevLicense"),
+  ]);
+  return { ...osInfo, defaultShell: getDefaultShell().kind, tools, wslDistros: distros, longPathsEnabled, developerMode };
 }
 
 export function formatDoctorReport(r: DoctorReport): string {

@@ -217,12 +217,21 @@ function validateReviewResult(value: unknown, evidence: string): ReviewResult {
 }
 
 export function parseReviewResult(output: string): ReviewResult {
-  const candidate = output.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] ?? output;
-  try {
-    return validateReviewResult(JSON.parse(candidate.trim()), output);
-  } catch {
-    return malformedReviewResult(output);
+  // A reviewer answer may open with a non-JSON fence (diff/example) before the
+  // result fence — try every fenced block, first valid JSON wins; only fall
+  // back to malformedReviewResult when none parses.
+  const fenced = [...output.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => m[1]);
+  for (const candidate of fenced) {
+    try {
+      return validateReviewResult(JSON.parse(candidate.trim()), output);
+    } catch { /* try the next fence */ }
   }
+  if (fenced.length === 0) {
+    try {
+      return validateReviewResult(JSON.parse(output.trim()), output);
+    } catch { /* fall through */ }
+  }
+  return malformedReviewResult(output);
 }
 
 function formatReview(result: ReviewResult): string {

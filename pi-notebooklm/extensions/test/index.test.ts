@@ -13,6 +13,10 @@ import {
   extractOutputPaths,
   TRUNCATION_DIRS,
   fsOps,
+  DESTRUCTIVE_PATHS,
+  DESTRUCTIVE_FLAGS,
+  REQUIRES_YES,
+  CONFIRM_ONLY_PATHS,
 } from "../index.js";
 
 // ---------------------------------------------------------------------------
@@ -327,6 +331,53 @@ describe("requiresYesFlag", () => {
   it("identifies --yes correctly with chained option-like values", () => {
     // "-p" is the value of "--storage", so "-y" is a real flag, not the value of "-p"
     expect(requiresYesFlag(["delete", "-n", "<id>", "--storage", "-p", "-y"])).to.be.false;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// policy drift guard (mirrors pi-hub catalog-completeness pattern)
+// ---------------------------------------------------------------------------
+
+// If notebooklm-py ships a new destructive command and it is added to
+// DESTRUCTIVE_PATHS, this test forces the author to decide how it confirms:
+// a --yes-capable path goes in REQUIRES_YES, a prompt-free one in
+// CONFIRM_ONLY_PATHS. A silently-missing entry would let the confirm gate be
+// the only protection — or worse, the command treated as non-destructive.
+describe("destructive policy drift guard", () => {
+  const keyOf = (p: string[]) => p.join(".");
+
+  it("covers every DESTRUCTIVE_PATHS entry: REQUIRES_YES ∪ CONFIRM_ONLY_PATHS", () => {
+    for (const p of DESTRUCTIVE_PATHS) {
+      const key = keyOf(p);
+      expect(
+        REQUIRES_YES.has(key) || CONFIRM_ONLY_PATHS.has(key),
+        `DESTRUCTIVE_PATHS entry "${key}" is in neither REQUIRES_YES nor CONFIRM_ONLY_PATHS — classify its confirmation strategy`,
+      ).to.be.true;
+    }
+  });
+
+  it("has no stale CONFIRM_ONLY_PATHS entries", () => {
+    for (const key of CONFIRM_ONLY_PATHS) {
+      const p = key.split(".");
+      expect(
+        DESTRUCTIVE_PATHS.some((dp) => keyOf(dp) === key),
+        `CONFIRM_ONLY_PATHS entry "${key}" is not a DESTRUCTIVE_PATHS entry — remove it or re-classify`,
+      ).to.be.true;
+    }
+  });
+
+  it("has no stale REQUIRES_YES-only destructive entries", () => {
+    // Every REQUIRES_YES key must come from a destructive source: a
+    // DESTRUCTIVE_PATHS entry or the ask --new flag.
+    for (const key of REQUIRES_YES) {
+      const p = key.split(".");
+      const fromPath = DESTRUCTIVE_PATHS.some((dp) => keyOf(dp) === key);
+      const fromFlag = DESTRUCTIVE_FLAGS[p[0]]?.length > 0;
+      expect(
+        fromPath || fromFlag,
+        `REQUIRES_YES entry "${key}" matches no DESTRUCTIVE_PATHS entry or destructive flag — remove it`,
+      ).to.be.true;
+    }
   });
 });
 

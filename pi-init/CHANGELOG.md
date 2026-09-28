@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.6 (2026-09-28)
+
+### Fixed
+
+- `/init` check-mode findings and usage warnings now fall back to
+  `console.error` when `ctx.ui` is absent (RPC/print mode) — matching the
+  dispatch-failure path, they were previously silently dropped.
+
 ## 0.1.5 (2026-09-24)
 
 ### Fixed

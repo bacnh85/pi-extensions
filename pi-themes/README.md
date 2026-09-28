@@ -39,6 +39,14 @@ Then select a theme via `/settings` in pi.
 
 ![pi-light](previews/light.png)
 
+(pi-catppuccin-mocha has no preview PNG yet — the theme itself is validated
+and installable.)
+
+## Validation
+
+Run `npm test` to validate every theme JSON against the token schema
+(`scripts/validate-themes.mjs`) before publishing.
+
 ## Future Themes
 
 This is a themes collection. Additional variants (e.g., solarized, nord, custom) will be added as new JSON files in this package.

@@ -81,7 +81,7 @@ Pure-theme packages (pi-themes) have no extensions/ or skills/ dirs.
 ## Testing
 
 ```bash
-npm test                      # all packages (root)
+for d in pi-*/; do (cd "$d" && npm test) || echo "FAIL: $d"; done   # all packages (no root test script — loop per package)
 cd pi-<name> && npm test      # one package — script is in its package.json
 ```
 

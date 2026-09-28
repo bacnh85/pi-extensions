@@ -5,7 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { openConfigPanel, row } from "@bacnh85/pi-config-panel";
 import { configSummary, getSettings, readStoredApiKey, maskApiKey, normalizeUrl } from "../lib/config.js";
 import { registerProvider, maybeRefreshCatalog, PROVIDER_ID } from "../lib/provider.js";
-import { refreshActiveModel } from "../index.js";
+import { refreshActiveModel } from "../lib/refresh.js";
 
 /** Router model ids from the last /router-model invocation — the completion
  *  hook has no ctx, so it replays this cache (empty until first use). */

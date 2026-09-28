@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.10 (2026-09-28)
+
+- Refactor: the stored-lesson sanitizer (single-line coercion + heading
+  marker / blockquote / code-fence stripping) moved from an inline regex
+  chain in the tool_result hook (index.ts) into lib/inject.ts as the
+  exported `sanitizeStoredLesson`, next to the injection-path sanitizer it
+  duplicated. The recall path now shares it, so both prompt-injection
+  boundaries are covered by the same tested code.
+- Tests: new `sanitizeStoredLesson` suite covering heading, fence,
+  blockquote stripping (and preserved `C#`/`#123`/`x > y`), plus
+  single-line bounding and empty input.
+
 ## 0.3.9 (2026-09-26)
 
 - Changed: first-turn injection grace `FIRST_SEED_GRACE_MS` 800ms → 300ms —

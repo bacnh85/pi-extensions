@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.7 (2026-09-28)
+
+- Fixed: a configured `branch` starting with `-` (silently rejected as an
+  argument-injection guard) now surfaces a warning at session start — `ui.notify`
+  in the TUI, `console.warn` otherwise — and the reference still clones with the
+  repository's default branch.
+
 ## 0.1.6 (2026-09-26)
 
 - Fixed: `normalizeReference` type-guards `path`/`repository`/`branch`/`description`

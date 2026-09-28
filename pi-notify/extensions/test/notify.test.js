@@ -93,6 +93,27 @@ test("tool_result fires error only once per turn (dedupe)", () => {
   assert.doesNotThrow(() => pi.handlers.tool_result({ isError: true }, {}));
 });
 
+test("errored turn does not also fire 'Task complete' (regression)", () => {
+  // tool_result error fires the error notification; agent_settled in the same
+  // turn must skip the completion notification (double-notify bug).
+  const notifyCalls = [];
+  const pi = harness({ notifySpy: (...a) => notifyCalls.push(a), soundSpy: () => {} });
+  const dir = mkdtempSync(join(tmpdir(), "pi-notify-"));
+  mkdirSync(join(dir, ".pi"), { recursive: true });
+  writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ notify: { sound: false } }));
+  pi.handlers.session_start({}, { cwd: dir });
+  pi.handlers.turn_start({}, {});
+  pi.handlers.tool_result({ isError: true }, {});
+  pi.handlers.agent_settled({}, {});
+  assert.equal(notifyCalls.length, 1, "exactly one notification: the error one");
+  assert.match(notifyCalls[0][1], /An error occurred/);
+  // Next clean turn settles normally.
+  pi.handlers.turn_start({}, {});
+  pi.handlers.agent_settled({}, {});
+  assert.equal(notifyCalls.length, 2, "clean turn fires 'Task complete'");
+  assert.match(notifyCalls[1][1], /Task complete/);
+});
+
 test("onError config=false suppresses error notification (observable effect)", () => {
   // Settings now come from settings.json on disk (the SDK has no getSetting
   // API) — write one into a temp cwd and refresh via session_start. Assert on
@@ -106,6 +127,22 @@ test("onError config=false suppresses error notification (observable effect)", (
   pi.handlers.turn_start({}, {});
   pi.handlers.tool_result({ isError: true }, {});
   assert.equal(notifyCalls.length, 0, "onError:false must suppress the notification");
+});
+
+test("onError config=false still fires 'Task complete' on an errored turn (0.1.8)", () => {
+  // The error notification is suppressed, so the turn must NOT be latched —
+  // agent_settled still fires the completion notification (0.1.6 behavior).
+  const dir = mkdtempSync(join(tmpdir(), "pi-notify-"));
+  mkdirSync(join(dir, ".pi"), { recursive: true });
+  writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ notify: { onError: false, sound: false } }));
+  const notifyCalls = [];
+  const pi = harness({ notifySpy: (...a) => notifyCalls.push(a), soundSpy: () => {} });
+  pi.handlers.session_start({}, { cwd: dir });
+  pi.handlers.turn_start({}, {});
+  pi.handlers.tool_result({ isError: true }, {});
+  pi.handlers.agent_settled({}, {});
+  assert.equal(notifyCalls.length, 1, "only 'Task complete' fires");
+  assert.match(notifyCalls[0][1], /Task complete/);
 });
 
 test("default settings fire a notification (observable effect)", () => {

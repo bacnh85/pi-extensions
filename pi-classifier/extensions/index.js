@@ -22,7 +22,7 @@
  *   "classifier": {
  *     "baseUrl": "https://router.example/v1",   // yardmaster or OpenRouter
  *     "model": "jev/jev-latest",                // id as the upstream knows it
- *     "permission": {                            // opt-in, default off
+ *     "permission": {                            // default on since 0.2.0
  *       "enabled": true,
  *       "threshold": 0.9,                        // both nouls must clear it
  *       "mode": "observe" | "enforce"            // default "observe"
@@ -405,7 +405,7 @@ export default function (pi) {
     },
   });
 
-  // ── 2. permission auto-approve hook (opt-in, default off) ──────────────
+  // ── 2. permission auto-approve hook (default on since 0.2.0) ───────────
   let lastTask = "";
   pi.on("message_end", (event) => {
     const msg = event.message;
@@ -426,7 +426,7 @@ export default function (pi) {
     // reach Jev and never leave the normal prompt
     if (segments(command).some(isRisky)) return undefined;
 
-    const cacheKey = `${command}\u0000${ctx.cwd}`;
+    const cacheKey = `${command}\u0000${ctx.cwd}\u0000${(lastTask || "").slice(0, 200)}`;
     const cached = cache.get(cacheKey);
 
     const decide = async () => {

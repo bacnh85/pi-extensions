@@ -210,19 +210,34 @@ export default function referencesExtension(pi) {
     snippet = buildContextSnippet(refs);
   }
 
+  /** Surface a config problem: ctx.ui.notify in TUI, console.warn otherwise. */
+  function warnConfig(ctx2, msg) {
+    try {
+      if (ctx2?.hasUI && ctx2?.ui?.notify) {
+        ctx2.ui.notify(msg, "warning");
+        return;
+      }
+    } catch { /* fall through to console */ }
+    console.warn(msg);
+  }
+
   pi.on("session_start", (_event, ctx) => {
     loadConfig(ctx);
     if (refs.length === 0) return;
+
+    // Config-error signal: a dashed branch is silently rejected by ensureCloned
+    // (argument-injection guard) — tell the user instead of cloning the wrong branch quietly.
+    for (const r of refs) {
+      if (r.repository && r.branch && String(r.branch).startsWith("-")) {
+        warnConfig(ctx, `references: @${r.alias} branch ${JSON.stringify(r.branch)} starts with "-" (rejected for safety) — cloning the default branch`);
+      }
+    }
 
     // Ensure git refs are cloned (eager at session start, best-effort, non-blocking).
     Promise.all(
       refs.map((r) =>
         ensureCloned(r, (cmd, args) => pi.exec(cmd, args, { cwd: ctx?.cwd })).then((ok) => {
-          if (!ok && ctx?.hasUI) {
-            try {
-              ctx.ui.notify(`Failed to clone reference @${r.alias}`, "warning");
-            } catch { /* best-effort */ }
-          }
+          if (!ok) warnConfig(ctx, `Failed to clone reference @${r.alias}`);
         }),
       ),
     ).catch(() => { /* best-effort */ });

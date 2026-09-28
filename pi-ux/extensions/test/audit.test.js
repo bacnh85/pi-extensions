@@ -97,6 +97,14 @@ test("scanOffSystem does NOT flag hex values that match a token", () => {
   assert.deepEqual(off.hardcodedHex, []);
 });
 
+test("scanOffSystem ignores commented-out hex (dead code must not fail the gate)", () => {
+  const css = `:root { --accent: #0066ff; } /* .card { color: #ff0000; } */ .ok { color: var(--accent); }`;
+  const tokens = extractTokens(css);
+  const off = scanOffSystem(css, tokens);
+  assert.deepEqual(off.hardcodedHex, [], "commented-out hex is dead code, not a violation");
+  assert.deepEqual(off.adhocShadow, []);
+});
+
 test("scanOffSystem flags box-shadow not built from var()", () => {
   const css = `.card { box-shadow: 0 4px 12px rgba(0,0,0,0.1); }`;
   const tokens = extractTokens(css);

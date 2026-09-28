@@ -77,7 +77,7 @@ pi install npm:@bacnh85/pi-attachments
 |-----|---------|-------------|
 | `inlineTextFiles` | `false` | Inline text files as `<file>` blocks instead of 📎 path chips |
 | `maxInlineBytes` | `100000` | Max file size for text inlining (`inlineTextFiles` mode) |
-| `pasteFileShortcut` | `"alt+shift+v"` | Keybinding for paste-file-from-clipboard |
+| `pasteFileShortcut` | `"alt+shift+v"` | Keybinding for paste-file-from-clipboard (pi-tui `KeyId` grammar, e.g. `ctrl+shift+v`, `f2`). **Requires a restart** — the shortcut is registered when the extension loads, so editing it in `settings.json` only takes effect on the next session; an invalid value is warned about at session start |
 | `pasteCollapseLines` | `10` | Pastes with ≥ this many lines collapse to a paste file + token (`0` disables) |
 | `pasteCollapseChars` | `2000` | Pastes with ≥ this many chars collapse even below the line threshold (`0` disables) |
 

@@ -177,6 +177,16 @@ function registerConfigCommand(pi: ExtensionAPI): void {
             /* refresh errors are surfaced by Pi elsewhere */
           }
           ctx.ui.notify(`Command Code baseUrl saved → ${written}\nModels refreshed — select with /model.`, "info");
+          // Env/trusted-repo override detection (pi-router pattern): the value
+          // just written may be shadowed by COMMAND_CODE_BASE_URL or a trusted
+          // repo .pi/settings.json — tell the user which endpoint is effective.
+          const effective = getSettings(ctx.cwd, { trustProject: ctx.isProjectTrusted?.() === true });
+          if (working.baseUrl !== effective.baseUrl) {
+            ctx.ui.notify(
+              `Saved to ${written}, but COMMAND_CODE_BASE_URL env or repo .pi/settings.json overrides it — effective: ${effective.baseUrl}.`,
+              "warning",
+            );
+          }
         },
       });
     },

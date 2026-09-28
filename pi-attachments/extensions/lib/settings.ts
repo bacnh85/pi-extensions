@@ -49,3 +49,29 @@ export function loadSettings(): AttachmentsSettings {
     return { ...DEFAULTS };
   }
 }
+
+/* Runtime mirror of pi-tui's KeyId grammar: modifier(+modifier)*+base.
+ * A value outside this grammar registers fine but never matches a key event
+ * (the TUI compares against parsed KeyIds) — a silent no-op for the user. */
+const MODIFIERS = new Set(["ctrl", "shift", "alt", "super"]);
+// Lowercase entries — pi-tui lowercases the whole KeyId, so "pageUp" is
+// parsed/compared as "pageup".
+const SPECIAL_KEYS = new Set([
+  "escape", "esc", "enter", "return", "tab", "space", "backspace", "delete", "insert", "clear",
+  "home", "end", "pageup", "pagedown", "up", "down", "left", "right",
+  ...Array.from({ length: 12 }, (_, i) => `f${i + 1}`),
+]);
+const SYMBOL_KEYS = new Set("`-=[]\\;',./!@#$%^&*()_+|~{}:<>?".split(""));
+
+/** True when `s` is a valid pi-tui KeyId (e.g. "alt+shift+v", "ctrl+enter", "f2").
+ *  Matches pi-tui's parseKeyId exactly: case-insensitive (lowercases the whole
+ *  id) and duplicate-modifier tolerant (parts.includes), so "Ctrl+Shift+V" and
+ *  even "ctrl+ctrl+v" are real shortcuts — the validator must not warn about
+ *  shortcuts pi-tui actually accepts. */
+export function isValidShortcut(s: string): boolean {
+  if (typeof s !== "string" || s.length === 0) return false;
+  const parts = s.toLowerCase().split("+");
+  const base = parts.pop()!;
+  const isBase = /^[a-z0-9]$/.test(base) || SPECIAL_KEYS.has(base) || SYMBOL_KEYS.has(base);
+  return isBase && parts.every((m) => MODIFIERS.has(m));
+}

@@ -8,6 +8,7 @@ import {
   joinCompletion,
   kindValue,
   makeOnAction,
+  openConfigPanel,
   row,
   type PanelAction,
   type PanelGroup,
@@ -366,6 +367,62 @@ describe("panel kernel", () => {
     model.handleInput("\r");
     assert.equal(cfg.entries.keep, "x");
     assert.isTrue(model.dirty, "applied action still marks the panel dirty");
+  });
+
+  describe("openConfigPanel onSave contract", () => {
+    /** Drive openConfigPanel with a fake ctx.ui.custom that captures the
+     *  component factory and the done() close callback. */
+    function panelUnderTest(onSaveImpl: (saved: boolean, edited?: Set<string>) => void | Promise<void>) {
+      const notes: string[] = [];
+      let model: ConfigPanelModel | undefined;
+      let closed = 0;
+      const ctx = {
+        mode: "tui",
+        hasUI: true,
+        ui: {
+          notify: (msg: string) => { notes.push(msg); },
+          custom: (factory: (tui: any, theme: any, kb: any, done: () => void) => unknown) => {
+            model = factory({ requestRender() {} }, null, null, () => { closed++; }) as ConfigPanelModel;
+            return new Promise<void>(() => {}); // resolves only via done()
+          },
+        },
+      };
+      void openConfigPanel({ ctx: ctx as any, cfg: DEFAULTS(), build: buildRows, onSave: onSaveImpl });
+      assert.ok(model, "panel component created");
+      return { model: model!, notes, closed: () => closed };
+    }
+
+    it("async rejecting onSave notifies failure and keeps the panel open (0.1.10)", async () => {
+      const { model, notes, closed } = panelUnderTest(async () => {
+        throw new Error("boom");
+      });
+      model.dirty = true;
+      model.onClose?.(); // dirty → save path → awaited rejection
+      await new Promise((r) => setTimeout(r, 0));
+      assert.equal(notes.length, 1, "failure surfaced via notify");
+      assert.match(notes[0]!, /Save failed: boom/);
+      assert.equal(closed(), 0, "panel must NOT close on a failed save");
+    });
+
+    it("sync throwing onSave still notifies failure and keeps the panel open", async () => {
+      const { model, notes, closed } = panelUnderTest(() => {
+        throw new Error("sync boom");
+      });
+      model.dirty = true;
+      model.onClose?.();
+      await new Promise((r) => setTimeout(r, 0));
+      assert.match(notes[0]!, /Save failed: sync boom/);
+      assert.equal(closed(), 0);
+    });
+
+    it("async resolving onSave closes the panel", async () => {
+      const { model, notes, closed } = panelUnderTest(async () => {});
+      model.dirty = true;
+      model.onClose?.();
+      await new Promise((r) => setTimeout(r, 0));
+      assert.equal(notes.length, 0);
+      assert.equal(closed(), 1, "successful save closes the panel");
+    });
   });
 
   describe("kindValue", () => {

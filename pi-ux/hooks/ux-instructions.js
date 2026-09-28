@@ -6,7 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { DEFAULT_MODE, normalizeMode, isDeactivationCommand } = require('./ux-config');
+const { DEFAULT_MODE, normalizeMode } = require('./ux-config');
 const SKILL_PATH = path.join(__dirname, '..', 'skills', 'ux-design', 'SKILL.md');
 
 function getUxInstructions(mode) {

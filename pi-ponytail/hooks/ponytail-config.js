@@ -47,13 +47,39 @@ function getConfigPath() {
   return path.join(getConfigDir(), 'config.json');
 }
 
+// Memoized read: one stat per call, re-parse only when path/mtime/size change.
+// ponytail: stat-per-call keeps writeDefaultMode and test XDG swaps correct;
+// drop the stat if profiling ever shows it matters.
+let configCache = { path: null, mtimeMs: -1, size: -1, config: {} };
+
 function readConfig() {
+  const configPath = getConfigPath();
+  let st;
   try {
-    const raw = fs.readFileSync(getConfigPath(), 'utf8').replace(/^\uFEFF/, '');
-    const config = JSON.parse(raw);
-    if (config && typeof config === 'object') return config;
+    st = fs.statSync(configPath);
+    if (
+      configCache.path === configPath &&
+      configCache.mtimeMs === st.mtimeMs &&
+      configCache.size === st.size
+    ) {
+      return configCache.config;
+    }
+  } catch (_) {
+    // Missing/unreadable file → empty config; cache it for this path.
+    if (configCache.path === configPath && configCache.mtimeMs === -1) {
+      return configCache.config;
+    }
+    configCache = { path: configPath, mtimeMs: -1, size: -1, config: {} };
+    return configCache.config;
+  }
+  let config = {};
+  try {
+    const raw = fs.readFileSync(configPath, 'utf8').replace(/^\uFEFF/, '');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') config = parsed;
   } catch (_) {}
-  return {};
+  configCache = { path: configPath, mtimeMs: st.mtimeMs, size: st.size, config };
+  return config;
 }
 
 function readConfigBool(envVar, configKey) {
@@ -96,6 +122,7 @@ function writeDefaultMode(mode) {
   const configPath = getConfigPath();
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+  configCache = { path: null, mtimeMs: -1, size: -1, config: {} }; // force re-read
   return normalized;
 }
 

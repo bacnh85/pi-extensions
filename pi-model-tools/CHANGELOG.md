@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.4] - 2026-09-28
+
+- Fix: the `onRepair` callback signature drift — `wrapToolDefinition`
+  declared `(toolName, repairs)` but the sole call site passed a one-arg
+  callback and discarded `repairs`. The callback now consumes both: repair
+  count plus the repair kinds are logged via `debugLog`
+  (`repair: <tool> <kind1+kind2> <count>`), matching the declared
+  signature.
+
 ## [0.9.3] - 2026-09-27
 
 Session-mined tool-call hardening (2026-09 harness analysis: 337 sessions,

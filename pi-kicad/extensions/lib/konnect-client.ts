@@ -85,11 +85,10 @@ export function extractResult(response: JsonRpcResponse): unknown {
  *
  * Text items pass through, hard-capped at the remaining budget (the truncation
  * marker is reserved within the budget so total never exceeds maxChars). Image
- * items become a short text summary + the raw base64 is preserved in `details`
- * so nothing is lost; the model cannot usefully consume a multi-MB base64 blob
- * inline. Native ImageContent could replace this once its exact Pi shape is
- * confirmed.
- *   // ponytail: image-as-text-summary; swap to native ImageContent if/when needed
+ * items become a short text summary; only the image COUNT reaches `details` —
+ * the base64 payload is deliberately dropped to keep details small (the model
+ * cannot usefully consume a multi-MB base64 blob inline). Native ImageContent
+ * could replace this once its exact Pi shape is confirmed.
  */
 const TRUNC_MARKER = "\n…(truncated)";
 

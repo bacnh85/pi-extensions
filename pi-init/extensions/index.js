@@ -228,7 +228,8 @@ export default function initExtension(pi) {
     handler: async (args, ctx) => {
       const mode = String(args || "").trim();
       if (mode && mode !== "force" && mode !== "check") {
-        ctx?.ui?.notify("Usage: /init [force|check]", "warning");
+        if (ctx?.ui?.notify) ctx.ui.notify("Usage: /init [force|check]", "warning");
+        else console.error("Usage: /init [force|check]");
         return;
       }
 
@@ -243,7 +244,8 @@ export default function initExtension(pi) {
           `Has: ${present.join(" | ") || "(little detected)"}`,
           `Missing: ${missing.join(" | ") || "nothing obvious"}`,
         ].join("\n");
-        ctx?.ui?.notify(report, scan.hasAgentsMd ? "info" : "warning");
+        if (ctx?.ui?.notify) ctx.ui.notify(report, scan.hasAgentsMd ? "info" : "warning");
+        else console.error(report);
         return;
       }
 

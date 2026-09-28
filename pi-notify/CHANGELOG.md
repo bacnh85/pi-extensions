@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.8 - 2026-09-28
+
+- Fixed: `onError: false` users lost "Task complete" too. The errored-turn
+  latch is now set only when the error notification actually fires — with
+  error notifications suppressed, agent_settled still notifies completion
+  (0.1.6 behavior for that config).
+
+## 0.1.7 - 2026-09-28
+
+- **Failing turns double-notified**: a tool_result error fired "An error
+  occurred", then agent_settled unconditionally fired "Task complete" in the
+  same turn. The completion notification is now skipped when an error already
+  fired this turn; the next clean turn settles normally.
+
 ## [0.1.6] - 2026-09-24
 
 - **macOS escape test asserted on itself**: the escape-regex test

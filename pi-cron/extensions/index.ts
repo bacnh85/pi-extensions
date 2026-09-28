@@ -58,10 +58,13 @@ export interface CronSettings {
   timeoutMs: number;
 }
 
-/** Read the `cron` settings key (cwd/.pi → PI_CODING_AGENT_DIR|~/.pi/agent → ~/.pi/agents). */
-export function readCronSettings(cwd = process.cwd()): CronSettings {
+/** Read the `cron` settings key (cwd/.pi → PI_CODING_AGENT_DIR|~/.pi/agent → ~/.pi/agents).
+ * The project scope is trust-gated: `project: false` skips cwd/.pi entirely, so
+ * settings.json in an untrusted checkout cannot re-enable the scheduler or
+ * shrink tickMs (same pattern as pi-references/pi-permission/pi-router). */
+export function readCronSettings(cwd = process.cwd(), { project = true } = {}): CronSettings {
   const home = os.homedir();
-  const dirs = [join(cwd, ".pi"), process.env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent"), join(home, ".pi", "agents")];
+  const dirs = [...(project ? [join(cwd, ".pi")] : []), process.env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent"), join(home, ".pi", "agents")];
   for (const dir of dirs) {
     try {
       const v = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"))?.cron;
@@ -451,7 +454,17 @@ export function runCronAction(args: CronActionArgs): { content: { type: "text"; 
       if (!log) {
         return { content: [{ type: "text" as const, text: `No logs for '${name}'.` }], details: { action: "logs", name } };
       }
-      const tail = readFileSync(log, "utf8").split("\n").slice(-40).join("\n");
+      // The log can vanish between latestLog() and the read (external cleanup,
+      // concurrent export run) — report it instead of throwing a raw ENOENT.
+      let tail: string;
+      try {
+        tail = readFileSync(log, "utf8").split("\n").slice(-40).join("\n");
+      } catch {
+        return {
+          content: [{ type: "text" as const, text: `Log for '${name}' is gone (${log}) — try again after its next run.` }],
+          details: { action: "logs", name, log, vanished: true },
+        };
+      }
       return {
         content: [{ type: "text" as const, text: `${log} (tail):\n${tail}` }],
         details: { action: "logs", name, log },
@@ -473,7 +486,9 @@ export function runCronAction(args: CronActionArgs): { content: { type: "text"; 
 
 export default function cronExtension(pi: ExtensionAPI) {
   const dir = jobsDir(getAgentDir());
-  const settings = readCronSettings();
+  // Load-time read is global-only (no ctx yet — an untrusted cwd must not arm
+  // the scheduler); session_start re-reads with the trust gate below.
+  const settings = readCronSettings(process.cwd(), { project: false });
   const state = { lastFireArmAt: 0 };
   // Headless cron children: scheduler off, cron mutations refused (tool-level
   // enforcement — the advisory line in fireContent is not enough there).
@@ -504,10 +519,25 @@ export default function cronExtension(pi: ExtensionAPI) {
     tickOnce({ dir, enabled: settings.enabled, fire });
   }
 
-  if (!childMode) {
-    const timer = setInterval(tick, settings.tickMs);
+  let timer: NodeJS.Timeout | undefined;
+  function armTimer(): void {
+    if (childMode) return;
+    if (timer) clearInterval(timer);
+    timer = setInterval(tick, settings.tickMs);
     timer.unref?.();
   }
+  armTimer();
+
+  // ctx (and project trust) only exists from session_start on — re-read the
+  // repo scope there: a trusted repo may configure cron, an untrusted one is
+  // ignored (must not re-enable the scheduler or shrink tickMs).
+  pi.on("session_start", (_event, ctx) => {
+    Object.assign(
+      settings,
+      readCronSettings(ctx?.cwd, { project: ctx?.isProjectTrusted?.() === true }),
+    );
+    armTimer(); // pick up a changed tickMs
+  });
 
   // (No agent_settled handling — the loop guard is purely time-based.)
 

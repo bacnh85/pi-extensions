@@ -2,6 +2,13 @@
 
 All notable changes to `pi-munin` will be documented in this file.
 
+## 0.5.10 (2026-09-28)
+
+- Tests: pinned the `tool_result` error-sanitization hook (anti-injection path) —
+  a prior `Munin <type> error:` prefix is stripped instead of double-wrapped,
+  oversized error output is bounded to the truncation cap, and non-munin /
+  non-error results pass through untouched.
+
 ## 0.5.9 (2026-09-26)
 
 ### Fixed

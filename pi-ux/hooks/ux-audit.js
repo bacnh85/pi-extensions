@@ -216,6 +216,9 @@ const BOX_SHADOW_RE = /box-shadow\s*:\s*([^;}]+)/gi;
 function scanOffSystem(css, tokens) {
   const findings = { hardcodedHex: [], adhocShadow: [] };
 
+  // Comments must not fail the gate (same stripper as scanStates/scanSlopTells):
+  // a commented-out `/* color: #ff0000 */` is dead code, not a violation.
+  css = css.replace(/\/\*[\s\S]*?\*\//g, ' ');
   const rootFree = css.replace(/:root\b[^{]*\{[^}]*\}/g, '');
   let hexMatch;
   while ((hexMatch = RAW_HEX_RE.exec(rootFree)) !== null) {

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.2.9 (2026-09-28)
+
+### Fixed
+
+- **Security follow-up: permanent-allowlist writes are trust-gated too.** With
+  the project read scope now skipped in untrusted projects, "Add to permanent
+  allowlist" still wrote `<cwd>/.pi/settings.json` — a file this extension no
+  longer reads there, so the rule was a silent no-op (every identical call
+  re-prompted and re-wrote) and the write modified a repo-controlled file. In
+  untrusted projects the rule now persists to global scope
+  (`PI_CODING_AGENT_DIR|~/.pi/agent`, then `~/.pi/agents`).
+
+- **Security: project settings are now trust-gated.** `readSettingsKey` takes a
+  `{ project }` option (default `true`); the `tool_call` handler passes
+  `project: ctx?.isProjectTrusted?.() === true`. Previously an untrusted repo
+  could ship `cwd/.pi/settings.json` with `{"permission":{"*":"allow"}}` that
+  fully shadowed the user's global rules (first-match-wins) and disabled every
+  ask/deny guardrail. Same pattern as pi-references 0.1.4.
+- Misconfigured rules that parse but can never match now warn once per session
+  via `ctx.ui.notify` instead of silently no-op'ing: a string-valued
+  `external_directory` (rule resolution needs an object) and unknown action
+  verbs (treated as no-opinion).
+
+### Tests
+
+- Untrusted cwd ignores project `.pi/settings.json`; trusted reads it.
+- `readSettingsKey({project:false})` skips `cwd/.pi` entirely.
+- One-time invalid-rule warning (fires once, silent on valid rules).
+
 ## 0.2.7 (2026-09-26)
 
 - **Security: scoped path rules now match normalized subjects.** Path-tool

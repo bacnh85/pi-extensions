@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.16.4 (2026-09-28)
+
+- **Fix: branch switch clears session-scoped plan approvals.** `session_tree`
+  now calls `clearPlanSessionAllows()` alongside the existing controller/timer
+  aborts — restored sibling branches no longer inherit the previous branch's
+  "Allow for this session" approvals.
+- Removed dead `FlowState.initialDirtyPatch` and `FlowState.initialUntracked`
+  fields (never read / never assigned; persisted on every `persistState()`).
+  The review prompt now always builds from `initialCachedPatch` +
+  `initialUnstagedPatch` directly.
+
 ## 0.16.3 (2026-09-28)
 
 > Republished — the fix commit aborted at the version-table guard (README table

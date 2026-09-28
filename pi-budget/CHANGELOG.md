@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.6 (2026-09-28)
+
+### Fixed
+
+- **Thrown `ctx.abort()` permanently disabled enforcement**: `state.exceeded`
+  latched before the abort, so one throw stopped budget enforcement for the
+  rest of the session. The abort is now retried on subsequent `message_end`
+  events until it succeeds (`abortSucceeded` latches only on success), while
+  the exceed notification and `budget-exceeded` entry still fire exactly once.
+  Covered by new `abortThrows` tests.
+
 ## 0.1.5 (2026-09-24)
 
 ### Fixed

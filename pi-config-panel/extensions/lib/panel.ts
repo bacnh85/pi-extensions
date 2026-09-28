@@ -189,10 +189,12 @@ export function openConfigPanel<T>(opts: ConfigPanelOpts<T>): Promise<void> {
     const model = new ConfigPanelModel(build(cfg, actions), theme, title);
     model.keybindings = keybindings;
     model.onRequestRender = () => tui.requestRender();
-    model.onSave = () => {
+    model.onSave = async () => {
       try {
-        onSave?.(true, model.editedKeys);
+        await onSave?.(true, model.editedKeys);
       } catch (e: any) {
+        // Async rejections land here too (await unwraps the promise) — the
+        // panel stays open so the user can retry or Esc without saving.
         ctx.ui.notify(`Save failed: ${e?.message || e}`, "error");
         return;
       }

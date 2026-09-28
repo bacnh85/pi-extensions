@@ -1,7 +1,7 @@
 {
   "name": "@bacnh85/pi-classifier",
-  "version": "0.2.0",
-  "description": "System One decision models (TypeSafe Jev) for Pi — classify tool for typed probabilistic answers, an opt-in Jev-gated permission auto-approve hook for shell commands (static risky list first, never auto-denies, fails safe, observe mode), and a /classifier-config panel with decision-model discovery from the router.",
+  "version": "0.2.1",
+  "description": "System One decision models (TypeSafe Jev) for Pi — classify tool for typed probabilistic answers, a Jev-gated permission auto-approve hook for shell commands (default on, static risky list first, never auto-denies, fails safe, observe mode), and a /classifier-config panel with decision-model discovery from the router.",
   "keywords": [
     "pi-package",
     "pi",

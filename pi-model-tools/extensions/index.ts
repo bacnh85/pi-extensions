@@ -372,9 +372,9 @@ export default function (pi: ExtensionAPI) {
   const activeToolsRef = () => pi.getActiveTools();
   for (const f of Object.values(toolFactories)) {
     const template = f(process.cwd());
-    pi.registerTool(wrapToolDefinition(template, f, () => repairThisTurn, (toolName) => {
+    pi.registerTool(wrapToolDefinition(template, f, () => repairThisTurn, (toolName, repairs) => {
       repairCounts.set(toolName, (repairCounts.get(toolName) ?? 0) + 1);
-      debugLog("repair:", toolName, repairCounts.get(toolName));
+      debugLog("repair:", toolName, repairs.join("+"), repairCounts.get(toolName));
     }, editMismatchCounts, activeToolsRef));
   }
 

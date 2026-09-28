@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.10] - 2026-09-28
+
+### Fixed
+
+- **Async `onSave` rejections no longer silently close the panel.** The Esc
+  save path now awaits the `onSave` result inside the try/catch: an async
+  rejection (or sync throw) notifies `Save failed: …` and keeps the panel
+  open so the user can retry or close without saving. Previously only sync
+  throws were caught — a rejected promise skipped the notification and still
+  closed the panel.
+
 ## [0.1.9] - 2026-09-22
 
 ### Fixed

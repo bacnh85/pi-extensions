@@ -177,4 +177,46 @@ describe("commandcode-config save", () => {
     assert.equal(readFileSync(globalSettings(), "utf8"), before, "corrupt file untouched");
     rmSync(globalSettings(), { force: true });
   });
+
+  it("warns when the saved baseUrl is shadowed by the COMMAND_CODE_BASE_URL env override (0.2.8)", async () => {
+    const { commands } = await harnessWithConfig();
+    process.env.COMMAND_CODE_BASE_URL = "http://env-override:9/v1";
+    const handler = commands["commandcode-config"].handler;
+    const notifications: { msg: string; level?: string }[] = [];
+    const ctx = {
+      cwd: TMP_HOME,
+      mode: "tui",
+      hasUI: true,
+      modelRegistry: { refresh: async () => {} },
+      ui: {
+        notify: (msg: string, level?: string) => { notifications.push({ msg, level }); },
+        custom: (render: (tui: unknown, theme: unknown, kb: unknown, done: () => void) => {
+          groups: { rows: { set: (v: string) => void }[] }[];
+          dirty: boolean;
+          onClose: (() => void) | null;
+        }) =>
+          new Promise<void>((resolve) => {
+            const model = render({ requestRender() {} }, null, null, resolve);
+            model.groups[0]!.rows[0]!.set("http://panel-choice/v1");
+            model.dirty = true;
+            model.onClose!();
+          }),
+      },
+    };
+
+    try {
+      await handler("save", ctx);
+
+      const note = notifications.find((n) => n.msg.includes("overrides it"));
+      assert.ok(note, "override warning shown");
+      assert.equal(note.level, "warning");
+      assert.match(note.msg, /COMMAND_CODE_BASE_URL/);
+      assert.match(note.msg, /http:\/\/env-override:9\/v1/);
+      // The panel value was still persisted to global settings.
+      assert.match(readFileSync(globalSettings(), "utf8"), /http:\/\/panel-choice\/v1/);
+    } finally {
+      delete process.env.COMMAND_CODE_BASE_URL;
+      rmSync(globalSettings(), { force: true });
+    }
+  });
 });

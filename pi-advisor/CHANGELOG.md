@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.6 (2026-09-28)
+
+- Removed dead `NoteData.downgraded` field and its unreachable "Advisor
+  (downgraded)" card label (declared, never written anywhere).
+- `parseModelRef` (watcher) now delegates to the existing `parseModel` +
+  `splitThinkingSuffix` helpers from config.ts instead of reimplementing the
+  slash-split inline.
+
 ## 0.3.5 (2026-09-22)
 
 - Extracted shared `renderNoteCard` helper used by both the entry renderer and the message-renderer fallback (~20 duplicated lines removed); behavior unchanged.

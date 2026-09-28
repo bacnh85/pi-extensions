@@ -3,6 +3,7 @@
  */
 
 import { expect } from "chai";
+import { isReadOnlyWorkerAction, shouldRetryAfterTimeout } from "./index";
 import {
   pathLooksLikeCode,
   pathLooksNonSemantic,
@@ -303,6 +304,45 @@ describe("stripControlParams", () => {
     expect(params).to.have.property("substring_pattern", "foo");
     expect(params).to.not.have.property("pattern");
     expect(params).to.have.property("relative_path", "src/");
+  });
+});
+
+describe("read-only retry gate", () => {
+  it("classifies read-only actions and mutators", () => {
+    expect(isReadOnlyWorkerAction("call", { tool: "find_symbol" })).to.be.true;
+    expect(isReadOnlyWorkerAction("call", { tool: "get_symbols_overview" })).to.be.true;
+    expect(isReadOnlyWorkerAction("find_declaration")).to.be.true;
+    expect(isReadOnlyWorkerAction("get_diagnostics_for_file")).to.be.true;
+    expect(isReadOnlyWorkerAction("config")).to.be.true;
+    expect(isReadOnlyWorkerAction("status")).to.be.true;
+    expect(isReadOnlyWorkerAction("call", { tool: "replace_symbol_body" })).to.be.false;
+    expect(isReadOnlyWorkerAction("call", { tool: "insert_before_symbol" })).to.be.false;
+    expect(isReadOnlyWorkerAction("call", { tool: "rename_symbol" })).to.be.false;
+    expect(isReadOnlyWorkerAction("call", { tool: "safe_delete_symbol" })).to.be.false;
+    expect(isReadOnlyWorkerAction("call", { tool: "replace_content" })).to.be.false;
+    expect(isReadOnlyWorkerAction("restart_language_server")).to.be.false;
+    expect(isReadOnlyWorkerAction("onboarding")).to.be.false;
+  });
+
+  it("shouldRetryAfterTimeout: read-only tools retry on timeout responses", () => {
+    expect(shouldRetryAfterTimeout("find_symbol", {}, { responseOk: false, errorType: "timeout" })).to.be.true;
+    expect(shouldRetryAfterTimeout("call", { tool: "get_symbols_overview" }, { responseOk: false, errorType: "timeout" })).to.be.true;
+    // non-timeout error responses never retry
+    expect(shouldRetryAfterTimeout("find_symbol", {}, { responseOk: false, errorType: "worker_error" })).to.be.false;
+  });
+
+  it("shouldRetryAfterTimeout: mutators NEVER retry (may have applied before the kill)", () => {
+    expect(shouldRetryAfterTimeout("rename_symbol", {}, { responseOk: false, errorType: "timeout" })).to.be.false;
+    expect(shouldRetryAfterTimeout("call", { tool: "safe_delete_symbol" }, { responseOk: false, errorType: "timeout" })).to.be.false;
+    expect(shouldRetryAfterTimeout("replace_content", {}, { errorMessage: "Request timed out after 10ms" })).to.be.false;
+  });
+
+  it("shouldRetryAfterTimeout: thrown timeout-class errors retry only for read-only actions", () => {
+    for (const msg of ["Request timed out after 10ms", "worker killed due to timeout", "worker exited unexpectedly", "worker restarted"]) {
+      expect(shouldRetryAfterTimeout("search_for_pattern", {}, { errorMessage: msg }), msg).to.be.true;
+      expect(shouldRetryAfterTimeout("insert_before_symbol", {}, { errorMessage: msg }), msg).to.be.false;
+    }
+    expect(shouldRetryAfterTimeout("find_symbol", {}, { errorMessage: "unrelated failure" })).to.be.false;
   });
 });
 

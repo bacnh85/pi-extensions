@@ -62,3 +62,17 @@ test("valid var values still pass", () => {
     rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
+
+// Regression for the 0.2.1 var-to-var rejection: a var whose value is another
+// var name is circular — vars must carry literal values.
+test("var-to-var reference fails validation naming both vars", () => {
+  const dir = fixtureWithVars({ accent: "#0066ff", accentAlt: "accent" });
+  try {
+    const r = runValidator(dir);
+    assert.equal(r.code, 1, "validator must reject var-to-var references");
+    assert.match(r.stderr, /vars\.accentAlt/);
+    assert.match(r.stderr, /var-to-var/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});

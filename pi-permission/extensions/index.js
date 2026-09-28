@@ -97,11 +97,14 @@ export function expandHome(pattern, home) {
  * config must be read from <cwd>/.pi/settings.json → ~/.pi/agent/settings.json,
  * first existing file wins (per-package settings readers — extract to a shared
  * helper when a fourth copy appears).
+ *
+ * The project scope is gated on `ctx.isProjectTrusted()`: settings.json inside
+ * an untrusted checkout must not disable the user's ask/deny guardrails.
  */
-export function readSettingsKey(cwd, key) {
+export function readSettingsKey(cwd, key, { project = true } = {}) {
   const home = os.homedir();
   const dirs = [
-    pathJoin(cwd || process.cwd(), ".pi"),
+    ...(project ? [pathJoin(cwd || process.cwd(), ".pi")] : []),
     process.env.PI_CODING_AGENT_DIR || pathJoin(home, ".pi", "agent"),
     pathJoin(home, ".pi", "agents"),
   ];
@@ -308,6 +311,43 @@ export function persistAllowlistRule(toolName, subject, ctx, dirs) {
   }
 }
 
+/**
+ * One-time-per-session warning for permission rules that parse but can never
+ * match: a string-valued `external_directory` (resolveRule only handles rule
+ * objects) or an unknown action verb (treated as no-opinion — the rule
+ * silently no-ops). Best-effort via ctx.ui.notify; fires at most once.
+ */
+let warnedInvalidRules = false;
+export function resetInvalidRulesWarning() {
+  warnedInvalidRules = false;
+}
+function warnInvalidRules(rules, ctx) {
+  if (warnedInvalidRules) return;
+  const problems = [];
+  if (typeof rules.external_directory === "string") {
+    problems.push('external_directory must be a rule object ({"pattern":"action"}), not a string');
+  }
+  for (const [tool, r] of Object.entries(rules)) {
+    // external_directory has no actions to validate (patterns outside cwd are
+    // deny-only); string-shaped rules (whole-tool verb) are one value.
+    const vals =
+      r && typeof r === "object" && !Array.isArray(r)
+        ? (tool === "external_directory" ? [] : Object.values(r))
+        : [r];
+    for (const v of vals) {
+      if (v !== "allow" && v !== "ask" && v !== "deny") {
+        problems.push(`unknown action ${JSON.stringify(v)} in "${tool}" rules`);
+        break;
+      }
+    }
+  }
+  if (problems.length === 0) return;
+  warnedInvalidRules = true;
+  try {
+    ctx?.ui?.notify(`Invalid permission rules ignored: ${problems.join("; ")}`, "warning");
+  } catch { /* best-effort */ }
+}
+
 export default function permissionExtension(pi) {
   // yolo mode auto-approves "ask" without prompting; explicit deny still holds.
   pi.registerFlag("yolo", {
@@ -431,7 +471,17 @@ export default function permissionExtension(pi) {
         return undefined;
       }
       if (choice === "Add to permanent allowlist") {
-        const written = persistAllowlistRule(toolName, subject, ctx);
+        // Trust gate mirrors the read path: in an untrusted project the rule
+        // must land in global scope — writing cwd/.pi/settings.json would be
+        // a silent no-op (that file is not read there) and modifies a
+        // repo-controlled file.
+        const trusted = ctx?.isProjectTrusted?.() === true;
+        const written = trusted
+          ? persistAllowlistRule(toolName, subject, ctx)
+          : persistAllowlistRule(toolName, subject, ctx, [
+              process.env.PI_CODING_AGENT_DIR || pathJoin(os.homedir(), ".pi", "agent"),
+              pathJoin(os.homedir(), ".pi", "agents"),
+            ]);
         if (written.error) {
           return { block: true, reason: `could not persist allowlist rule: ${written.error}` };
         }
@@ -453,11 +503,16 @@ export default function permissionExtension(pi) {
 
   pi.on("tool_call", async (event, ctx) => {
     // Settings.json first (production), then the legacy getSetting stub (tests).
+    // Project scope is trust-gated: settings.json in an untrusted checkout must
+    // not shadow the user's global rules (pi-references pattern).
     const rules =
-      readSettingsKey(ctx?.cwd, "permission") ??
+      readSettingsKey(ctx?.cwd, "permission", {
+        project: ctx?.isProjectTrusted?.() === true,
+      }) ??
       pi.getSetting?.("permission") ??
       pi.config?.permission;
     if (!rules) return undefined; // not configured → no opinion
+    warnInvalidRules(rules, ctx);
 
     // ── Doom-loop guard ────────────────────────────────────────────────
     // Block the Nth identical consecutive call. Cheap insurance vs model loops.
@@ -483,5 +538,5 @@ export default function permissionExtension(pi) {
 
   // Reset doom-loop + session-allow memory on new session so a prior session's
   // calls don't poison the new one when pi reuses the extension process.
-  pi.on("session_start", () => { recent.length = 0; sessionAllows.clear(); });
+  pi.on("session_start", () => { recent.length = 0; sessionAllows.clear(); resetInvalidRulesWarning(); });
 }

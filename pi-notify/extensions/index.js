@@ -246,12 +246,16 @@ export default function notifyExtension(pi, opts = {}) {
     }
   };
 
-  // Agent finished a full turn and is waiting for input.
-  pi.on("agent_settled", () => fire("Pi", "Task complete", { kind: "complete" }));
-
   // Error: tool result flagged as error. We only fire on the first error per
   // turn to avoid a storm; best-effort dedupe via a turn-scoped flag.
   let erroredThisTurn = false;
+
+  // Agent finished a full turn and is waiting for input. A turn that already
+  // fired the error notification does not also get "Task complete".
+  pi.on("agent_settled", () => {
+    if (erroredThisTurn) return;
+    fire("Pi", "Task complete", { kind: "complete" });
+  });
   pi.on("session_start", (_event, ctx) => {
     erroredThisTurn = false;
     refreshConfig(ctx?.cwd || process.cwd());
@@ -260,7 +264,9 @@ export default function notifyExtension(pi, opts = {}) {
   pi.on("tool_result", (event) => {
     if (erroredThisTurn) return;
     if (event?.isError) {
-      erroredThisTurn = true;
+      // Latch only when the error notification will really fire — otherwise
+      // onError:false users would also lose "Task complete" (0.1.6 behavior).
+      if (!noNotify && cfg.onError !== false) erroredThisTurn = true;
       fire("Pi", "An error occurred", { kind: "error" });
     }
   });

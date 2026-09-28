@@ -171,11 +171,11 @@ export default function uxExtension(pi) {
       try { ctx.ui.setStatus("ux", ""); } catch { return; }
       return;
     }
-    const levelIcons = { lite: "🎨", strict: "📐" };
+    const levelIcons = { lite: "", strict: "📐" };
     const icon = levelIcons[currentMode] || "";
     const label = currentMode.toUpperCase();
     try {
-      ctx.ui.setStatus("ux", " 🎨 " + theme.fg("muted", "ux: ") + theme.fg("text", icon + " " + label));
+      ctx.ui.setStatus("ux", " 🎨 " + theme.fg("muted", "ux: ") + theme.fg("text", (icon ? icon + " " : "") + label));
     } catch { return; }
   }
 

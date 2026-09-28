@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.8 (2026-09-28)
+
+### Fixed
+
+- `/commandcode-config` save now detects when the written baseUrl is shadowed
+  by the `COMMAND_CODE_BASE_URL` env var or a trusted repo
+  `.pi/settings.json` (pi-router pattern) — the save notification warns with
+  the effective endpoint instead of a plain "saved".
+
 ## 0.2.7 (2026-09-26)
 
 ### Fixed

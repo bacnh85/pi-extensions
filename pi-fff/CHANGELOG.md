@@ -2,6 +2,12 @@
 
 All notable changes to `pi-fff` will be documented in this file.
 
+## 0.8.4 (2026-09-28)
+
+### Fixed
+
+- Migrated `@sinclair/typebox` to the unscoped `typebox` package (peer + dev dependencies and import), matching the host SDK and sibling packages; removes stale/duplicate install risk.
+
 ## 0.8.3 (2026-09-22)
 
 ### Fixed

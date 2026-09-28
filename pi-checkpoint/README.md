@@ -20,7 +20,7 @@ pi install npm:@bacnh85/pi-checkpoint
 
 ## How it works
 
-- On every `turn_start`, captures the working/index tree via `git stash create` (which does **not** touch your stash list) and stores it under `refs/pi-checkpoints/<sessionId>/<n>`.
+- Once per user turn (at the turn's first `turn_start`), captures the working/index tree via `git stash create` (which does **not** touch your stash list) and stores it under `refs/pi-checkpoints/<sessionId>/<n>`. Continuation rounds within the same turn are not re-snapshotted, and hostless sessions (a2a inbound children) are skipped.
 - `/undo` pops snapshots into a redo buffer and restores the prior checkpoint with `git checkout <ref> -- .` (tracked files only; untracked files are left alone).
 - `/redo` re-applies from the redo buffer.
 - Uses a dedicated ref namespace so it **never** touches your working refs, branches, or stash.

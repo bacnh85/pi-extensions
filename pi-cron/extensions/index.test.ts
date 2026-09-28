@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
-import { mkdtempSync, existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, utimesSync, chmodSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, utimesSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nextFire, nextFires, validateSchedule } from "./lib/schedule.ts";
@@ -789,5 +789,70 @@ describe("settings", () => {
     assert.equal(readCronSettings(dir).timeoutMs, 60_000); // clamped to 1 min floor
     write(99_999_999_999);
     assert.equal(readCronSettings(dir).timeoutMs, 86_400_000); // clamped to 24 h ceiling
+  });
+
+  it("project:false skips cwd/.pi entirely (trust gate)", () => {
+    // isolate from the user's real settings
+    const empty = tmpAgentDir();
+    const saved = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = empty;
+    try {
+      const dir = tmpAgentDir();
+      mkdirSync(join(dir, ".pi"), { recursive: true });
+      writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ cron: { enabled: true, tickMs: 5_000 } }));
+      // Untrusted: repo settings ignored → defaults, not the repo's tickMs.
+      const s = readCronSettings(dir, { project: false });
+      assert.equal(s.enabled, true);
+      assert.equal(s.tickMs, 30_000, "default tickMs, not the repo's 5s");
+      // Trusted: repo settings read.
+      assert.equal(readCronSettings(dir, { project: true }).tickMs, 5_000);
+    } finally {
+      if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = saved;
+    }
+  });
+});
+
+describe("runCronAction: test and logs actions", () => {
+  function action(dir: string, params: Record<string, unknown>) {
+    return runCronAction({
+      dir,
+      state: { lastFireArmAt: 0 },
+      childMode: false,
+      send: () => {},
+      fire: () => {},
+      params: params as never,
+      cwd: "/tmp",
+    });
+  }
+
+  it('action:"test" previews fire times; rejects invalid schedules', () => {
+    const dir = tmpAgentDir();
+    const r = action(dir, { action: "test", schedule: "0 9 * * mon" });
+    assert.ok(r.content[0]!.text.length > 0, "lists upcoming fires");
+    assert.ok((r.details as { fires: string[] }).fires.length > 0);
+    assert.throws(() => action(dir, { action: "test", schedule: "not a schedule" }), /Invalid cron schedule/);
+    assert.throws(() => action(dir, { action: "test" }), /schedule is required/);
+  });
+
+  it('action:"logs" tails the newest log; vanished log reports gracefully', () => {
+    const dir = tmpAgentDir();
+    const logsDir = join(dir, "logs");
+    mkdirSync(logsDir, { recursive: true });
+    // no log at all → "No logs" message
+    assert.ok(action(dir, { action: "logs", name: "j" }).content[0]!.text.includes("No logs for 'j'."));
+    // happy path: log listed and read back
+    writeFileSync(join(logsDir, "j-1.log"), "line1\nline2\n");
+    const ok = action(dir, { action: "logs", name: "j" });
+    assert.ok(ok.content[0]!.text.includes("line2"));
+    // vanished between latestLog() and readFileSync → graceful message.
+    // Swap the file for a directory of the same name: the listing still
+    // returns it, but readFileSync throws EISDIR — the exact race the
+    // try/catch guards.
+    rmSync(join(logsDir, "j-1.log"));
+    mkdirSync(join(logsDir, "j-1.log"));
+    const gone = action(dir, { action: "logs", name: "j" });
+    assert.ok(gone.content[0]!.text.includes("is gone"), "vanished log → graceful message");
+    assert.equal((gone.details as { vanished?: boolean }).vanished, true);
   });
 });

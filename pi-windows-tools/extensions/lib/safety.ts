@@ -52,6 +52,3 @@ export function classifyCommand(command: string): RiskResult {
   return reasons.length ? { risk: "confirm", reasons } : { risk: "safe", reasons: [] };
 }
 
-export function isSensitivePath(path: string): boolean {
-  return SENSITIVE_FILE_PATTERNS.some(rule => rule.pattern.test(path));
-}

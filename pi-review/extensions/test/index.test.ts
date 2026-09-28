@@ -185,6 +185,25 @@ describe("review parsing and shell gate", () => {
     assert.match(parseReviewResult(`${" ".repeat(1000)}not json`).findings[0].evidence, /not json/);
   });
   it("treats malformed reviewer output as blocking", () => assert.equal(parseReviewResult("not json").findings[0].blocking, true));
+  it("parses the valid JSON fence after a leading non-JSON fence (regression)", () => {
+    const output = [
+      "Here is the diff under review:",
+      "```diff",
+      "+ expiredSessions.reject();",
+      "```",
+      "And the structured result:",
+      "```json",
+      ACTIONABLE_REVIEW,
+      "```",
+    ].join("\n");
+    const result = parseReviewResult(output);
+    assert.equal(result.summary, JSON.parse(ACTIONABLE_REVIEW).summary, "valid fence parsed, not the diff one");
+    assert.notEqual(result.summary, "Reviewer returned malformed structured output");
+  });
+  it("falls back to malformed when every fence fails to parse", () => {
+    const output = "```diff\n+ only a diff, no json\n```\n```json\n{not json}\n```";
+    assert.equal(parseReviewResult(output).summary, "Reviewer returned malformed structured output");
+  });
 });
 
 describe("review lifecycle", () => {

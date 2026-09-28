@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.9 (2026-09-28)
+
+### Fixed
+
+- **Security: project cron settings are trust-gated.** `readCronSettings` takes
+  a `{ project }` option (default `true`); `project: false` skips `cwd/.pi`
+  entirely. Load-time read is global-only (no ctx yet); `session_start` re-reads
+  the repo scope with `ctx?.isProjectTrusted?.() === true` and re-arms the timer
+  if tickMs changed. Previously an untrusted checkout could re-enable the
+  scheduler or shrink tickMs via its `cwd/.pi/settings.json` (same pattern as
+  pi-router 1.1.9 / pi-commandcode 0.2.6 / pi-references).
+- `action:"logs"` no longer throws when a log vanishes between listing and
+  read (external cleanup, concurrent export) — returns a graceful "log gone"
+  message instead of a raw ENOENT/EISDIR.
+
+### Tests
+
+- Dispatcher tests for `action:"test"` (preview + invalid/missing schedule) and
+  `action:"logs"` (no log, happy tail, vanished log).
+- `readCronSettings({project:false})` ignores repo settings.
+
 ## 0.3.8 (2026-09-26)
 
 - Tests: `cwd-repro.test.ts` is now hermetic — saves and strips

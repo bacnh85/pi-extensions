@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.6.6] - 2026-09-28
+
+### Fixed
+
+- **Tokens gate no longer fails on commented-out CSS.** `scanOffSystem` now
+  strips `/* … */` comments before scanning (same stripper as the States and
+  Slop-tells gates) — a commented-out `/* color: #ff0000 */` is dead code, not
+  a violation. Regression test added.
+
+### Changed
+
+- Lite-mode status line no longer renders two 🎨 icons (hardcoded prefix +
+  `levelIcons.lite` deduped).
+- README gate table documents the intermediate APCA Lc 60 rung (regular ≥18px
+  / bold body) that `apcaThreshold` implements.
+- Dropped unused `isDeactivationCommand` import from `hooks/ux-instructions.js`.
+
 ## [0.6.5] - 2026-09-27
 
 > Republished after the CI version-table guard fix (matrix had aborted before this job ran); second attempt after npm dropped the first upload during processing.

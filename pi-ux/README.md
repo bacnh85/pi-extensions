@@ -68,7 +68,7 @@ Pass `path` to a stylesheet file — it is audited **verbatim**. Never retype or
 
 | Gate | What it checks |
 |------|----------------|
-| **Contrast (APCA)** | Perceptual APCA Lc per fg/bg pair (Lc ≥75 body, ≥45 large-bold, ≥30 non-text). hex or `oklch()`. Optional `weight`/`size` set the threshold. WCAG 2.x ratio shown as a compliance sidecar. |
+| **Contrast (APCA)** | Perceptual APCA Lc per fg/bg pair (Lc ≥75 body, ≥60 regular ≥18px / bold body, ≥45 large-bold [≥24px regular / ≥18px bold], ≥30 non-text). hex or `oklch()`. Optional `weight`/`size` set the threshold. WCAG 2.x ratio shown as a compliance sidecar. |
 | **Tokens** | Hardcoded hex outside `:root` token defs; `box-shadow` not built from `var(--…)` tokens |
 | **States** | Interactive selectors (`button`/`a`/`input`/…/`[role=button]`) missing `:focus-visible` or `:disabled`; any transition/animation missing a `prefers-reduced-motion` fallback |
 | **Slop tells** | Named AI signatures: glassmorphism (`backdrop-filter`), gradient orbs, neon glow, the shadcn default-card reflex (`rounded-2xl`+`shadow-lg`+`p-6`), 1px gray card borders, tracked-out eyebrows, tinted near-black backgrounds |

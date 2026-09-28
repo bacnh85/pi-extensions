@@ -244,6 +244,25 @@ test("hook: enforce + confident scores → allow (undefined), audit written", as
   });
 });
 
+test("hook: cache key includes the task — new task → fresh Jev call, same task → cached", async () => {
+  let hits = 0;
+  await withUpstream((req, res) => {
+    hits++;
+    res.end(JSON.stringify({ answers: { reversible: { noul: 0.99 }, serves_task: { noul: 0.95 } } }));
+  }, async (url) => {
+    const { handlers, cleanup } = loadExtensionWithStub({ baseUrl: url, settings: { permission: { enabled: true, mode: "enforce" } } });
+    try {
+      handlers.message_end({ message: { role: "user", content: "run the test suite" } });
+      await handlers.tool_call(bashEvent("bun test"), fakeCtx);
+      await handlers.tool_call(bashEvent("bun test"), fakeCtx);
+      assert.equal(hits, 1, "same command + same task → cache hit");
+      handlers.message_end({ message: { role: "user", content: "deploy to production" } });
+      await handlers.tool_call(bashEvent("bun test"), fakeCtx);
+      assert.equal(hits, 2, "same command + different task → decide() again, no stale cached verdict");
+    } finally { cleanup(); }
+  });
+});
+
 test("hook: enforce + low score → falls through to prompt, never denies", async () => {
   await withUpstream((req, res) => {
     res.end(JSON.stringify({ answers: { reversible: { noul: 0.3 }, serves_task: { noul: 0.95 } } }));

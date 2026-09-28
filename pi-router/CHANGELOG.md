@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.3 (2026-09-28)
+
+### Changed
+
+- Moved `refreshActiveModel` from the extension entrypoint into
+  `extensions/lib/refresh.ts`, removing the circular import between
+  `index.ts` and `commands/commands.ts`. Pure move — behavior unchanged.
+
+### Fixed
+
+- CHANGELOG 1.2.1 typo: `/router-reason` → `/router-reasoning`.
+
 ## 1.2.2 (2026-09-26)
 
 ### Fixed
@@ -14,7 +26,7 @@
 
 - **Session thinking level no longer silently reverts to the default.**
   `refreshActiveModel` re-selects the active router model after catalog
-  refreshes (session start, 5-min TTL pull, `/router-reason`, `/router-config`
+  refreshes (session start, 5-min TTL pull, `/router-reasoning`, `/router-config`
   save). Pi core's `setModel` re-applies the global `defaultThinkingLevel`
   even when the model is unchanged — its `modelsAreEqual` guard suppresses
   only the `model_select` event — so a session-only `/thinking` pick (e.g.

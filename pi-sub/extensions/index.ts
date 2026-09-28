@@ -559,68 +559,7 @@ export function parseOmniUsageText(text: string): {
   return out;
 }
 
-// ponytail: runnable self-check (pack gate; extensions/test covers the same
-// parser paths plus the adapters the self-check doesn't)
-if (process.env.PI_SUB_SELF_CHECK === "1") {
-  const sample = [
-    "Personal quota", "Daily", "80% left", "⏱ reset in 15h 0m", "",
-    "Weekly", "90% left", "⏱ reset in 7d 0h 0m", "",
-    "Provider quota", "Session", "47% left", "⏱ reset in 9m", "",
-    "Weekly", "28% left", "⏱ reset in 1d 0h 0m",
-  ].join("\n");
-  const p = parseOmniUsageText(sample);
-  const assert = (cond: boolean, msg: string) => { if (!cond) throw new Error("pi-sub self-check: " + msg); };
-  assert(p.personalDaily?.remaining === 80, "personal daily 80");
-  // routerUpstreamPrefix: provider first segment, aliases + generic filtered
-  const rp = (id: string) => routerUpstreamPrefix({ id });
-  assert(rp("command-code/deepseek/deepseek-v4-flash") === "command-code", "prefix command-code");
-  assert(rp("cmd/deepseek/deepseek-v4-flash") === "command-code", "alias cmd → command-code");
-  assert(rp("oc/gpt-5") === "opencode-go", "alias oc → opencode-go");
-  // OmniRoute's connection slug is `glm-cn` (live-verified; zai-coding-cn is a
-  // Pi provider id, NOT an OmniRoute slug — wrong slug = no cached data).
-  assert(rp("glm-cn/glm-5.2") === "glm-cn", "glm-cn passes through");
-  assert(rp("glmcn/glm-5.2") === "glm-cn", "alias glmcn → glm-cn");
-  assert(rp("zai-coding/glm-5.2") === "zai-coding", "prefix zai-coding");
-  assert(rp("auto/best") === undefined, "generic auto filtered");
-  assert(rp("openrouter/gpt-5") === undefined, "generic openrouter filtered");
-  assert(rp("nvidia/gpt-5") === undefined, "generic nvidia filtered");
-  assert(p.personalWeekly?.remaining === 90, "personal weekly 90");
-  assert(p.session?.remaining === 47, "session 47");
-  assert(p.providerWeekly?.remaining === 28, "provider weekly 28");
-  // tok/s split label: usage.reasoning ⊂ usage.output, never summed.
-  assert(tokPerSecLabel(3200, 2500, 70_000) === "46 tok/s (36 think + 10 answer)", "tok/s split label");
-  assert(tokPerSecLabel(200, 0, 10_000) === "20 tok/s", "tok/s plain label");
-  assert(p.personalDaily?.resetLabel?.includes("15h") === true, "daily reset label");
-  const disabled = parseOmniUsageText("Usage command is disabled for this API key.");
-  assert(Object.keys(disabled).length === 0, "disabled text parses empty");
-  // Live-verified: provider without cached data → no windows (endpoint fallback).
-  const noCache = parseOmniUsageText("Provider quota\nNo cached usage data available.");
-  assert(Object.keys(noCache).length === 0, "no-cached-data parses empty");
-  // Live-verified: opencode-go quota via ?provider=opencode-go.
-  const live = parseOmniUsageText(
-    "Provider quota\nSession\n90% left\n⏱ reset in 1h 59m\n\nWeekly\n0% left\n⏱ reset in 1d 20h 26m"
-  );
-  assert(live.session?.remaining === 90, "session 90");
-  assert(live.providerWeekly?.remaining === 0, "weekly 0");
-  assert(live.session?.resetLabel?.includes("1h 59m") === true, "session reset");
-  // Live-verified 2026-08-22: glm-cn scoped quota — Session 99%, Weekly
-  // "Unavailable" (skipped, so W stays absent like the direct Z.ai footer).
-  const glmCn = parseOmniUsageText(
-    "Provider quota\nSession\n99% left\n⏱ reset in 2h 55m\n\nWeekly\nUnavailable\n⏱ reset in unknown"
-  );
-  assert(glmCn.session?.remaining === 99, "glm-cn session 99");
-  assert(glmCn.session?.remainingLabel === "3H", "glm-cn reset label 3H");
-  assert(glmCn.providerWeekly === undefined, "glm-cn weekly unavailable skipped");
-  // general usage API (yardmaster GET /v1/usage): JSON windows + credits
-  const gen = parseGenericUsage({
-    windows: { session: { remaining_pct: 47, reset_at: Date.now() + 2 * 3600_000 } },
-    credits: { currency: "USD", balance: 42.5 },
-  });
-  assert(gen.fiveHour?.remaining === 47, "generic session 47");
-  assert(gen.fiveHour?.remainingLabel === "2H", "generic reset label");
-  assert(gen.monthlyCredits === 42.5, "generic credits");
-  assert(parseGenericUsage(null).fiveHour === undefined, "generic null input");
-}
+// ponytail: parser assertions live in extensions/test/parsers.test.ts
 
 async function fetchUsageFromPiAuth(entry: PiAuthEntry, signal?: AbortSignal): Promise<UsageApiSnapshot | undefined> {
   const accountId = getCodexAccountId(entry) ?? entry.accountId;

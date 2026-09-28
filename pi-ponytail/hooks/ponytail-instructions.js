@@ -5,6 +5,21 @@ const path = require('path');
 const { DEFAULT_MODE, normalizeMode, normalizePersistedMode } = require('./ponytail-config');
 const SKILL_PATH = path.join(__dirname, '..', 'skills', 'ponytail', 'SKILL.md');
 
+// Module-level cache: readFileSync(SKILL.md) once per process instead of on
+// every before_agent_start (every turn). Re-read on failure so a SKILL.md
+// that appears mid-session (install/update) is picked up on the next turn.
+let skillBodyCache = null; // string | null (null = unread)
+
+function readSkillBody() {
+  if (skillBodyCache !== null) return skillBodyCache;
+  try {
+    skillBodyCache = fs.readFileSync(SKILL_PATH, 'utf8');
+  } catch (_) {
+    return null;
+  }
+  return skillBodyCache;
+}
+
 function filterSkillBodyForMode(body, mode) {
   const effectiveMode = normalizeMode(mode) || DEFAULT_MODE;
   const withoutFrontmatter = String(body || '').replace(/^---[\s\S]*?---\s*/, '');
@@ -39,10 +54,11 @@ function getPonytailInstructions(mode) {
   }
   const effectiveMode = normalizeMode(configuredMode) || DEFAULT_MODE;
 
-  try {
+  const body = readSkillBody();
+  if (body !== null) {
     return 'PONYTAIL MODE ACTIVE — level: ' + effectiveMode + '\n\n' +
-      filterSkillBodyForMode(fs.readFileSync(SKILL_PATH, 'utf8'), effectiveMode);
-  } catch (e) {
+      filterSkillBodyForMode(body, effectiveMode);
+  } else {
     // ponytail: SKILL.md missing or unreadable — compact inline fallback keeps the ladder and rules.
     return [
       'PONYTAIL MODE ACTIVE — level: ' + effectiveMode,

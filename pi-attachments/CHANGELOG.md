@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.9 (2026-09-28)
+
+- Fixed: `isValidShortcut` now matches pi-tui's actual `KeyId` grammar —
+  case-insensitive (`Ctrl+Shift+V` was rejected yet worked fine) and no longer
+  rejects duplicate modifiers (pi-tui's `parts.includes` treats them as one).
+  The new 0.3.8 "never trigger" warning no longer fires for shortcuts that
+  actually work.
+
+## 0.3.8 (2026-09-28)
+
+- Fixed: an invalid `pasteFileShortcut` in `settings.json` (previously a silent
+  no-op — the keybinding never triggered) now warns at session start via
+  `ui.notify` (or `console.warn` without a UI). New `isValidShortcut` validates
+  against pi-tui's `KeyId` grammar.
+- Docs: README notes `pasteFileShortcut` requires a restart — the shortcut is
+  registered when the extension loads.
+
 ## 0.3.7 (2026-09-24)
 
 - Fixed: Windows drive-letter paths (`C:\Users\me\shot.png`, `D:/data/x.md`)

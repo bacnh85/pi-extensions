@@ -44,6 +44,7 @@ describe("cwd guard — unpinned fires must not run in a foreign-cwd session", (
         execute = t.execute;
       },
       registerCommand: () => {},
+      on: () => {},
       sendMessage: (...args: unknown[]) => {
         sent.push(args);
       },

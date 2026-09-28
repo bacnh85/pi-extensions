@@ -142,6 +142,25 @@ test("add: multi-ref install prints the failure summary with the count", { skip:
   assert.ok(logs.some((l) => /2 install\(s\) failed/.test(l)), "summary line printed for -y users too");
 });
 
+test("add: missing pi binary (ENOENT) gets the friendly install hint, exit 1", { skip: process.platform === "win32" }, async () => {
+  const realPath = process.env.PATH;
+  const logs = [];
+  const orig = console.log;
+  console.log = (msg) => logs.push(msg);
+  let code;
+  try {
+    process.env.PATH = ""; // no `pi` anywhere → spawnSync ENOENT
+    code = await main(["add", "pi-plan"]);
+  } finally {
+    process.env.PATH = realPath;
+    console.log = orig;
+  }
+  assert.equal(code, 1);
+  assert.ok(logs.some((l) => l.includes("not found on PATH")), "friendly message printed");
+  assert.ok(!logs.some((l) => /ENOENT/.test(l)), "no cryptic spawnSync error leaked");
+});
+
+
 test("resolveSource: shell metacharacters throw (all branches)", () => {
   assert.throws(() => resolveSource("pkg&whoami"), /invalid source/);
   assert.throws(() => resolveSource("pkg;rm"), /invalid source/);

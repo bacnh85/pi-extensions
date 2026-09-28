@@ -248,6 +248,33 @@ describe("pi-selfskills extension", () => {
     expect(res.content[0].text).to.include("read the skill");
   });
 
+  it("refuses alias forms of SKILL.md for write/delete exactly like the bare name", async () => {
+    writeSkill(defaultSkillsDir(), "alpha", "Rule one.\n");
+    const { tools, ctx } = harness(cwd);
+    await tools.skill_manage.execute("id", { action: "read", skill: "alpha" }, undefined, undefined, ctx);
+    for (const file of ["SKILL.md", "./SKILL.md", "sub/../SKILL.md"]) {
+      const w = await tools.skill_manage.execute(
+        "id",
+        { action: "write", skill: "alpha", file, content: "forbidden" },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(w.details.error).to.equal(true, `write ${file}`);
+      expect(w.content[0].text).to.include("SKILL.md is only writable via patch", `write ${file}`);
+      const d = await tools.skill_manage.execute(
+        "id",
+        { action: "delete", skill: "alpha", file },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(d.details.error).to.equal(true, `delete ${file}`);
+      expect(d.content[0].text).to.include("SKILL.md alone is not deletable", `delete ${file}`);
+    }
+    expect(readFileSync(join(defaultSkillsDir(), "alpha", "SKILL.md"), "utf8")).to.include("Rule one.");
+  });
+
   it("delete removes a bundled file (backup + restore) and refuses SKILL.md; whole-skill delete snapshots", async () => {
     const skillDir = join(defaultSkillsDir(), "alpha");
     const file = writeSkill(defaultSkillsDir(), "alpha");

@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { ABSOLUTE_PATH_RE, absolutePathSpans, extractImagePaths } from "./lib/paths";
 import { parseUriList } from "./lib/clipboard-files";
-import { DEFAULTS, loadSettings } from "./lib/settings";
+import { DEFAULTS, isValidShortcut, loadSettings } from "./lib/settings";
 import { lookup, remember, registryPath } from "./lib/registry";
 import { savePaste } from "./lib/pastes";
 import { AttachmentTray } from "./lib/tray";
@@ -161,6 +161,82 @@ describe("loadSettings", () => {
     } finally {
       if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = saved;
+    }
+  });
+});
+
+describe("isValidShortcut", () => {
+  it("accepts modifier combos, bare keys, symbols and specials", () => {
+    // pi-tui lowercases the whole KeyId, so uppercase variants are valid too.
+    for (const ok of ["alt+shift+v", "Ctrl+Shift+V", "Alt+Shift+V", "ctrl+c", "ctrl+shift+alt+delete", "super+k", "f2", "v", "/", "pageUp", "ctrl+enter"])
+      assert.equal(isValidShortcut(ok), true, ok);
+  });
+
+  it("rejects bad grammar and empty", () => {
+    for (const bad of ["", "not+a+key", "ctrl+", "+v", "ctrl v", "f13"])
+      assert.equal(isValidShortcut(bad), false, JSON.stringify(bad));
+  });
+});
+
+describe("pasteFileShortcut validation warning", () => {
+  const writeCfg = (shortcut: string) => {
+    const dir = path.join(TMP, "cfg-shortcut");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ attachments: { pasteFileShortcut: shortcut } }));
+    const saved = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = dir;
+    return () => {
+      if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = saved;
+    };
+  };
+
+  it("warns via ui.notify when the configured shortcut is invalid", () => {
+    const restore = writeCfg("garbage-key");
+    try {
+      const h = harness();
+      const notifies: Array<{ msg: string; level: string }> = [];
+      h.start({}, {
+        ui: {
+          notify: (msg: string, level: string) => notifies.push({ msg, level }),
+          onTerminalInput: () => {},
+          setWidget: () => {},
+        },
+      });
+      assert.equal(notifies.length, 1, "exactly one warning");
+      assert.equal(notifies[0].level, "warning");
+      assert.match(notifies[0].msg, /pasteFileShortcut/);
+      assert.match(notifies[0].msg, /never trigger/);
+    } finally {
+      restore();
+    }
+  });
+
+  it("no warning for a valid shortcut; console.warn fallback without ui", () => {
+    const restore = writeCfg("alt+shift+v");
+    const origWarn = console.warn;
+    const warns: string[] = [];
+    console.warn = (m: string) => warns.push(m);
+    try {
+      const h = harness();
+      const notifies: unknown[] = [];
+      h.start({}, {
+        ui: { notify: (...a: unknown[]) => notifies.push(a), onTerminalInput: () => {}, setWidget: () => {} },
+      });
+      assert.equal(notifies.length, 0, "valid shortcut stays silent");
+    } finally {
+      restore();
+    }
+    // Fallback path: invalid shortcut + no ui.notify → console.warn.
+    const restore2 = writeCfg("nope");
+    try {
+      const h = harness();
+      h.start({}, { ui: { onTerminalInput: () => {}, setWidget: () => {} } });
+      assert.equal(warns.length, 1);
+      assert.match(warns[0], /pasteFileShortcut/);
+    } finally {
+      console.warn = origWarn;
+      restore2();
     }
   });
 });

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.23.1 - 2026-09-28
+
+### Changed
+
+- Extract `makeErrorResult(agent, task, msg, stopReason?)` and replace the ~6
+  hand-rolled zero-usage `SubAgentResult` error literals (unknown agent,
+  model-not-found, validation, model exhaustion, herdr delegation, sibling
+  cancellation) with it. No behavior change; −43 lines.
+- Fix the `/subagent status` history-fallback comment: foreground `fg-*` ids
+  are upserted without the `background` flag on completion, so the
+  `e.background` filter matches background entries only (the comment claimed
+  fg ids live there too).
+
 ## 0.23.0 (2026-09-26)
 
 ### Added

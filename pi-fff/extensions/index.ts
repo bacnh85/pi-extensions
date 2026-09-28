@@ -27,7 +27,7 @@ import type {
   SearchResult,
 } from "@ff-labs/fff-node";
 import { FileFinder } from "@ff-labs/fff-node";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";

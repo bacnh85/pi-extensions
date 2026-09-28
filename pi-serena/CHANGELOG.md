@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.19 (2026-09-28)
+
+### Fixed
+
+- **Blind retry could double-apply mutations**: `callWorkerAction`'s
+  retry-once applied to every action, but a timed-out mutator
+  (`replace_symbol_body`, `insert_*`, `rename_symbol`, `safe_delete_symbol`,
+  `replace_content`, …) may have already applied before the worker was
+  killed — retrying it double-applies. Retry is now gated to read-only
+  actions (`READ_ONLY_WORKER_ACTIONS`: symbols overview, find_symbol,
+  find_referencing_symbols, find_declaration, find_implementations,
+  search_for_pattern, get_diagnostics_for_file, config,
+  check_onboarding_performed, status, list_tools); mutating actions surface
+  the timeout error without retry.
+
 ## 0.9.18 (2026-09-26)
 
 ### Fixed

@@ -109,3 +109,23 @@ test("unsafe rewrite (isSafeRewrite false) keeps the original command", async ()
   assert.equal(after, "git status");
   assert.equal(h.state.rewriteCalls, 1);
 });
+
+test("before_agent_start: prompt note injected only when rtk is available", async () => {
+  const ext = (await import("../index.ts")).default;
+
+  // rtkAvailable === false → rewrites pass through, so no rewrite note.
+  const off = createHarness();
+  off.state.versionAvailable = false;
+  ext(off.pi);
+  await off.handlers.session_start({}, off.ctx);
+  const resOff = await off.handlers.before_agent_start({ systemPrompt: "BASE" });
+  assert.equal(resOff, undefined, "no systemPrompt modification when unavailable");
+
+  // Available → the note is appended truthfully.
+  const on = createHarness();
+  on.state.versionAvailable = true;
+  ext(on.pi);
+  await on.handlers.session_start({}, on.ctx);
+  const resOn = await on.handlers.before_agent_start({ systemPrompt: "BASE" });
+  assert.match(resOn.systemPrompt, /transparently rewritten through RTK/);
+});

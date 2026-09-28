@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.12 - 2026-09-28
+
+- Fixed: non-interactive `add`/`remove`/`update` no longer die with a cryptic
+  `spawnSync pi ENOENT` when the `pi` binary isn't installed — they now print the
+  same friendly "`pi` not found on PATH. Install it first" hint the interactive
+  installer has always shown, and exit 1.
+
 ## 0.1.11 - 2026-09-26
 
 - Catalog: added the missing `pi-classifier` entry — `pi-hub add pi-classifier`

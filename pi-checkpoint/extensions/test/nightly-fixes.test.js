@@ -244,6 +244,23 @@ test("a new turn clears the redo buffer (no stale re-apply)", async () => {
   await redo.handler("1", ctx);
   assert.match(ctx.notifies[ctx.notifies.length - 1].m, /Nothing to redo/);
 });
+test("hasUI === false (hostless a2a child): turn_start does not snapshot", async () => {
+  let n = 0;
+  const t = setup((args) => {
+    if (args[0] === "stash" && args[1] === "create") return { stdout: `tree${++n}\n`, stderr: "" };
+    return { stdout: "", stderr: "" };
+  });
+  const { pi, turnStart } = t;
+  const hostlessCtx = { ...t.ctx, hasUI: false };
+
+  await turnStart({}, hostlessCtx);
+  assert.equal(pi.execCalls.filter((x) => x.args[0] === "stash").length, 0,
+    "no git stash create in a hostless session");
+  assert.equal(pi.execCalls.filter((x) => x.args[0] === "update-ref").length, 0,
+    "no checkpoint ref written in a hostless session");
+});
+
+
 test("session_start prunes checkpoint refs older than 30 days (new kept)", async () => {
   const now = Math.floor(Date.now() / 1000);
   const handlers = {};

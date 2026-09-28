@@ -253,13 +253,13 @@ test("normalizeReference rejects dot-segment aliases (cache-root escape)", () =>
 // ── Extension wiring ──────────────────────────────────────────────────────
 
 function harness({ setting } = {}) {
-  const calls = { handlers: {}, registeredCmds: [] };
+  const calls = { handlers: {}, registeredCmds: [], execs: [] };
   const pi = {
     on(evt, handler) { calls.handlers[evt] = handler; },
     registerCommand(name) { calls.registeredCmds.push(name); },
     getSetting(name) { return name === "references" ? setting : undefined; },
     config: {},
-    async exec() { return { failed: false }; },
+    async exec(_cmd, args) { calls.execs.push(args); return { failed: false }; },
     calls,
   };
   referencesExtension(pi);
@@ -364,6 +364,39 @@ test("ensureCloned passes a safe branch normally (review: MED)", async () => {
     await ensureCloned(ref, async (cmd, args) => { calls.push({ cmd, args }); return { failed: false }; });
     assert.deepEqual(calls[0].args, ["clone", "--branch", "main", "https://github.com/owner/repo.git", join(dir, "sdk")]);
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("dashed branch: warning surfaces, ref still clones with default branch", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "refs-branch-warn-"));
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const origWarn = console.warn;
+  const warns = [];
+  console.warn = (m) => warns.push(m);
+  process.env.PI_CODING_AGENT_DIR = dir;
+  try {
+    const pi = harness({ setting: { sdk: { repository: "owner/repo", branch: "--upload-pack=evil" } } });
+    const c = ctx();
+    pi.calls.handlers.session_start({}, c);
+    // Warning surfaced via ui.notify in TUI mode ...
+    assert.equal(c.notifies.length, 1, "exactly one warning");
+    assert.match(c.notifies[0], /@sdk/);
+    assert.match(c.notifies[0], /default branch/);
+    // ... and the ref still loads: clone runs WITHOUT the rejected --branch value.
+    await new Promise((r) => setImmediate(r));
+    assert.equal(pi.calls.execs.length, 1, "clone attempted");
+    assert.equal(pi.calls.execs[0][0], "clone");
+    assert.equal(pi.calls.execs[0].includes("--branch"), false, "dangerous branch omitted");
+    assert.equal(pi.calls.execs[0].includes("--upload-pack=evil"), false);
+    // Fallback: no UI → console.warn instead of notify.
+    pi.calls.handlers.session_start({}, { cwd: "/proj", hasUI: false });
+    assert.equal(warns.length, 1, "console.warn fallback used");
+    assert.match(warns[0], /@sdk/);
+  } finally {
+    console.warn = origWarn;
+    if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
     rmSync(dir, { recursive: true, force: true });
   }
 });

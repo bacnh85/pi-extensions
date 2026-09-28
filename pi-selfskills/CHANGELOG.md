@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.6 (2026-09-28)
+
+- **Fix: `file` paths are normalized (path.posix.normalize) before the
+  SKILL.md-refusal and containment checks** in writeAction, deleteAction,
+  and both batch write/delete ops. Alias forms (`./SKILL.md`,
+  `sub/../SKILL.md`) previously fell past the basename refusal into the
+  generic relpath error (and containment saw raw input); they are now
+  refused with the same SKILL.md-specific message as the bare name.
+- Tests: alias-form refusal suite (`SKILL.md` / `./SKILL.md` /
+  `sub/../SKILL.md` for write and delete, skill unchanged after).
+
 ## 0.3.5 (2026-09-24)
 
 - **Fix: in-queue create re-checks the discovered-name clash** — parity with

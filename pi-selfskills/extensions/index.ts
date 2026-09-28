@@ -667,7 +667,9 @@ function collectFiles(dir: string, baseDir: string, out: { relpath: string; cont
 }
 
 async function writeAction(params: any, cwd: string, settings: ReturnType<typeof readSelfSkillsSettings>, trusted: boolean) {
-  const file = typeof params.file === "string" ? params.file : "";
+  // Normalize alias forms (./SKILL.md, sub/../SKILL.md) BEFORE the SKILL.md
+  // refusal + containment checks so they guard the resolved path, not the raw input.
+  const file = typeof params.file === "string" ? path.posix.normalize(params.file) : "";
   if (!isValidRelpath(file)) {
     return err("write requires `file`: a relative path inside the skill directory (e.g. references/api.md).");
   }
@@ -726,7 +728,7 @@ async function deleteAction(params: any, cwd: string, settings: ReturnType<typeo
   if (!readThisSession.has(r.skillFilePath)) {
     return err("Refusing to delete: read the skill (its SKILL.md) first — deletion is destructive.");
   }
-  const file = typeof params.file === "string" ? params.file : "";
+  const file = typeof params.file === "string" ? path.posix.normalize(params.file) : "";
 
   // Bundled-file delete: backup, remove, prune empty parents.
   if (file) {
@@ -890,7 +892,7 @@ async function executeBatch(ops: any[], cwd: string, settings: ReturnType<typeof
       overlay.set(real, applied.content);
       meta.set(real, { skillName: r.skillName, baseDir: r.baseDir, relpath: "SKILL.md" });
     } else if (action === "write") {
-      const file = typeof op.file === "string" ? op.file : "";
+      const file = typeof op.file === "string" ? path.posix.normalize(op.file) : "";
       if (!isValidRelpath(file) || path.basename(file) === "SKILL.md") {
         errors.push(`${prefix}write requires \`file\` (relative path; SKILL.md is patch-only).`);
         continue;
@@ -911,7 +913,7 @@ async function executeBatch(ops: any[], cwd: string, settings: ReturnType<typeof
       overlay.set(target, op.content);
       meta.set(target, { skillName: r.skillName, baseDir: r.baseDir, relpath: file });
     } else {
-      const file = typeof op.file === "string" ? op.file : "";
+      const file = typeof op.file === "string" ? path.posix.normalize(op.file) : "";
       if (!isValidRelpath(file) || path.basename(file) === "SKILL.md") {
         errors.push(`${prefix}batch delete requires \`file\` (bundled files only; SKILL.md is patch-only; whole-skill delete is a single call).`);
         continue;

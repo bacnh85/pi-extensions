@@ -294,3 +294,51 @@ test("stale runner (getFlag throws at load) never crashes handlers (regression)"
   assert.doesNotThrow(() => events.get("message_end")({ message: assistantMsg(5, "m1") }, ctx));
   assert.equal(ctx.aborted(), false, "no cap when flag unreadable → no abort");
 });
+
+test("abortThrows: enforcement retries until abort succeeds; record/notify once", () => {
+  // A thrown ctx.abort() must NOT permanently latch enforcement away — retry
+  // on subsequent message_end events until one succeeds, while the exceed
+  // notification + entry are recorded exactly once.
+  const { events, appendedEntries } = createPiHarness("0.50");
+  let failFirst = true;
+  const ctx = createCtx();
+  const realAbort = ctx.abort.bind(ctx);
+  ctx.abort = () => {
+    if (failFirst) { failFirst = false; throw new Error("abort boom"); }
+    realAbort();
+  };
+  events.get("session_start")({}, ctx);
+
+  // Cap crossed; abort throws → nothing lost.
+  events.get("message_end")({ message: assistantMsg(0.6, "m1") }, ctx);
+  assert.equal(ctx.aborted(), false, "first abort attempt threw");
+  assert.equal(appendedEntries.length, 1, "exceed entry recorded despite throw");
+  assert.equal(ctx.notifyCalls.length, 1, "exceed notification fired despite throw");
+
+  // Subsequent message_end retries the abort and succeeds.
+  events.get("message_end")({ message: assistantMsg(0.01, "m2") }, ctx);
+  assert.equal(ctx.aborted(), true, "abort retried and succeeded");
+  assert.equal(appendedEntries.length, 1, "entry not duplicated on retry");
+  assert.equal(ctx.notifyCalls.length, 1, "notification not duplicated on retry");
+
+  // After success, no further abort attempts.
+  events.get("message_end")({ message: assistantMsg(0.01, "m3") }, ctx);
+  assert.equal(ctx.aborted(), true);
+  assert.equal(appendedEntries.length, 1);
+  assert.equal(ctx.notifyCalls.length, 1);
+});
+
+test("abortThrows on every attempt never permanently disables the exceed path", () => {
+  // Even if abort keeps throwing, the exceed notification/entry still fire
+  // exactly once and each message_end retries (no permanent latch-away).
+  const { events, appendedEntries } = createPiHarness("0.50");
+  const ctx = createCtx({ abortThrows: true });
+  events.get("session_start")({}, ctx);
+  assert.doesNotThrow(() => events.get("message_end")({ message: assistantMsg(0.6, "m1") }, ctx), "cap crossed, abort throws");
+  for (let i = 1; i < 3; i++) {
+    assert.doesNotThrow(() => events.get("message_end")({ message: assistantMsg(0.01, `m${i}`) }, ctx));
+  }
+  assert.equal(appendedEntries.length, 1, "entry recorded exactly once");
+  assert.equal(ctx.notifyCalls.length, 1, "notification fired exactly once");
+  assert.equal(ctx.aborted(), false, "abort never succeeded (harness throws every time)");
+});

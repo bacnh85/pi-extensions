@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.11 - 2026-09-28
+
+- Docs (in-code): the `mapContent` comment falsely claimed image base64 is
+  "preserved in details so nothing is lost" — only the image count is kept;
+  the payload is deliberately dropped to keep details small.
+
 ## 0.1.10 - 2026-09-26
 
 - Fixed: SKILL.md wiring guidance no longer contradicts itself — the ⚠ warning

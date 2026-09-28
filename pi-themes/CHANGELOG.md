@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2 - 2026-09-28
+
+- Regression test for the 0.2.1 var-to-var rejection: a var whose value is
+  another var name must fail validation naming both vars.
+- README: note that `npm test` runs the theme validator; annotate the missing
+  catppuccin-mocha preview PNG.
+
 ## 0.2.1 - 2026-09-26
 
 - Theme validator now checks `vars` VALUES, not just names: each var must be a

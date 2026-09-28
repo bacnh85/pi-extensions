@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 - 2026-09-28
+
+- Fix: the permission-hook verdict cache key now includes the task (first 200 chars of `lastTask`), so a cached `serves_task` verdict can no longer outlive its task — the same command under a new task gets a fresh Jev decision instead of task A's auto-approval. Covered by a hook-wiring test (same command + different task → fresh call; same task → cache hit).
+- Docs: corrected two stale comments claiming the permission hook is "opt-in, default off" — it has been default ON since 0.2.0.
+- Docs: same stale "opt-in" claim removed from the npm package description.
+
 ## 0.2.0 (2026-09-25)
 
 - **Plan gate for pi-plan** (`planGateVerdict` export + `classifier.planGate` config block, default OFF): when pi-plan's plan-mode confirm tier fires, Jev is asked whether the command is read-only and needed for planning; a confident yes auto-allows in enforce mode, every other outcome — disabled, risky-list command, low score, HTTP error, timeout, malformed noul — falls back to pi-plan's normal prompt. Jev may only reduce prompts, never unlock a write and never deny. Verdicts cached by command+cwd store confidence (not the allow decision), so a mid-session observe→enforce flip applies to cached verdicts; every verdict audited with `source: "plan-gate"`. The package now declares `main`/`exports` so pi-plan can import it as a library.

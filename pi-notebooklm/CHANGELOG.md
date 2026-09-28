@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.16 - 2026-09-28
+
+### Added
+
+- **Destructive-policy drift guard.** `DESTRUCTIVE_PATHS`, `DESTRUCTIVE_FLAGS`,
+  `REQUIRES_YES` are now exported, plus a new documented `CONFIRM_ONLY_PATHS`
+  set for destructive paths that cannot hang on a CLI prompt (auth.logout,
+  skill.uninstall, clear, the four share privacy paths). Tests enforce:
+  every `DESTRUCTIVE_PATHS` entry ∈ `REQUIRES_YES` ∪ `CONFIRM_ONLY_PATHS`,
+  and no stale entries on either side — a new upstream destructive command
+  can no longer be silently misclassified.
+
 ## 0.1.15 (2026-09-26)
 
 ### Fixed

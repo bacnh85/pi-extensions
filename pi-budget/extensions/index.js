@@ -55,11 +55,15 @@ export default function budgetExtension(pi) {
     rawBudget = undefined;
   }
 
-  // Session-scoped state. `exceeded` guards so abort fires exactly once per session.
+  // Session-scoped state. `exceeded` guards so the exceed path runs once per
+  // session; `abortSucceeded` only latches after a successful ctx.abort(), so
+  // a thrown abort is retried on later message_end events.
   const state = {
     budgetCap: parseBudgetCap(rawBudget),
     cumulativeCost: 0,
     exceeded: false,
+    abortSucceeded: false,
+    notified: false,
     // Idempotency: message IDs already counted (guards double-count on
     // retry/replay when the host re-fires message_end for the same message).
     countedMessageIds: new Set(),
@@ -68,6 +72,8 @@ export default function budgetExtension(pi) {
   pi.on("session_start", (event, ctx) => {
     state.cumulativeCost = 0;
     state.exceeded = false;
+    state.abortSucceeded = false;
+    state.notified = false;
     state.countedMessageIds = new Set();
     if (rawBudget !== undefined && rawBudget !== null && rawBudget !== "" && state.budgetCap === undefined) {
       // A non-empty flag we couldn't parse means the user asked for a cap that
@@ -95,22 +101,29 @@ export default function budgetExtension(pi) {
       // provider response can never poison the accumulator into a permanent
       // NaN >= cap === false bypass.
 
-      if (!state.exceeded && state.budgetCap !== undefined && state.cumulativeCost >= state.budgetCap) {
+      if (state.budgetCap !== undefined && state.cumulativeCost >= state.budgetCap) {
         state.exceeded = true;
-        // Enforcement first; UI side effects are best-effort and must not be
-        // able to skip the abort.
-        try {
-          ctx.abort();
-        } catch { /* still recorded below */ }
-        try {
-          ctx.ui.notify(
-            `Budget cap reached: $${state.cumulativeCost.toFixed(2)} / $${state.budgetCap.toFixed(2)}. Aborting.`,
-            "warning",
-          );
-        } catch { /* best-effort UI */ }
-        try {
-          pi.appendEntry("budget-exceeded", { cap: state.budgetCap, spent: state.cumulativeCost });
-        } catch { /* best-effort */ }
+        // Record + notify exactly once; retry the abort on subsequent
+        // message_end events until one succeeds — a thrown abort must never
+        // silently disable enforcement for the rest of the session.
+        if (!state.abortSucceeded) {
+          try {
+            ctx.abort();
+            state.abortSucceeded = true;
+          } catch { /* retried on the next message_end */ }
+        }
+        if (!state.notified) {
+          state.notified = true;
+          try {
+            ctx.ui.notify(
+              `Budget cap reached: $${state.cumulativeCost.toFixed(2)} / $${state.budgetCap.toFixed(2)}. Aborting.`,
+              "warning",
+            );
+          } catch { /* best-effort UI */ }
+          try {
+            pi.appendEntry("budget-exceeded", { cap: state.budgetCap, spent: state.cumulativeCost });
+          } catch { /* best-effort */ }
+        }
       }
 
       // Footer: best-effort, must never throw out of the handler (theme proxy may

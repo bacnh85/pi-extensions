@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect } from "chai";
 import { MuninClient } from "@kalera/munin-sdk";
+import { OUTPUT_MAX_BYTES } from "../lib/helpers";
 import muninExtension from "../index";
 
 const ENV_KEYS = ["MUNIN_API_KEY", "MUNIN_PROJECT", "MUNIN_BASE_URL", "PI_CODING_AGENT_DIR"] as const;
@@ -148,5 +149,38 @@ describe("pi-munin extension", () => {
     const result = await tools.munin_capabilities.execute("id", {}, undefined, undefined, ctx);
     expect(args).to.deep.equal([true]);
     expect(result.content[0].text).to.include("Spec Version: v1");
+  });
+
+  // ── tool_result error sanitization hook (anti-injection path) ──────────
+
+  it("tool_result hook strips a prior 'Munin <type> error:' prefix (no double-wrap)", async () => {
+    const h = harness();
+    const hook = h.handlers.tool_result[0];
+    const out = await hook({
+      toolName: "munin_search",
+      isError: true,
+      content: [{ type: "text", text: "Munin auth error: unauthorized: invalid api key" }],
+    });
+    // A previous sanitization pass already added the prefix — the hook must
+    // re-wrap once, not stack "Munin auth error: " twice.
+    expect(out.content[0].text).to.equal("Munin auth error: unauthorized: invalid api key");
+    expect(out.details.errorType).to.equal("auth");
+  });
+
+  it("tool_result hook bounds oversized munin error output", async () => {
+    const h = harness();
+    const hook = h.handlers.tool_result[0];
+    const huge = "network error: " + "x".repeat(120 * 1024);
+    const out = await hook({ toolName: "munin_get", isError: true, content: [{ type: "text", text: huge }] });
+    expect(out.content[0].text.length).to.be.at.most(OUTPUT_MAX_BYTES + 200, "bounded to max bytes + marker slack");
+    expect(out.content[0].text).to.include("[Munin output truncated:");
+    expect(out.details.errorType).to.equal("network");
+  });
+
+  it("tool_result hook ignores non-munin tools and successful results", async () => {
+    const h = harness();
+    const hook = h.handlers.tool_result[0];
+    expect(await hook({ toolName: "read", isError: true, content: [{ type: "text", text: "boom" }] })).to.equal(undefined);
+    expect(await hook({ toolName: "munin_search", isError: false, content: [{ type: "text", text: "ok" }] })).to.equal(undefined);
   });
 });

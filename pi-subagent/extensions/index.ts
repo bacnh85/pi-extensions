@@ -799,8 +799,9 @@ export default function (pi: ExtensionAPI) {
           if (!bgTask) {
             // Evicted after the 60s post-completion retention — fall back to
             // the durable history so a finished task doesn't read as "never existed".
-            // Background entries only: foreground fg-* ids live here too, and
-            // non-terminal entries (running/interrupted) aren't "finished".
+            // Background entries only: foreground fg-* ids write a running
+            // entry at start, so a completed fg task is upserted WITHOUT the
+            // background flag and never matches this filter.
             const hist = readHistory(path.join(ctx.cwd, CONFIG_DIR_NAME)).find((e) => e.id === taskId && e.background);
             if (hist) {
               const terminal = hist.status === "completed" || hist.status === "failed" || hist.status === "aborted" || hist.status === "timeout";
@@ -1004,10 +1005,12 @@ export default function (pi: ExtensionAPI) {
         return { tools: result.tools, loadExtensions: needsExtensions(result.tools) };
       }
 
-      // Helper: uniform error result for herdr-delegated tasks.
-      function herdrErrorResult(agentName: string, task: string, message: string): SubAgentResult {
+      // Helper: uniform error SubAgentResult — single source for every
+      // hand-rolled failure literal (unknown agent, model exhaustion,
+      // validation, herdr delegation, sibling cancellation).
+      function makeErrorResult(agentName: string, task: string, message: string, stopReason = "error"): SubAgentResult {
         return {
-          agent: agentName, task, exitCode: 1, status: "error", stopReason: "error",
+          agent: agentName, task, exitCode: 1, status: "error", stopReason,
           messages: [], stderr: message,
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
           errorMessage: message,
@@ -1087,7 +1090,7 @@ export default function (pi: ExtensionAPI) {
         onHeartbeat?: () => void,
       ): Promise<SubAgentResult> {
         const prepared = await prepareHerdrOne(agentName, task, cwd, timeoutMs);
-        if ("error" in prepared) return herdrErrorResult(agentName, task, prepared.error);
+        if ("error" in prepared) return makeErrorResult(agentName, task, prepared.error);
         const { handle, startedAt } = prepared;
         // Keep-alive parity with the SDK path: a long pane run must emit
         // onUpdate traffic or the host may idle-abort the tool call.
@@ -1111,7 +1114,7 @@ export default function (pi: ExtensionAPI) {
             signal: parentSignal,
           });
         } catch (err) {
-          return herdrErrorResult(agentName, task, `herdr delegation failed: ${err instanceof Error ? err.message : String(err)}`);
+          return makeErrorResult(agentName, task, `herdr delegation failed: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
           // Settled: stop the keep-alive and detach the abort listener so a
           // later abort never keystrokes a completed step's pane.
@@ -1138,17 +1141,7 @@ export default function (pi: ExtensionAPI) {
 
         if (!agent) {
           const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
-          return {
-            agent: agentName,
-            task,
-            exitCode: 1,
-            status: "error",
-            stopReason: "error",
-            messages: [],
-            stderr: `Unknown agent: "${agentName}". Available: ${available}.`,
-            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-            errorMessage: `Unknown agent: "${agentName}"`,
-          };
+          return makeErrorResult(agentName, task, `Unknown agent: "${agentName}". Available: ${available}.`);
         }
 
         const agentChain = resolveAgentModelChain(agent, rolesCfg);
@@ -1156,17 +1149,10 @@ export default function (pi: ExtensionAPI) {
         if (!resolved.model) {
           const tried = resolved.attempted.join(", ") || "none";
           const parentInfo = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
-          return {
-            agent: agentName,
-            task,
-            exitCode: 1,
-            status: "error",
-            stopReason: "error",
-            messages: [],
-            stderr: `Model not found for agent "${agentName}". Tried: ${tried}. Parent model: ${parentInfo}. Check agent definition and pi model configuration.`,
-            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-            errorMessage: `No model resolved (tried: ${tried})`,
-          };
+          return makeErrorResult(
+            agentName, task,
+            `Model not found for agent "${agentName}". Tried: ${tried}. Parent model: ${parentInfo}. Check agent definition and pi model configuration.`,
+          );
         }
 
         // Security: validate tools, timeout, and cwd (wrapped in try/catch).
@@ -1189,17 +1175,7 @@ export default function (pi: ExtensionAPI) {
           safeCwd = resolveChildCwd(cwd);
         } catch (err: unknown) {
           const errorMsg = err instanceof Error ? err.message : String(err);
-          return {
-            agent: agentName,
-            task,
-            exitCode: 1,
-            status: "error",
-            stopReason: "error",
-            messages: [],
-            stderr: `Validation error: ${errorMsg}`,
-            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-            errorMessage: errorMsg,
-          };
+          return makeErrorResult(agentName, task, `Validation error: ${errorMsg}`);
         }
 
         // Retry loop: rate-limit model fallback (candidates already role-expanded).
@@ -1259,19 +1235,10 @@ export default function (pi: ExtensionAPI) {
                     `All available models exhausted.`,
                     `Tried: ${triedModels.join(" → ")}.`,
                   ].join(" ");
-              return {
-                agent: agentName,
-                task,
-                exitCode: 1,
-                status: "error" as const,
-                stopReason: "error" as const,
-                messages: [],
-                stderr: exhaustedStderr,
-                usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-                errorMessage: reason === "no-model"
-                  ? `All models exhausted (tried: ${triedModels.join(" → ") || "none"})`
-                  : `All available models exhausted (tried: ${triedModels.join(" → ")})`,
-              };
+                return makeErrorResult(
+                  agentName, task, exhaustedStderr,
+                  // ponytail: exhaustive-models case; set a distinct stopReason if callers ever need to tell them apart.
+                );
             },
           });
         } finally {
@@ -1508,23 +1475,13 @@ export default function (pi: ExtensionAPI) {
                 if (parallelController.signal.aborted) {
                   const preparedSkip = herdrPrepared?.[index];
                   if (preparedSkip?.ok) void cancelAgent(preparedSkip.handle.name, herdrCli.exec);
-                  const skippedResult: SubAgentResult = {
-                    agent: t.agent,
-                    task: t.task,
-                    exitCode: 1,
-                    status: "error",
-                    messages: [],
-                    stderr: "",
-                    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-                    stopReason: "aborted",
-                    errorMessage:
-                      abortCause === "sibling"
-                      ? "Cancelled: sibling task failed"
-                      : abortCause === "timeout"
-                      ? "Cancelled: sibling task timed out"
-                      : "Cancelled: parent operation aborted",
-                  };
-                  allResults[index] = skippedResult;
+                  // Sibling/parent cancellation surfaces as "aborted", not "error" —
+                  // render and /subagent history key off the stopReason.
+                  const skipReason =
+                    abortCause === "sibling" ? "Cancelled: sibling task failed"
+                    : abortCause === "timeout" ? "Cancelled: sibling task timed out"
+                    : "Cancelled: parent operation aborted";
+                  const skippedResult = makeErrorResult(t.agent, t.task, skipReason, "aborted");
                   threadStore.updateThread(parallelThreads[index].id, {
                     status: "aborted",
                     result: skippedResult,
@@ -1546,7 +1503,7 @@ export default function (pi: ExtensionAPI) {
                         // feeds parallelController via onParentAbort).
                         signal: parallelController.signal,
                       })
-                    : herdrErrorResult(t.agent, t.task, prepared.error)
+                    : makeErrorResult(t.agent, t.task, prepared.error)
                   : await runOne(
                       t.agent, t.task, t.cwd,
                       parallelController.signal, t.timeout ?? params.timeout,

@@ -37,7 +37,7 @@ const VALUE_OPTIONS = new Set([
 ]);
 
 // Exact command-path patterns that are destructive
-const DESTRUCTIVE_PATHS: string[][] = [
+export const DESTRUCTIVE_PATHS: string[][] = [
   ["delete"],                        // top-level notebook delete
   ["source", "delete"],
   ["source", "delete-by-title"],
@@ -56,16 +56,15 @@ const DESTRUCTIVE_PATHS: string[][] = [
 ];
 
 // Commands where a flag triggers destruction (e.g. ask --new, history --clear)
-const DESTRUCTIVE_FLAGS: Record<string, string[]> = {
+export const DESTRUCTIVE_FLAGS: Record<string, string[]> = {
   ask: ["--new"],
   history: ["--clear"],
 };
 
 // Command paths that need --yes/-y to avoid a hanging prompt.
-// Commands whose destructive action does not support --yes/-y in CLI v0.7.3
-// (auth.logout, skill.uninstall, history --clear, clear) are deliberately
-// absent — they are handled by the explicit-confirm path instead.
-const REQUIRES_YES = new Set([
+// Destructive paths deliberately absent here are pinned in CONFIRM_ONLY_PATHS
+// below — the policy drift-guard test enforces full coverage.
+export const REQUIRES_YES = new Set([
   "delete",
   "source.delete",
   "source.delete-by-title",
@@ -75,6 +74,25 @@ const REQUIRES_YES = new Set([
   "profile.delete",
   "share.remove",
   "ask", // for ask --new
+]);
+
+// Destructive DESTRUCTIVE_PATHS entries intentionally OUTSIDE REQUIRES_YES —
+// they cannot hang on a CLI prompt, so the explicit `confirm: true` gate alone
+// guards them. Drift-guard test pins the invariant: every DESTRUCTIVE_PATHS
+// entry ∈ REQUIRES_YES ∪ CONFIRM_ONLY_PATHS, and every entry here is still a
+// real destructive path (the set must not rot into a dumping ground).
+//  - auth.logout / skill.uninstall / clear: CLI v0.7.3 has no --yes support.
+//  - share.public/add/update/view-level: privacy changes with no CLI prompt.
+//  - history --clear (flag-based, not a DESTRUCTIVE_PATHS entry): same
+//    explicit-confirm treatment.
+export const CONFIRM_ONLY_PATHS: ReadonlySet<string> = new Set([
+  "auth.logout",
+  "skill.uninstall",
+  "clear",
+  "share.public",
+  "share.add",
+  "share.update",
+  "share.view-level",
 ]);
 
 // Command paths that overwrite workspace files when combined with --force/-f

@@ -1240,6 +1240,37 @@ describe("tool gating in plan mode", () => {
     assert.equal(prompts.length, promptsBefore + 2, "session_start cleared planSessionAllows");
   });
 
+  it("session_tree branch switch clears session approvals (0.16.4)", async () => {
+    const prompts: string[] = [];
+    const { handlers } = createFakePi(["read", "bash"], { plan: true });
+    const ctx = fakeCtx({
+      hasUI: true,
+      // The switched-to branch persists plan mode — approvals must not carry
+      // over even though plan mode itself is restored.
+      sessionManager: { getBranch: () => [{ type: "custom", customType: "pi-plan", data: { enabled: true } }] },
+      ui: {
+        confirm: async () => false,
+        select: async (title: string) => { prompts.push(title); return "Allow for this session"; }, editor: async () => "",
+        setStatus: () => {}, setWidget: () => {}, notify: () => {},
+        theme: { fg: (_s: string, t: string) => t },
+      },
+    });
+    await handlers.session_start?.[0]({ reason: "startup" }, ctx);
+    const tc = handlers.tool_call?.[0];
+    assert.ok(tc);
+
+    // Approve `node script.js` for the plan session.
+    assert.equal(await tc({ toolName: "bash", input: { command: "node script.js" } }, ctx), undefined);
+    assert.equal(await tc({ toolName: "bash", input: { command: "node script.js" } }, ctx), undefined, "session-allowed");
+    const promptsBefore = prompts.length;
+
+    // Branch switch must clear the allows — the restored branch's plan session
+    // starts with no inherited approvals.
+    await handlers.session_tree?.[0]({}, ctx);
+    await tc({ toolName: "bash", input: { command: "node script.js" } }, ctx);
+    assert.equal(prompts.length, promptsBefore + 1, "branch switch cleared planSessionAllows");
+  });
+
   it("subagent session allows are keyed per requested agent set (review fix)", async () => {
     const prompts: string[] = [];
     const { handlers } = createFakePi(["read", "subagent"], { plan: true });

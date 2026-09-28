@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.17 (2026-09-28)
+
+### Changed
+
+- Perf: `getPonytailInstructions` caches the SKILL.md read at module level
+  (one read per process instead of every `before_agent_start`/turn);
+  a failed read is retried next turn so a SKILL.md that appears mid-session
+  (install/update) is picked up.
+- Perf: `readConfig` in `ponytail-config.js` is memoized per
+  path+mtime+size (one `stat` per call, re-parse only on change);
+  `writeDefaultMode` invalidates the cache. Test XDG swaps (new path) read
+  fresh.
+
 ## 0.1.16 (2026-09-27)
 
 > Republished after the CI version-table guard fix (matrix had aborted before this job ran).

@@ -2,6 +2,14 @@
 
 All notable changes to `pi-rtk` will be documented in this file.
 
+## [0.2.8] - 2026-09-28
+
+- Prompt truth: the `before_agent_start` note ("Your bash commands are
+  transparently rewritten through RTK…") is no longer injected while `rtk` is
+  known-unavailable — the model was told about rewrites that never happen.
+  Availability is re-checked every turn, so once the 30s re-probe flips the
+  binary back to available, the note is injected again on subsequent turns.
+
 ## [0.2.7] - 2026-09-26
 
 - Honest status footer: `rtk ✓` now only shows when the binary is not

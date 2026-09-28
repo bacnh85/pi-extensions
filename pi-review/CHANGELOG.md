@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.16 (2026-09-28)
+
+- **Review answers with a leading non-JSON fence parsed as malformed**:
+  `parseReviewResult` took the first fenced block, so a reviewer answer that
+  opened with a ```diff/example fence before the result fence produced a
+  synthetic blocking "malformed" finding. It now iterates all fenced blocks
+  and JSON-parses each until one validates; `malformedReviewResult` is only
+  used when none parse (or there are no fences and the raw output isn't JSON).
+
 ## 0.2.15 (2026-09-26)
 
 - Security: the review-mode read-only bash gate now rejects `git diff --ext-diff`

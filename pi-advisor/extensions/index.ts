@@ -17,7 +17,6 @@ interface NoteData {
   severity: Severity;
   note: string;
   timestamp: number;
-  downgraded?: boolean;
   deferred?: boolean;
 }
 
@@ -27,7 +26,7 @@ function renderNoteCard(raw: NoteData | undefined, expanded: boolean, theme: The
     ? { ...raw, note: sanitizeNote(raw.note) }
     : { severity: "nit" as Severity, note: "(unavailable)", timestamp: 0 };
   const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-  const label = data.downgraded ? "Advisor (downgraded)" : data.deferred ? "Advisor (deferred — next turn)" : "Advisor";
+  const label = data.deferred ? "Advisor (deferred — next turn)" : "Advisor";
   const sev = data.severity === "blocker"
     ? theme.fg("error", data.severity)
     : data.severity === "concern"

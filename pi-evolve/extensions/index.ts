@@ -14,7 +14,7 @@ import {
   searchLearnings,
   activeBackend,
 } from "./lib/store";
-import { buildInjectDigest } from "./lib/inject";
+import { buildInjectDigest, sanitizeStoredLesson } from "./lib/inject";
 import { readEvolveSettings } from "./lib/config";
 
 // ponytail: one buffer per process. Reset on session_start (new/resume/fork)
@@ -379,16 +379,9 @@ export default function evolveExtension(pi: ExtensionAPI) {
         });
         const found = await Promise.race([searchLearnings(text, 1, {}, storeCfg, ctx.cwd, ctx?.isProjectTrusted?.() === true), timeout]);
         if (found.length > 0 && found[0]?.lesson) {
-          // Sanitize like the injection path (inject.ts sanitize): single-line,
-          // strip heading markers + code fences, so a stored lesson can't inject
-          // directives into the tool-result context.
-          const safeLesson = found[0].lesson
-            .replace(/[\r\n]+/g, " ")
-            .replace(/(^|\s)#{1,6}(?=\s)/g, "$1")
-            .replace(/^>\s?/g, "")
-            .replace(/```/g, "")
-            .replace(/\s+/g, " ")
-            .trim();
+          // Sanitize via the injection path's shared sanitizer (inject.ts) so a
+          // stored lesson can't inject directives into the tool-result context.
+          const safeLesson = sanitizeStoredLesson(found[0].lesson);
           if (safeLesson) {
             recallPart = { type: "text", text: `\n📚 Prior fix for similar issue: ${safeLesson}` };
           }

@@ -30,7 +30,7 @@ export function buildInjectDigest(
 }
 
 /** Strip markdown structural characters so a stored learning can't inject a heading/directive. */
-function sanitize(text: string): string {
+export function sanitizeStoredLesson(text: string): string {
   return text
     .replace(/[\r\n]+/g, " ") // force single line
     // Only strip '#' that function as a heading marker: start-of-line or after
@@ -44,11 +44,11 @@ function sanitize(text: string): string {
 }
 
 function formatLine(l: StoredLearning): string {
-  const lesson = sanitize(l.lesson ?? "");
+  const lesson = sanitizeStoredLesson(l.lesson ?? "");
   if (!lesson) return "";
-  const trigger = sanitize(l.trigger ?? "");
+  const trigger = sanitizeStoredLesson(l.trigger ?? "");
   const anchor = l.anchors?.length
-    ? ` (${l.anchors.slice(0, 2).map(sanitize).join(", ")})`
+    ? ` (${l.anchors.slice(0, 2).map(sanitizeStoredLesson).join(", ")})`
     : "";
   const triggerPart = trigger && trigger !== lesson ? `${trigger}: ` : "";
   return `- [${l.kind}] ${triggerPart}${lesson}${anchor}`.slice(0, 240);

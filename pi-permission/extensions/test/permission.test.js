@@ -42,6 +42,93 @@ test("readSettingsKey treats non-object values as misconfig (undefined)", () => 
   }
 });
 
+test("readSettingsKey: project=false skips cwd/.pi (trust gate)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "perm-settings-"));
+  try {
+    mkdirSync(join(dir, ".pi"), { recursive: true });
+    writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ permission: { "*": "allow" } }));
+    // Untrusted project: cwd/.pi must be ignored entirely.
+    assert.equal(readSettingsKey(dir, "permission", { project: false }), undefined);
+    // Trusted project: cwd/.pi is read (shadowing global, as before).
+    assert.deepEqual(readSettingsKey(dir, "permission", { project: true }), { "*": "allow" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("untrusted cwd ignores project .pi/settings.json (tool_call trust gate)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "perm-trust-"));
+  try {
+    mkdirSync(join(dir, ".pi"), { recursive: true });
+    // Untrusted repo ships a blanket allow — must be ignored.
+    writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ permission: { "*": "allow" } }));
+    const pi = harness({ rules: { bash: { "*": "ask", "rm *": "deny" } } });
+    const untrusted = ctx({ cwd: dir, selectChoice: "Deny" });
+    untrusted.isProjectTrusted = () => false;
+    const blocked = await pi.handler({ toolName: "bash", input: { command: "git push" } }, untrusted);
+    assert.equal(blocked.block, true, "global ask still fires when project settings are untrusted");
+    assert.match(blocked.reason, /denied by user/);
+    // Same cwd, trusted: the project's blanket allow now shadows global.
+    const trusted = ctx({ cwd: dir });
+    trusted.isProjectTrusted = () => true;
+    assert.equal(await pi.handler({ toolName: "bash", input: { command: "git push" } }, trusted), undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("untrusted cwd: permanent allowlist persists to global scope, never cwd/.pi (0.2.9)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "perm-untrusted-"));
+  const agentDir = mkdtempSync(join(tmpdir(), "perm-global-"));
+  const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  try {
+    const pi = harness({ rules: { bash: { "*": "ask" } } });
+    const c = ctx({ cwd, selectChoice: "Add to permanent allowlist" });
+    c.isProjectTrusted = () => false;
+    assert.equal(await pi.handler({ toolName: "bash", input: { command: "git push" } }, c), undefined);
+    // cwd/.pi untouched; rule landed in the global agent dir.
+    assert.equal(existsSync(join(cwd, ".pi", "settings.json")), false, "untrusted repo file not created");
+    const global = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
+    assert.deepEqual(global.permission.bash, { "git push": "allow" });
+    // The persisted rule suppresses the next identical ask (read path is global).
+    const c2 = ctx({ cwd, selectChoice: "Deny" });
+    c2.isProjectTrusted = () => false;
+    assert.equal(await pi.handler({ toolName: "bash", input: { command: "git push" } }, c2), undefined, "no re-prompt");
+  } finally {
+    if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(agentDir, { recursive: true, force: true });
+  }
+});
+
+test("one-time warning on invalid rule shapes", async () => {
+  const pi = harness({ rules: { bash: { "*": "ask", "git *": "allow" }, external_directory: "/ext" } });
+  const c = ctx();
+  await pi.handler({ toolName: "bash", input: { command: "ls" } }, c);
+  assert.equal(c.notifies.length, 1, "warned once");
+  assert.match(c.notifies[0].m, /external_directory must be a rule object/);
+  // One-time: second call stays silent.
+  await pi.handler({ toolName: "bash", input: { command: "ls" } }, c);
+  assert.equal(c.notifies.length, 1, "no repeat warning");
+
+  const pi2 = harness({ rules: { bash: { "*": "ask", "git *": "block" } } });
+  const c2 = ctx();
+  // The warning latch is module-scoped (one extension instance per process):
+  // reset it the way a new session would, then trigger the unknown action.
+  await pi.sessionStart({}, c);
+  await pi2.handler({ toolName: "bash", input: { command: "git status" } }, c2);
+  assert.match(c2.notifies[0].m, /unknown action "block"/);
+});
+
+test("valid rules never warn", async () => {
+  const pi = harness({ rules: { bash: { "*": "ask", "git *": "allow" } } });
+  const c = ctx();
+  await pi.handler({ toolName: "bash", input: { command: "ls" } }, c);
+  assert.equal(c.notifies.length, 0, "valid rules are silent");
+});
+
 // ── Pattern matching (the non-trivial logic) ──────────────────────────────
 
 test("wildcardToRegex: * matches zero+ chars, ? matches exactly one", () => {
@@ -412,8 +499,12 @@ test("'Add to permanent allowlist' persists the rule and allows (regression)", a
   const pi = harness({ rules: { bash: { "*": "ask" } } });
   const c = ctx({ selectChoice: "Add to permanent allowlist" });
   const cwd = mkdtempSync(join(tmpdir(), "perm-allowlist-"));
+  const agentDir = mkdtempSync(join(tmpdir(), "perm-allowlist-global-"));
+  const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir; // isolate: never touch the real global settings.json
   try {
     c.cwd = cwd; // persistAllowlistRule writes <cwd>/.pi/settings.json
+    c.isProjectTrusted = () => true; // trusted project → project scope is read/written
     assert.equal(await pi.handler({ toolName: "bash", input: { command: "npm test" } }, c), undefined);
     const written = JSON.parse(readFileSync(join(cwd, ".pi", "settings.json"), "utf8"));
     assert.deepEqual(written.permission.bash, { "npm test": "allow" });
@@ -424,6 +515,9 @@ test("'Add to permanent allowlist' persists the rule and allows (regression)", a
     c2.cwd = cwd;
     assert.equal(await pi.handler({ toolName: "bash", input: { command: "npm test" } }, c2), undefined);
   } finally {
+    if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+    rmSync(agentDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
   if (pi.sessionStart) await pi.sessionStart({}, c);

@@ -92,10 +92,8 @@ interface ReviewFinding {
 interface FlowState {
   baseline: string;
   initialDirty: string;
-  initialDirtyPatch?: string;
   initialCachedPatch?: string;
   initialUnstagedPatch?: string;
-  initialUntracked?: string;
   initialUntrackedSnapshot?: string;
   initialUntrackedSnapshotVersion?: 1;
   phase: FlowPhase;
@@ -1150,12 +1148,11 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
    *  worktree execution). Returns an error string instead of notifying so the
    *  caller keeps the message style. */
   async function captureFlowBaseline(ctx: ExtensionContext): Promise<{ state: Omit<FlowState, "phase" | "reviewPass"> } | { error: string }> {
-    const [head, dirty, cachedPatch, unstagedPatch, untracked] = await Promise.all([
+    const [head, dirty, cachedPatch, unstagedPatch] = await Promise.all([
       pi.exec("git", ["rev-parse", "HEAD"], { timeout: 5_000 }),
       pi.exec("git", ["status", "--porcelain"], { timeout: 5_000 }),
       pi.exec("git", ["diff", "--cached", "--binary", "HEAD"], { timeout: 30_000 }),
       pi.exec("git", ["diff", "--binary"], { timeout: 30_000 }),
-      pi.exec("git", ["ls-files", "--others", "--exclude-standard"], { timeout: 5_000 }),
     ]);
     if (head.code !== 0 || !head.stdout.trim()) {
       return { error: "Cannot create workflow: git repository not found (rev-parse HEAD failed)." };
@@ -1181,7 +1178,6 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
         initialDirty: dirty.stdout.trim(),
         initialCachedPatch: cachedPatch.stdout,
         initialUnstagedPatch: unstagedPatch.stdout,
-        initialUntracked: untracked.code === 0 ? untracked.stdout.trim() : undefined,
         initialUntrackedSnapshot,
         initialUntrackedSnapshotVersion: 1,
       },
@@ -1462,7 +1458,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     pi.events.emit(REVIEW_EVENT, {
       id,
       cwd: ctx.cwd,
-      prompt: `Review implementation of ${relativeToCwd(ctx.cwd, lastPlanPath)} against Git baseline ${flow.baseline}. Initial dirty paths at workflow start (exclude unless changed by this implementation):\n${(flow.initialDirty || "(none)").slice(0, MAX_DIRTY_PATCH_BYTES)}\n\nInitial dirty patches (staged + unstaged, 50 KB max):\n${flow.initialDirtyPatch ?? ([flow.initialCachedPatch, flow.initialUnstagedPatch].filter(Boolean).join("\n") || "(none)")}${untrackedDelta}\n\nCompare the current diff against the initial patch above. Report only regressions introduced by this implementation, not pre-existing dirt.`,
+      prompt: `Review implementation of ${relativeToCwd(ctx.cwd, lastPlanPath)} against Git baseline ${flow.baseline}. Initial dirty paths at workflow start (exclude unless changed by this implementation):\n${(flow.initialDirty || "(none)").slice(0, MAX_DIRTY_PATCH_BYTES)}\n\nInitial dirty patches (staged + unstaged, 50 KB max):\n${[flow.initialCachedPatch, flow.initialUnstagedPatch].filter(Boolean).join("\n") || "(none)"}${untrackedDelta}\n\nCompare the current diff against the initial patch above. Report only regressions introduced by this implementation, not pre-existing dirt.`,
       gitRange: `${flow.baseline}...HEAD`,
       requireExactRange: true,
       timeout: REVIEW_INACTIVITY_TIMEOUT_MS,
@@ -2529,6 +2525,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     isolationController = undefined;
     if (reviewTimer) clearTimeout(reviewTimer);
     reviewTimer = undefined;
+    // Session-scoped approvals were granted in the previous branch's plan
+    // session — the restored branch must not inherit them.
+    clearPlanSessionAllows();
     if (planModeEnabled) {
       toolsBeforePlan ??= previousToolsBeforePlan ?? pi.getActiveTools();
       enablePlanTools();

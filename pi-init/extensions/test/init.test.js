@@ -301,14 +301,14 @@ test("check findings: JS repo without package.json still flagged as missing", ()
 
 // ---- command handler guards ----
 
-function captureHandler() {
+function captureHandler(sendUserMessage) {
   const registered = {};
   const sent = [];
   initExtension({
     registerCommand: (name, opts) => {
       registered[name] = opts;
     },
-    sendUserMessage: (msg) => sent.push(msg),
+    sendUserMessage: sendUserMessage || ((msg) => sent.push(msg)),
   });
   return { handler: registered.init.handler, sent };
 }
@@ -344,4 +344,36 @@ test("command handler: empty ctx (no ui/isIdle) falls back to process.cwd() and 
   await assert.doesNotReject(() => handler("", {}));
   assert.equal(sent.length, 1);
   assert.match(sent[0], /REPO SCAN/, "prompt built from the real cwd scan");
+});
+
+test("command handler: sendUserMessage throwing surfaces the dispatch failure via ui, never crashes", async () => {
+  const handler = captureHandler(() => {
+    throw new Error("session gone");
+  }).handler;
+  const dir = fixture(() => {});
+  const notes = [];
+  const ctx = { cwd: dir, isIdle: () => true, ui: { notify: (msg, level) => notes.push([msg, level]) } };
+  await assert.doesNotReject(() => handler("", ctx));
+  assert.equal(notes.length, 1);
+  assert.match(notes[0][0], /failed to dispatch/);
+  assert.match(notes[0][0], /session gone/);
+  assert.equal(notes[0][1], "error");
+});
+
+test("command handler: sendUserMessage throwing with no ui falls back to console.error", async () => {
+  const handler = captureHandler(() => {
+    throw new Error("no session");
+  }).handler;
+  const dir = fixture(() => {});
+  const errors = [];
+  const realError = console.error;
+  console.error = (msg) => errors.push(msg);
+  try {
+    await assert.doesNotReject(() => handler("", { cwd: dir, isIdle: () => true }));
+  } finally {
+    console.error = realError;
+  }
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /failed to dispatch/);
+  assert.match(errors[0], /no session/);
 });

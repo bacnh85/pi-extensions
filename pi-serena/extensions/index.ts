@@ -164,6 +164,47 @@ let worker: SerenaWorkerClient | undefined;
 // time so status updates never land on a stale session's ui after replacement.
 let currentCtx: { ui?: { setStatus?: (key: string, value: string | undefined) => void } } | undefined;
 
+// Actions that only read state — safe to auto-retry once after a timeout,
+// because a partial application is impossible. Mutating actions
+// (replace_symbol_body, insert_*, rename_symbol, safe_delete_symbol,
+// replace_content, restart_*, onboarding) may have applied before the worker
+// was killed; retrying them can double-apply, so their timeout surfaces as an
+// error instead. Effective action = extraPayload.tool when present (the
+// `call` action is dispatched by tool name), else the action itself.
+export const READ_ONLY_WORKER_ACTIONS: ReadonlySet<string> = new Set([
+  "get_symbols_overview",
+  "find_symbol",
+  "find_referencing_symbols",
+  "find_declaration",
+  "find_implementations",
+  "search_for_pattern",
+  "get_diagnostics_for_file",
+  "config", // serena_get_current_config
+  "check_onboarding_performed",
+  "status",
+  "list_tools",
+]);
+
+export function isReadOnlyWorkerAction(action: string, extraPayload: Record<string, unknown> = {}): boolean {
+  return READ_ONLY_WORKER_ACTIONS.has(typeof extraPayload.tool === "string" ? extraPayload.tool : action);
+}
+
+/** Retry policy for callWorkerAction, extracted so tests can pin it without
+ *  spawning a real worker: a timeout response/throw retries only when the
+ *  effective action is read-only (mutators may have applied before the kill). */
+export function shouldRetryAfterTimeout(
+  action: string,
+  extraPayload: Record<string, unknown>,
+  failure: { responseOk?: boolean; errorType?: string; errorMessage?: string },
+): boolean {
+  if (!isReadOnlyWorkerAction(action, extraPayload)) return false;
+  if (failure.responseOk !== undefined) {
+    return failure.responseOk !== true && failure.errorType === "timeout";
+  }
+  const msg = failure.errorMessage || "";
+  return msg.includes("timed out") || msg.includes("killed due to timeout") || msg.includes("worker exited") || msg.includes("restarted");
+}
+
 export default function serenaToolsExtension(pi: ExtensionAPI) {
   const getWorker = (ctx?: { ui?: { setStatus?: (key: string, value: string | undefined) => void } }) => {
     if (ctx) currentCtx = ctx;
@@ -183,15 +224,16 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     const { project, context, timeoutMs, params } = stripControlParams(rawParams);
     const payload = { action, project, context, params, ...extraPayload };
     const requestWithRetry = async (): Promise<SerenaWorkerResponse> => {
+      const canRetry = isReadOnlyWorkerAction(action, extraPayload);
       try {
         const response = await getWorker(ctx).request(payload, timeoutMs);
         const errorType = response.errorType as string | undefined;
-        return !response.ok && errorType === "timeout"
+        return !response.ok && errorType === "timeout" && canRetry
           ? getWorker(ctx).request(payload, timeoutMs)
           : response;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
-        if (!(msg.includes('timed out') || msg.includes('killed due to timeout') || msg.includes('worker exited') || msg.includes('restarted'))) throw error;
+        if (!shouldRetryAfterTimeout(action, extraPayload, { errorMessage: msg })) throw error;
         return getWorker(ctx).request(payload, timeoutMs);
       }
     };

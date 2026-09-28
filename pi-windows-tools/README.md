@@ -21,7 +21,7 @@ PI_WSL_DISTRO=Ubuntu-24.04
 
 | Tool | Description |
 |---|---|
-| `windows_shell_detect` | Detect available Windows shells (ignores `timeout_ms` — detection is synchronous). |
+| `windows_shell_detect` | Detect available Windows shells. |
 | `windows_shell_exec` | Execute a command through a Windows shell. |
 | `windows_audit_log` | Show command history and exit codes (`clear: true` empties the log). |
 | `windows_path_to_windows` | Convert POSIX/WSL path to `C:\...`. |

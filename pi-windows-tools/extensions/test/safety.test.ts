@@ -1,6 +1,6 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import { classifyCommand, isSensitivePath } from "../lib/safety";
+import { classifyCommand } from "../lib/safety";
 
 describe("safety", () => {
 
@@ -154,24 +154,4 @@ describe("safety", () => {
     });
   });
 
-  describe("isSensitivePath", () => {
-    it("detects .env", () => {
-      expect(isSensitivePath("C:\\project\\.env")).to.be.true;
-    });
-    it("detects .env.local", () => {
-      expect(isSensitivePath("C:\\project\\.env.local")).to.be.true;
-    });
-    it("detects .pem files", () => {
-      expect(isSensitivePath("C:\\keys\\cert.pem")).to.be.true;
-    });
-    it("detects .ssh dir", () => {
-      expect(isSensitivePath("C:\\Users\\me\\.ssh\\config")).to.be.true;
-    });
-    it("detects .aws dir", () => {
-      expect(isSensitivePath("/home/me/.aws/credentials")).to.be.true;
-    });
-    it("allows normal files", () => {
-      expect(isSensitivePath("C:\\project\\src\\index.ts")).to.be.false;
-    });
-  });
 });

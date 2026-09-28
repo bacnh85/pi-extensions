@@ -80,6 +80,12 @@ export function piInstalled() {
 
 function pi(args) {
   const r = spawnPi(args, { stdio: "inherit" });
+  // Same friendly gate as the interactive path — non-interactive add/remove/update
+  // shouldn't die with a cryptic "spawnSync pi ENOENT".
+  if (r.error?.code === "ENOENT") {
+    console.log(paint.red("`pi` not found on PATH. Install it first: https://github.com/earendil-works/pi"));
+    return 1;
+  }
   if (r.error) throw new Error(`failed to run pi: ${r.error.message}`);
   // status is null when the child died from a signal — that's a failure, not success
   return r.status === 0 && !r.signal ? 0 : (r.status ?? 1);

@@ -2,6 +2,17 @@
 
 All notable changes to `pi-sub` will be documented in this file.
 
+## 0.1.52 (2026-09-28)
+
+### Removed
+
+- Deleted the opt-in `PI_SUB_SELF_CHECK=1` module-load block (~90 lines of
+  parser asserts shipped in `extensions/index.ts`). The parser paths are
+  pinned by `extensions/test/parsers.test.ts` (om-usage windows, reset
+  labels, `routerUpstreamPrefix` aliases/generic filters, `tokPerSecLabel`
+  split, disabled/no-cache empty parses, `parseGenericUsage` windows +
+  credits + null input), which runs in `npm test`.
+
 ## 0.1.51 (2026-09-27)
 
 ### Features
