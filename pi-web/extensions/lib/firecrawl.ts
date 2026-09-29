@@ -49,6 +49,7 @@ export async function firecrawlRequest(
   endpoint: string,
   body?: unknown,
   signal?: AbortSignal,
+  attempts = 3,
 ): Promise<Record<string, unknown>> {
-  return withRetry(() => firecrawlRequestJson(config, method, endpoint, body, signal), undefined, signal);
+  return withRetry(() => firecrawlRequestJson(config, method, endpoint, body, signal), attempts, signal);
 }

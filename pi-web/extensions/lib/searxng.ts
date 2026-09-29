@@ -1,7 +1,7 @@
 // SearXNG metasearch client.
 
 import { sanitizeSnippet } from "./format";
-import { signalWithTimeout, withRetry } from "./retry";
+import { HttpError, signalWithTimeout, withRetry } from "./retry";
 
 export interface SearxngResultItem {
   title: string;
@@ -46,7 +46,12 @@ export async function fetchSearxngResults(
           : "";
       throw new Error(`HTTP ${response.status}: ${response.statusText}${hint}${text ? `\n${text}` : ""}`);
     }
-    const data: any = text ? JSON.parse(text) : {};
+    let data: any = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      throw new HttpError(502, "non-JSON response body", text.slice(0, 200));
+    }
     const results = (data.results || [])
       .slice(0, limit)
       .map((r: any) => ({

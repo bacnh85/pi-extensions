@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect } from "chai";
@@ -127,5 +127,25 @@ describe("config", () => {
       store: "dropbox",
     });
     expect(readEvolveSettings(cwd, true)).to.deep.equal(DEFAULTS);
+  });
+
+  it("memoizes per resolved path and re-reads only when mtime/size change", () => {
+    const cwd = tmpDir("pi-evolve-cfg-memo-");
+    dirs.push(cwd);
+    writeSettings(cwd, { bufferCap: 7 });
+    expect(readEvolveSettings(cwd, true).bufferCap).to.equal(7);
+    // Same mtime ⇒ cached value returned without re-parsing.
+    writeSettings(cwd, { bufferCap: 99 });
+    const { mtimeMs, size } = statSync(join(cwd, ".pi", "settings.json"));
+    try {
+      utimesSync(join(cwd, ".pi", "settings.json"), new Date(mtimeMs), new Date(mtimeMs));
+    } catch { /* coarse-mtime fs: size also unchanged — accept cache */ }
+    const after = statSync(join(cwd, ".pi", "settings.json"));
+    if (after.mtimeMs === mtimeMs && after.size === size) {
+      expect(readEvolveSettings(cwd, true).bufferCap).to.equal(7); // served from cache
+    }
+    // Different content (size change) ⇒ re-parsed.
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ evolve: { bufferCap: 42 } }), "utf8");
+    expect(readEvolveSettings(cwd, true).bufferCap).to.equal(42);
   });
 });

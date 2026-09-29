@@ -8,7 +8,7 @@
 //   untrusted: <agentDir>/settings.json
 // agentDir = $PI_CODING_AGENT_DIR or ~/.pi/agent (falls back to ~/.pi/agents);
 // malformed JSON → defaults.
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -63,15 +63,19 @@ export function resolveSettingsPath(cwd = process.cwd(), trusted = false): strin
   return null;
 }
 
-/** Read the `evolve` block from settings.json. Returns defaults when absent/unreadable.
- *  Untrusted projects: only the agent-dir settings are consulted. */
-export function readEvolveSettings(cwd = process.cwd(), trusted = false): EvolveSettings {
-  const file = resolveSettingsPath(cwd, trusted);
-  if (!file) return { ...DEFAULTS };
+// Memoized per resolved path: tool_call/tool_result hooks fire per tool call,
+// so one statSync per read beats readFileSync+parse every time. Re-read only
+// when mtime/size change (same pattern as pi-ponytail's config cache).
+let settingsCache: { path: string | null; mtimeMs: number; size: number; value: EvolveSettings } | null = null;
+
+function parseEvolveSettings(file: string): EvolveSettings {
   let parsed: any;
   try {
     parsed = JSON.parse(readFileSync(file, "utf8"));
   } catch {
+    // Malformed (possibly mid-write): defaults. The caller caches these under
+    // the file's current mtime/size — a completed write changes one of them,
+    // so the settings re-parse then.
     return { ...DEFAULTS };
   }
   const raw = (parsed?.evolve ?? {}) as Record<string, unknown>;
@@ -91,4 +95,33 @@ export function readEvolveSettings(cwd = process.cwd(), trusted = false): Evolve
     errorTriage: bool(raw.errorTriage, DEFAULTS.errorTriage),
     recallStoredFixes: bool(raw.recallStoredFixes, DEFAULTS.recallStoredFixes),
   };
+}
+
+/** Read the `evolve` block from settings.json. Returns defaults when absent/unreadable.
+ *  Untrusted projects: only the agent-dir settings are consulted. Memoized per
+ *  resolved path; re-parsed only when the file's mtime/size changes. */
+export function readEvolveSettings(cwd = process.cwd(), trusted = false): EvolveSettings {
+  const file = resolveSettingsPath(cwd, trusted);
+  if (!file) {
+    if (settingsCache?.path === null) return settingsCache.value;
+    settingsCache = { path: null, mtimeMs: -1, size: -1, value: { ...DEFAULTS } };
+    return settingsCache.value;
+  }
+  let st;
+  try {
+    st = statSync(file);
+  } catch {
+    return { ...DEFAULTS }; // vanished between existsSync and stat — don't poison the cache
+  }
+  if (
+    settingsCache &&
+    settingsCache.path === file &&
+    settingsCache.mtimeMs === st.mtimeMs &&
+    settingsCache.size === st.size
+  ) {
+    return settingsCache.value;
+  }
+  const value = parseEvolveSettings(file);
+  settingsCache = { path: file, mtimeMs: st.mtimeMs, size: st.size, value };
+  return value;
 }

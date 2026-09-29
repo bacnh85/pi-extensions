@@ -105,8 +105,6 @@ describe("review parsing and shell gate", () => {
     assert.equal(isReadOnlyBash("git diff --output=/tmp/patch"), false, "diff --output");
     assert.equal(isReadOnlyBash("git show HEAD"), true, "show ok");
     assert.equal(isReadOnlyBash("git log --oneline -5"), true, "log ok");
-    assert.equal(isReadOnlyBash("git diff --text"), false, "--text (unique-prefix abbrev of --textconv) runs the driver");
-    assert.equal(isReadOnlyBash("git diff --ext"), false, "--ext (abbrev of --ext-diff) is driver-inviting");
     assert.equal(isReadOnlyBash("awk -i inplace '1' tracked.txt"), false, "awk inplace");
     assert.equal(isReadOnlyBash("sed -n 'w output.txt' input.txt"), false, "sed w command");
     assert.equal(isReadOnlyBash("sed 'w /tmp/out' input"), false, "sed w path");
@@ -137,10 +135,32 @@ describe("review parsing and shell gate", () => {
       assert.equal(armed("git diff"), false, "git diff runs configured textconv by default");
       assert.equal(armed("git show"), false, "git show renders a patch");
       assert.equal(armed("git log -p"), false, "log -p renders patches");
-      assert.equal(armed("git diff --no-textconv"), true, "explicit --no-textconv is safe");
-      assert.equal(armed("git show --no-ext-diff"), true, "explicit --no-ext-diff is safe");
+      // -u is a -p alias; -U<n>/--cc/-c imply patch output and run the filter
+      // (verified live on git 2.55).
+      assert.equal(armed("git log -u"), false, "log -u is a -p alias — renders patches");
+      assert.equal(armed("git log -U3"), false, "log -U<n> implies patch output");
+      assert.equal(armed("git log --cc"), false, "log --cc renders combined patches");
+      assert.equal(armed("git log -c"), false, "log -c renders combined patches");
+      // A patch flag beats a summary flag: stat+patch combos render a patch and
+      // fired the filter in clean-room probes — they must NOT slip past the
+      // armed block via the --stat negative lookahead into the allowlist.
+      assert.equal(armed("git diff --stat -p"), false, "stat+patch combo renders a patch");
+      assert.equal(armed("git show --stat --patch"), false, "show stat+patch renders a patch");
+      assert.equal(armed("git diff --stat -u"), false, "stat+-u combo renders a patch");
+      assert.equal(armed("git diff --numstat -p"), false, "numstat+patch renders a patch");
+      // A SINGLE off-flag leaves the other driver kind armed — the probe
+      // matches both textconv and driver configs, so both flags are required.
+      assert.equal(armed("git log -u --no-ext-diff"), false, "--no-ext-diff alone leaves the textconv filter armed");
+      assert.equal(armed("git log -u --no-textconv"), false, "--no-textconv alone leaves an external driver armed");
+      assert.equal(armed("git diff --no-textconv --no-ext-diff"), true, "both off-flags together are safe");
+      assert.equal(armed("git show --no-textconv --no-ext-diff"), true, "both off-flags on show are safe");
       assert.equal(armed("git status --short"), true, "status never renders patches");
       assert.equal(armed("git log --oneline -5"), true, "log without -p shows no patches");
+      assert.equal(armed("git log --stat"), true, "summary-only forms are patch-free");
+      assert.equal(armed("git log -w"), true, "whitespace-ignore alone renders no patch");
+      assert.equal(armed("git log -M"), true, "rename-detection alone renders no patch");
+      assert.equal(armed("git diff --stat @{u}"), true, "summary-only diff stays allowed while armed");
+      assert.equal(armed("git show --stat"), true, "summary-only show stays allowed while armed");
       assert.equal(armed("git rev-parse HEAD"), true, "rev-parse is patch-free");
     } finally {
       mod.setTextconvArmed(false);

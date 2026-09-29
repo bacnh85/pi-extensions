@@ -177,6 +177,19 @@ describe("pi-munin extension", () => {
     expect(out.details.errorType).to.equal("network");
   });
 
+  it("tool_result hook unwinds a DOUBLY-wrapped 'Munin <type> error:' prefix in a loop", async () => {
+    const h = harness();
+    const hook = h.handlers.tool_result[0];
+    const out = await hook({
+      toolName: "munin_search",
+      isError: true,
+      content: [{ type: "text", text: "Munin auth error: Munin network error: fetch failed" }],
+    });
+    // Both stacked prefixes strip — the result never re-presents the stack.
+    expect(out.content[0].text).to.not.include("Munin auth error: Munin");
+    expect(out.content[0].text).to.include("fetch failed");
+  });
+
   it("tool_result hook ignores non-munin tools and successful results", async () => {
     const h = harness();
     const hook = h.handlers.tool_result[0];

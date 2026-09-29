@@ -105,7 +105,13 @@ function addReadDefaults(args: unknown): unknown {
   const note = args.limit !== undefined
     ? "Note: offset was not provided; defaulted to 1."
     : "Note: limit was not provided; defaulted to 2000 lines.";
-  return { ...args, ...defaults, __mtReadNote: note };
+  const out = { ...args, ...defaults } as Record<string, unknown>;
+  // Non-enumerable so host-side schema validation of prepared args (which
+  // walks enumerable keys) never rejects the marker; execute still reads it
+  // via property access. JSON-cloning hosts drop it silently — the note is
+  // cosmetic, so that degrades gracefully.
+  Object.defineProperty(out, "__mtReadNote", { value: note, enumerable: false, configurable: true });
+  return out;
 }
 
 function appendReadNote(result: any, note: unknown) {

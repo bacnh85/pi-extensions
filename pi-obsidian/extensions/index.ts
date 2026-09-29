@@ -175,6 +175,29 @@ export function isVaultFilesystemBashCommand(command: unknown, cwd: string, vaul
   return true;
 }
 
+/**
+ * Literal-mark helper for the cross-vault guard: does the command reference the
+ * vault root or its `.obsidian` dir, with `..`-relative paths resolved against
+ * cwd first (so `rm ../MyVault/x.md` is caught when cwd is a sibling of the
+ * vault). Mirrors the CLI-printed-root normalization (#4) and Windows case
+ * folding. `isVaultFilesystemBashCommand` already resolves `..`; this exists
+ * only so the cross-vault branch's literal pre-check doesn't discard its verdict.
+ */
+export function commandMentionsVaultPath(command: string, cwd: string, vaultRoot: string): boolean {
+  const norm = (s: string) =>
+    (process.platform === "win32" ? s.toLowerCase() : s).replace(/[\\/]+/g, sep);
+  const matchesRoot = (p: string) => {
+    const resolved = norm(resolve(cwd, p));
+    // .obsidian needs no separate clause: any path under the vault (including
+    // <root>/.obsidian) already matches the root+sep prefix below.
+    return resolved === norm(vaultRoot) || resolved.startsWith(norm(vaultRoot) + sep);
+  };
+  if (parseCliString(command).some((t) => matchesRoot(t))) return true;
+  // Redirection targets aren't plain tokens (`echo x > ../V/n.md`).
+  const dest = redirectionDestination(command);
+  return dest !== undefined && matchesRoot(dest);
+}
+
 // ---------------------------------------------------------------------------
 // CLI string parser
 // ---------------------------------------------------------------------------
@@ -1026,17 +1049,12 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
         if (isVaultFilesystemBashCommand(input.command, ctx.cwd, root)) {
           // Ponytail: isVaultFilesystemBashCommand is over-aggressive for && chains.
           // Cross-vault guard requires an actual vault path reference in the command.
-          // Only check for the full vault root path or .obsidian marker.
-          // Normalize separators and (on Windows) case so `rm D:/MyVault/x.md`
-          // matches the vault root as the CLI prints it (`D:\MyVault`) — without
-          // this the cross-vault guard silently no-ops on Windows path styles (#4).
-          const cmd = input.command;
-          const norm = (s: string) =>
-            (process.platform === "win32" ? s.toLowerCase() : s).replace(/[\\/]+/g, sep);
-          const normalizedCmd = norm(cmd);
-          const normalizedRoot = norm(root);
-          const containsVaultPath =
-            normalizedCmd.includes(normalizedRoot) || cmd.includes(".obsidian");
+          // commandMentionsVaultPath resolves `..`-relative paths against cwd
+          // before matching the root/.obsidian literals, so `rm ../MyVault/x.md`
+          // is caught (nightly 2026-09-29 P1). Normalizes separators and (on
+          // Windows) case so `rm D:/MyVault/x.md` matches the CLI-printed
+          // `D:\MyVault` root (#4).
+          const containsVaultPath = commandMentionsVaultPath(input.command, ctx.cwd, root);
           if (!containsVaultPath) continue;
           return {
             block: true,

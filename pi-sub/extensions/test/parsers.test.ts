@@ -8,6 +8,7 @@ import {
   routerUpstreamPrefix,
   tokPerSecLabel,
   formatMonthlyCredits,
+  jwtExpired,
 } from "../index.ts";
 
 // ── parseOmniUsageText — OmniRoute /api/usage/om-usage free-text report ──────
@@ -224,4 +225,20 @@ test("generic usage: garbage/empty input falls through empty", () => {
   // NaN / missing remaining_pct windows are skipped, not fabricated
   const g = parseGenericUsage({ windows: { session: { remaining_pct: "x" } } });
   assert.equal(g.fiveHour, undefined);
+});
+
+// ── jwtExpired — Codex OAuth access-token expiry check ───────────────────────
+
+test("jwtExpired: exp in the past → true", () => {
+  assert.equal(jwtExpired({ exp: Math.floor(Date.now() / 1000) - 60 }), true);
+});
+
+test("jwtExpired: exp in the future → false", () => {
+  assert.equal(jwtExpired({ exp: Math.floor(Date.now() / 1000) + 3600 }), false);
+});
+
+test("jwtExpired: missing exp or garbage payload → false (server arbitrates)", () => {
+  assert.equal(jwtExpired(undefined), false);
+  assert.equal(jwtExpired({}), false);
+  assert.equal(jwtExpired({ exp: "soon" }), false);
 });

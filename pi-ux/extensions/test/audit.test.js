@@ -743,3 +743,14 @@ test("resolveAuditCss resolves a relative path against the provided cwd, not pro
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("resolveAuditCss rejects files over the 1MB cap with a clean error", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ux-audit-"));
+  const file = path.join(dir, "big.css");
+  fs.writeFileSync(file, "/* pad */ .x { color: red; }".repeat(60 * 1024)); // ~1.15MB
+  try {
+    assert.throws(() => resolveAuditCss({ path: file }), /1MB audit cap/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

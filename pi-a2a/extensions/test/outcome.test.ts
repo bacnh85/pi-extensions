@@ -1,6 +1,6 @@
 import { describe, it } from "mocha";
 import { assert } from "chai";
-import { terminalOutcomeError } from "../lib/outcome.js";
+import { stripInputRequired, terminalOutcomeError } from "../lib/outcome.js";
 
 describe("terminal outcome (#314, #425)", () => {
   it("a normal text ending is a success", () => {
@@ -24,5 +24,38 @@ describe("terminal outcome (#314, #425)", () => {
   });
   it("a length stop that produced text is a success", () => {
     assert.isNull(terminalOutcomeError({ stopReason: "length", hadText: true, sawAssistant: true }));
+  });
+});
+
+describe("stripInputRequired (tail-anchored marker)", () => {
+  it("a marker at the trimmed tail flips the state and is stripped once", () => {
+    const r = stripInputRequired("need more info [INPUT_REQUIRED]");
+    assert.equal(r.text, "need more info");
+    assert.isTrue(r.inputRequired);
+  });
+  it("trailing whitespace after the marker still counts", () => {
+    const r = stripInputRequired("ok [INPUT_REQUIRED]  \n");
+    assert.equal(r.text, "ok");
+    assert.isTrue(r.inputRequired);
+  });
+  it("a quoted marker mid-text neither flips the state nor mangles the text", () => {
+    const r = stripInputRequired("earlier log said [INPUT_REQUIRED] but we moved on");
+    assert.equal(r.text, "earlier log said [INPUT_REQUIRED] but we moved on");
+    assert.isFalse(r.inputRequired);
+  });
+  it("a marker as message prefix is content, not a signal", () => {
+    const r = stripInputRequired("[INPUT_REQUIRED] is the marker syntax");
+    assert.isFalse(r.inputRequired);
+    assert.equal(r.text, "[INPUT_REQUIRED] is the marker syntax");
+  });
+  it("a bare marker strips to empty text", () => {
+    const r = stripInputRequired("[INPUT_REQUIRED]");
+    assert.equal(r.text, "");
+    assert.isTrue(r.inputRequired);
+  });
+  it("matching is case-insensitive", () => {
+    const r = stripInputRequired("hi [input_required]");
+    assert.isTrue(r.inputRequired);
+    assert.equal(r.text, "hi");
   });
 });

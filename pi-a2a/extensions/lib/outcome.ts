@@ -33,3 +33,16 @@ export function terminalOutcomeError(s: TerminalState): string | null {
   }
   return null;
 }
+
+/**
+ * Detect + strip a trailing [INPUT_REQUIRED] marker from a final assistant
+ * reply. Only a marker at the trimmed TAIL counts — a peer merely QUOTING the
+ * marker mid-text must neither flip the state nor mangle the quoted text, and
+ * only that one trailing occurrence is removed.
+ */
+export function stripInputRequired(reply: string): { text: string; inputRequired: boolean } {
+  const m = /\[INPUT_REQUIRED\]\s*$/i.exec(reply);
+  return m
+    ? { text: reply.slice(0, m.index).trim(), inputRequired: true }
+    : { text: reply, inputRequired: false };
+}

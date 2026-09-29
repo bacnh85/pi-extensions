@@ -315,7 +315,13 @@ export function latestLog(logsDir: string, name: string): string | undefined {
       )
         continue;
       const p = join(logsDir, f);
-      const ms = statSync(p).mtimeMs;
+      // One vanished file (raced cleanup) must not abort the scan of the rest.
+      let ms: number;
+      try {
+        ms = statSync(p).mtimeMs;
+      } catch {
+        continue;
+      }
       if (ms > newestMs) {
         newestMs = ms;
         newest = p;
@@ -415,6 +421,13 @@ export function runCronAction(args: CronActionArgs): { content: { type: "text"; 
       const job = findJob(jobs, name);
       if (!job) throw new Error(`No job named '${name}'.`);
       if (!job.enabled) throw new Error(`Job '${name}' is disabled (enable with cron action:"enable" name:"${name}").`);
+      // Undelivered-manual-run guard: an unpinned job whose cwd mismatches this
+      // session can never deliver here, so don't burn the schedule slot — the
+      // same check fire() applies. fire() re-checks and records the failure.
+      if (!isPinned(job) && job.cwd !== cwd) {
+        setJobResult(dir, job.name, "fail", `cwd mismatch: job expects ${job.cwd}, session is ${cwd} — run from ${job.cwd}, or pin model/thinking to run headless`);
+        throw new Error(`cwd mismatch: job '${name}' expects ${job.cwd}, session is ${cwd} — run from ${job.cwd}, or pin model/thinking to run headless`);
+      }
       markFired(job, Date.now());
       saveJobs(dir, jobs);
       fire(job);
@@ -484,6 +497,10 @@ export function runCronAction(args: CronActionArgs): { content: { type: "text"; 
 
 // ---------------------------------------------------------------------------
 
+// Module scope: a second factory invocation (/reload) must clear the previous
+// interval instead of double-ticking — one tick interval per process.
+let timer: NodeJS.Timeout | undefined;
+
 export default function cronExtension(pi: ExtensionAPI) {
   const dir = jobsDir(getAgentDir());
   // Load-time read is global-only (no ctx yet — an untrusted cwd must not arm
@@ -519,7 +536,6 @@ export default function cronExtension(pi: ExtensionAPI) {
     tickOnce({ dir, enabled: settings.enabled, fire });
   }
 
-  let timer: NodeJS.Timeout | undefined;
   function armTimer(): void {
     if (childMode) return;
     if (timer) clearInterval(timer);

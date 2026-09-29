@@ -33,14 +33,17 @@ const DEFAULTS = {
 /**
  * Read the `notify` settings key from settings.json, searching <cwd>/.pi →
  * ~/.pi/agent → ~/.pi/agents (same pattern as pi-references/pi-permission).
+ * The project scope is trust-gated (pi-cron pattern): `trusted === false`
+ * skips <cwd>/.pi entirely, so settings.json in an untrusted checkout cannot
+ * disable or enable notifications — global settings still apply.
  * A settings.json that is missing, unreadable, or has no object value for the
  * key is skipped and the search continues; the first file WITH a valid object
  * wins. Returns undefined when no file provides one.
  */
-export function readSettingsKey(cwd, key) {
+export function readSettingsKey(cwd, key, trusted = false) {
   const home = os.homedir();
   const dirs = [
-    join(cwd || process.cwd(), ".pi"),
+    ...(trusted ? [join(cwd || process.cwd(), ".pi")] : []),
     process.env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent"),
     join(home, ".pi", "agents"),
   ];
@@ -103,8 +106,10 @@ export function _resetBackendCacheForTest() {
 /** Run a command, swallowing all errors (best-effort notification). */
 function run(cmd, args) {
   try {
-    execFile(cmd, args, (err) => {
-      if (err) { /* best-effort: silent */ }
+    // timeout: hung osascript/afplay/notify-send/paplay children are killed
+    // instead of lingering forever (best-effort notification, bounded cost).
+    execFile(cmd, args, { timeout: 5000 }, (err) => {
+      if (err) { /* best-effort: silent (includes timeout kills) */ }
     });
   } catch { /* best-effort */ }
 }
@@ -127,17 +132,19 @@ export function appleScriptEscape(str) {
 }
 
 function notifyOSC777(title, body) {
-  // A TUI owns the terminal when stdout is a TTY — raw OSC writes would paint
-  // escape garbage into the UI. Skip when a TUI renders; only write when the
-  // terminal is otherwise idle (piped, or plain REPL stdout).
-  if (process.stdout.isTTY) return;
+  // OSC only renders on a terminal — stdout must be a TTY. Pipes/files are
+  // skipped entirely: raw escape bytes there are pure pollution (pi | tee,
+  // a2a-spawned stdout). TERM is NOT a terminal sentinel — it leaks from the
+  // launching shell into every pipe, so gating on it writes escape bytes into
+  // logs and pipes.
+  if (!process.stdout.isTTY) return;
   try {
     process.stdout.write(`\x1b]777;notify;${sanitizeOsc(title)};${sanitizeOsc(body)}\x07`);
   } catch { /* best-effort */ }
 }
 
 function notifyOSC99(title, body) {
-  if (process.stdout.isTTY) return; // same TUI rule as OSC 777
+  if (!process.stdout.isTTY) return; // same TTY-only rule as OSC 777
   try {
     process.stdout.write(`\x1b]99;i=1:d=0;${sanitizeOsc(title)}\x1b\\`);
     process.stdout.write(`\x1b]99;i=1:p=body;${sanitizeOsc(body)}\x1b\\`);
@@ -221,9 +228,9 @@ export default function notifyExtension(pi, opts = {}) {
 
   // notify settings — cached, refreshed on session_start with a fresh ctx.cwd.
   let cfg = resolveConfig(undefined);
-  const refreshConfig = (cwd) => {
+  const refreshConfig = (cwd, trusted) => {
     try {
-      cfg = resolveConfig(readSettingsKey(cwd, "notify"));
+      cfg = resolveConfig(readSettingsKey(cwd, "notify", trusted));
     } catch {
       cfg = resolveConfig(undefined); // best-effort: keep defaults
     }
@@ -258,7 +265,9 @@ export default function notifyExtension(pi, opts = {}) {
   });
   pi.on("session_start", (_event, ctx) => {
     erroredThisTurn = false;
-    refreshConfig(ctx?.cwd || process.cwd());
+    // Project settings load only for trusted checkouts; untrusted falls back
+    // to the global settings files (readSettingsKey gates the cwd/.pi scope).
+    refreshConfig(ctx?.cwd || process.cwd(), ctx?.isProjectTrusted?.() === true);
   });
   pi.on("turn_start", () => { erroredThisTurn = false; });
   pi.on("tool_result", (event) => {

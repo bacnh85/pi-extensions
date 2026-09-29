@@ -693,6 +693,12 @@ describe("extractOutputPaths", () => {
     expect(paths).to.deep.equal(["/cwd/output.mp3"]);
   });
 
+  it("--all is a boolean flag: dir is positional and gets extracted", () => {
+    // Guards against adding --all to VALUE_OPTIONS, which would consume
+    // the directory and break mutation-queue serialization for --all runs.
+    expect(extractOutputPaths(["download", "audio", "--all", "./dir"], "/cwd")).to.deep.equal(["/cwd/dir"]);
+  });
+
   it("deduplicates --all ./dir (single result)", () => {
     const paths = extractOutputPaths(["download", "audio", "--all", "./dir"], "/cwd");
     expect(paths).to.deep.equal(["/cwd/dir"]);

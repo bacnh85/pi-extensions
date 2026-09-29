@@ -234,7 +234,7 @@ describe("callMunin ERR_STALE_PROTOCOL auto-recovery", () => {
     expect((caught as Error).message).to.not.include("acknowledge_setup");
   });
 
-  it("tolerates a transient network error during the post-ack retry (withRetry-wrapped)", async () => {
+  it("post-ack retry is a SINGLE attempt — a transient failure on it surfaces (total attempts bounded)", async () => {
     let storeCount = 0;
     const remediation = {
       version_to: "2026-04-17",
@@ -258,12 +258,21 @@ describe("callMunin ERR_STALE_PROTOCOL auto-recovery", () => {
       },
     });
 
-    const result = await callMunin(client, "proj_test", "store", { key: "k", title: "t", content: "c", tags: "type:f,d:x" });
+    let caught: unknown;
+    try {
+      await callMunin(client, "proj_test", "store", { key: "k", title: "t", content: "c", tags: "type:f,d:x" });
+      expect.fail("Should have thrown");
+    } catch (e) {
+      caught = e;
+    }
 
-    // 1 initial stale + 2 retry attempts (first transient, second ok) = 3 store calls.
-    expect(storeCount).to.equal(3);
+    // Budget (plan 2026-09-29): 1 initial stale + 1 ack + 1 single retry = 3
+    // network calls total. The retry leg is NOT withRetry-wrapped anymore, so
+    // a transient error on the retry attempt surfaces instead of stacking
+    // up to ~8 nested attempts.
+    expect(storeCount).to.equal(2);
     expect(calls.filter((c) => c.action === "acknowledge_setup")).to.have.lengthOf(1);
-    expect(result).to.deep.equal({ stored: true });
+    expect((caught as Error).message).to.include("fetch failed");
   });
 
   it("uses the server-directed ack action name instead of hardcoding acknowledge_setup", async () => {

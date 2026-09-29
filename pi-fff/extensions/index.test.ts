@@ -3,7 +3,7 @@ import { FileFinder } from "@ff-labs/fff-node";
 import { mkdtempSync, mkdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import fffExtension from "./index";
+import fffExtension, { BoundedMap } from "./index";
 
 const originalCreate = FileFinder.create;
 const originalMode = process.env.PI_FFF_MODE;
@@ -105,6 +105,18 @@ async function run(tool: any, params: any) {
 function text(result: any): string {
   return result.content[0].text;
 }
+
+describe("BoundedMap", () => {
+  it("evicts least-recently-used, not FIFO", () => {
+    const map = new BoundedMap<number>(2, "test");
+    const a = map.store(1);
+    map.store(2);
+    map.get(a); // touch: `a` becomes most-recently-used
+    const c = map.store(3); // over capacity → evicts the untouched `2`
+    expect(map.get(a)).to.equal(1);
+    expect(map.get(c)).to.equal(3);
+  });
+});
 
 describe("pi-fff tools", () => {
   afterEach(() => {

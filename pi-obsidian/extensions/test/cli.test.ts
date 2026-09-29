@@ -1,7 +1,7 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { relative, resolve, isAbsolute, sep, join } from "node:path";
+import { relative, resolve, isAbsolute, sep, join, basename } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
@@ -9,6 +9,7 @@ import {
   buildPrependChunkScript,
   buildFirstScript,
   djb2Utf8,
+  commandMentionsVaultPath,
   filesMissingProperty,
   listFilesRecursive,
   readQuotedContent,
@@ -789,6 +790,27 @@ it("issue #21: write/create/overwrite without content= or content_from= errors i
         }
       } finally {
         rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
+    it("#9: cross-vault guard resolves '..'-relative paths against cwd", () => {
+      // Nightly 2026-09-29 P1: `rm ../MyVault/x.md` bypassed the literal
+      // root-path match. commandMentionsVaultPath is the resolved check the
+      // guard now uses (guarded branch itself needs the memoized CLI lookup,
+      // so this pins the seam directly).
+      const vault = mkdtempSync(join(tmpdir(), "pi-obsidian-relguard-"));
+      const cwd = mkdtempSync(join(tmpdir(), "pi-obsidian-relguard-cwd-"));
+      try {
+        expect(commandMentionsVaultPath(`rm ../${basename(vault)}/vault.md`, cwd, vault)).to.equal(true);
+        expect(commandMentionsVaultPath("cat ../../nope/other/x.md", cwd, vault)).to.equal(false);
+        expect(commandMentionsVaultPath(`rm ${join(vault, "x.md")}`, cwd, vault)).to.equal(true);
+        expect(commandMentionsVaultPath(`rm ${join(cwd, "x.md")}`, cwd, vault)).to.equal(false);
+        expect(commandMentionsVaultPath(`echo hi > ${join(vault, "n.md")}`, cwd, vault)).to.equal(true);
+        expect(commandMentionsVaultPath(join(vault, ".obsidian", "config"), cwd, vault)).to.equal(true);
+        expect(commandMentionsVaultPath(`ls ../${basename(vault)}/sub`, cwd, vault)).to.equal(true);
+      } finally {
+        rmSync(vault, { recursive: true, force: true });
+        rmSync(cwd, { recursive: true, force: true });
       }
     });
   });

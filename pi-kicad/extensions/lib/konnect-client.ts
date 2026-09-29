@@ -187,24 +187,25 @@ export async function callKonnect(opts: CallOptions): Promise<unknown> {
   const onAbort = () => ctrl.abort();
   if (opts.signal) opts.signal.addEventListener("abort", onAbort, { once: true });
 
-  let res: Response;
   try {
-    res = await f(`${baseUrl(opts.port)}${MCP_PATH}`, {
+    const res = await f(`${baseUrl(opts.port)}${MCP_PATH}`, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify(buildJsonRpcRequest(opts.method, opts.params)),
       signal: ctrl.signal,
     });
+
+    if (!res.ok) {
+      throw new Error(`Konnect HTTP ${res.status}: ${await res.text().catch(() => "")}`.trim());
+    }
+    // Body read stays inside the abort/timeout window: a hung response body is
+    // cancellable via ctrl.signal (timer still live until below).
+    const body = (await res.json()) as JsonRpcResponse;
+    return extractResult(body);
   } finally {
     clearTimeout(timer);
-    // Drop the listener on normal completion so the caller's signal isn't
+    // Drop the listener on completion so the caller's signal isn't
     // retained by every finished call.
     if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
   }
-
-  if (!res.ok) {
-    throw new Error(`Konnect HTTP ${res.status}: ${await res.text().catch(() => "")}`.trim());
-  }
-  const body = (await res.json()) as JsonRpcResponse;
-  return extractResult(body);
 }

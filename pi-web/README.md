@@ -478,7 +478,7 @@ Smoke test: `npx tsx extensions/scripts/gemini-smoke.ts x chatgpt-auth`,
 
 ## Migration from 0.3.x
 
-v0.4 replaces the 14 individual backend-specific tools with 7 unified tools:
+v0.4 replaces the 14 individual backend-specific tools with 11 unified tools:
 
 | v0.3 tool | v0.4 replacement |
 |---|---|

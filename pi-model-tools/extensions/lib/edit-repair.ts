@@ -21,19 +21,14 @@ export function normalizeToLF(text: string): string {
   return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
-/**
- * The exact read-tool notice patterns that contaminate oldText
- * (see pi-coding-agent dist/core/tools/read.js).
- * Each is anchored on its distinctive shape so it cannot match real source.
- */
-const READ_CONTAMINATION_PATTERNS: RegExp[] = [
-  // [Showing lines A-B of C (50KB limit). Use offset=N to continue.]
-  /\n{1,2}\[Showing lines \d+-\d+ of \d+(?: \([^)]+\))?\.\s*Use offset=\d+ to continue\.\]/g,
-  // [N more lines in file. Use offset=N to continue.]
-  /\n{1,2}\[\d+ more lines in file\.\s*Use offset=\d+ to continue\.\]/g,
-  // [Line X is SIZE, exceeds 50KB limit. Use bash: sed -n ...]
-  /\n\[Line \d+ is [^,]+, exceeds [^\]]+ limit\.[^\]]*\]/g,
-];
+// The exact read-tool notice shapes that contaminate oldText (see
+// pi-coding-agent dist/core/tools/read.js). Contamination is APPENDED by the
+// read tool after the last shown line, so the model's copy carries it as a
+// suffix — strip only a notice anchored at the END of oldText. A mid-text
+// occurrence is real file content (e.g. repos documenting these very strings)
+// and must survive verbatim matching; the trim-tolerant retry path covers the
+// rare mid-copy page-boundary case.
+const TRAILING_READ_NOTICE = /(?:\n{1,2}(?:\[Showing lines \d+-\d+ of \d+(?: \([^)]+\))?\.\s*Use offset=\d+ to continue\.\]|\[\d+ more lines in file\.\s*Use offset=\d+ to continue\.\])|\n\[Line \d+ is [^,]+, exceeds [^\]]+ limit\.[^\]]*\])\s*$/;
 
 /**
  * Strip read-tool contamination notices from an oldText string.
@@ -41,14 +36,9 @@ const READ_CONTAMINATION_PATTERNS: RegExp[] = [
  * Safe: these notice shapes never legitimately appear inside matched source.
  */
 export function stripReadContamination(text: string): { text: string; changed: boolean } {
-  let changed = false;
-  let out = text;
-  for (const re of READ_CONTAMINATION_PATTERNS) {
-    const next = out.replace(re, "");
-    if (next !== out) changed = true;
-    out = next;
-  }
-  return { text: out, changed };
+  const m = text.match(TRAILING_READ_NOTICE);
+  if (!m || m.index === undefined) return { text, changed: false };
+  return { text: text.slice(0, m.index), changed: true };
 }
 
 function splitLines(content: string): string[] {

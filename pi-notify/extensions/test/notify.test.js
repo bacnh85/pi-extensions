@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import notifyExtension, { resolveConfig, notify, playSound, detectBackend, toastScript, sanitizeOsc, appleScriptEscape, _resetBackendCacheForTest } from "../index.js";
+import notifyExtension, { resolveConfig, notify, playSound, detectBackend, readSettingsKey, toastScript, sanitizeOsc, appleScriptEscape, _resetBackendCacheForTest } from "../index.js";
 
 // ── resolveConfig ─────────────────────────────────────────────────────────
 
@@ -101,7 +101,7 @@ test("errored turn does not also fire 'Task complete' (regression)", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-notify-"));
   mkdirSync(join(dir, ".pi"), { recursive: true });
   writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ notify: { sound: false } }));
-  pi.handlers.session_start({}, { cwd: dir });
+  pi.handlers.session_start({}, { cwd: dir, isProjectTrusted: () => true });
   pi.handlers.turn_start({}, {});
   pi.handlers.tool_result({ isError: true }, {});
   pi.handlers.agent_settled({}, {});
@@ -123,7 +123,7 @@ test("onError config=false suppresses error notification (observable effect)", (
   writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ notify: { onError: false } }));
   const notifyCalls = [];
   const pi = harness({ notifySpy: (...a) => notifyCalls.push(a) });
-  pi.handlers.session_start({}, { cwd: dir });
+  pi.handlers.session_start({}, { cwd: dir, isProjectTrusted: () => true });
   pi.handlers.turn_start({}, {});
   pi.handlers.tool_result({ isError: true }, {});
   assert.equal(notifyCalls.length, 0, "onError:false must suppress the notification");
@@ -137,7 +137,7 @@ test("onError config=false still fires 'Task complete' on an errored turn (0.1.8
   writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ notify: { onError: false, sound: false } }));
   const notifyCalls = [];
   const pi = harness({ notifySpy: (...a) => notifyCalls.push(a), soundSpy: () => {} });
-  pi.handlers.session_start({}, { cwd: dir });
+  pi.handlers.session_start({}, { cwd: dir, isProjectTrusted: () => true });
   pi.handlers.turn_start({}, {});
   pi.handlers.tool_result({ isError: true }, {});
   pi.handlers.agent_settled({}, {});
@@ -152,7 +152,7 @@ test("default settings fire a notification (observable effect)", () => {
   const notifyCalls = [];
   const soundCalls = [];
   const pi = harness({ notifySpy: (...a) => notifyCalls.push(a), soundSpy: (...a) => soundCalls.push(a) });
-  pi.handlers.session_start({}, { cwd: dir });
+  pi.handlers.session_start({}, { cwd: dir, isProjectTrusted: () => true });
   pi.handlers.turn_start({}, {});
   pi.handlers.tool_result({ isError: true }, {});
   assert.equal(notifyCalls.length, 1, "error notification fires by default");
@@ -192,7 +192,7 @@ test("onQuestion config=false suppresses question notification", () => {
   writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ notify: { onQuestion: false } }));
   const notifyCalls = [];
   const pi = harness({ notifySpy: (...a) => notifyCalls.push(a), soundSpy: () => {} });
-  pi.handlers.session_start({}, { cwd: dir });
+  pi.handlers.session_start({}, { cwd: dir, isProjectTrusted: () => true });
   pi.handlers.ui_prompt_start({ kind: "confirm", title: "Sure?" }, {});
   assert.equal(notifyCalls.length, 0, "onQuestion:false must suppress the notification");
 });
@@ -203,7 +203,7 @@ test("onComplete config=false suppresses completion notification; error/question
   writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ notify: { onComplete: false } }));
   const notifyCalls = [];
   const pi = harness({ notifySpy: (...a) => notifyCalls.push(a), soundSpy: () => {} });
-  pi.handlers.session_start({}, { cwd: dir });
+  pi.handlers.session_start({}, { cwd: dir, isProjectTrusted: () => true });
   pi.handlers.agent_settled({}, {});
   assert.equal(notifyCalls.length, 0, "onComplete:false must suppress the completion notification");
   // The other gates are independent — they must not be affected by onComplete:false.
@@ -257,23 +257,33 @@ test("Windows toastScript escapes single quotes in title/body (mirrors macOS tes
   assert.ok(slots.includes(body), "body round-trips");
 });
 
-test("terminal backend writes nothing when a TUI owns stdout (isTTY)", () => {
+test("terminal backend writes OSC only to a TTY, never a pipe (even with TERM set)", () => {
   const written = [];
   const origWrite = process.stdout.write.bind(process.stdout);
   const origIsTTY = process.stdout.isTTY;
+  const origTerm = process.env.TERM;
   process.stdout.write = (chunk) => { written.push(String(chunk)); return true; };
-  process.stdout.isTTY = true; // TUI rendering — OSC would paint garbage
+  // Pipe with an inherited TERM (the common case: launched from any shell):
+  // still skipped — TERM leaks into every pipe, and raw escape bytes in a
+  // pipe/file (pi | tee, a2a-spawned stdout) are pure pollution.
+  process.stdout.isTTY = false;
+  process.env.TERM = "xterm-256color";
+  notify("T", "B", "terminal");
+  assert.equal(written.length, 0, "no OSC written to a pipe, even with TERM set");
+  delete process.env.TERM;
+  notify("T", "B", "terminal");
+  assert.equal(written.length, 0, "no OSC written to a bare pipe");
+  // TTY: the write path runs.
+  process.stdout.isTTY = true;
   try {
     notify("T", "B", "terminal");
-    assert.equal(written.length, 0, "no OSC written while a TUI renders");
+    assert.ok(written.length > 0, "OSC written to a TTY");
+    assert.match(written.join(""), /\x1b\](777|99);/);
   } finally {
-    process.stdout.isTTY = false; // no TUI — the write path must run
-    notify("T", "B", "terminal");
     process.stdout.write = origWrite;
     process.stdout.isTTY = origIsTTY;
+    if (origTerm === undefined) delete process.env.TERM; else process.env.TERM = origTerm;
   }
-  assert.ok(written.length > 0, "OSC written when stdout is not a TTY");
-  assert.match(written.join(""), /\x1b\](777|99);/);
 });
 
 test("sanitizeOsc strips escapes so OSC 777 payload stays well-formed (review: P2)", () => {
@@ -309,4 +319,22 @@ test("sanitizeOsc covers OSC 99 fields and passes clean text through", () => {
   assert.equal((seq.match(/\x1b/g) || []).length, 2, "only the two ESCs (OSC intro + ST)");
   assert.ok(!/[\x00-\x1f\x7f]/.test(title) && !/[\x00-\x1f\x7f]/.test(body));
   assert.equal(sanitizeOsc("plain text"), "plain text", "clean input unchanged");
+});
+
+test("readSettingsKey trust-gates the project scope; global still applies when untrusted", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-notify-"));
+  mkdirSync(join(dir, ".pi"), { recursive: true });
+  writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ notify: { sound: false } }));
+  const globalDir = mkdtempSync(join(tmpdir(), "pi-notify-global-"));
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = globalDir;
+  try {
+    assert.deepEqual(readSettingsKey(dir, "notify", true), { sound: false }, "trusted: project settings load");
+    assert.equal(readSettingsKey(dir, "notify", false), undefined, "untrusted: project settings skipped");
+    writeFileSync(join(globalDir, "settings.json"), JSON.stringify({ notify: { onComplete: false } }));
+    assert.deepEqual(readSettingsKey(dir, "notify", false), { onComplete: false }, "untrusted: global fallback still applies");
+  } finally {
+    if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+  }
 });

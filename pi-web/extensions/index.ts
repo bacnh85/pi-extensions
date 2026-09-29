@@ -337,6 +337,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
           scrapeOptions: { formats: ["markdown"], onlyMainContent: true },
         },
         signal,
+        1, // ponytail: crawl submission is non-idempotent — never retried
       );
       const id = result.id || (result.data as Record<string, unknown> | undefined)?.id;
       let pollTimedOut = false;

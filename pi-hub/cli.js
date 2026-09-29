@@ -25,11 +25,17 @@ const paint = Object.fromEntries(Object.entries(C).map(([k, fn]) => [k, noColor 
 
 // ponytail: Windows npm shims are pi.cmd — spawnSync can't PATHEXT-resolve them without a
 // shell, and an args array + shell triggers DEP0190, so win32 passes one joined command
-// string instead (install/remove/update args are ours: npm:/git: refs, -l — no spaces).
-const spawnPi = (args, opts) =>
-  process.platform === "win32"
+// string instead.
+// Args are enforced HERE, not trusted to callers — win32 joins them into a shell
+// string, so any metacharacter would execute. Allow-list the safe charset.
+const spawnPi = (args, opts) => {
+  for (const a of args) {
+    if (!/^[\w.@/:~+-]+$/.test(a)) throw new Error(`invalid pi argument: ${JSON.stringify(a)}`);
+  }
+  return process.platform === "win32"
     ? spawnSync(["pi", ...args].join(" "), { shell: true, ...opts })
     : spawnSync("pi", args, opts);
+};
 
 export function resolveSource(ref) {
   // win32 spawnPi may route through a shell — a ref carrying metacharacters
@@ -52,10 +58,13 @@ export function searchCatalog(query) {
 }
 
 export function mergeResults(curated, npmResults) {
-  const seen = new Set(curated.map((c) => c.name));
+  // normalizeName folds the npm: prefix and the @bacnh85/ scope, so curated
+  // `@bacnh85/x` and npm `x` (or `npm:x`) dedupe to one entry.
+  const normalizeName = (n) => String(n ?? "").replace(/^npm:/, "").replace(/^@bacnh85\//, "");
+  const seen = new Set(curated.map((c) => normalizeName(c.name)));
   return [
     ...curated.map((c) => ({ ...c, curated: true })),
-    ...npmResults.filter((r) => !seen.has(r.name)),
+    ...npmResults.filter((r) => !seen.has(normalizeName(r.name))),
   ];
 }
 

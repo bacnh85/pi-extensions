@@ -5,6 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import os from "node:os";
 import path from "node:path";
 import { MuninClient } from "@kalera/munin-sdk";
+import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 
 export interface Learning {
   kind: "strategy" | "recovery" | "optimization";
@@ -182,9 +183,15 @@ export async function writeLearning(
     }
   } else {
     const file = localPath(cwd);
-    mkdirSync(path.dirname(file), { recursive: true });
-    appendFileSync(file, JSON.stringify({ key, title, content, tags, storedAt }) + "\n", "utf8");
-    capLocal(file, cfg.localCap);
+    // Serialize append+cap per file (SDK mutation queue, as pi-selfskills uses
+    // it): a cap rewrite running between another save's append and its own cap
+    // could drop that entry. ponytail: keyed on the path string, not realpath —
+    // ctx.cwd is stable within a session; aliasing would only skip serialization.
+    await withFileMutationQueue(file, async () => {
+      mkdirSync(path.dirname(file), { recursive: true });
+      appendFileSync(file, JSON.stringify({ key, title, content, tags, storedAt }) + "\n", "utf8");
+      capLocal(file, cfg.localCap);
+    });
   }
   return { ...learning, key, title, storedAt };
 }
@@ -235,11 +242,25 @@ export async function searchLearnings(
   cfg: StoreConfig,
   cwd: string,
   trusted?: boolean,
+  signal?: AbortSignal,
 ): Promise<StoredLearning[]> {
   const backend = activeBackend(params, cfg, cwd, trusted);
   if (backend === "munin") {
     const munin = tryResolveMunin(params, cwd, trusted === true)!;
-    const client = new MuninClient({ apiKey: munin.apiKey, baseUrl: munin.baseUrl });
+    // Thread the caller's deadline into the fetch: when the race in index.ts
+    // times out it aborts this signal, so the underlying request dies instead
+    // of leaking. The SDK's own internal signal (its per-request controller)
+    // is merged in so its timeout still works.
+    const client = new MuninClient({
+      apiKey: munin.apiKey,
+      baseUrl: munin.baseUrl,
+      ...(signal
+        ? {
+            fetchImpl: ((url: any, init: any) =>
+              fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal })) as typeof fetch,
+          }
+        : {}),
+    });
     let result: unknown;
     try {
       if (typeof (client as any).search === "function") {

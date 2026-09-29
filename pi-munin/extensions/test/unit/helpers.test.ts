@@ -314,6 +314,21 @@ describe("sanitizeErrorMessage", () => {
     const result = sanitizeErrorMessage(new Error("Normal error message"));
     expect(result).to.equal("Normal error message");
   });
+
+  it("redacts Bearer tokens", () => {
+    const result = sanitizeErrorMessage(new Error("Request failed: Bearer mun_sk_123.abc-def_456 rejected"));
+    expect(result).to.include("Bearer [REDACTED]");
+    expect(result).to.not.include("mun_sk_123");
+  });
+
+  it("redacts apiKey= and api_key: literals", () => {
+    for (const msg of ['apiKey=hunter2secret', "api_key: 'abc123.xyz'", "API_KEY=zzzz"]) {
+      const result = sanitizeErrorMessage(new Error(`auth failed with ${msg}`));
+      expect(result).to.include("[REDACTED]");
+      expect(result).to.not.include("hunter2secret");
+      expect(result).to.not.include("abc123");
+    }
+  });
 });
 
 describe("formatMemory", () => {

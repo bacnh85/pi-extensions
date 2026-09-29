@@ -49,7 +49,7 @@ type FffMode = (typeof VALID_MODES)[number];
 // Cursor store — simple bounded Map for pagination cursors
 // ---------------------------------------------------------------------------
 
-class BoundedMap<V> {
+export class BoundedMap<V> {
   private map = new Map<string, V>();
   private counter = 0;
   constructor(private maxSize: number, private prefix: string) {}
@@ -63,7 +63,13 @@ class BoundedMap<V> {
     return id;
   }
   get(id: string): V | undefined {
-    return this.map.get(id);
+    const value = this.map.get(id);
+    // LRU: re-insert so a live cursor never becomes the eviction candidate.
+    if (value !== undefined) {
+      this.map.delete(id);
+      this.map.set(id, value);
+    }
+    return value;
   }
 }
 
@@ -401,6 +407,9 @@ function createFffMentionProvider(
 export default function fffExtension(pi: ExtensionAPI) {
   let finder: FileFinder | null = null;
   let finderCwd: string | null = null;
+  // Scoped hidden-dir finders, keyed by resolved scope — created once, reused
+  // across repeated hidden searches, destroyed on session_shutdown.
+  const scopedFinders = new Map<string, FileFinder>();
   // Concurrent ensureFinder() callers share the same in-flight promise so
   // FileFinder.create() (which takes native DB locks) runs at most once per
   // base path at a time — otherwise parallel tool calls would race and
@@ -526,25 +535,29 @@ export default function fffExtension(pi: ExtensionAPI) {
     const resolved = resolveExplicitHiddenScope(pathConstraint);
     if (!resolved?.stat.isDirectory()) return null;
 
-    const created = FileFinder.create({
-      basePath: resolved.absoluteScope,
-      // ponytail: scoped fallback is ephemeral; sharing workspace DBs risks native lock contention.
-      aiMode: true,
-      enableHomeDirScanning: true,
-      enableFsRootScanning,
-    });
-    if (!created.ok) return null;
+    let scopedFinder = scopedFinders.get(resolved.scope);
+    if (!scopedFinder || scopedFinder.isDestroyed) {
+      const created = FileFinder.create({
+        basePath: resolved.absoluteScope,
+        // ponytail: scoped fallback is ephemeral; sharing workspace DBs risks native lock contention.
+        aiMode: true,
+        enableHomeDirScanning: true,
+        enableFsRootScanning,
+      });
+      if (!created.ok) return null;
 
-    const scopedFinder = created.value;
-    try {
+      scopedFinder = created.value;
+      // Register BEFORE waitForScan: a rejection must leave the finder in the
+      // map so session_shutdown can destroy it (and so it's reusable), not
+      // abandoned un-destroyed.
+      scopedFinders.set(resolved.scope, scopedFinder);
       await scopedFinder.waitForScan(15000);
-      return {
-        scope: resolved.scope,
-        value: run(scopedFinder, resolved.scope, resolved.absoluteScope, resolved.constraint),
-      };
-    } finally {
-      scopedFinder.destroy();
     }
+
+    return {
+      scope: resolved.scope,
+      value: run(scopedFinder, resolved.scope, resolved.absoluteScope, resolved.constraint),
+    };
   }
 
   function matchesExplicitFile(
@@ -843,6 +856,10 @@ export default function fffExtension(pi: ExtensionAPI) {
       finder = null;
       finderCwd = null;
     }
+    for (const scopedFinder of scopedFinders.values()) {
+      if (!scopedFinder.isDestroyed) scopedFinder.destroy();
+    }
+    scopedFinders.clear();
   }
 
   async function getMentionItems(

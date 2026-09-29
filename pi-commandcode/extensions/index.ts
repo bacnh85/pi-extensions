@@ -32,9 +32,10 @@ function readModelCache(): CommandCodeModelRaw[] | null {
     if (!existsSync(MODEL_CACHE_PATH)) return null;
     const raw = JSON.parse(readFileSync(MODEL_CACHE_PATH, "utf8")) as unknown;
     if (!Array.isArray(raw) || raw.length === 0) return null;
-    // ponytail: validate just the first entry's shape — if it has an id, trust the rest
-    if (!raw[0] || typeof (raw[0] as Record<string, unknown>).id !== "string") return null;
-    return raw as CommandCodeModelRaw[];
+    // Validate every entry: a partially-written/edited cache file must not
+    // crash mapModel later. Bad entries drop; an empty result is a miss.
+    const models = raw.filter((e): e is CommandCodeModelRaw => !!e && typeof (e as Record<string, unknown>).id === "string");
+    return models.length > 0 ? models : null;
   } catch {
     return null;
   }

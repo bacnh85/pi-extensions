@@ -100,8 +100,11 @@ function auditParametersSchema() {
 /**
  * Resolve the stylesheet to audit: a file `path` read verbatim (preferred —
  * retyped `css` drifts and causes false gate failures) or inline `css`.
- * Exactly one of the two.
+ * Exactly one of the two. Files are capped (~1MB via statSync before reading)
+ * so a runaway stylesheet can't flood the model's context.
  */
+const MAX_CSS_BYTES = 1024 * 1024;
+
 export function resolveAuditCss(params, cwd) {
   const css = typeof params.css === "string" ? params.css : "";
   const hasCss = css.trim().length > 0;
@@ -110,7 +113,13 @@ export function resolveAuditCss(params, cwd) {
   if (!hasCss && !p) throw new Error("Pass a stylesheet to audit: `path` (preferred, read verbatim) or `css`.");
   // Relative paths resolve against the tool-call cwd (falls back to the
   // process cwd) — the session cwd can differ from this process's cwd.
-  if (p) return fs.readFileSync(path.resolve(cwd || process.cwd(), p), "utf8");
+  if (p) {
+    const file = path.resolve(cwd || process.cwd(), p);
+    if (fs.statSync(file).size > MAX_CSS_BYTES) {
+      throw new Error(`Stylesheet is over the 1MB audit cap — audit a smaller file or split the stylesheet.`);
+    }
+    return fs.readFileSync(file, "utf8");
+  }
   return css;
 }
 

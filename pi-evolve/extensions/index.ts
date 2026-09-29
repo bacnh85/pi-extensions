@@ -372,12 +372,26 @@ export default function evolveExtension(pi: ExtensionAPI) {
     let recallPart: { type: "text"; text: string } | null = null;
     if (settings.recallStoredFixes) {
       let timer: ReturnType<typeof setTimeout> | undefined;
+      // Declared OUTSIDE the try: finally must clear it, and a let scoped to
+      // the try block is invisible there (the earlier inner declaration
+      // compiled to a dangling global reference).
+      let raceTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         const storeCfg = resolveStoreConfig(settings);
+        // Abort (not just race): a timed-out recall's underlying Munin fetch
+        // dies with the signal instead of leaking until its own timeout.
+        const abort = new AbortController();
+        timer = setTimeout(() => abort.abort(), RECALL_TIMEOUT_MS);
+        // The race timeout needs its own resolve timer — captured so the
+        // finally below can clear whichever leg settles first (the un-cleared
+        // variant kept the event loop alive up to 3s after every recall).
         const timeout = new Promise<Awaited<ReturnType<typeof searchLearnings>>>((resolve) => {
-          timer = setTimeout(() => resolve([]), RECALL_TIMEOUT_MS);
+          raceTimer = setTimeout(() => resolve([]), RECALL_TIMEOUT_MS);
         });
-        const found = await Promise.race([searchLearnings(text, 1, {}, storeCfg, ctx.cwd, ctx?.isProjectTrusted?.() === true), timeout]);
+        const found = await Promise.race([
+          searchLearnings(text, 1, {}, storeCfg, ctx.cwd, ctx?.isProjectTrusted?.() === true, abort.signal),
+          timeout,
+        ]);
         if (found.length > 0 && found[0]?.lesson) {
           // Sanitize via the injection path's shared sanitizer (inject.ts) so a
           // stored lesson can't inject directives into the tool-result context.
@@ -387,8 +401,9 @@ export default function evolveExtension(pi: ExtensionAPI) {
           }
         }
       } catch {
-        // recall is best-effort; static hint still ships
+        // recall is best-effort; static hint still ships (includes AbortError on timeout)
       } finally {
+        if (raceTimer) clearTimeout(raceTimer);
         if (timer) clearTimeout(timer);
       }
     }

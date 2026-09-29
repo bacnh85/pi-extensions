@@ -29,23 +29,58 @@ export function parseEnvText(text: string): Record<string, string> {
   return out;
 }
 
-/** Pi config dirs + .env.local/.env discovery (pi-munin convention, stdlib parse). */
-function loadEnvFiles(): void {
+/** Read a .env-style file into entries; missing/unreadable → {} (optional). */
+function readEnvFile(file: string): Record<string, string> {
+  try {
+    return parseEnvText(fs.readFileSync(file, "utf8"));
+  } catch {
+    return {}; // optional file
+  }
+}
+
+/** Keys injected at import from global env files. Trusted-project cwd files
+ *  may still override these (the pre-gating cwd-first precedence); values from
+ *  the real environment are never touched by either pass. */
+const globalEnvFileKeys = new Set<string>();
+
+/** Import-time pass: ONLY global/PI_CODING_AGENT_DIR env files. Cwd .env files
+ *  are untrusted repo content — loading them here would let any repo inject
+ *  ROUTER_MGMT_TOKEN, COMMAND_CODE_BASE_URL, etc. They load in session_start
+ *  behind ctx.isProjectTrusted() instead (see loadCwdEnvFilesIfTrusted). */
+function loadGlobalEnvFiles(): void {
   const dirs = process.env.PI_CODING_AGENT_DIR
     ? [process.env.PI_CODING_AGENT_DIR]
     : [path.join(os.homedir(), ".pi", "agent"), path.join(os.homedir(), ".pi", "agents")];
-  const candidates = [path.resolve(process.cwd(), ".env.local"), path.resolve(process.cwd(), ".env")]
-    .concat(dirs.flatMap((d) => [path.join(d, ".env.local"), path.join(d, ".env")]));
-  for (const file of candidates) {
-    try {
-      const text = fs.readFileSync(file, "utf8");
-      for (const [key, value] of Object.entries(parseEnvText(text))) {
-        if (process.env[key] === undefined) process.env[key] = value;
+  for (const dir of dirs) {
+    for (const file of [path.join(dir, ".env.local"), path.join(dir, ".env")]) {
+      for (const [key, value] of Object.entries(readEnvFile(file))) {
+        if (process.env[key] === undefined) {
+          process.env[key] = value;
+          globalEnvFileKeys.add(key);
+        }
       }
-    } catch { /* optional file */ }
+    }
   }
 }
-loadEnvFiles();
+loadGlobalEnvFiles();
+
+let cwdEnvLoaded = false;
+
+/** session_start pass: ingest cwd .env.local/.env, but ONLY for trusted
+ *  projects. Idempotent (first trusted session wins), first-wins per candidate
+ *  order, and never overrides the real environment. */
+export function loadCwdEnvFilesIfTrusted(ctx: { isProjectTrusted?: () => boolean; cwd?: string }): void {
+  if (cwdEnvLoaded || ctx.isProjectTrusted?.() !== true) return;
+  cwdEnvLoaded = true;
+  // Trust was decided for the SESSION cwd — load ITS files, not process.cwd()'s
+  // (they differ when pi was launched elsewhere and switched projects).
+  const cwd = ctx.cwd || process.cwd();
+  for (const file of [path.resolve(cwd, ".env.local"), path.resolve(cwd, ".env")]) {
+    for (const [key, value] of Object.entries(readEnvFile(file))) {
+      if (process.env[key] === undefined || globalEnvFileKeys.has(key)) process.env[key] = value;
+    }
+  }
+}
 
 const STATUS_KEY = "pi-sub";
 const MESSAGE_TYPE = "pi-sub-status";
@@ -220,12 +255,19 @@ function decodeJwtPayload(token: string | undefined): Record<string, any> | unde
   }
 }
 
-function accountFromPiAuth(entry: PiAuthEntry): SubscriptionAccountSnapshot {
+/** True when the token's `exp` claim (epoch seconds) has passed. Missing exp
+ *  or unparseable token → false (the server still arbitrates auth). */
+export function jwtExpired(payload: Record<string, any> | undefined): boolean {
+  return typeof payload?.exp === "number" && Date.now() / 1000 >= payload.exp;
+}
+
+// Exported for tests: the JWT exp → "expired" plan path.
+export function accountFromPiAuth(entry: PiAuthEntry): SubscriptionAccountSnapshot {
   const claims = decodeJwtPayload(entry.access);
   const profile = claims?.["https://api.openai.com/profile"];
   const auth = claims?.["https://api.openai.com/auth"];
   const email = typeof profile?.email === "string" ? profile.email : undefined;
-  const plan = typeof auth?.chatgpt_plan_type === "string" ? planLabel(auth.chatgpt_plan_type) : undefined;
+  const plan = jwtExpired(claims) ? "expired" : typeof auth?.chatgpt_plan_type === "string" ? planLabel(auth.chatgpt_plan_type) : undefined;
   const accountId = typeof entry.accountId === "string" ? entry.accountId : typeof auth?.chatgpt_account_id === "string" ? auth.chatgpt_account_id : undefined;
   return {
     id: accountId,
@@ -1852,6 +1894,9 @@ export default function (pi: ExtensionAPI) {
   const state: State = { lastRefreshAt: 0, refreshGeneration: 0, cumulativeOutput: 0, cumulativeDurationMs: 0, cumulativeCost: 0 };
 
   pi.on("session_start", async (_event, ctx) => {
+    // Cwd .env files are untrusted repo content — ingest only for trusted
+    // projects (idempotent; first trusted session wins).
+    loadCwdEnvFilesIfTrusted(ctx);
     // Only session_start installs state.ctx: it fires (startup/new/fork/switch/
     // reload) before the session's other events, so mid-session handlers never
     // need to — and a late old-session event must not reinstall a stale ctx.

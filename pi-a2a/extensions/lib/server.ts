@@ -241,7 +241,13 @@ export class A2AServer {
   private cwd: string;
   private piDir: string;
   private runner: SessionRunner | undefined;
-  private running = 0; // concurrency counter (bounded by cfg.server.maxConcurrent)
+  // Two admission pools, both sized cfg.server.maxConcurrent: `running`
+  // counts blocking message/send + message/stream tasks, `detachedRunning`
+  // counts detached (returnImmediately) runs. Detached tasks hold their slot
+  // up to asyncTimeoutSec (default 24h) — a shared counter let 3 hung
+  // detached dispatches 503 ALL blocking senders (self-inflicted outage).
+  private running = 0;
+  private detachedRunning = 0;
   // Discovery state (0.2.0)
   private descriptor: SessionDescriptor | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -891,7 +897,8 @@ export class A2AServer {
     const isV1 = (v1Norm: string): boolean => norm === v1Norm;
 
     if (norm === "messagesend" || norm === "sendmessage") {
-      // Concurrency cap: reject when too many tasks are already running.
+      // Concurrency cap (blocking pool): reject when too many blocking tasks
+      // are already running. Detached tasks do not compete for this pool.
       if (this.running >= this.cfg.server.maxConcurrent) {
         return this.send(
           res,
@@ -985,7 +992,14 @@ export class A2AServer {
       controller.signal.addEventListener("abort", () => externalSignal.removeEventListener("abort", onExternal), { once: true });
     }
 
-    this.running += 1;
+    // Admission: promote to the detached pool only while it has capacity.
+    // A full detached pool means the returnImmediately hint is ignored and
+    // the caller waits for the terminal state (A2A v1.0 §3.2.2 lets the
+    // server treat the hint as advisory) — never a 503 while blocking slots
+    // remain, which is what re-checking a SHARED gate here would produce.
+    const detached = returnImmediately && this.detachedRunning < this.cfg.server.maxConcurrent;
+    if (detached) this.detachedRunning += 1;
+    else this.running += 1;
 
     // Blocking (default): await the run and return the terminal Task.
     // Non-blocking (returnImmediately): return the in-progress Task as an
@@ -993,8 +1007,8 @@ export class A2AServer {
     // — the caller polls GetTask / subscribes / cancels by task id, and the
     // session is no longer bounded by the caller's reply window (detached
     // runs are supervised by server.asyncTimeoutSec instead).
-    const execution = this.executeTask(st, identity, inboundText, returnImmediately, framing);
-    if (returnImmediately) {
+    const execution = this.executeTask(st, identity, inboundText, detached, framing);
+    if (detached) {
       // The detached run continues after this reply returns; nothing else
       // will ever await `execution`. executeTask never rejects by contract
       // (every failure is classified into the task state), but that is
@@ -1030,8 +1044,9 @@ export class A2AServer {
   /**
    * Run one stored task to completion and update the store. Never rejects —
    * failures are classified into the task state (FAILED/CANCELED) exactly as
-   * the blocking path has always done. `this.running` is held for the whole
-   * execution, so detached runs still count against server.maxConcurrent.
+   * the blocking path has always done. The matching admission-pool counter
+   * (`running` for blocking, `detachedRunning` for detached) is held for the
+   * whole execution.
    */
   private async executeTask(
     st: StoredTask,
@@ -1180,7 +1195,8 @@ export class A2AServer {
       }
       return st.task;
     } finally {
-      this.running -= 1;
+      if (detached) this.detachedRunning -= 1;
+      else this.running -= 1;
       // The run settled (completed or classified) — the supervision timer's
       // job is done. Without this, a FAILED run whose runner threw its own
       // error (no abort → no listener fire) leaked an armed timer that kept

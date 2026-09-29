@@ -16,6 +16,16 @@ export class HttpError extends Error {
 // Retry
 // ---------------------------------------------------------------------------
 
+/**
+ * Transient-only retry predicate: retry network-level errors, 408, 429, and
+ * 5xx; surface other 4xx (401/403/404…) immediately.
+ */
+function isTransient(error: unknown): boolean {
+  const status = (error as { status?: number })?.status;
+  if (typeof status === "number") return status === 408 || status === 429 || status >= 500;
+  return true; // no HTTP status (network failure, timeout, parse) → transient
+}
+
 export async function withRetry<T>(fn: () => Promise<T>, attempts = 3, signal?: AbortSignal): Promise<T> {
   let last: unknown;
   for (let attempt = 0; attempt < attempts; attempt++) {
@@ -23,7 +33,7 @@ export async function withRetry<T>(fn: () => Promise<T>, attempts = 3, signal?: 
     try { return await fn(); }
     catch (error) {
       last = error;
-      if (attempt === attempts - 1) break;
+      if (attempt === attempts - 1 || !isTransient(error)) break;
       await abortableSleep(1000 * 2 ** attempt, signal);
     }
   }
@@ -34,7 +44,8 @@ export async function withRetry<T>(fn: () => Promise<T>, attempts = 3, signal?: 
  * Combine a timeout signal with an optional external signal.
  */
 export function signalWithTimeout(timeoutMs: number, signal?: AbortSignal): AbortSignal {
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const clamped = Math.min(Math.max(timeoutMs, 1_000), 600_000); // ponytail: min 1s / max 10min
+  const timeoutSignal = AbortSignal.timeout(clamped);
   if (!signal) return timeoutSignal;
   return AbortSignal.any([signal, timeoutSignal]);
 }

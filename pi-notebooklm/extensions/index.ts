@@ -393,9 +393,12 @@ export function truncateOutput(text: string): { text: string; truncated: boolean
  *
  *  Handles:
  *  - `-o <path>` / `--output <path>` flag (source fulltext, etc.)
- *  - `--all <dir>` flag (download all files to a directory)
  *  - `download <type> [path]` — path is the last positional arg after type
- *    (detected via extractCommandPath so global options don't interfere)
+ *    (detected via extractCommandPath so global options don't interfere).
+ *    Covers `download <type> --all <dir>`: the CLI's --all is a boolean flag
+ *    and the directory is the positional OUTPUT_PATH, so positional
+ *    extraction finds it. Do NOT add --all to VALUE_OPTIONS — that would
+ *    consume the dir and break serialization.
  *  - If no explicit path is found for download, queues on cwd as fallback
  *    to serialize concurrent default-filename downloads.
  *

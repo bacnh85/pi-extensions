@@ -322,6 +322,34 @@ test("hook: no task captured yet → reversibility question only", async () => {
   });
 });
 
+test("hook: array-shaped user content contributes the task (joined text parts)", async () => {
+  let sentState;
+  await withUpstream((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      sentState = JSON.parse(body).state;
+      res.end(JSON.stringify({ answers: { reversible: { noul: 0.99 }, serves_task: { noul: 0.95 } } }));
+    });
+  }, async (url) => {
+    const { handlers, cleanup } = loadExtensionWithStub({ baseUrl: url, settings: { permission: { enabled: true, mode: "observe" } } });
+    try {
+      handlers.message_end({
+        message: {
+          role: "user",
+          content: [
+            { type: "text", text: "fix the login bug" },
+            { type: "image", source: { type: "base64", data: "..." } },
+            { type: "text", text: "without touching the schema" },
+          ],
+        },
+      });
+      await handlers.tool_call(bashEvent("bun test"), fakeCtx);
+      assert.equal(sentState.task, "fix the login bug\nwithout touching the schema");
+    } finally { cleanup(); }
+  });
+});
+
 // ── plan gate (planGateVerdict — called by pi-plan) ─────────────────────────
 
 function loadPlanGate({ baseUrl, settings }) {

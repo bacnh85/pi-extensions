@@ -43,7 +43,8 @@
  * convention). No repo-scope sources, ever.
  */
 
-import { readFileSync, writeFileSync, renameSync, existsSync, appendFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
+import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 // Static import, like every pi-config-panel consumer (pi-router/pi-commandcode/
@@ -275,9 +276,13 @@ export function createVerdictCache(cap = 100) {
 export function audit(entry) {
   try {
     const dir = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
-    mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, "classifier.log"), JSON.stringify({ ts: Date.now(), pid: process.pid, ppid: process.ppid, ...entry }) + "\n");
-  } catch { /* logging must never break the command */ }
+    // ponytail: async write so the tool_call hot path never blocks; the
+    // promise is returned (callers may fire-and-forget — internal call sites
+    // await to keep the audit ordered with the decision). Never rejects.
+    return mkdir(dir, { recursive: true })
+      .then(() => appendFile(join(dir, "classifier.log"), JSON.stringify({ ts: Date.now(), pid: process.pid, ppid: process.ppid, ...entry }) + "\n"))
+      .catch(() => {});
+  } catch { return Promise.resolve(); /* logging must never break the command */ }
 }
 
 /** Split a compound command into top-level segments the RISKY check can see.
@@ -336,10 +341,10 @@ export async function planGateVerdict({ signal } = {}, command, cwd, task) {
       const confident = ro >= s.planGate.threshold && sp >= s.planGate.threshold;
       const v = { confident, read_only: ro, serves_plan: sp };
       planGateCache.set(cacheKey, v);
-      audit({ source: "plan-gate", command, cwd, ...v, ms: Date.now() - started, model: s.model });
+      await audit({ source: "plan-gate", command, cwd, ...v, ms: Date.now() - started, model: s.model });
       return v;
     } catch (e) {
-      audit({ source: "plan-gate", command, cwd, error: String(e && e.message || e), ms: Date.now() - started, model: s.model });
+      await audit({ source: "plan-gate", command, cwd, error: String(e && e.message || e), ms: Date.now() - started, model: s.model });
       return { confident: false, reason: "error" };
     }
   })();
@@ -409,7 +414,16 @@ export default function (pi) {
   let lastTask = "";
   pi.on("message_end", (event) => {
     const msg = event.message;
-    if (msg?.role === "user" && typeof msg.content === "string") lastTask = msg.content.slice(0, 4000);
+    if (msg?.role !== "user") return;
+    if (typeof msg.content === "string") lastTask = msg.content.slice(0, 4000);
+    // Array-shaped content: join the text parts (images etc. contribute nothing).
+    else if (Array.isArray(msg.content)) {
+      lastTask = msg.content
+        .filter((p) => p?.type === "text" && typeof p.text === "string")
+        .map((p) => p.text)
+        .join("\n")
+        .slice(0, 4000);
+    }
   });
 
   const cache = createVerdictCache();
@@ -455,10 +469,10 @@ export default function (pi) {
         const ok = rev >= s.permission.threshold && serves >= s.permission.threshold;
         const decision = { approve: ok, reversible: rev, serves_task: serves };
         cache.set(cacheKey, decision);
-        audit({ command, ...decision, ms: Date.now() - started, model: s.model });
+        await audit({ command, ...decision, ms: Date.now() - started, model: s.model });
         return decision;
       } catch (e) {
-        audit({ command, error: String(e && e.message || e), ms: Date.now() - started, model: s.model });
+        await audit({ command, error: String(e && e.message || e), ms: Date.now() - started, model: s.model });
         return null; // fail-safe: fall back to the normal prompt
       }
     };

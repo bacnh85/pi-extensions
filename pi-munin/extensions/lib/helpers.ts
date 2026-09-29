@@ -296,9 +296,13 @@ export function classifyError(error: unknown): { type: string; message: string; 
   return { type: "unknown", message: err.message };
 }
 
-// ponytail: only redacts the env-var name, not heuristic base64 (fragile, false positives).
+// ponytail: redacts the env-var name plus Bearer/apiKey literals — heuristic
+// base64 sniffing stays out (fragile, false positives).
 export function sanitizeErrorMessage(error: Error): string {
-  return error.message.replace(/MUNIN_API_KEY[=\s]+[A-Za-z0-9+/=_-]{4,}/gi, "MUNIN_API_KEY=[REDACTED]");
+  return error.message
+    .replace(/MUNIN_API_KEY[=\s]+[A-Za-z0-9+/=_-]{4,}/gi, "MUNIN_API_KEY=[REDACTED]")
+    .replace(/api[_-]?key\s*[=:]\s*["']?[A-Za-z0-9._-]+/gi, "apiKey=[REDACTED]")
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]");
 }
 
 // ---------------------------------------------------------------------------

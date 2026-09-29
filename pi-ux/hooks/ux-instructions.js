@@ -9,6 +9,31 @@ const path = require('path');
 const { DEFAULT_MODE, normalizeMode } = require('./ux-config');
 const SKILL_PATH = path.join(__dirname, '..', 'skills', 'ux-design', 'SKILL.md');
 
+// Memoized SKILL.md read: before_agent_start fires every turn, so one stat
+// per call beats readFileSync+parse every time. Re-read only when
+// path/mtime/size change (same pattern as ponytail-config's readConfig).
+let skillCache = { path: SKILL_PATH, mtimeMs: -1, size: -1, body: null };
+
+function readSkillBody() {
+  let st;
+  try {
+    st = fs.statSync(SKILL_PATH);
+    if (
+      skillCache.path === SKILL_PATH &&
+      skillCache.mtimeMs === st.mtimeMs &&
+      skillCache.size === st.size &&
+      skillCache.body !== null
+    ) {
+      return skillCache.body;
+    }
+  } catch (e) {
+    // stat failed: fall through to the read's own error handling
+  }
+  const body = String(fs.readFileSync(SKILL_PATH, 'utf8')).replace(/^---[\s\S]*?---\s*/, '');
+  skillCache = { path: SKILL_PATH, mtimeMs: st.mtimeMs, size: st.size, body };
+  return body;
+}
+
 function getUxInstructions(mode) {
   const configuredMode = normalizeMode(mode) || DEFAULT_MODE;
   const effectiveMode = normalizeMode(configuredMode) || DEFAULT_MODE;
@@ -18,8 +43,7 @@ function getUxInstructions(mode) {
     : 'UX DISCIPLINE ACTIVE — level: lite. Anti-slop guardrail enforced; audit gate recommended but not blocking.';
 
   try {
-    const body = String(fs.readFileSync(SKILL_PATH, 'utf8')).replace(/^---[\s\S]*?---\s*/, '');
-    return banner + '\n\n' + body;
+    return banner + '\n\n' + readSkillBody();
   } catch (e) {
     // ponytail: SKILL.md missing or unreadable — compact inline fallback keeps the guardrail.
     return [

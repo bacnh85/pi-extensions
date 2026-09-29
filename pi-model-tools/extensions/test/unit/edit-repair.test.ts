@@ -58,6 +58,17 @@ describe("stripReadContamination", () => {
     assert.strictEqual(r.text, code);
     assert.strictEqual(r.changed, false);
   });
+  it("does NOT strip a notice-shaped string occurring mid-text (real content)", () => {
+    // e.g. editing this repo's own edit-repair.ts — the notice is content.
+    const code = "const P = /\\[Showing lines \\d+ of \\d+\\. Use offset=\\d+ to continue\\.\\]/;\nconst x = 1;";
+    const r = stripReadContamination(code);
+    assert.strictEqual(r.text, code);
+    assert.strictEqual(r.changed, false);
+  });
+  it("strips a trailing notice even after trailing blank line", () => {
+    const r = stripReadContamination("const x = 1;\n\n[48 more lines in file. Use offset=2 to continue.]\n");
+    assert.strictEqual(r.text, "const x = 1;");
+  });
 });
 
 describe("findTrimMatch", () => {

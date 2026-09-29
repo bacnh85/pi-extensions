@@ -170,6 +170,26 @@ describe("local JSONL store", () => {
     expect(remaining[0]).to.include('"k5"'); // kept the last 5
   });
 
+  it("parallel local saves are serialized (mutation queue): no lost entries", async () => {
+    const cfg = resolveStoreConfig({ store: "local", localCap: 500 });
+    // Race 20 saves: without per-file serialization, a cap rewrite can run
+    // between another save's append and its own cap check and drop its entry.
+    await Promise.all(
+      Array.from({ length: 20 }, (_, i) =>
+        writeLearning(
+          { kind: "strategy", trigger: `parallel save ${i}`, lesson: `entry ${i}` },
+          {},
+          cfg,
+          cwd,
+        ),
+      ),
+    );
+    const lines = readFileSync(localPath(cwd), "utf8").trim().split("\n").filter(Boolean);
+    expect(lines).to.have.length(20);
+    const keys = new Set(lines.map((l) => JSON.parse(l).key));
+    expect(keys.size).to.equal(20); // every distinct learning survived
+  });
+
   it("readLocalTail tolerates malformed lines", () => {
     const file = localPath(cwd);
     mkdirSync(dirname(file), { recursive: true });

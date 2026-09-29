@@ -187,11 +187,13 @@ export async function callMunin(
         // ack failed (thrown or resolved-failure) → surface remediation, do NOT retry (no infinite loop).
         throw remediatedError(err, remediation);
       }
-      // Retry the original action exactly once. Wrap in withRetry so a transient
-      // network blip during the retry (after ack already succeeded) is tolerated —
-      // same as the initial call. Safe: withRetry never retries stale_protocol.
+      // Retry the original action exactly ONCE, unwrapped. ponytail: this is
+      // the total-attempt budget (plan 2026-09-29) — the previous withRetry
+      // wrapper here stacked 3+3 network attempts worst case. A stale error
+      // can't recur here (the ack succeeded), so withRetry's extra retry
+      // rounds bought nothing but stacked attempts.
       try {
-        return await withRetry(async () => invokeMuninAction(client, projectId, directAction, payload, invokeOptions));
+        return await invokeMuninAction(client, projectId, directAction, payload, invokeOptions);
       } catch (retryErr) {
         const r = retryErr instanceof Error ? retryErr : new Error(String(retryErr));
         // Only fall back to the original stale remediation when the retry error is itself stale.
@@ -567,8 +569,10 @@ export default function muninExtension(pi: ExtensionAPI) {
     if (!event.toolName.startsWith("munin_") || !event.isError) return;
     const text = event.content.map((part: any) => part?.text ?? "").join("\n");
     // Strip any existing "Munin <type> error:" prefix to avoid double-wrapping.
-    // classifyError may add this prefix on a previous pass.
-    const cleanText = text.replace(/^Munin \w+ error: /, "");
+    // classifyError may add this prefix on a previous pass — loop so a
+    // doubly-wrapped stack ("Munin x error: Munin y error: ...") unwinds fully.
+    let cleanText = text;
+    while (/^Munin \w+ error: /.test(cleanText)) cleanText = cleanText.replace(/^Munin \w+ error: /, "");
     const classified = classifyError(new Error(cleanText));
     const sanitized = sanitizeErrorMessage(new Error(classified.message));
     // Error messages are also bounded — a malicious server can balloon agent context

@@ -27,7 +27,10 @@ function rs(shell?: WindowsShellKind): WindowsShellKind {
 
 // in-memory audit log
 const _log: { shell: string; command: string; exitCode: number | null | "denied"; timedOut: boolean }[] = [];
-// ponytail: cap at 200 — audit log is in-memory and unbounded growth is a leak.
+function audit(shell: string, command: string, exitCode: number | null | "denied", timedOut: boolean) {
+  _log.push({ shell, command, exitCode, timedOut });
+  if (_log.length > 200) _log.shift(); // ponytail: in-memory cap — unbounded growth is a leak
+}
 function _fmt() {
   if (!_log.length) return "No commands executed yet.";
   return _log.map((e, i) => {
@@ -55,8 +58,7 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
       if (safe.risk === "confirm") {
         if (!ctx?.hasUI) {
           // No UI to prompt with — refusal still leaves an audit trace.
-          _log.push({ shell: opts.shell as string, command: p.command, exitCode: "denied", timedOut: false });
-          if (_log.length > 200) _log.shift();
+          audit(opts.shell as string, p.command, "denied", false);
           return tr(`Command requires confirmation but UI is unavailable: ${safe.reasons.join("; ")}`);
         }
         // ponytail: session-allow keying — interpreter/wrapper tokens run
@@ -87,8 +89,7 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
           if (choice === "Allow for this session") sessionAllowedCommands.add(allowKey);
           else if (choice !== "Allow once") {
             // Denied dangerous commands still belong in the audit trail.
-            _log.push({ shell: opts.shell as string, command: p.command, exitCode: "denied", timedOut: false });
-            if (_log.length > 200) _log.shift();
+            audit(opts.shell as string, p.command, "denied", false);
             return tr("Command cancelled by user.");
           }
         }
@@ -106,8 +107,7 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
       }
       try {
         const r = await execCmd(p.command, opts);
-        _log.push({ shell: opts.shell as string, command: p.command, exitCode: r.exitCode, timedOut: r.timedOut });
-        if (_log.length > 200) _log.shift();
+        audit(opts.shell as string, p.command, r.exitCode, r.timedOut);
         let o = `Exit code: ${r.exitCode}\n`;
         if (r.timedOut) o += "Status: TIMED OUT\n";
         if (r.cancelled) o += "Status: CANCELLED\n";
@@ -145,6 +145,8 @@ export default function piWindowsToolsExtension(pi: ExtensionAPI) {
     async execute(_id, p) { const r = await runDoctor(); return tr(p.format === "json" ? JSON.stringify(r, null, 2) : formatDoctorReport(r)); } });
   pi.registerTool({ name: "windows_tool_discover", label: "Windows: Discover Tool", description: "Check if a tool is in PATH.", promptSnippet: "Check tool availability", promptGuidelines: ["Use to verify a tool is installed."], parameters: Type.Object({ name: Type.String() }),
     async execute(_id, p) {
+      // Leading "-" would be parsed as a where.exe flag — model-controlled name must stay an operand.
+      if (p.name.startsWith("-")) return tr(`\u2717 invalid tool name: ${p.name}`);
       try {
         const { stdout } = await execFileP(systemExe("where.exe"), [p.name], { cwd: homedir(), encoding: "utf8", timeout: 3000, maxBuffer: 1024 * 1024 });
         return tr(`\u2713 ${p.name} at:\n${stdout.split(/\r?\n/).filter(Boolean).map(x => "  " + x).join("\n")}`);

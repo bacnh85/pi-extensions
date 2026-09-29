@@ -111,14 +111,19 @@ export default function piAttachments(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     settings = loadSettings();
-    // The shortcut was registered at module load with whatever this said then — an
-    // invalid KeyId never matches any key event, so say so instead of a silent no-op.
-    if (!isValidShortcut(settings.pasteFileShortcut)) {
-      const msg = `attachments: pasteFileShortcut ${JSON.stringify(settings.pasteFileShortcut)} is not a valid keybinding (e.g. "${DEFAULTS.pasteFileShortcut}") — the paste-file shortcut will never trigger. Fix settings.json and restart Pi.`;
+    // The shortcut was registered at module load with factory-time settings —
+    // re-reading doesn't re-register, so an edited-but-valid shortcut is
+    // silently dead until restart. Say so instead of a silent no-op.
+    const notify = (msg: string) => {
       try {
         if (ctx?.ui?.notify) ctx.ui.notify(msg, "warning");
         else console.warn(msg);
       } catch { /* best-effort */ }
+    };
+    if (!isValidShortcut(settings.pasteFileShortcut)) {
+      notify(`attachments: pasteFileShortcut ${JSON.stringify(settings.pasteFileShortcut)} is not a valid keybinding (e.g. "${DEFAULTS.pasteFileShortcut}") — the paste-file shortcut will never trigger. Fix settings.json and restart Pi.`);
+    } else if (settings.pasteFileShortcut !== registeredShortcut) {
+      notify(`attachments: pasteFileShortcut changed to ${JSON.stringify(settings.pasteFileShortcut)} in settings.json, but ${JSON.stringify(registeredShortcut)} is active for this session — restart Pi to apply.`);
     }
     trayUi = ctx.ui;
     editorText = (ctx.ui as any).getEditorText?.bind(ctx.ui);
@@ -243,7 +248,8 @@ export default function piAttachments(pi: ExtensionAPI): void {
 
   // 3. Clipboard file paste shortcut → queue into the tray as tokens.
   // ponytail: settings string → KeyId cast; an invalid key never matches (warned at session_start) — and note the shortcut is registered HERE, at module load, so settings edits need a restart
-  pi.registerShortcut(settings.pasteFileShortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+  const registeredShortcut = settings.pasteFileShortcut;
+  pi.registerShortcut(registeredShortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
     description: "Paste file(s) from clipboard as attachments",
     handler: async (ctx) => {
       // only existing regular files are attachable — Finder/Explorer folder copies pass through

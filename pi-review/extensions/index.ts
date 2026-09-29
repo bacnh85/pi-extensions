@@ -129,13 +129,29 @@ export function isReadOnlyBash(command: string): boolean {
     // diff/show/log render patches → textconv drivers run BY DEFAULT when a
     // repo .gitattributes names a driver (probe at review start sets
     // textconvArmed). Only auto-allow them when drivers are explicitly off.
-    // Verified driver-executing forms (clean-room probe): `git diff` (dirty
-    // worktree or staged content, bare or vs a rev), `git show [rev]`,
-    // `git log -p/--patch`, `git blame|annotate <path>`. Summary-only forms
-    // (--stat/--numstat/--shortstat), `git log` without -p, and
-    // status/rev-parse/ls-files never render a patch.
-    const rendersPatch = /^git\s+(?:\S+\s+)*(?:diff\b(?!.*\s--(?:stat|numstat|shortstat)\b)|show\b(?!.*\s--(?:stat|numstat|shortstat)\b)|log\b(?=.*(?:\s-p\b|\s--patch\b|--patch\b))|blame\b|annotate\b)/i;
-    if (textconvArmed && rendersPatch.test(inspection) && !/--(?:no-ext-diff|no-textconv)\b/i.test(inspection)) {
+    // Verified driver-executing forms (clean-room probe, git 2.55): `git diff`
+    // (dirty worktree or staged content, bare or vs a rev), `git show [rev]`,
+    // `git log -p/--patch/-u/-U<n>/--cc/-c` (-u is a -p alias; -U<n> and the
+    // combined-diff flags imply patch output and run the filter; -w/-b/-M/-C/
+    // -S/-G/--raw/--name-only never render one), `git blame|annotate <path>`.
+    // Summary-only forms (--stat/--numstat/--shortstat WITHOUT any
+    // patch-implying flag), `git log` without a patch-implying flag, and
+    // status/rev-parse/ls-files never render a patch. A patch flag beats a
+    // summary flag (`git diff --stat -p` renders a patch and fires the driver
+    // — verified live), so the diff/show lookahead is (patch-flag present OR
+    // no summary flag present).
+    const patchFlag = ".*\\s(?:-p\\b|-u(?:\\d|\\b)|-U\\d+\\b|--patch\\b|--cc\\b|-c\\b)";
+    const summaryFlag = "--(?:stat|numstat|shortstat)\\b";
+    const rendersPatch = new RegExp(
+      `^git\\s+(?:\\S+\\s+)*(?:(?:diff|show)\\b(?=${patchFlag}|(?:(?!.*${summaryFlag}).)*$)|log\\b(?=${patchFlag})|blame\\b|annotate\\b)`,
+      "i",
+    );
+    // Both off-flags are required: the probe matches diff.<drv>.textconv AND
+    // diff.<drv>.driver, and a single flag doesn't disable the other —
+    // `--no-ext-diff` alone leaves the textconv filter armed (verified live:
+    // the filter still fires), `--no-textconv` alone leaves an external
+    // driver armed (diff.external / diff.<drv>.driver probe hits).
+    if (textconvArmed && rendersPatch.test(inspection) && !(/--no-ext-diff\b/i.test(inspection) && /--no-textconv\b/i.test(inspection))) {
       return false;
     }
     return /^git\s+(status|rev-parse|diff|show|log|ls-files)\b/i.test(inspection)
@@ -241,7 +257,8 @@ function formatReview(result: ReviewResult): string {
 
 async function isolatedReview(pi: ExtensionAPI, request: Omit<ReviewRunRequest, "id" | "respond" | "accept">): Promise<ReviewResult | undefined> {
   const id = crypto.randomUUID();
-  const inactivityMs = request.timeout ?? INACTIVITY_TIMEOUT_MS;
+  // Callers may request a longer idle window — the hard ceiling always wins.
+  const inactivityMs = Math.min(request.timeout ?? INACTIVITY_TIMEOUT_MS, HARD_TIMEOUT_MS);
   const controller = new AbortController();
   const signal = request.signal ? AbortSignal.any([request.signal, controller.signal]) : controller.signal;
   let accepted = false;

@@ -18,7 +18,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { terminalOutcomeError } from "./lib/outcome.js";
+import { stripInputRequired, terminalOutcomeError } from "./lib/outcome.js";
 import { childRetrySettings, isTransientChannelError } from "./lib/retry.js";
 import { buildA2ASettingsPatch, getGatewayPeers, loadConfig, setConfigOverrides, writeSettingsA2A, type A2AConfig } from "./lib/config";
 import {
@@ -226,9 +226,12 @@ function makeSessionRunner(ctx: ExtensionContext, cfg?: A2AConfig): SessionRunne
         terminalHadText = Boolean(text);
         terminalErrorMessage = event.message?.errorMessage;
         sawAssistant = true;
-        if (/\[INPUT_REQUIRED\]/i.test(reply)) {
-          inputRequired = true;
-          reply = reply.replace(/\[INPUT_REQUIRED\]\s*/gi, "").trim();
+        // Tail-anchored: only a marker ENDING this (final) assistant message
+        // flips the state — see stripInputRequired.
+        if (text) {
+          const stripped = stripInputRequired(text);
+          reply = stripped.text;
+          inputRequired = stripped.inputRequired;
         }
       }
     });
@@ -476,6 +479,17 @@ const contextIdParam = Type.Optional(
       "Context id from a prior call — reuse for multi-turn conversations. Omit for a new conversation.",
   }),
 );
+
+/** Parse `/a2a-broadcast` args. The --agents flag is only recognized LEADING
+ *  or TRAILING — an occurrence inside the message body is content, not a flag. */
+export function parseBroadcastArgs(raw: string): { message: string; agents: string[] } {
+  const s = raw.trim();
+  const lead = /^--agents\s+(\S+)\s*/.exec(s);
+  const trail = lead ? null : /\s+--agents\s+(\S+)$/.exec(s);
+  if (lead) return { message: s.slice(lead[0].length).trim(), agents: lead[1].split(",") };
+  if (trail) return { message: s.slice(0, trail.index).trim(), agents: trail[1].split(",") };
+  return { message: s, agents: [] };
+}
 
 // ---------------------------------------------------------------------------
 // Extension entrypoint
@@ -776,7 +790,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
         a2aList({
           cfg,
           piDir: piDir(),
-          discoveredPeers: listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "" }),
+          discoveredPeers: listPeers({ cfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "", gatewayPeers: getGatewayPeers() }),
         }),
         "info",
       );
@@ -821,10 +835,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
       return [{ value: "--agents", label: "--agents", description: "comma-separated peer list" }];
     },
     handler: async (args, ctx) => {
-      const raw = String(args ?? "").trim();
-      const m = /--agents\s+(\S+)/.exec(raw);
-      const message = raw.replace(/--agents\s+\S+/, "").trim();
-      const agents = m?.[1]?.split(",") ?? [];
+      const { message, agents } = parseBroadcastArgs(String(args ?? ""));
       if (!message || agents.length === 0) {
         ctx.ui.notify("Usage: /a2a-broadcast <msg> --agents a,b,c", "error");
         return;
