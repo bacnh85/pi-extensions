@@ -20,7 +20,6 @@ import { readEvolveSettings } from "./lib/config";
 // ponytail: one buffer per process. Reset on session_start (new/resume/fork)
 // so cross-session digests don't leak. Bounded by bufferCap within a session.
 const buffer = new TrajectoryBuffer();
-let sealedSnapshot: TrajectoryEntry[] = [];
 let lastSealTs: number | null = null;
 let learningsWritten = 0;
 // v0.3: per-{tool:category} error counts for repeat escalation (Layer 3).
@@ -59,7 +58,6 @@ const PLAN_DEFER_HINT =
 /** Test helper: reset the module-level buffer + counters. Exported for tests only. */
 export function _resetForTest(): void {
   buffer.clear();
-  sealedSnapshot = [];
   lastSealTs = null;
   learningsWritten = 0;
   injectCache = null;
@@ -276,7 +274,6 @@ export default function evolveExtension(pi: ExtensionAPI) {
     const reason = String(event?.reason ?? "");
     if (reason === "new" || reason === "resume" || reason === "fork" || reason === "startup" || reason === "") {
       buffer.clear();
-      sealedSnapshot = [];
       lastSealTs = null;
       learningsWritten = 0;
       errorHistory.clear();
@@ -436,13 +433,13 @@ export default function evolveExtension(pi: ExtensionAPI) {
   pi.on("agent_end", (_event: any, ctx: any) => {
     const settings = readEvolveSettings(ctx?.cwd, ctx?.isProjectTrusted?.() === true);
     if (!settings.enabled) return;
-    sealedSnapshot = buffer.snapshot();
+    const sealed = buffer.snapshot();
     lastSealTs = Date.now();
     // v0.2: auto-reflect nudge — when the sealed buffer shows a recovery
     // (error → later ok on the same tool), surface a hint so the model can
     // extract a recovery learning. Best-effort; never throws. Layer 4: in plan
     // mode, defer saving (evolve_save is blocked there).
-    if (settings.autoReflect && countRecoveries(sealedSnapshot) > 0) {
+    if (settings.autoReflect && countRecoveries(sealed) > 0) {
       try {
         const inPlan = pi.getFlag?.("plan") === true;
         ctx?.ui?.notify?.(

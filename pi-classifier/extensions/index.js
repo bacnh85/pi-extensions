@@ -224,7 +224,9 @@ export async function classify({ baseUrl, model, apiKey, signal }, state, questi
   if (!apiKey) throw new Error("classifier API key not configured (CLASSIFIER_API_KEY or auth.json classifier.key)");
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 8000);
-  if (signal) signal.addEventListener("abort", () => ac.abort(), { once: true });
+  const abort = () => ac.abort();
+  if (signal?.aborted) ac.abort();
+  else signal?.addEventListener("abort", abort, { once: true });
   try {
     const res = await fetch(`${baseUrl}/systemone`, {
       method: "POST",
@@ -240,6 +242,7 @@ export async function classify({ baseUrl, model, apiKey, signal }, state, questi
     return body.answers;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
   }
 }
 
@@ -306,6 +309,7 @@ function segments(command) {
 const planGateCache = createVerdictCache();
 
 export async function planGateVerdict({ signal } = {}, command, cwd, task) {
+  if (signal?.aborted) return { allow: false, reason: "cancelled" };
   const s = getClassifierSettings();
   if (!s.planGate.enabled) return { allow: false, reason: "disabled" };
   if (isRisky(command) || segments(command).some(isRisky)) {

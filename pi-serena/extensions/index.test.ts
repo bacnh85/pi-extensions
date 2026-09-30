@@ -324,16 +324,16 @@ describe("read-only retry gate", () => {
     expect(isReadOnlyWorkerAction("onboarding")).to.be.false;
   });
 
-  it("shouldRetryAfterTimeout: read-only tools retry on timeout responses", () => {
-    expect(shouldRetryAfterTimeout("find_symbol", {}, { responseOk: false, errorType: "timeout" })).to.be.true;
-    expect(shouldRetryAfterTimeout("call", { tool: "get_symbols_overview" }, { responseOk: false, errorType: "timeout" })).to.be.true;
-    // non-timeout error responses never retry
-    expect(shouldRetryAfterTimeout("find_symbol", {}, { responseOk: false, errorType: "worker_error" })).to.be.false;
+  it("shouldRetryAfterTimeout: read-only tools retry on thrown timeout-class errors", () => {
+    expect(shouldRetryAfterTimeout("find_symbol", {}, { errorMessage: "Request timed out after 10ms" })).to.be.true;
+    expect(shouldRetryAfterTimeout("call", { tool: "get_symbols_overview" }, { errorMessage: "worker killed due to timeout" })).to.be.true;
+    // non-timeout errors never retry
+    expect(shouldRetryAfterTimeout("find_symbol", {}, { errorMessage: "unrelated failure" })).to.be.false;
   });
 
   it("shouldRetryAfterTimeout: mutators NEVER retry (may have applied before the kill)", () => {
-    expect(shouldRetryAfterTimeout("rename_symbol", {}, { responseOk: false, errorType: "timeout" })).to.be.false;
-    expect(shouldRetryAfterTimeout("call", { tool: "safe_delete_symbol" }, { responseOk: false, errorType: "timeout" })).to.be.false;
+    expect(shouldRetryAfterTimeout("rename_symbol", {}, { errorMessage: "Request timed out after 10ms" })).to.be.false;
+    expect(shouldRetryAfterTimeout("call", { tool: "safe_delete_symbol" }, { errorMessage: "worker exited unexpectedly" })).to.be.false;
     expect(shouldRetryAfterTimeout("replace_content", {}, { errorMessage: "Request timed out after 10ms" })).to.be.false;
   });
 

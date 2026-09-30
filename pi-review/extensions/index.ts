@@ -450,8 +450,8 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
         timeout: INACTIVITY_TIMEOUT_MS,
         accept: () => {
           if (accepted) return false;
-          accepted = true;
           ctx.ui.notify("Isolated review is running...", "info");
+          accepted = true;
           return true;
         },
         respond: (response: any) => {
@@ -467,7 +467,7 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
           }
         },
       });
-      if (!accepted) {
+      if (!accepted && !settled) {
         // No one listening for REVIEW_EVENT — already in review mode, send prompt
         ctx.ui.notify("No isolated reviewer available, switching to local review...", "info");
         pi.sendUserMessage(prompt, { deliverAs: "followUp" });
@@ -478,10 +478,22 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
   pi.events.on(REVIEW_EVENT, (raw) => {
     const request = raw as ReviewRunRequest;
     if (!request?.id || typeof request.respond !== "function") return;
-    if (request.accept && !request.accept()) return;
+    let accepted = true;
+    try { accepted = !request.accept || request.accept() !== false; }
+    catch {
+      // A synchronous throw inside accept() must not escape the emit chain —
+      // that strands the caller (e.g. /review self-consume arms local review
+      // mode before emitting). Treat as declined AND resolve the request as
+      // failed so a waiting consumer doesn't hang. Consumers ignore a
+      // plain-decline (no response = "unavailable"); only the throw path
+      // responds here.
+      accepted = false;
+      try { request.respond({ id: request.id, ok: false, error: "Reviewer accept handler failed" }); } catch { /* consumer gone */ }
+    }
+    if (!accepted) return;
     void runReview(request.prompt, request.cwd, request.signal, request.gitRange, request.requireExactRange, request.timeout, request.onProgress).then(
-      (result) => request.respond(result ? { id: request.id, ok: true, result } : { id: request.id, ok: false, error: "Isolated reviewer unavailable" }),
-      (error) => request.respond({ id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) }),
+      (result) => { try { request.respond(result ? { id: request.id, ok: true, result } : { id: request.id, ok: false, error: "Isolated reviewer unavailable" }); } catch { /* consumer gone */ } },
+      (error) => { try { request.respond({ id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) }); } catch { /* consumer gone */ } },
     );
   });
 
@@ -492,6 +504,17 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
     thinkingBeforeReview = undefined;
     void probeTextconvArmed(ctx.cwd); // best-effort: driver-aware bash gating
     setStatus(ctx);
+  });
+
+  // Session replaced without agent_settled/session_start (RPC/print lifecycle):
+  // drop leaked review-mode bookkeeping so restricted tools/thinking don't
+  // carry into the replacement session. Mirrors the session_start reset; the
+  // host resets actual tool/thinking session state.
+  pi.on("session_shutdown", async () => {
+    reviewModeEnabled = false;
+    restorePending = false;
+    toolsBeforeReview = undefined;
+    thinkingBeforeReview = undefined;
   });
 
   pi.on("tool_call", async (event) => {

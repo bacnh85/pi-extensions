@@ -30,7 +30,7 @@ In TUI mode, bare `/review` asks for uncommitted, branch, or custom scope. Witho
 - Each confirmed finding is a structured actionable issue with severity, file/line, reproduction or evidence, expected behavior, suggested fix, acceptance criteria, and `blocking`.
 - Only compact findings return to the parent; `/agent` retains the child thread.
 - `REVIEW.md`, when present, is passed as bounded review guidance.
-- Isolated reviews use a 3-minute activity-resettable inactivity window and a 20-minute absolute cap; transport heartbeats do not count as activity.
+- Isolated reviews use a 3-minute activity-resettable inactivity window and a 20-minute absolute cap. All progress events (including `pi-subagent` transport heartbeats) count as activity and reset the window; only the 20-minute cap bounds a hung-but-heartbeating child.
 
 The local fallback preserves active safe research tools (Serena, FFF, web, and Munin reads), blocks mutators and unsafe Bash, chains review guidance into the per-turn system prompt, and restores tools/thinking once on `agent_settled`.
 

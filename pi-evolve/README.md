@@ -95,6 +95,7 @@ Optional `evolve` key in `settings.json`:
 
 - **Munin configured** (`MUNIN_API_KEY` + `MUNIN_PROJECT` set via env or `.env.local`) → learnings stored with tag `type:learning,domain:<inferred>`, searchable via `munin_search`.
 - **Munin not configured** → local JSONL at `.pi/evolve/learnings.jsonl` (capped at `localCap`).
+- **Untrusted project** → local saves redirect to `<agentDir>/evolve/learnings.jsonl` (never into cwd).
 
 ### Security (exfiltration guards, v0.3.2)
 

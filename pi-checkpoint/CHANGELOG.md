@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.9 - 2026-09-30
+
+### Fixed
+
+- **`session_start` can no longer reject on seed failure.** State was reset
+  (stack/redo/counter=0) *before* awaiting `seedCounter`/`pruneOldRefs`; if the
+  git calls threw (transient git failure), the handler rejected with
+  `sessionCounter` already reset to 0 — so a resumed session's existing refs
+  (`<sid>/0…`) could be overwritten once git recovered. The seed/prune block is
+  now best-effort with a warning notification, matching the file's
+  snapshot/restore/prune error style. A residual window remains (a transient
+  git failure between a successful seed and the first snapshot) — snapshot()
+  skips and notifies on that failure rather than overwriting silently.
+
+### Documented
+
+- README Caveats: after a Pi restart the in-memory undo/redo stack is empty
+  even though ref numbering continues — `/undo` reports nothing until new
+  turns are snapshotted.
+
 ## 0.1.8 - 2026-09-28
 
 - Docs + tests: README's "On every `turn_start`" claim corrected to the

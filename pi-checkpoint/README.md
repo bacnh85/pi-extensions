@@ -35,7 +35,7 @@ Pi's `/tree` lets you navigate conversation history, but if the agent made 20 ed
 
 ## Caveats
 
-- Snapshots are per-session and in-memory; they are not persisted across Pi restarts (the git refs are, but the stack index resets). A resumed session reuses the same sessionId and **continues numbering from the highest existing ref** (`<sid>/<max+1>`), so old restore points are never overwritten.
+- Snapshots are per-session and in-memory; they are not persisted across Pi restarts (the git refs are, but the undo/redo stack resets). After a Pi restart the stack is **empty** even though ref numbering continues: a resumed session reuses the same sessionId and **continues numbering from the highest existing ref** (`<sid>/<max+1>`, so old restore points are never overwritten), but `/undo` reports nothing until new turns have been snapshotted.
 - Restore is tracked-files-only. Untracked files created during the undone turn remain until you remove them — and tracked files that were **added** during the undone turn also remain after restore (`git checkout <ref> -- .` only updates paths tracked at the snapshot; files newly added to the index stay behind). Remove them manually if unwanted.
 - Checkpoint refs are pruned on `session_start` when older than **30 days** (`refs/pi-checkpoints/<sid>/<n>`, by commit date); older restore points are deleted permanently.
 

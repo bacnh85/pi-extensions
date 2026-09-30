@@ -1,6 +1,6 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { relative, resolve, isAbsolute, sep, join, basename } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -1506,6 +1506,119 @@ it("issue #21: write/create/overwrite without content= or content_from= errors i
       // And each expression yields the right listing against the stub vault.
       expect(runAgainstVault(sentCodes[0])).to.equal("01.md");
       expect(runAgainstVault(sentCodes[1]).split("\n")).to.deep.equal([...vaultFiles].sort());
+    } finally {
+      process.env.PATH = oldPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("create with file content containing literal 'overwrite=true' must NOT overwrite (token guard, not substring)", async function () {
+    this.timeout(10_000);
+    // Reproduction: `create file=n.md content="... overwrite=true ..."` — the
+    // old raw.includes("overwrite=true") matched inside the quoted content and
+    // flipped create→overwrite, clobbering the existing file. Capture the
+    // eval scripts the tool sends and assert the SECOND create still carries
+    // the create-mode guard ('File already exists'), i.e. mode stayed create.
+    const { default: piObsidianExtension } = await import("../index.js");
+    let tool: any = null;
+    const mockPi: any = { registerTool(t: any) { tool = t; }, on() {} };
+    piObsidianExtension(mockPi);
+    const dir = mkdtempSync(join(tmpdir(), "pi-obsidian-ovw-token-"));
+    const log = join(dir, "args.log");
+    const oldPath = process.env.PATH;
+    try {
+      // Stub CLI: log every arg; eval steps echo "ok", read steps echo seed content.
+      writeFileSync(join(dir, "obsidian"), `#!/bin/sh
+for a in "$@"; do printf '%s\n' "$a" >> "$OBS_STUB_LOG"; done
+if [ "$1" = "read" ]; then printf 'seed\n'; else printf 'ok'; fi
+`);
+      chmodSync(join(dir, "obsidian"), 0o755);
+      process.env.PATH = `${dir}:${oldPath ?? ""}`;
+      process.env.OBS_STUB_LOG = log;
+      // create #1 (fresh file) — verification may fail against the dumb stub;
+      // we only care about which scripts get sent for create #2.
+      try { await tool.execute("test-id", { run: 'create file=n.md content="seed"' }); } catch { /* ignore */ }
+      writeFileSync(log, "");
+      try { await tool.execute("test-id", { run: 'create file=n.md content="seed overwrite=true"' }); } catch { /* ignore */ }
+      const logged = readFileSync(log, "utf8").split("\n").filter((l) => l.startsWith("code="));
+      expect(logged.length).to.be.greaterThan(0);
+      // First sent script must be a CREATE script (has the exists-guard).
+      // The old bug sent an OVERWRITE script here (no guard) → silent clobber.
+      expect(logged[0]).to.include("File already exists");
+    } finally {
+      process.env.PATH = oldPath;
+      delete process.env.OBS_STUB_LOG;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("eval on empty echo: read-only script retries once; write script returns a warning without re-exec (0.8.20)", async function () {
+    this.timeout(10_000);
+    const { default: piObsidianExtension } = await import("../index.js");
+    let tool: any = null;
+    const mockPi: any = { registerTool(t: any) { tool = t; }, on() {} };
+    piObsidianExtension(mockPi);
+    const dir = mkdtempSync(join(tmpdir(), "pi-obsidian-eval-echo-"));
+    const log = join(dir, "args.log");
+    const oldPath = process.env.PATH;
+    try {
+      // Stub CLI: log every arg, print NOTHING on stdout and nothing on
+      // stderr — the exact 1.13.x dropped-echo condition.
+      writeFileSync(join(dir, "obsidian"), `#!/bin/sh
+for a in "$@"; do printf '%s\n' "$a" >> "$OBS_STUB_LOG"; done
+`);
+      chmodSync(join(dir, "obsidian"), 0o755);
+      process.env.PATH = `${dir}:${oldPath ?? ""}`;
+      process.env.OBS_STUB_LOG = log;
+      // Read-only script: retried once (2 eval invocations), then the
+      // "(eval returned no result; ...)" fallback string.
+      const r1 = await tool.execute("test-id", { run: "eval code=return app.vault.getFiles().length" });
+      let evals = readFileSync(log, "utf8").split("\n").filter((l) => l === "eval").length;
+      expect(evals).to.equal(2, "read-only eval retried exactly once");
+      expect(String(r1.content[0].text)).to.include("no result");
+      // Write-capable script: never re-executed (2 fresh evals = exactly 1
+      // attempt + no retry), and reports the likely-applied side effects
+      // instead of throwing. Quoted so the code= value is one token.
+      writeFileSync(log, "");
+      let r2;
+      try {
+        r2 = await tool.execute("test-id", { run: `eval code="await app.vault.modify(f,'x')"` });
+      } catch (e) {
+        // Old behavior threw — fail loudly with the thrown error.
+        throw new Error(`write-capable eval must not throw on dropped echo, got: ${e}`);
+      }
+      evals = readFileSync(log, "utf8").split("\n").filter((l) => l === "eval").length;
+      expect(evals).to.equal(1, "write-capable eval NOT re-executed");
+      expect(String(r2.content[0].text)).to.include("most likely applied");
+    } finally {
+      process.env.PATH = oldPath;
+      delete process.env.OBS_STUB_LOG;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("files with folder name containing 'recursive' must NOT switch to recursive listing", async function () {
+    this.timeout(10_000);
+    // Reproduction: `files folder=recursive-archive` — the old
+    // raw.includes("recursive") matched the folder NAME substring and turned a
+    // plain subfolder listing into a full recursive walk.
+    const { default: piObsidianExtension } = await import("../index.js");
+    let tool: any = null;
+    const mockPi: any = { registerTool(t: any) { tool = t; }, on() {} };
+    piObsidianExtension(mockPi);
+    const dir = mkdtempSync(join(tmpdir(), "pi-obsidian-recursive-name-"));
+    const oldPath = process.env.PATH;
+    try {
+      writeFileSync(join(dir, "obsidian"), "#!/bin/sh\nfor a in \"$@\"; do printf '%s\n' \"$a\"; done\n");
+      chmodSync(join(dir, "obsidian"), 0o755);
+      process.env.PATH = `${dir}:${oldPath ?? ""}`;
+      const r = await tool.execute("test-id", { run: "files folder=recursive-archive" });
+      const sentCode = String(r.content[0].text);
+      // Non-root folder without an explicit `recursive` token routes through
+      // the plain `files folder=… format=json` CLI call, not the recursive
+      // eval walk (whose predicate uses startsWith).
+      expect(sentCode).to.include("format=json");
+      expect(sentCode).to.not.include("startsWith");
     } finally {
       process.env.PATH = oldPath;
       rmSync(dir, { recursive: true, force: true });

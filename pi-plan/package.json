@@ -1,7 +1,7 @@
 {
   "name": "@bacnh85/pi-plan",
-  "version": "0.16.4",
-  "description": "Plan mode with read-only gating and plan \u2192 implement \u2192 verify \u2192 review workflow for Pi.",
+  "version": "0.16.5",
+  "description": "Plan mode with read-only gating and plan → implement → verify → review workflow for Pi.",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
@@ -43,15 +43,15 @@
     "@bacnh85/pi-classifier": "^0.2.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.80.8 <0.88.0",
-    "@earendil-works/pi-coding-agent": ">=0.84.3 <0.88.0",
-    "@earendil-works/pi-tui": ">=0.80.8 <0.88.0",
+    "@earendil-works/pi-ai": ">=0.80.8 <1.0.0",
+    "@earendil-works/pi-coding-agent": ">=0.84.3 <1.0.0",
+    "@earendil-works/pi-tui": ">=0.80.8 <1.0.0",
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.87.0",
-    "@earendil-works/pi-coding-agent": "^0.87.1",
-    "@earendil-works/pi-tui": "^0.87.0",
+    "@earendil-works/pi-ai": "^0.99.1",
+    "@earendil-works/pi-coding-agent": "^0.99.1",
+    "@earendil-works/pi-tui": "^0.99.1",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.43",
     "chai": "^4.5.0",

@@ -13,6 +13,7 @@ import {
   searchLearnings,
   rankLocal,
   localPath,
+  agentSettingsPath,
   readLocalTail,
   capLocal,
   formatLearningContent,
@@ -136,6 +137,8 @@ describe("local JSONL store", () => {
   beforeEach(() => {
     cwd = tmpCwd();
     saved = saveEnv();
+    // Isolate agent-dir fallbacks from the developer's real ~/.pi/agent.
+    process.env.PI_CODING_AGENT_DIR = join(cwd, "agent-store");
   });
   afterEach(() => {
     restoreEnv(saved);
@@ -144,12 +147,12 @@ describe("local JSONL store", () => {
 
   it("writes and reads back a learning via the local backend", async () => {
     const cfg = resolveStoreConfig({ store: "local" });
-    const stored = await writeLearning(sampleLearning, {}, cfg, cwd);
+    const stored = await writeLearning(sampleLearning, {}, cfg, cwd, true);
     expect(stored.key).to.include("learning/recovery/");
     expect(stored.title).to.include("ECONNREFUSED");
 
     expect(existsSync(localPath(cwd))).to.equal(true);
-    const recent = await readRecentLearnings(10, {}, cfg, cwd);
+    const recent = await readRecentLearnings(10, {}, cfg, cwd, true);
     expect(recent).to.have.length(1);
     expect(recent[0].kind).to.equal("recovery");
     expect(recent[0].lesson).to.include("Docker daemon");
@@ -180,7 +183,7 @@ describe("local JSONL store", () => {
           { kind: "strategy", trigger: `parallel save ${i}`, lesson: `entry ${i}` },
           {},
           cfg,
-          cwd,
+          cwd, true,
         ),
       ),
     );
@@ -404,6 +407,10 @@ describe("searchLearnings (local ranking)", () => {
   beforeEach(() => {
     saved = saveEnv();
     cwd = tmpCwd();
+    // Route agent-dir fallbacks at a temp dir: these tests exercise ranking
+    // logic with trusted omitted (→ untrusted → agent-dir store), and must
+    // never touch the developer's real ~/.pi/agent/evolve learnings.
+    process.env.PI_CODING_AGENT_DIR = join(cwd, "agent-store");
   });
   afterEach(() => {
     restoreEnv(saved);
@@ -449,6 +456,19 @@ describe("searchLearnings (local ranking)", () => {
     );
     const results = await searchLearnings("kubernetes cluster setup", 5, {}, cfg, cwd);
     expect(results).to.deep.equal([]);
+  });
+
+  it("untrusted local writes land in the agent dir, never in cwd", async () => {
+    const cfg = resolveStoreConfig({ store: "local" });
+    await writeLearning(
+      { kind: "strategy", trigger: "trust boundary", lesson: "agent dir only", anchors: [] },
+      {}, cfg, cwd, // trusted omitted → false → agent-dir store
+    );
+    expect(existsSync(localPath(cwd))).to.equal(false);
+    expect(existsSync(agentSettingsPath())).to.equal(true);
+    const back = await readRecentLearnings(5, {}, cfg, cwd);
+    expect(back).to.have.length(1);
+    expect(back[0].lesson).to.include("agent dir only");
   });
 
   it("rankLocal scores empty query as no preference (returns all)", () => {

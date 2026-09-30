@@ -769,7 +769,7 @@ export class SerenaWorkerClient {
       finish();
       item.reject(new Error(
         `Serena worker request timed out: ${item.payload.action ?? "unknown"}. ` +
-        `Worker has been restarted; retry if needed.`
+        `Worker has been restarted; if this was a write action, verify state before retrying — it may have partially applied.`
       ));
     }, item.timeoutMs);
     this.pending.set(id, {

@@ -66,7 +66,7 @@ export function resolveSettingsPath(cwd = process.cwd(), trusted = false): strin
 // Memoized per resolved path: tool_call/tool_result hooks fire per tool call,
 // so one statSync per read beats readFileSync+parse every time. Re-read only
 // when mtime/size change (same pattern as pi-ponytail's config cache).
-let settingsCache: { path: string | null; mtimeMs: number; size: number; value: EvolveSettings } | null = null;
+let settingsCache: { path: string; mtimeMs: number; size: number; value: EvolveSettings } | null = null;
 
 function parseEvolveSettings(file: string): EvolveSettings {
   let parsed: any;
@@ -99,14 +99,15 @@ function parseEvolveSettings(file: string): EvolveSettings {
 
 /** Read the `evolve` block from settings.json. Returns defaults when absent/unreadable.
  *  Untrusted projects: only the agent-dir settings are consulted. Memoized per
- *  resolved path; re-parsed only when the file's mtime/size changes. */
+ *  resolved path (a null resolution is never memoized — see readEvolveSettings
+ *  body); re-parsed only when the file's mtime/size changes. */
 export function readEvolveSettings(cwd = process.cwd(), trusted = false): EvolveSettings {
   const file = resolveSettingsPath(cwd, trusted);
-  if (!file) {
-    if (settingsCache?.path === null) return settingsCache.value;
-    settingsCache = { path: null, mtimeMs: -1, size: -1, value: { ...DEFAULTS } };
-    return settingsCache.value;
-  }
+  // No settings anywhere: do NOT memoize the null case — a project can gain
+  // .pi/settings.json mid-session, and only the first-existing candidate wins,
+  // so a cached null would shadow later-created files forever. Re-stat is
+  // cheap (same cost the file path pays per read).
+  if (!file) return { ...DEFAULTS };
   let st;
   try {
     st = statSync(file);

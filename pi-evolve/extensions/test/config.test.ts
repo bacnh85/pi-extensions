@@ -56,6 +56,17 @@ describe("config", () => {
     expect(resolveSettingsPath(cwd)).to.equal(null);
   });
 
+  it("no-settings read is never memoized: a settings file created mid-session is honored (0.3.11)", () => {
+    const cwd = tmpDir("pi-evolve-cfg-latecreate-");
+    dirs.push(cwd);
+    // First read with no settings anywhere → defaults, nothing cached.
+    expect(readEvolveSettings(cwd, true)).to.deep.equal(DEFAULTS);
+    // The project gains a settings file mid-session — the next read must
+    // see it (a cached null would shadow it forever).
+    writeSettings(cwd, { bufferCap: 7 });
+    expect(readEvolveSettings(cwd, true).bufferCap).to.equal(7);
+  });
+
   it("malformed JSON → defaults", () => {
     const cwd = tmpDir("pi-evolve-cfg-malformed-");
     dirs.push(cwd);

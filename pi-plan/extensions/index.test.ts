@@ -3315,6 +3315,54 @@ describe("fallback model chain", () => {
     await ext.commands["plan-fallback"].handler("", ctx);
     assert.ok(notices.some((n) => /No fallback models configured/.test(n)), "view after clear");
   });
+
+  it("/plan-fallback set/clear roll back in-memory state when the save fails (0.16.5)", async () => {
+    cleanPrefs();
+    const ext = createFakePi(["read"], {});
+    const ctx = fallbackCtx({ provider: "test", id: "model-1" });
+    const notices: string[] = [];
+    ctx.ui.notify = (m: string) => notices.push(m);
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    // Seed a known chain on disk first.
+    await ext.commands["plan-fallback"].handler("set test/model-1", ctx);
+
+    // Force savePreferences to fail: make the settings dir unwritable
+    // (the tmp→file rename then fails on POSIX).
+    const agentDir = path.dirname(prefsPath());
+    const mode = statSync(agentDir).mode;
+    chmodSync(agentDir, 0o500);
+    try {
+      await ext.commands["plan-fallback"].handler("set opencode-go/deepseek-v4-flash", ctx);
+      assert.ok(notices.some((n) => /Could not save fallback setting/.test(n)), "set reports the save failure");
+      await ext.commands["plan-fallback"].handler("clear", ctx);
+      assert.ok(notices.filter((n) => /Could not save fallback setting/.test(n)).length >= 2, "clear also reports the failure");
+    } finally {
+      chmodSync(agentDir, mode);
+    }
+
+    // Both handlers must have restored the pre-command chain in memory AND
+    // on disk: view still shows the seeded chain, disk untouched.
+    await ext.commands["plan-fallback"].handler("", ctx);
+    assert.ok(notices.some((n) => /fallback: test\/model-1 \(idx 0\)/.test(n)), "in-memory chain restored to pre-command state");
+    assert.deepEqual(JSON.parse(readFileSync(prefsPath(), "utf8"))["pi-plan"].fallbackModels, ["test/model-1"], "disk state restored");
+  });
+
+  it("/plan-execute with no written plan warns and never executes (0.16.5)", async () => {
+    cleanPrefs();
+    const ext = createFakePi(["read"], {});
+    const ctx = fallbackCtx({ provider: "test", id: "model-1" });
+    const notices: string[] = [];
+    ctx.ui.notify = (m: string) => notices.push(m);
+    let executed = false;
+    ctx.sessionManager.newSession = () => { executed = true; };
+    await ext.handlers.session_start?.[0]({ reason: "startup" }, ctx);
+
+    await ext.commands["plan-execute"].handler("new", ctx);
+    await ext.commands["plan-execute"].handler("flow", ctx);
+    assert.equal(notices.filter((n) => /No plan is ready for execution/.test(n)).length, 2, "both invocations warn");
+    assert.equal(executed, false, "no session created without a plan");
+  });
 });
 
 describe("ask_user_question validation", () => {

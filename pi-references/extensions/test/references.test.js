@@ -47,6 +47,28 @@ test("readSettingsKey treats non-object values as misconfig (undefined)", () => 
   }
 });
 
+test("readSettingsKey: malformed project references falls through to global settings", () => {
+  const dir = mkdtempSync(join(tmpdir(), "refs-settings-"));
+  const globalDir = mkdtempSync(join(tmpdir(), "refs-global-"));
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+  try {
+    mkdirSync(join(dir, ".pi"), { recursive: true });
+    writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ references: "garbage" }));
+    writeFileSync(
+      join(globalDir, "settings.json"),
+      JSON.stringify({ references: { docs: { path: "../d" } } }),
+    );
+    process.env.PI_CODING_AGENT_DIR = globalDir;
+    const key = readSettingsKey(dir, "references");
+    assert.deepEqual(key, { docs: { path: "../d" } });
+  } finally {
+    if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(globalDir, { recursive: true, force: true });
+  }
+});
+
 // ── normalizeReference ────────────────────────────────────────────────────
 
 test("normalizeReference: local relative path resolved against cwd", () => {

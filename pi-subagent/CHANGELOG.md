@@ -1,3 +1,7 @@
+## 0.23.2 (2026-09-29)
+
+- Widened `@earendil-works/pi-coding-agent` peerDependency cap from `<0.88.0` to `<1.0.0` (floor unchanged) and `@earendil-works/pi-tui`/`@earendil-works/pi-ai` caps likewise; bumped devDependencies to `^0.99.1`. Verified against Pi SDK 0.99.1.
+
 # Changelog
 
 ## 0.23.1 - 2026-09-28

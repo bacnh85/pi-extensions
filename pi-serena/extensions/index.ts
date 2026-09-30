@@ -129,7 +129,6 @@ const ERROR_HINTS: Record<string, (tool?: string) => string> = {
   language_server_error: () => " The language server may need a restart. Try serena_restart_language_server first.",
   missing_tool: (tool) => ` The tool '${tool ?? "unknown"}' is not available. Try serena_list_tools to see available tools for this project.`,
   inactive_tool: (tool) => ` The tool '${tool ?? "unknown"}' is not active in the current context. Try serena_list_tools to see active tools.`,
-  timeout: () => " The request timed out. Retry with a longer timeout_ms parameter.",
   project_error: () => " There is a project configuration issue. Try serena_get_current_config to inspect the active project.",
 };
 
@@ -190,17 +189,14 @@ export function isReadOnlyWorkerAction(action: string, extraPayload: Record<stri
 }
 
 /** Retry policy for callWorkerAction, extracted so tests can pin it without
- *  spawning a real worker: a timeout response/throw retries only when the
+ *  spawning a real worker: a thrown timeout-class error retries only when the
  *  effective action is read-only (mutators may have applied before the kill). */
 export function shouldRetryAfterTimeout(
   action: string,
   extraPayload: Record<string, unknown>,
-  failure: { responseOk?: boolean; errorType?: string; errorMessage?: string },
+  failure: { errorMessage?: string },
 ): boolean {
   if (!isReadOnlyWorkerAction(action, extraPayload)) return false;
-  if (failure.responseOk !== undefined) {
-    return failure.responseOk !== true && failure.errorType === "timeout";
-  }
   const msg = failure.errorMessage || "";
   return msg.includes("timed out") || msg.includes("killed due to timeout") || msg.includes("worker exited") || msg.includes("restarted");
 }
@@ -224,13 +220,8 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     const { project, context, timeoutMs, params } = stripControlParams(rawParams);
     const payload = { action, project, context, params, ...extraPayload };
     const requestWithRetry = async (): Promise<SerenaWorkerResponse> => {
-      const canRetry = isReadOnlyWorkerAction(action, extraPayload);
       try {
-        const response = await getWorker(ctx).request(payload, timeoutMs);
-        const errorType = response.errorType as string | undefined;
-        return !response.ok && errorType === "timeout" && canRetry
-          ? getWorker(ctx).request(payload, timeoutMs)
-          : response;
+        return await getWorker(ctx).request(payload, timeoutMs);
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         if (!shouldRetryAfterTimeout(action, extraPayload, { errorMessage: msg })) throw error;

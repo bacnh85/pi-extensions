@@ -1182,13 +1182,13 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
         }
         const folder = flags.folder ?? "";
         const isRoot = folder === "/" || folder === "";
-        if (isRoot || raw.includes("recursive")) {
+        const explicitRecursive = parseCliString(raw).includes("recursive");
+        if (isRoot || explicitRecursive) {
           // Root without an explicit `recursive` token lists only root-level
           // entries (no "/") — the full vault dump was a bug (issue: README
           // promises "Root-level files"). Explicit `recursive` keeps the full
           // listing. parseCliString token match avoids substring false-
           // positives (same guard as validate-tags).
-          const explicitRecursive = parseCliString(raw).includes("recursive");
           return listFilesRecursive(isRoot ? "" : folder, v, timeoutMs, execObsidian, isRoot && !explicitRecursive);
         }
         const args: string[] = [];
@@ -1299,17 +1299,29 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
         const eArgs: string[] = [];
         if (v) eArgs.push(`vault=${v}`);
         eArgs.push("eval", `code=${alreadyWrapped ? code : `(async function(){try{${code}}catch(e){return 'Error: '+String(e&&e.message||e)}})()`}`);
-        let _evalRes = execObsidian(eArgs, false, timeoutMs);
+        const _evalRes = execObsidian(eArgs, false, timeoutMs);
         let evalOut = _evalRes.stdout.trim().replace(/^=>\s?/, "");
-        // Obsidian 1.13.x intermittently drops the eval echo on successful
-        // writes (side effect happens, result lost). Retry once; if still empty
-        // with no stderr, the code ran — report that instead of throwing.
-        if (!evalOut && !(_evalRes.stderr || "").trim()) {
-          _evalRes = execObsidian(eArgs, false, timeoutMs);
-          evalOut = _evalRes.stdout.trim().replace(/^=>\s?/, "");
+        let evalStderr = (_evalRes.stderr || "").trim();
+        // Obsidian 1.13.x intermittently drops the eval echo on scripts whose
+        // async body does real I/O — the side effect usually landed. Retry
+        // once ONLY for read-only scripts (a retry cannot double-apply a
+        // read); write-capable scripts are never re-executed — a lost echo
+        // there most likely means the write DID apply, so report it as a
+        // warning instead of an error that would deny successful work.
+        const writeCapable = /adapter\.(write|remove|append)|vault\.(create|modify|trash|process|rename|delete)|createFolder|navigator\.clipboard/.test(code);
+        if (!evalOut && !evalStderr) {
+          if (!writeCapable) {
+            const retryRes = execObsidian(eArgs, false, timeoutMs);
+            evalOut = retryRes.stdout.trim().replace(/^=>\s?/, "");
+            evalStderr = (retryRes.stderr || "").trim();
+          }
+          if (!evalOut && !evalStderr) {
+            return writeCapable
+              ? "(eval echo was dropped by Obsidian 1.13.x; the script's side effects most likely applied — verify the result before re-running)"
+              : "(eval returned no result; side effects none — read-only script)";
+          }
         }
         if (/^Error[:\s]/.test(evalOut)) throw new Error(`eval returned error: ${evalOut}`);
-        if (!evalOut && !(_evalRes.stderr || "").trim()) return "(eval ran; result echo was dropped by Obsidian 1.13.x — verify the effect)";
         return evalOut;
       }
 
@@ -1325,7 +1337,7 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
           content = execObsidian(rArgs, false, timeoutMs).stdout;
         }
         // Content-presence guard lives in the early validation block (issue #21).
-        const overwrite = cmd !== "create" || raw.includes("overwrite=true");
+        const overwrite = cmd !== "create" || parseCliString(raw).includes("overwrite=true");
         return vaultWrite(path, content, overwrite ? "overwrite" : "create", v, timeoutMs);
       }
 

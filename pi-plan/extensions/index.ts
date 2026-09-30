@@ -726,7 +726,6 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
   let authApplyDone = false;
   // Fallback-model chain state (overload/rate-limit resilience).
   let fallbackIndex = 0;
-  let consecutiveOverloads = 0;
   /** Model ref active before the first fallback switch — restored on success. */
   let primaryModelRef: string | undefined;
   /** Set on successful write_plan, cleared after first agent_settled prompt. */
@@ -2013,6 +2012,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     description: "Backward-compatible fresh plan execution command",
     handler: async (args, ctx) => {
       if (specGateActive) return ctx.ui.notify("/specs gate is active. Run /specs-approve before execution.", "warning");
+      if (!lastPlanPath) {
+        ctx.ui.notify("No plan is ready for execution.", "warning");
+        return;
+      }
       const mode = args.trim();
       if (mode !== "new" && mode !== "flow") {
         ctx.ui.notify(`Usage: /${PLAN_EXECUTE_COMMAND} new|flow`, "warning");
@@ -2145,10 +2148,18 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
         return;
       }
       if (trimmed === "clear") {
+        const previousModels = preferences.fallbackModels;
+        const previousIndex = fallbackIndex;
         preferences.fallbackModels = undefined;
         fallbackIndex = 0;
-        consecutiveOverloads = 0;
-        await savePreferences(preferences);
+        try {
+          await savePreferences(preferences);
+        } catch (error) {
+          preferences.fallbackModels = previousModels;
+          fallbackIndex = previousIndex;
+          ctx.ui.notify(`Could not save fallback setting: ${String(error)}`, "error");
+          return;
+        }
         ctx.ui.notify("Fallback model chain cleared.", "info");
         return;
       }
@@ -2167,10 +2178,18 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
         ctx.ui.notify(`Invalid model ref(s): ${invalid.join(", ")} (expected provider/id)`, "warning");
         return;
       }
+      const previousModels = preferences.fallbackModels;
+      const previousIndex = fallbackIndex;
       preferences.fallbackModels = refs;
       fallbackIndex = 0;
-      consecutiveOverloads = 0;
-      await savePreferences(preferences);
+      try {
+        await savePreferences(preferences);
+      } catch (error) {
+        preferences.fallbackModels = previousModels;
+        fallbackIndex = previousIndex;
+        ctx.ui.notify(`Could not save fallback setting: ${String(error)}`, "error");
+        return;
+      }
       ctx.ui.notify(`Fallback chain set: ${refs.join(" → ")}`, "info");
     },
   });
@@ -2428,8 +2447,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     if (event.message?.role !== "assistant") return;
 
     if (isOverloadError(event.message)) {
-      consecutiveOverloads++;
-      if (consecutiveOverloads >= 1 && fallbackIndex < preferences.fallbackModels.length) {
+      if (fallbackIndex < preferences.fallbackModels.length) {
         // Remember the pre-fallback model once so success can restore it.
         if (!primaryModelRef && ctx.model) primaryModelRef = `${ctx.model.provider}/${ctx.model.id}`;
         // Try fallbacks from the current index, skipping models absent from
@@ -2443,7 +2461,6 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
             ctx.ui.notify(`Fallback model not found in registry: ${target} — skipping.`, "warning");
             continue;
           }
-          consecutiveOverloads = 0;
           // Guard so model_select (if pi emits it for setModel) doesn't record
           // the fallback as the user's per-mode pick (same guard as applyModeModel).
           applyingStoredModel = true;
@@ -2465,7 +2482,6 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     } else if (event.message.stopReason !== "error") {
       // Success (or non-overload terminal state): back to the primary model.
       const wasOnFallback = fallbackIndex > 0 || primaryModelRef !== undefined;
-      consecutiveOverloads = 0;
       fallbackIndex = 0;
       if (wasOnFallback && primaryModelRef) {
         const primary = parseModel(primaryModelRef);
@@ -2731,7 +2747,6 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       }
     }
     // Fresh turn: reset the fallback chain to the primary model.
-    consecutiveOverloads = 0;
     fallbackIndex = 0;
     // One-shot retry: re-apply the plan model that was skipped at startup
     // because auth wasn't configured yet (e.g. before /login). Consumed once —
@@ -2749,7 +2764,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
       return {
         systemPrompt:
           _event.systemPrompt +
-          `\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- Bash commands that write to files (redirect, heredoc, sed -i, tee, cp/mv/rm, etc.) or contain command substitution are hard-blocked. Read-only bash commands (ls, grep, find, git status) run automatically — including pipelines/chains whose every segment is read-only (e.g. \`grep foo src | head\`). Test/build/package scripts and other unknown executables require confirmation.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${ASK_USER_QUESTION_TOOL} for consequential open decisions with 2-4 clear options, a recommended default, and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${ASK_USER_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- Do not use ${ASK_USER_QUESTION_TOOL} to offer approve / execute / implement options. Execution is initiated only by ${autoFlowArmed ? "pi-plan itself (autonomous flow is armed — the plan is approved and executed automatically)" : "/plan-approve (prefilled after the plan is written)"}; ask_user_question is for unresolved clarifying questions only.${autoFlowArmed ? "\n- Autonomous flow is ARMED: after ${PLAN_TOOL} writes the plan, pi-plan approves and executes it without user input. Do not tell the user to press Enter or run /plan-approve; state that execution starts automatically." : ""}\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${expandPlansDir(plansDir)}/. Current/next plan path: ${relativePlan}\n${specGateActive && specPath ? `- An active draft specification is at ${relativeToCwd(ctx.cwd, specPath)}. Read it before refining or approving it; workspace writes remain locked until /specs-approve.\n` : ""}- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
+          `\n\n## Plan Mode\n\nYou are in read-only planning mode. Research the codebase and produce a reviewable implementation plan before making changes.\n\nRules:\n- Do not edit source files, configs, lockfiles, or git state.\n- You may read files, search, inspect git state, and use dedicated read/research tools.\n- Bash commands that write to files (redirect, heredoc, sed -i, tee, cp/mv/rm, etc.) or contain command substitution are hard-blocked. Read-only bash commands (ls, grep, find, git status) run automatically — including pipelines/chains whose every segment is read-only (e.g. \`grep foo src | head\`). Test/build/package scripts and other unknown executables require confirmation.\n- ${PLAN_MODE_SERENA_GUIDANCE}\n- Ask concise clarifying questions if requirements are ambiguous. Use ${ASK_USER_QUESTION_TOOL} for consequential open decisions with 2-4 clear options, a recommended default, and an Other/user-opinion path.\n- Do not ask about details you can discover from repository evidence. If the user already gave an opinion, incorporate it instead of asking again.\n- Before calling ${PLAN_TOOL}, if any consequential, user-answerable decision remains, call ${ASK_USER_QUESTION_TOOL} and wait for the answer. Do not place blocking user decisions in the final plan as open questions.\n- Do not use ${ASK_USER_QUESTION_TOOL} to offer approve / execute / implement options. Execution is initiated only by ${autoFlowArmed ? "pi-plan itself (autonomous flow is armed — the plan is approved and executed automatically)" : "/plan-approve (prefilled after the plan is written)"}; ask_user_question is for unresolved clarifying questions only.${autoFlowArmed ? `\n- Autonomous flow is ARMED: after ${PLAN_TOOL} writes the plan, pi-plan approves and executes it without user input. Do not tell the user to press Enter or run /plan-approve; state that execution starts automatically.` : ""}\n- When the plan is ready, call ${PLAN_TOOL} with a complete Markdown plan.\n- The plan file must live in ${expandPlansDir(plansDir)}/. Current/next plan path: ${relativePlan}\n${specGateActive && specPath ? `- An active draft specification is at ${relativeToCwd(ctx.cwd, specPath)}. Read it before refining or approving it; workspace writes remain locked until /specs-approve.\n` : ""}- Goal: honor active system/project/skill constraints. Choose the smallest complete implementation — reuse existing code, stdlib, and native features before adding abstractions.\n\nPlan content should include:\n1. Goal and assumptions.\n2. Key findings with durable file/symbol paths.\n3. Proposed implementation steps.\n4. Verification plan.\n5. Risks, non-blocking open questions, and rejected alternatives if relevant.`,
       };
     }
   });

@@ -338,6 +338,22 @@ describe("review lifecycle", () => {
     await h.handlers.agent_settled[0]({}, h.ctx);
     assert.equal(h.thinking(), "high", "undefined never restored — stays at review level");
   });
+
+  it("session_shutdown drops leaked review-mode state (session replaced without agent_settled)", async () => {
+    const h = harness(false);
+    await h.commands.review.handler("changes", h.ctx);
+    await flush();
+    assert.deepEqual(h.tools(), ["read", "ffgrep", "serena_find_symbol", "bash", "grep", "find", "ls"], "review mode active");
+    assert.equal(h.thinking(), "high");
+    await h.handlers.session_shutdown[0]({}, h.ctx);
+    assert.deepEqual(h.tools(), ["read", "ffgrep", "serena_find_symbol", "bash", "grep", "find", "ls"], "tools untouched — host owns session replacement");
+    assert.equal(h.thinking(), "high", "thinking untouched — host owns session replacement");
+    // A stale agent_settled after shutdown must not "restore" the pre-review
+    // snapshot into the replacement session.
+    await h.handlers.agent_settled[0]({}, h.ctx);
+    assert.deepEqual(h.tools(), ["read", "ffgrep", "serena_find_symbol", "bash", "grep", "find", "ls"], "post-shutdown agent_settled is a no-op");
+    assert.equal(h.thinking(), "high", "post-shutdown agent_settled is a no-op");
+  });
 });
 
 describe("review prompt builder and git evidence gate", () => {
@@ -392,5 +408,45 @@ describe("review prompt builder and git evidence gate", () => {
     await flush();
     assert.equal(response?.ok, false);
     assert.equal(response?.error, "Reviewer Git evidence exceeds the configured limit");
+  });
+
+  it("listener treats a throwing acceptor as declined but resolves the request (0.2.17)", async () => {
+    // A throw inside accept() must not escape the emit chain (that strands
+    // callers mid-flight) — and a waiting consumer must not hang either, so
+    // the throw path responds ok:false instead of relying on the no-accept
+    // "unavailable" convention.
+    const h = harness(false);
+    let response: any;
+    h.emit("pi-review:run", {
+      id: "review-accept-throw", cwd: process.cwd(), prompt: "Review this change",
+      accept: () => { throw new Error("acceptor blew up"); },
+      respond: (value: any) => { response = value; },
+    });
+    await flush();
+    assert.equal(response?.ok, false, "throw resolved as failure");
+    assert.equal(response?.error, "Reviewer accept handler failed");
+  });
+
+  it("/review survives a listener-side accept() throw without crashing the handler", async () => {
+    // The command's own accept() runs first (its accepted flag flips before
+    // any user-visible work). The listener then wraps the same acceptor in
+    // try/catch: a synchronous throw inside accept() is treated as declined
+    // instead of propagating out of the emit chain and stranding local review
+    // mode with no resolution.
+    const h = harness(false);
+    const inner = h.emit;
+    (h as any).emit = (name: string, value: any) => {
+      (h as any).emit = inner;
+      if (name === "pi-review:run" && value?.accept) {
+        const realAccept = value.accept;
+        value.accept = () => { realAccept.call(value); throw new Error("listener-side throw"); };
+      }
+      return inner.call(h, name, value);
+    };
+    await h.commands.review.handler("changes", h.ctx);
+    await flush();
+    assert.equal(h.messages.length, 0, "no isolated run");
+    assert.equal(h.sent.length, 1, "review not stranded — listener's ok:false resolve drives the local fallback");
+    assert.match(h.sent[0].content, /Inspect Git state with read-only tools/, "fallback prompt delivered");
   });
 });

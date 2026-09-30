@@ -678,6 +678,33 @@ describe("attachment removal flow", () => {
   });
 });
 
+describe("terminal-input listener lifecycle", () => {
+  // session_start fires once per session; the disposer returned by
+  // onTerminalInput must be called before re-registering, or listeners
+  // stack across sessions and one paste produces duplicate tokens.
+  function sessionCtx(listeners: Function[]) {
+    return {
+      ui: {
+        onTerminalInput: (fn: Function) => {
+          listeners.push(fn);
+          return () => { listeners.splice(listeners.indexOf(fn), 1); };
+        },
+        setWidget: () => {},
+      },
+    };
+  }
+
+  it("second session_start disposes the first listener (no stacking)", () => {
+    const h = harness();
+    const listeners: Function[] = [];
+    h.start({}, sessionCtx(listeners));
+    h.start({}, sessionCtx(listeners));
+    assert.equal(listeners.length, 1, "exactly one live listener after two sessions");
+    const result = (listeners[0] as Function)(`\x1b[200~${img}\x1b[201~`) as any;
+    assert.match(result?.data, /^\[\[attach:shot\.png\]\]$/, "paste still works after re-register");
+  });
+});
+
 describe("paste collapse", () => {
   const wrap = (payload: string) => `\x1b[200~${payload}\x1b[201~`;
   const logWall = (n: number) => Array.from({ length: n }, (_, i) => `log line ${i}`).join("\n");

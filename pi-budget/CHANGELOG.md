@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.7 (2026-09-30)
+
+### Fixed
+
+- **Dedupe-set clear-all at cap enabled replay double-counting**: when
+  `countedMessageIds` reached 1000 the whole set was cleared, so replayed
+  `message_end` events for recent ids were re-counted and could push the
+  cumulative cost over the cap prematurely. The set now evicts exactly one
+  oldest id per add at capacity (insertion-ordered Set), keeping the last
+  1000 ids replay-deduped.
+- **Stale budget footer in new no-cap sessions**: the footer-clear branch ran
+  only inside `message_end`, so a `Budget $X / $Y` line left by a previous
+  capped session lingered until the first assistant reply. `session_start`
+  now clears the footer immediately when no cap is configured.
 ## 0.1.6 (2026-09-28)
 
 ### Fixed

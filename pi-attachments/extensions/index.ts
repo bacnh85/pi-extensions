@@ -51,6 +51,9 @@ export default function piAttachments(pi: ExtensionAPI): void {
 
   // Captured at session_start — lets onPaste read the editor for prune-sync.
   let editorText: (() => string) | undefined;
+  // Disposer returned by ui.onTerminalInput (SDK ≥0.87) — session_start fires
+  // once per session, so without disposing, listeners stack across sessions.
+  let detachPasteInput: (() => void) | undefined;
 
   // 1. Intercept bracketed pastes BEFORE the editor:
   //    - path-only payloads → [[attach:]] tokens + chip widget (existing flow)
@@ -127,7 +130,8 @@ export default function piAttachments(pi: ExtensionAPI): void {
     }
     trayUi = ctx.ui;
     editorText = (ctx.ui as any).getEditorText?.bind(ctx.ui);
-    ctx.ui.onTerminalInput?.(onPaste);
+    detachPasteInput?.();
+    detachPasteInput = ctx.ui.onTerminalInput?.(onPaste);
     updateWidget();
   });
 
@@ -172,7 +176,7 @@ export default function piAttachments(pi: ExtensionAPI): void {
             images.push({ type: "image", data: content.toString("base64"), mimeType });
             attachedImages.add(path);
           } catch {
-            /* unreadable → skip */
+            ctx?.ui?.notify?.(`attachments: unreadable image ${path}; attached path only`, "warning");
           }
         }
         replacements.push({ start, end: start + token.length, block: `📎 ${path}` });

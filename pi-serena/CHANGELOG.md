@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.9.20 (2026-09-30)
+
+### Fixed
+
+- **Neutral timeout message for mutating tools**: the thrown worker-timeout
+  error told users to "retry if needed", which invites double-apply for
+  mutators (auto-retry is deliberately withheld from them). The message now
+  says: verify state before retrying — a write action may have partially
+  applied.
+- **Stale/contradictory README claims**: the timeout section no longer says
+  all worker-routed tools retry once — retry is read-only actions only;
+  mutators surface the timeout. The `serena_restart_language_server`
+  sentence now notes the JetBrains-backend "not applicable" exception instead
+  of contradicting the line above it.
+
+### Removed
+
+- **Dead `"timeout"` error-type path**: Python `classify_error` never returns
+  `"timeout"`, so the `errorType === "timeout"` response branch in
+  `callWorkerAction` and the `ERROR_HINTS.timeout` entry were unreachable.
+  Deleted both; retries are driven solely by the thrown-message heuristic in
+  `shouldRetryAfterTimeout` (now accepting only `errorMessage`).
+
 ## 0.9.19 (2026-09-28)
 
 ### Fixed

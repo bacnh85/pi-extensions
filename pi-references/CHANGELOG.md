@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.8 (2026-09-30)
+
+- Fixed: a project-level `references` value that parses but fails the shape
+  guard (e.g. `"references": "garbage"`) no longer silently shadows a valid
+  global `references` block — `readSettingsKey` now warns (console.warn) and
+  continues to the next settings location; only a valid plain-object value
+  returns. Tests: 35 → 36.
+
 ## 0.1.7 (2026-09-28)
 
 - Fixed: a configured `branch` starting with `-` (silently rejected as an

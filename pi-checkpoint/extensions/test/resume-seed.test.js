@@ -128,3 +128,32 @@ test("for-each-ref failure during seeding falls back to 0 and session still work
   await turn();
   assert.deepEqual(updateRefs(pi), ["refs/pi-checkpoints/s1/0"]);
 });
+
+test("session_start never rejects when seeding throws — warns and resets numbering instead", async () => {
+  // git() swallows exec rejections and seedCounter treats failed:true as "no
+  // refs", so a throw can only escape via malformed-but-not-failed output:
+  // non-string for-each-ref stdout makes seedCounter's .split() throw
+  // synchronously, propagating out of the awaited seedCounter call.
+  const t = setup((args) => {
+    if (args[0] === "stash" && args[1] === "create") return { stdout: "tree\n", stderr: "" };
+    return { stdout: "", stderr: "" };
+  });
+  const { pi, ctx, turn, sessionStart } = t;
+  const inner = pi.exec.bind(pi);
+  pi.exec = async (cmd, args) => {
+    if (args[0] === "for-each-ref") return { stdout: 42, stderr: "" }; // malformed
+    return inner(cmd, args);
+  };
+
+  pi.refs = new Set(["refs/pi-checkpoints/s1/0", "refs/pi-checkpoints/s1/1"]);
+  // Pre-fix this rejected out of session_start and left counter=0 — the next
+  // snapshot would overwrite s1/0. Now: no rejection, warn, session proceeds.
+  await assert.doesNotReject(() => sessionStart({}, ctx));
+  const last = ctx.notifies.at(-1);
+  assert.equal(last?.t, "warning", "failure must warn via ctx.ui.notify");
+  assert.match(last?.m ?? "", /seed failed — numbering reset/);
+
+  await turn();
+  assert.deepEqual(updateRefs(pi), ["refs/pi-checkpoints/s1/0"],
+    "counter stayed at the reset value — numbering visibly reset, snapshot overwrites refs");
+});

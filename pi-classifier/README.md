@@ -75,9 +75,10 @@ Non-negotiables, in order:
 2. **Never auto-denies.** Any outcome other than a confident yes (low score,
    timeout, 4xx/5xx, malformed answer, missing key, no UI) falls back to the
    normal prompt. Worst case is one extra prompt, never an unwanted command.
-3. **Observe mode.** The default posture logs the decision it *would* have
-   made to `~/.pi/agent/classifier.log` without acting. Run it for a few
-   days, read the log, then flip `mode: "enforce"`.
+3. **Observe mode (opt-in).** Enforce is the default posture; set
+   `permission.mode: "observe"` to log the decision it *would* have made to
+   `~/.pi/agent/classifier.log` without acting. Run it for a few days, read
+   the log, then flip `mode: "enforce"`.
 4. **One audit line per decision** — command, scores, elapsed ms, model.
 5. **Compound commands are split** on operators before the risky check; a
    separator hidden inside quotes can only add a prompt, never hide a command.
@@ -103,8 +104,10 @@ what pi-plan calls; it is exported for tests and library hosts.
 
 ## Verification cache
 
-Verdicts are cached (LRU, 100 entries) keyed by command + cwd, so repeated
-`bun test` doesn't re-pay Jev or add latency every time.
+Verdicts are cached (LRU, 100 entries) — permission-hook keys are
+`command\0cwd\0task` (task truncated to 200 chars, since 0.2.1), plan-gate
+keys are `plan\0command\0cwd` (task excluded — plan commands are generic) —
+so repeated `bun test` doesn't re-pay Jev or add latency every time.
 
 ## Using the classify tool directly
 

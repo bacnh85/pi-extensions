@@ -46,6 +46,13 @@ export function readSettingsKey(cwd, key, { project = true } = {}) {
       const v = parsed?.[key];
       // Only plain objects are valid config; arrays/strings/numbers are misconfig.
       if (v && typeof v === "object" && !Array.isArray(v)) return v;
+      if (v !== undefined) {
+        // Parsed but wrong shape: warn and CONTINUE to the next settings location,
+        // so a bad project-level key can't shadow a valid global one.
+        console.warn(
+          `${key}: ${join(dir, "settings.json")} has a non-object "${key}" value — ignoring (trying next settings location)`,
+        );
+      }
     } catch {
       // missing/unreadable settings.json is fine — try next location
     }

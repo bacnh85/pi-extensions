@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.8 (2026-09-30)
+
+### Fixed
+
+- **`/advisor on` now re-syncs on-demand tool availability** — re-arming the
+  watch previously skipped the `sync()` step, so if the advisor tool had been
+  removed because no model resolved at the time (e.g. auth dropped), the tool
+  stayed hidden after re-auth until the next `model_select`/`session_start`.
+  Review round: low.
+
+## 0.3.7 (2026-09-29)
+
+- Widened `@earendil-works/pi-coding-agent` peerDependency cap from `<0.88.0` to `<1.0.0` (floor unchanged) and `@earendil-works/pi-tui`/`@earendil-works/pi-ai` caps likewise; bumped devDependencies to `^0.99.1`. Verified against Pi SDK 0.99.1.
+- Review hardening round: SYSTEM prompt cooldown wording now says only nits defer (concerns always steer, matching code); `latestEntryId()` helper exported and used for cursor reseeding instead of raw last-entry access; `customType` literals in commands/advisor.ts replaced with the `REVIEW_ENTRY` constant; the message-renderer fallback path now truncates/sanitizes note text the same way the entry path does (shared `MAX_NOTE_LENGTH`).
+
 ## 0.3.6 (2026-09-28)
 
 - Removed dead `NoteData.downgraded` field and its unreachable "Advisor

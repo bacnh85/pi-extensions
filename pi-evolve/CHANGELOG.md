@@ -1,3 +1,9 @@
+## 0.3.11 (2026-09-30)
+
+- Trust gate on the local JSONL store: untrusted projects no longer receive (or serve) <cwd>/.pi/evolve/learnings.jsonl — local writes/reads redirect to the agent dir ($PI_CODING_AGENT_DIR/evolve), symmetric on write+read+search. Closes the evolve_save Munin-outage fallback writing into untrusted checkouts.
+- Settings memo no longer caches the "no settings file found" case — a settings.json created mid-session (or a different cwd with settings) is honored without restart.
+- Removed dead sealedSnapshot module state.
+
 # Changelog
 
 ## 0.3.10 (2026-09-28)

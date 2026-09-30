@@ -20,4 +20,7 @@ After each Pi minor release, verify extensions against the new SDK:
 
    `npm ci` accepts and preserves hand-added hashes; `npm install` strips them
    again — re-run the backfill after any install in this repo.
+   Convenience script: `node scripts/backfill-integrity.mjs` does the scan +
+   inject + URL assertion across all packages; it exits non-zero if any entry
+   remains unfilled (offline, unpublished, or URL mismatch).
 6. Run tests and typecheck; verify the installed SDK version per package.

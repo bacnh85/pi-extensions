@@ -1,3 +1,11 @@
+## 0.16.5 (2026-09-30)
+
+- Widened `@earendil-works/pi-coding-agent` peerDependency cap from `<0.88.0` to `<1.0.0` (floor unchanged) and `@earendil-works/pi-tui`/`@earendil-works/pi-ai` caps likewise; bumped devDependencies to `^0.99.1`. Verified against Pi SDK 0.99.1.
+- **Fix: plan-mode prompt no longer leaks the literal `${PLAN_TOOL}` placeholder** when the autonomous flow is armed — the armed-flow bullet now renders the real tool name (`write_plan`).
+- **Fix: `/plan-fallback` set/clear persist failures no longer leave in-memory fallback state diverged from disk** — both save paths now roll back and notify on error (same guarded pattern as `/plan-auto`; `/plan-model`/`/plan-thinking` already route through the best-effort `persistPreferences()`).
+- **Fix: `/plan-execute` no longer bypasses the approval gate** — it now requires a written plan before starting a fresh execution session, matching `/plan-approve`'s ready-check.
+- Removed the no-op overload counter (`consecutiveOverloads`): its `>= 1` guard was always true right after increment; the real gate is the fallback-chain index. Fallback switching/restoring behavior is unchanged.
+
 # Changelog
 
 ## 0.16.4 (2026-09-28)

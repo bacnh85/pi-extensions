@@ -2,8 +2,8 @@ import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext, type Theme 
 import { Box, Markdown, Text } from "@earendil-works/pi-tui";
 
 import { loadConfig, migrateLegacyAdvisorModel, saveModels } from "./lib/config";
-import { isSeverity, sanitizeNote, type Severity } from "./lib/emission-guard";
-import { REVIEW_ENTRY, createRuntime, reseedCursor, reviewTurn, type IsolatedCall, type WatcherRuntime } from "./lib/watcher";
+import { MAX_NOTE_LENGTH, isSeverity, sanitizeNote, type Severity } from "./lib/emission-guard";
+import { REVIEW_ENTRY, createRuntime, latestEntryId, reseedCursor, reviewTurn, type IsolatedCall, type WatcherRuntime } from "./lib/watcher";
 import { registerAdvisor } from "./commands/advisor";
 
 // ponytail: test-only injection — real calls use runIsolated (watcher's default); tests swap it.
@@ -23,7 +23,7 @@ interface NoteData {
 /** Shared card body for the entry renderer and the message-renderer fallback. */
 function renderNoteCard(raw: NoteData | undefined, expanded: boolean, theme: Theme): Box {
   const data = raw && isSeverity(raw.severity) && typeof raw.note === "string"
-    ? { ...raw, note: sanitizeNote(raw.note) }
+    ? { ...raw, note: sanitizeNote(raw.note).slice(0, MAX_NOTE_LENGTH) }
     : { severity: "nit" as Severity, note: "(unavailable)", timestamp: 0 };
   const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
   const label = data.deferred ? "Advisor (deferred — next turn)" : "Advisor";
@@ -94,7 +94,7 @@ export default function piAdvisor(pi: ExtensionAPI): void {
     // Seed the cursor to the current transcript tail so the first review
     // covers only work that happens after the advisor was loaded.
     const entries = ctx.sessionManager.getEntries() as any[];
-    runtime.cursor = entries.length ? entries[entries.length - 1].id : undefined;
+    runtime.cursor = latestEntryId(entries);
   });
 
   // Self-disarm on session teardown: session_shutdown is emitted and awaited

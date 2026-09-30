@@ -182,7 +182,12 @@ export async function writeLearning(
       throw new Error("Munin SDK exposes neither store() nor invoke()");
     }
   } else {
-    const file = localPath(cwd);
+    // TRUST GATE (root-cause fix): `local` means "the user's own store". When
+    // the project is untrusted, a write into cwd/.pi would let an untrusted
+    // repo receive model-produced learnings about other projects' code — and
+    // in the evolve_save Munin-outage fallback it would land there silently.
+    // Redirect to the agent dir (never into cwd) instead of throwing.
+    const file = trusted === true ? localPath(cwd) : agentSettingsPath();
     // Serialize append+cap per file (SDK mutation queue, as pi-selfskills uses
     // it): a cap rewrite running between another save's append and its own cap
     // could drop that entry. ponytail: keyed on the path string, not realpath —
@@ -224,7 +229,9 @@ export async function readRecentLearnings(
     }
     return parseMuninMemories(result);
   }
-  return readLocalTail(localPath(cwd), n);
+  // Mirror the write gate: untrusted sessions read their (agent-dir) store,
+  // never a plantable <cwd>/.pi/evolve/learnings.jsonl.
+  return readLocalTail(trusted === true ? localPath(cwd) : agentSettingsPath(), n);
 }
 
 // ---------------------------------------------------------------------------
@@ -273,8 +280,8 @@ export async function searchLearnings(
     }
     return parseMuninMemories(result);
   }
-  // Local: keyword-overlap scoring against JSONL entries.
-  const all = readAllLocal(localPath(cwd));
+  // Local: keyword-overlap scoring against JSONL entries (same gate as reads).
+  const all = readAllLocal(trusted === true ? localPath(cwd) : agentSettingsPath());
   return rankLocal(all, query).slice(0, n);
 }
 
@@ -337,6 +344,20 @@ export function rankLocal(learnings: StoredLearning[], query: string): StoredLea
 
 export function localPath(cwd: string): string {
   return path.join(cwd, ".pi", "evolve", "learnings.jsonl");
+}
+
+/** Agent-dir local store (<agentDir>/evolve/learnings.jsonl) — the untrusted
+ *  fallback target, so an untrusted project's saves never write into cwd.
+ *  Always the FIRST agent dir ($PI_CODING_AGENT_DIR else ~/.pi/agent); unlike
+ *  settings resolution in lib/config.ts, the legacy ~/.pi/agents fallback is
+ *  deliberately NOT consulted here — a divergent legacy install gets its
+ *  learnings store co-located with the primary dir, self-consistent for
+ *  read/write/search. */
+export function agentSettingsPath(): string {
+  const dirs = process.env.PI_CODING_AGENT_DIR
+    ? [process.env.PI_CODING_AGENT_DIR]
+    : [path.join(os.homedir(), ".pi", "agent"), path.join(os.homedir(), ".pi", "agents")];
+  return path.join(dirs[0], "evolve", "learnings.jsonl");
 }
 
 /** Read the last n entries from a JSONL file. Tolerates malformed trailing lines. */

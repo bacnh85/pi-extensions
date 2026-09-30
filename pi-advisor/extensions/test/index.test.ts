@@ -98,6 +98,28 @@ describe("index wiring", () => {
     assert.ok(state.eventHandlers.has("agent_settled"), "agent_settled hook registered");
   });
 
+  it("/advisor on re-syncs tool availability after the model becomes available again (0.1.x)", async () => {
+    const { pi, state } = createFakePi();
+    piAdvisor(pi);
+    await mkdir(path.join(TMP, ".pi", "agent"), { recursive: true });
+    await writeFile(path.join(TMP, ".pi", "agent", "settings.json"), JSON.stringify({
+      "pi-advisor": { model: "test/advisor-model" },
+    }));
+    // Registry starts EMPTY (auth dropped) → session_start's sync removes the tool.
+    const ctx = fakeCtx([]);
+    let available: any[] = [];
+    ctx.modelRegistry.getAvailable = () => available;
+    await fire(pi, state, "session_start", ctx);
+    assert.equal(state.activeTools.has("advisor"), false, "tool hidden while no model resolves");
+
+    // User re-auths (model now in the registry) and runs /advisor on —
+    // enableWatch must re-sync, not just re-arm the watcher.
+    available = [{ provider: "test", id: "advisor-model", contextWindow: 32_768 }];
+    const cmd = state.commands.get("advisor");
+    await cmd.handler("on", ctx);
+    assert.ok(state.activeTools.has("advisor"), "tool re-activated by /advisor on without waiting for session_start");
+  });
+
   it("nit flow steers via sendUserMessage (accepted notes all trigger a turn at settle)", async () => {
     const { pi, state } = createFakePi();
     piAdvisor(pi);

@@ -1,3 +1,9 @@
+## 0.3.10 (2026-09-30)
+
+- Widened `@earendil-works/pi-coding-agent` peerDependency cap from `<0.88.0` to `<1.0.0` (floor unchanged); bumped devDependencies to `^0.99.1`. Verified against Pi SDK 0.99.1.
+- Fixed: `ui.onTerminalInput` disposer is now stored and called before re-registering on `session_start` — listeners previously stacked across session switches, so one paste produced duplicate `[[attach:]]` tokens.
+- Fixed: an unreadable image attachment no longer silently degrades to a path chip — `session_start`/`input` now warns via `ui.notify` (`attachments: unreadable image <path>; attached path only`).
+
 # Changelog
 
 ## 0.3.9 (2026-09-28)

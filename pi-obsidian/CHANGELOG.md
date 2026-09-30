@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.20 (2026-09-30)
+
+### Fixed
+
+- **`create` no longer flips to overwrite when note content contains the
+  literal text `overwrite=true`** — the guard now matches `overwrite=true` as
+  a whole token via `parseCliString` instead of a raw substring search, so
+  quoted content can no longer clobber an existing file.
+- **`files folder=<name-containing-recursive>` no longer switches to a
+  recursive listing** — same substring→token fix for the `recursive` flag.
+- **`eval` no longer hard-fails when Obsidian 1.13.x drops the echo** —
+  read-only scripts retry once on an empty echo (a retry cannot double-apply
+  a read); write-capable scripts are never re-executed and instead return a
+  warning noting the side effects most likely applied, so a successful write
+  is no longer reported as an error.
 ## 0.8.19 (2026-09-26)
 
 ### Fixed

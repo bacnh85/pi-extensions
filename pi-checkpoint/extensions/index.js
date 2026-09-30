@@ -175,11 +175,24 @@ export default function checkpointExtension(pi) {
     redoBuffer.length = 0;
     sessionCounter = 0;
     lastSessionId = ctx?.sessionManager?.getSessionId?.() || null;
-    if (isGitRepo(ctx?.cwd)) {
-      // Resumed session (same sessionId): continue past existing refs instead
-      // of overwriting them. Only possible when we know the sessionId here.
-      if (lastSessionId) sessionCounter = await seedCounter(lastSessionId, ctx);
-      await pruneOldRefs(ctx);
+    // Best-effort, like snapshot/restore/prune: seed or prune throwing out of
+    // session_start would leave sessionCounter at the 0 reset above while the
+    // session keeps running — once git recovers, the first snapshot could
+    // overwrite a resumed session's refs <sid>/0… (the 0.1.5 bug class, by
+    // another door).
+    // ponytail: residual window — a transient git failure between a successful
+    // seed and the first snapshot's update-ref still lands numbering at the
+    // reset value; snapshot() skips + notifies on that failure rather than
+    // overwriting silently.
+    try {
+      if (isGitRepo(ctx?.cwd)) {
+        // Resumed session (same sessionId): continue past existing refs instead
+        // of overwriting them. Only possible when we know the sessionId here.
+        if (lastSessionId) sessionCounter = await seedCounter(lastSessionId, ctx);
+        await pruneOldRefs(ctx);
+      }
+    } catch (e) {
+      notify(ctx, `pi-checkpoint: seed failed — numbering reset (${String(e?.message || e).trim()}).`, "warning");
     }
   });
 

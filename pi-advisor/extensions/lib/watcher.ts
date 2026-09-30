@@ -21,7 +21,7 @@ Severity:
 - concern: material risk, likely wrong direction, missing constraint — the primary agent must address it or state why it does not apply.
 - blocker: continuing would clearly waste work or produce broken output — the primary agent must fix it before continuing.
 
-Every accepted note is delivered to the primary agent and it will respond: sent as a follow-up instruction (steering) immediately, or — for nit/concern inside the post-steer calm-down window — deferred to the next turn as a visible note. Blockers always steer immediately. Severity sets how strongly the agent must act. Rate by the end state, not by the agent's summary: broken or non-compiling output, a factually wrong result, or a violated user constraint is at least a concern even if the agent disclosed or acknowledged it. "nit" is only for polish that does not affect correctness (style, naming, trivial count slips in prose).`;
+Every accepted note is delivered to the primary agent and it will respond: sent as a follow-up instruction (steering) immediately, or — for nit inside the post-steer calm-down window — deferred to the next turn as a visible note. Blockers always steer immediately. Severity sets how strongly the agent must act. Rate by the end state, not by the agent's summary: broken or non-compiling output, a factually wrong result, or a violated user constraint is at least a concern even if the agent disclosed or acknowledged it. "nit" is only for polish that does not affect correctness (style, naming, trivial count slips in prose).`;
 
 export interface WatcherStats {
   reviews: number;
@@ -118,7 +118,7 @@ function toolCallCount(entries: any[], sinceId: string | undefined): number {
   return count;
 }
 
-function latestEntryId(entries: any[]): string | undefined {
+export function latestEntryId(entries: any[]): string | undefined {
   for (let i = entries.length - 1; i >= 0; i--) if (typeof entries[i]?.id === "string") return entries[i].id;
   return undefined;
 }

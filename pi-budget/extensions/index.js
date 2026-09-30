@@ -19,9 +19,10 @@
 
 const STATUS_KEY = "pi-budget";
 
-/** ponytail: dedupe-set cap, keep-last-1000 (clear on reach) — sessions past
- *  1000 assistant messages lose replay-dedupe for old ids, an acceptable
- *  ceiling vs. unbounded growth; raise if replay windows ever grow. */
+/** ponytail: dedupe-set cap, evict-oldest at 1000 (insertion-ordered Set) —
+ *  the last 1000 ids stay replay-deduped; only ids older than that window can
+ *  be re-counted on replay, a bounded ceiling vs. unbounded growth; raise if
+ *  replay windows ever grow. */
 const MAX_COUNTED_MESSAGE_IDS = 1000;
 
 /**
@@ -75,6 +76,13 @@ export default function budgetExtension(pi) {
     state.abortSucceeded = false;
     state.notified = false;
     state.countedMessageIds = new Set();
+    if (state.budgetCap === undefined) {
+      // No cap configured: clear any footer left over from a previous capped
+      // session instead of letting it linger until the first assistant reply.
+      try {
+        ctx.ui.setStatus(STATUS_KEY, undefined);
+      } catch { /* best-effort UI */ }
+    }
     if (rawBudget !== undefined && rawBudget !== null && rawBudget !== "" && state.budgetCap === undefined) {
       // A non-empty flag we couldn't parse means the user asked for a cap that
       // will NOT be enforced. Say so — silent disable is a false sense of safety.
@@ -92,7 +100,12 @@ export default function budgetExtension(pi) {
         if (!id || !state.countedMessageIds.has(id)) {
           state.cumulativeCost += cost;
           if (id) {
-            if (state.countedMessageIds.size >= MAX_COUNTED_MESSAGE_IDS) state.countedMessageIds.clear();
+            // Evict-oldest: at capacity drop the first-inserted id only, so
+            // recent ids keep replay-dedupe (clear-all reopened a window over
+            // the entire set and let replayed events double-count).
+            if (state.countedMessageIds.size >= MAX_COUNTED_MESSAGE_IDS) {
+              state.countedMessageIds.delete(state.countedMessageIds.values().next().value);
+            }
             state.countedMessageIds.add(id);
           }
         }

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 - 2026-09-30
+
+- Fix: `classify()` leaked its abort listener — `{once:true}` bounds firing, not registration — so every tool call with a signal left one `abort` handler on the harness signal. Now mirrors the pi-commandcode pattern: pre-aborted signals abort the internal controller directly (no listener registered), and the `finally` block removes the listener on every exit. Covered by a spy-based unit test (added/removed handler identity + zero registrations when pre-aborted).
+- Fix: `planGateVerdict()` accepted `{signal}` but never checked it — a cancelled pi-plan session could still pay for a Jev call. A pre-aborted signal now short-circuits to the non-confident fallback `{allow:false, reason:'cancelled'}` with zero network.
+- Docs: README safety-envelope item claimed observe mode is "the default posture" — enforce has been the permission-hook default since 0.2.0; corrected to enforce-default/observe-opt-in. Also corrected the stale cache-key claim ("keyed by command + cwd") to the actual keys: `command\0cwd\0task[:200]` for the permission hook (since 0.2.1) and `plan\0command\0cwd` for the plan gate.
+
 ## 0.2.1 - 2026-09-28
 
 - Fix: the permission-hook verdict cache key now includes the task (first 200 chars of `lastTask`), so a cached `serves_task` verdict can no longer outlive its task — the same command under a new task gets a fresh Jev decision instead of task A's auto-approval. Covered by a hook-wiring test (same command + different task → fresh call; same task → cache hit).

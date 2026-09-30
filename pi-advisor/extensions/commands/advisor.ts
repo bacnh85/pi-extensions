@@ -3,7 +3,7 @@ import { fuzzyFilter } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { runIsolatedChain } from "../lib/isolated-model";
 import { canonicalEntry, chooseModel, exactModel, firstAvailable, modelRef, modelSearchText } from "../lib/model-picker";
-import { buildEvidence } from "../lib/watcher";
+import { REVIEW_ENTRY, buildEvidence } from "../lib/watcher";
 import type { WatcherRuntime } from "../lib/watcher";
 
 const TOOL = "advisor";
@@ -77,6 +77,10 @@ export function registerAdvisor(pi: ExtensionAPI, state: AdvisorState): void {
       rt.failures = 0;
       state.onEnableWatch?.(ctx);
     }
+    // Re-evaluate tool availability too: if the tool was removed because no
+    // model resolved at the time (firstAvailable false), re-auth + /advisor on
+    // must bring it back without waiting for the next model_select/session_start.
+    sync(ctx);
     ctx.ui.notify(`Advisor watch ${on ? "enabled" : "disabled"} for this session${on ? "" : " (cards and steers stop; on-demand tool unaffected)"}.`, "info");
   }
 
@@ -154,7 +158,7 @@ export function registerAdvisor(pi: ExtensionAPI, state: AdvisorState): void {
         `Append :level (minimal…max) to an entry to pin thinking per slot.`,
         `Edit ~/.pi/agent/settings.json → pi-advisor.models, or run /advisor models in a TUI.`,
       ];
-      pi.sendMessage({ customType: "pi-advisor", content: lines.join("\n"), display: true });
+      pi.sendMessage({ customType: REVIEW_ENTRY, content: lines.join("\n"), display: true });
       return;
     }
     const working = panel.buildModelsPanelCfg(models);

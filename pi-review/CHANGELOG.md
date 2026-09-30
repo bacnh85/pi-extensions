@@ -1,3 +1,10 @@
+## 0.2.17 (2026-09-30)
+
+- Widened `@earendil-works/pi-coding-agent` peerDependency cap from `<0.88.0` to `<1.0.0` (floor unchanged); bumped devDependencies to `^0.99.1`. Verified against Pi SDK 0.99.1.
+- Fixed: a `session_shutdown` handler now resets local-review state (restricted `SAFE_REVIEW_TOOLS` toolset + review thinking level), so sessions replaced without `agent_settled`/`session_start` (RPC/print lifecycle) no longer leak the restricted toolset or thinking level. Mirrors the `session_start` reset; the host resets actual tool/thinking session state.
+- Fixed: the `/review` event listener guards its `accept()`/`respond()` invocations — a synchronous throw inside a consumer's `accept()` is treated as declined and resolved as `ok:false` (`"Reviewer accept handler failed"`) instead of escaping the emit chain and stranding local review mode.
+- Docs: corrected the README timeout claim — transport heartbeats DO reset the 3-minute inactivity window (all `pi-subagent` progress events do); only the 20-minute hard cap bounds a hung-but-heartbeating child.
+
 # Changelog
 
 ## 0.2.16 (2026-09-28)

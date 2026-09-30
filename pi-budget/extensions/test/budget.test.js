@@ -251,28 +251,55 @@ test("cost is idempotent per message id (review: LOW)", () => {
   assert.equal(ctx.notifyCalls[0].message.includes("1.10"), true, "cost is 0.6+0.5, not double-counted");
 });
 
-test("dedupe set clears at cap of 1000, opening a replay window (documented trade-off)", () => {
+test("dedupe set evicts exactly one oldest id at cap, recent ids stay deduped", () => {
   const statusCalls = [];
-  const { events } = createPiHarness("1.00");
+  const { events } = createPiHarness("2.00");
   const ctx = createCtx({ setStatus: (key, text) => statusCalls.push({ key, text }) });
   events.get("session_start")({}, ctx);
 
   // Fill the dedupe set to exactly the cap (MAX_COUNTED_MESSAGE_IDS = 1000).
+  // m1 carries a distinctive cost: it is the fingerprint that discriminates
+  // evict-oldest from a clear-all regression (see last assertion).
   for (let i = 0; i < 1000; i++) {
-    events.get("message_end")({ message: assistantMsg(0.0001, `m${i}`) }, ctx);
+    events.get("message_end")({ message: assistantMsg(i === 1 ? 0.01 : 0.001, `m${i}`) }, ctx);
   }
   assert.equal(ctx.aborted(), false, "still below cap");
+  // 999 × 0.001 + 0.01 = 1.009
+  assert.match(statusCalls[statusCalls.length - 1].text, /Budget \$1\.01 \/ \$2\.00/);
 
-  // The set is now full; counting one more message clears it first.
-  events.get("message_end")({ message: assistantMsg(0.0001, "m-new") }, ctx);
+  // ids within the last MAX window are NOT re-counted on replay — the set
+  // must never have been wholesale-cleared.
+  events.get("message_end")({ message: assistantMsg(0.001, "m500") }, ctx);
+  events.get("message_end")({ message: assistantMsg(0.01, "m999") }, ctx);
+  assert.match(statusCalls[statusCalls.length - 1].text, /Budget \$1\.01 \/ \$2\.00/);
 
-  // m0 was in the cleared set — replaying it now re-counts (the documented
-  // replay window) instead of being deduped.
-  events.get("message_end")({ message: assistantMsg(0.0001, "m0") }, ctx);
-  assert.equal(ctx.notifyCalls.length, 0);
-  // 1002 × 0.0001 = 0.1002: m0 was re-counted on replay. A live dedupe set
-  // would have shown $0.09.
-  assert.match(statusCalls[statusCalls.length - 1].text, /Budget \$0\.10 \/ \$1\.00/);
+  // The next distinct id evicts exactly one: set size stays at MAX and cost
+  // grows by one message only.
+  events.get("message_end")({ message: assistantMsg(0.001, "m-new") }, ctx);
+  assert.match(statusCalls[statusCalls.length - 1].text, /Budget \$1\.01 \/ \$2\.00/);
+
+  // m1 is still inside the window (only m0 was evicted) → its 0.01 must NOT
+  // re-count. A clear-all regression would re-count it → "$1.02" and fail.
+  events.get("message_end")({ message: assistantMsg(0.01, "m1") }, ctx);
+  const footer = statusCalls[statusCalls.length - 1].text;
+  assert.match(footer, /Budget \$1\.01 \/ \$2\.00/);
+  assert.doesNotMatch(footer, /\$1\.02/);
+
+  // m0 was the evicted-oldest → replaying it re-counts (the documented
+  // window): 1.011. Note this re-add evicts m1, so m1 replays AFTER this
+  // point legitimately count — window follows insertion order.
+  events.get("message_end")({ message: assistantMsg(0.001, "m0") }, ctx);
+  assert.match(statusCalls[statusCalls.length - 1].text, /Budget \$1\.01 \/ \$2\.00/);
+});
+
+test("session_start clears a stale footer when no cap is configured", () => {
+  const statusCalls = [];
+  const { events } = createPiHarness(undefined);
+  const ctx = createCtx({ setStatus: (key, text) => statusCalls.push({ key, text }) });
+
+  events.get("session_start")({}, ctx);
+  assert.deepEqual(statusCalls, [{ key: "pi-budget", text: undefined }],
+    "stale 'Budget $X / $Y' from a previous capped session is cleared immediately");
 });
 
 test("enforces even when message_end fires before session_start (review: LOW)", () => {

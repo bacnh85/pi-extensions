@@ -106,6 +106,7 @@ future sessions. Apply one only if its trigger matches the current work.
 - **Munin configured** (`MUNIN_API_KEY` + `MUNIN_PROJECT` set) → learnings stored
   with tag `type:learning,domain:<inferred>`, searchable via `munin_search`.
 - **Munin not configured** → local JSONL at `.pi/evolve/learnings.jsonl` (capped).
+- **Untrusted project** → local saves/reads redirect to `<agentDir>/evolve/learnings.jsonl` (never written into cwd).
 
 ## Safety
 

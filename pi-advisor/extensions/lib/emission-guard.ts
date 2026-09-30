@@ -33,6 +33,9 @@ export function sanitizeNote(note: string): string {
   return note.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g, "").trim();
 }
 
+/** Note length cap — enforced on parse (parseReviewOutput) and again at render (renderNoteCard). */
+export const MAX_NOTE_LENGTH = 280;
+
 export interface GuardState {
   /** Note text → highest severity + the review index at which it was delivered. */
   delivered: Map<string, { severity: Severity; reviewIndex: number }>;
@@ -131,6 +134,6 @@ export function parseReviewOutput(raw: string): { severity: Severity; note: stri
   try {
     const parsed = JSON.parse(match[0]) as { severity?: unknown; note?: unknown };
     if (!isSeverity(parsed.severity) || typeof parsed.note !== "string" || !parsed.note.trim()) return undefined;
-    return { severity: parsed.severity, note: parsed.note.trim().slice(0, 280) };
+    return { severity: parsed.severity, note: parsed.note.trim().slice(0, MAX_NOTE_LENGTH) };
   } catch { return undefined; }
 }
