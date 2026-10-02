@@ -22,6 +22,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parsePeerTokens } from "./security";
+import { QUEUE_DEFAULTS, type QueueConfig } from "./queue";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -148,10 +149,22 @@ export interface A2AConfig {
      *  starts. 0 = keep forever. Transcripts carry everything the dispatched
      *  worker read, so keep the retention window bounded. */
     childTranscriptRetentionDays: number;
+    /** Receiver-side idempotency: remember each caller's `Message.messageId`
+     *  for this many seconds (in memory only) and answer a repeated
+     *  SendMessage with the ORIGINAL task instead of starting a second one.
+     *  Makes a sender's retry after an ambiguous timeout safe (see `queue`).
+     *  0 = off (every SendMessage creates a new task, the pre-0.8 behavior). */
+    dedupeTtlSec: number;
     skills: Array<{ id: string; name: string; description: string; tags?: string[] }>;
   };
   timeouts: { send: number; async: number; stream: number };
+  /** LEGACY alias (documented but unused before the outbound queue): when set
+   *  explicitly in settings.json and `queue.maxAttempts` is not, the queue
+   *  allows `retryAttempts` retries after the first try (maxAttempts =
+   *  retryAttempts + 1). Has no effect while `queue.enabled` is false. */
   retryAttempts: number;
+  /** Sender-side persistent outbound queue + retry (opt-in). See lib/queue.ts. */
+  queue: QueueConfig;
   verifySsl: boolean;
   /** Session self-declaration + local/network discovery (0.2.0). */
   discovery: {
@@ -194,10 +207,12 @@ const DEFAULTS: A2AConfig = {
     rateLimitPerMin: 60,
     childTranscripts: true,
     childTranscriptRetentionDays: 30,
+    dedupeTtlSec: 300,
     skills: [],
   },
   timeouts: { send: 360000, async: 30000, stream: 120000 },
   retryAttempts: 2,
+  queue: { ...QUEUE_DEFAULTS },
   verifySsl: true,
   discovery: {
     local: { enabled: true, heartbeatSec: 15, ttlSec: 60 },
@@ -251,6 +266,16 @@ export const SECURITY_ENV_KEYS: ReadonlySet<string> = new Set([
   "A2A_RATE_LIMIT",
   "A2A_CHILD_TRANSCRIPTS",
   "A2A_CHILD_TRANSCRIPT_RETENTION_DAYS",
+  // Outbound queue + receiver dedupe: a repo must not be able to turn on
+  // background retries / on-disk message persistence, resize them, or switch
+  // off idempotent dedupe (same threat model as the abuse-control keys).
+  "A2A_QUEUE_ENABLED",
+  "A2A_QUEUE_MAX_SIZE",
+  "A2A_QUEUE_TTL_SEC",
+  "A2A_QUEUE_BASE_DELAY_MS",
+  "A2A_QUEUE_MAX_DELAY_MS",
+  "A2A_QUEUE_MAX_ATTEMPTS",
+  "A2A_DEDUPE_TTL_SEC",
   // Abuse-control parity with sanitizeRepoA2ASettings ("maxConcurrent",
   // "replyTimeoutSec", "asyncTimeoutSec"): a repo must not be able to raise
   // the concurrency ceiling or stretch either supervision window
@@ -355,6 +380,8 @@ function sanitizeRepoA2ASettings(s: any): any {
       "childTranscripts",
       "childTranscriptRetentionDays",
       "asyncTimeoutSec",
+      // Idempotency parity with SECURITY_ENV_KEYS (A2A_DEDUPE_TTL_SEC).
+      "dedupeTtlSec",
     ])
       delete srv[k];
     c.server = srv;
@@ -371,6 +398,10 @@ function sanitizeRepoA2ASettings(s: any): any {
     c.discovery = d;
   }
   delete c.verifySsl;
+  // Outbound queue (parity with the A2A_QUEUE_* env keys) + its legacy alias:
+  // a repo must not enable on-disk persistence / background retries.
+  delete c.queue;
+  delete c.retryAttempts;
   return c;
 }
 
@@ -438,6 +469,7 @@ export function loadConfig(opts: {
     server: { ...DEFAULTS.server },
     timeouts: { ...DEFAULTS.timeouts },
     retryAttempts: DEFAULTS.retryAttempts,
+    queue: { ...DEFAULTS.queue },
     verifySsl: DEFAULTS.verifySsl,
     discovery: {
       local: { ...DEFAULTS.discovery.local },
@@ -505,6 +537,7 @@ export function loadConfig(opts: {
     srv.childTranscriptRetentionDays ?? env.A2A_CHILD_TRANSCRIPT_RETENTION_DAYS,
     DEFAULTS.server.childTranscriptRetentionDays,
   );
+  cfg.server.dedupeTtlSec = Math.max(0, num(srv.dedupeTtlSec ?? env.A2A_DEDUPE_TTL_SEC, DEFAULTS.server.dedupeTtlSec));
   cfg.server.skills = Array.isArray(srv.skills) ? srv.skills : [];
 
   // Timeouts
@@ -514,6 +547,25 @@ export function loadConfig(opts: {
   cfg.timeouts.stream = num(t.stream, DEFAULTS.timeouts.stream);
 
   cfg.retryAttempts = num(s.retryAttempts, DEFAULTS.retryAttempts);
+
+  // Outbound queue (opt-in). Precedence per field: settings.json `queue.*` →
+  // A2A_QUEUE_* env → default. maxAttempts additionally honors the legacy
+  // `retryAttempts` (retries after the first try) when set explicitly.
+  const qs = (s.queue && typeof s.queue === "object" ? s.queue : {}) as Record<string, any>;
+  const qd = DEFAULTS.queue;
+  cfg.queue.enabled = bool(qs.enabled ?? env.A2A_QUEUE_ENABLED, qd.enabled);
+  cfg.queue.maxSize = Math.max(1, num(qs.maxSize ?? env.A2A_QUEUE_MAX_SIZE, qd.maxSize));
+  cfg.queue.ttlSec = Math.max(0, num(qs.ttlSec ?? env.A2A_QUEUE_TTL_SEC, qd.ttlSec));
+  cfg.queue.baseDelayMs = Math.max(1, num(qs.baseDelayMs ?? env.A2A_QUEUE_BASE_DELAY_MS, qd.baseDelayMs));
+  cfg.queue.maxDelayMs = Math.max(
+    cfg.queue.baseDelayMs,
+    num(qs.maxDelayMs ?? env.A2A_QUEUE_MAX_DELAY_MS, qd.maxDelayMs),
+  );
+  const legacyAttempts = s.retryAttempts !== undefined ? Math.max(0, num(s.retryAttempts, 0)) + 1 : undefined;
+  cfg.queue.maxAttempts = Math.max(
+    0,
+    num(qs.maxAttempts ?? env.A2A_QUEUE_MAX_ATTEMPTS ?? legacyAttempts, qd.maxAttempts),
+  );
   cfg.verifySsl = bool(s.verifySsl ?? env.A2A_VERIFY_SSL, DEFAULTS.verifySsl);
 
   // Discovery (0.2.0)
@@ -613,6 +665,7 @@ function applyOverrides(cfg: A2AConfig, patch: Partial<A2AConfig>): void {
   if (patch.server) Object.assign(cfg.server, patch.server);
   if (patch.timeouts) Object.assign(cfg.timeouts, patch.timeouts);
   if (patch.retryAttempts !== undefined) cfg.retryAttempts = patch.retryAttempts;
+  if (patch.queue) Object.assign(cfg.queue, patch.queue);
   if (patch.verifySsl !== undefined) cfg.verifySsl = patch.verifySsl;
   if (patch.discovery) {
     if (patch.discovery.local) Object.assign(cfg.discovery.local, patch.discovery.local);
@@ -742,6 +795,7 @@ export function buildA2ASettingsPatch(opts: {
       ...(discoveryChanged ? { discovery: mergedDiscovery } : {}),
       ...(working.selfIdentity !== cfg.selfIdentity ? { selfIdentity: working.selfIdentity } : {}),
       ...(JSON.stringify(working.ui) !== JSON.stringify(cfg.ui) ? { ui: working.ui } : {}),
+      ...(JSON.stringify(working.queue) !== JSON.stringify(cfg.queue) ? { queue: working.queue } : {}),
     };
   };
 }

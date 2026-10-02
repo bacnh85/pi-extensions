@@ -23,6 +23,7 @@ import { childRetrySettings, isTransientChannelError } from "./lib/retry.js";
 import { buildA2ASettingsPatch, getGatewayPeers, loadConfig, setConfigOverrides, writeSettingsA2A, type A2AConfig } from "./lib/config";
 import {
   a2aCall,
+  drainQueue,
   a2aDiscover,
   a2aHistory,
   a2aList,
@@ -31,6 +32,7 @@ import {
   metrics,
 } from "./lib/client";
 import { A2AServer, type SessionRunner } from "./lib/server";
+import { hasPending, queueStatus, startDrainLoop } from "./lib/queue";
 import { formatPeers, listPeers } from "./lib/discovery";
 import { childTranscriptDir } from "./lib/persistence";
 import { activityLine, activityStatusLine, activityToText, classifyLine, dispatchLabel, preview, type InboundActivity } from "./lib/activity";
@@ -43,6 +45,8 @@ import { Container, Text } from "@earendil-works/pi-tui";
 // ---------------------------------------------------------------------------
 
 let server: A2AServer | null = null;
+/** Stops the outbound-queue background drain (host session only). */
+let stopQueueDrain: (() => void) | null = null;
 
 function piDir(): string {
   return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
@@ -860,6 +864,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
         `Outbound: ${m.outbound_total} sent / ${m.inbound_total} replies`,
         `Dispatches: ${m.tasks_completed} completed, ${m.tasks_failed} failed`,
         `Avg latency: ${m.avg_latency_ms}ms`,
+        ...queueStatus(piDir(), cfg.queue),
       ];
       ctx.ui.notify(lines.join("\n"), "info");
     },
@@ -884,6 +889,8 @@ export default function a2aExtension(pi: ExtensionAPI): void {
             `  gateway: ${cfg.discovery.gateway ? `${cfg.discovery.gateway.enabled ? "enabled" : "disabled"} ${cfg.discovery.gateway.url || "(no url)"}${cfg.discovery.gateway.token ? " · token (set)" : ""}` : "not configured"}`,
             `  gateways: ${Object.keys(cfg.discovery.gateways ?? {}).join(", ") || "(none)"}`,
             `  ui.transcript: ${cfg.ui.transcript}`,
+            `  queue: ${cfg.queue.enabled ? "enabled" : "disabled"} (maxSize=${cfg.queue.maxSize} ttlSec=${cfg.queue.ttlSec} baseDelayMs=${cfg.queue.baseDelayMs} maxDelayMs=${cfg.queue.maxDelayMs} maxAttempts=${cfg.queue.maxAttempts || "ttl-only"})`,
+            `  server.dedupeTtlSec: ${cfg.server.dedupeTtlSec}`,
             `  peers: ${Object.keys(cfg.peers).join(", ") || "(none)"}`,
             "",
             "Interactive editor: run /a2a-config in TUI mode (no args).",
@@ -1029,6 +1036,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
             server: workingCfg.server,
             discovery: workingCfg.discovery,
             ui: workingCfg.ui,
+            queue: workingCfg.queue,
           });
 
           ctx.ui.notify(`A2A config saved → ${written}`, "info");
@@ -1181,6 +1189,37 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     // the guard so a child session can't overwrite the host's ctx.
     if (!ctx.hasUI && ctx.mode !== "json") return;
     lastA2aCtx = ctx;
+    // Outbound queue: resume pending entries now (survives sender restarts) and
+    // keep draining in the background. The loop is a no-op while the queue is
+    // disabled or empty (one readdir per tick), so it is always safe to start.
+    stopQueueDrain?.();
+    stopQueueDrain = startDrainLoop({
+      tick: async () => {
+        const c = lastA2aCtx;
+        if (!c || !hasPending(piDir())) return;
+        const qcfg = cfgFor(c);
+        if (!qcfg.queue.enabled) return;
+        await drainQueue({
+          cfg: qcfg,
+          piDir: piDir(),
+          discoveredPeers: listPeers({ cfg: qcfg, piDir: piDir(), mdnsPeers: server?.discoveredMdnsPeers ?? [], selfUrl: server?.url ?? "", gatewayPeers: getGatewayPeers() }),
+          onEvent: (ev) => {
+            if (ev.type === "delivered") {
+              c.ui.notify(
+                `A2A queued message ${ev.entry.messageId} delivered to ${ev.entry.agent} after ${ev.entry.attempts} attempt(s). ` +
+                  `Reply: a2a_history(context_id: "${ev.value.contextId}")${ev.value.taskId ? `; task ${ev.value.taskId}` : ""}.`,
+                "info",
+              );
+            } else if (ev.type === "dropped") {
+              c.ui.notify(
+                `A2A queued message ${ev.entry.messageId} → ${ev.entry.agent} dropped (${ev.reason}${ev.detail ? `: ${ev.detail}` : ""}). See /a2a-status.`,
+                "warning",
+              );
+            }
+          },
+        });
+      },
+    });
     const cfg = cfgFor(ctx);
     if (!cfg.server.enabled) return;
     try {
@@ -1225,6 +1264,8 @@ export default function a2aExtension(pi: ExtensionAPI): void {
     // mode "print"; json-mode hosts are long-lived HOSTS, not children —
     // they keep the shutdown.
     if (!ctx.hasUI && ctx.mode !== "json") return;
+    stopQueueDrain?.();
+    stopQueueDrain = null;
     if (server) {
       try {
         await server.stop();

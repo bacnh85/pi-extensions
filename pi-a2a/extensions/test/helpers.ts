@@ -1,4 +1,5 @@
 import type { A2AConfig } from "../lib/config";
+import { QUEUE_DEFAULTS } from "../lib/queue";
 
 /** Fresh default config for tests (deep-ish copy — server is a nested object). */
 export function DEFAULTS(): A2AConfig {
@@ -24,10 +25,12 @@ export function DEFAULTS(): A2AConfig {
       rateLimitPerMin: 60,
       childTranscripts: true,
       childTranscriptRetentionDays: 30,
+      dedupeTtlSec: 300,
       skills: [],
     },
     timeouts: { send: 120000, async: 30000, stream: 120000 },
     retryAttempts: 2,
+    queue: { ...QUEUE_DEFAULTS },
     verifySsl: true,
     discovery: {
       local: { enabled: true, heartbeatSec: 15, ttlSec: 60 },

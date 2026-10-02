@@ -70,6 +70,31 @@ export function buildRows(
     row("server.rateLimitPerMin", "Rate limit /min", "number", cfg.server.rateLimitPerMin, (v) => {
       cfg.server.rateLimitPerMin = toInt(v, cfg.server.rateLimitPerMin);
     }),
+    row("server.dedupeTtlSec", "Dedupe messageId TTL (s, 0=off)", "number", cfg.server.dedupeTtlSec, (v) => {
+      cfg.server.dedupeTtlSec = Math.max(0, toInt(v, cfg.server.dedupeTtlSec));
+    }),
+  ];
+
+  // Outbound queue (opt-in). Setters clamp to the same floors loadConfig uses.
+  const queue: PanelRow[] = [
+    row("queue.enabled", "Queue + retry enabled", "toggle", cfg.queue.enabled, (v) => {
+      cfg.queue.enabled = Boolean(v);
+    }),
+    row("queue.maxSize", "Max pending messages", "number", cfg.queue.maxSize, (v) => {
+      cfg.queue.maxSize = Math.max(1, toInt(v, cfg.queue.maxSize));
+    }),
+    row("queue.ttlSec", "Entry TTL (s, 0=never)", "number", cfg.queue.ttlSec, (v) => {
+      cfg.queue.ttlSec = Math.max(0, toInt(v, cfg.queue.ttlSec));
+    }),
+    row("queue.baseDelayMs", "Backoff base (ms)", "number", cfg.queue.baseDelayMs, (v) => {
+      cfg.queue.baseDelayMs = Math.max(1, toInt(v, cfg.queue.baseDelayMs));
+    }),
+    row("queue.maxDelayMs", "Backoff cap (ms)", "number", cfg.queue.maxDelayMs, (v) => {
+      cfg.queue.maxDelayMs = Math.max(cfg.queue.baseDelayMs, toInt(v, cfg.queue.maxDelayMs));
+    }),
+    row("queue.maxAttempts", "Max attempts (0=ttl only)", "number", cfg.queue.maxAttempts, (v) => {
+      cfg.queue.maxAttempts = Math.max(0, toInt(v, cfg.queue.maxAttempts));
+    }),
   ];
 
   const discovery: PanelRow[] = [
@@ -206,6 +231,7 @@ export function buildRows(
     { key: "identity", label: "Identity", rows: identity },
     { key: "peers", label: "Peers", rows: peers },
     { key: "ui", label: "UI", rows: ui },
+    { key: "queue", label: "Outbound queue (queue)", rows: queue },
   ];
 }
 
