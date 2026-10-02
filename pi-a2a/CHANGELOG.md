@@ -1,5 +1,33 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Opt-in sender-side persistent outbound queue with retry** (`queue.*`,
+  `A2A_QUEUE_*`; default OFF — disabled is the exact previous behavior). The
+  redacted message is persisted to `<piDir>/a2a_queue/<messageId>.json` before
+  the first POST and retried in the background with exponential backoff +
+  jitter on receiver-down/transient failures (`ECONNREFUSED`, `EHOSTUNREACH`,
+  `ETIMEDOUT`, reply timeout, 5xx, 429 + `Retry-After`; never other 4xx).
+  Pending entries resume at session start. Bounded by `queue.maxSize` (full →
+  new message sent once, un-queued), `queue.ttlSec` (expired entries dropped,
+  logged, surfaced in `a2a_list` / `/a2a-status`) and optional
+  `queue.maxAttempts`. New `/a2a-config` "Outbound queue" group. See README
+  "Outbound queue & retry".
+- **Receiver-side `messageId` dedupe** (`server.dedupeTtlSec`, default 300 s,
+  `0` = off; in-memory, scoped per caller identity): a repeated `SendMessage`
+  returns the original task instead of running twice, so a queue retry after
+  an ambiguous timeout cannot create a duplicate task.
+
+### Changed
+
+- The previously dead `retryAttempts` setting (documented as "Outbound retry
+  count" but never read) is now a legacy alias: when set explicitly and the
+  queue is enabled, `queue.maxAttempts = retryAttempts + 1`.
+- `postJsonRpc` failures are now `A2ASendError`s (same messages) carrying
+  `retryable` / `status` / `retryAfterMs`.
+
 ## [0.7.13] - 2026-09-25
 
 ### Fixed

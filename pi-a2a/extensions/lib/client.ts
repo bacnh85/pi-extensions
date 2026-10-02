@@ -5,6 +5,11 @@
  * Wire format: A2A v1.0 JSON-RPC `SendMessage`; v0.3 peers tolerated.
  *
  * Every call: redact → audit → persist → POST → unwrap → reply text.
+ *
+ * Opt-in outbound queue (`queue.enabled`, lib/queue.ts): the same pipeline,
+ * but the redacted message is persisted to disk before the first POST and
+ * retried in the background on receiver-down/transient failures. With the
+ * queue disabled (default) none of that code runs.
  */
 
 import {
@@ -13,6 +18,7 @@ import {
   TERMINAL_STATES,
   extractText,
   newContextId,
+  newMessageId,
   newTaskId,
   normalizeState,
   ROLE_USER,
@@ -42,6 +48,19 @@ import {
   loadConversation,
   persistMessage,
 } from "./persistence";
+import {
+  A2ASendError,
+  attemptEntry,
+  drainDue,
+  enqueue,
+  isRetryableStatus,
+  networkErrorCode,
+  parseRetryAfterMs,
+  queueStatus,
+  type DrainEvent,
+  type QueueConfig,
+  type QueueEntry,
+} from "./queue";
 import { clean, type DiscoveredPeer } from "./discovery";
 import { list as listRegistry } from "./registry";
 
@@ -191,13 +210,23 @@ export function rpcUrl(baseUrl: string, card: AgentCard | null): string {
 // HTTP POST (JSON-RPC)
 // ---------------------------------------------------------------------------
 
-async function postJsonRpc(
+/** Parsed JSON-RPC HTTP reply plus the transport facts the retry policy needs. */
+interface RpcReply {
+  json: any;
+  status: number;
+  retryAfterMs?: number;
+}
+
+/** postJsonRpc with the HTTP status / Retry-After exposed. Every thrown error
+ *  is an A2ASendError whose message is the text the client has always thrown;
+ *  `retryable` marks receiver-down/transient failures for the queue. */
+async function postJsonRpcRaw(
   url: string,
   body: JsonRpcRequest,
   headers: Record<string, string>,
   timeoutMs: number,
   gatewayOrigins?: Set<string>,
-): Promise<any> {
+): Promise<RpcReply> {
   if (gatewayOrigins) assertGatewayUrl(url, gatewayOrigins);
   else assertSafeUrl(url);
   const ctrl = new AbortController();
@@ -217,27 +246,44 @@ async function postJsonRpc(
       });
     } catch (e: any) {
       if (ctrl.signal.aborted) {
-        throw new Error(
+        // Delivery status unknown (the peer may have processed it): retryable,
+        // made safe by the stable messageId + receiver dedupe.
+        throw new A2ASendError(
           `reply timed out after ${timeoutMs}ms; delivery status unknown (requestId=${String(body.id)})`,
+          { retryable: true, code: "ETIMEDOUT" },
         );
       }
-      throw new Error(`connection failed — ${e?.message || String(e)}`);
+      const code = networkErrorCode(e);
+      throw new A2ASendError(`connection failed — ${e?.message || String(e)}`, { retryable: !!code, code });
     }
+    const status = resp.status;
+    const retryAfterMs = parseRetryAfterMs(resp.headers?.get?.("retry-after"));
+    const retryable = isRetryableStatus(status);
     const text = await resp.text();
     let json: any;
     try {
       json = JSON.parse(text);
     } catch {
       // Don't leak internal service response bodies into model-facing errors.
-      throw new Error(`peer returned non-JSON (HTTP ${resp.status})`);
+      throw new A2ASendError(`peer returned non-JSON (HTTP ${status})`, { retryable, status, retryAfterMs });
     }
     if (!resp.ok && !json.error) {
-      throw new Error(`HTTP ${resp.status}`);
+      throw new A2ASendError(`HTTP ${status}`, { retryable, status, retryAfterMs });
     }
-    return json;
+    return { json, status, retryAfterMs };
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function postJsonRpc(
+  url: string,
+  body: JsonRpcRequest,
+  headers: Record<string, string>,
+  timeoutMs: number,
+  gatewayOrigins?: Set<string>,
+): Promise<any> {
+  return (await postJsonRpcRaw(url, body, headers, timeoutMs, gatewayOrigins)).json;
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +388,9 @@ export interface SendResult {
   /** Set when the peer returned a Task (v1.0 wire) — the caller can poll it
    *  with GetTask (a2a_status). Always present for non-blocking dispatches. */
   taskId?: string;
+  /** Set (instead of a reply) when the queue is enabled and the first attempt
+   *  failed transiently: the message is persisted and retried in background. */
+  queued?: { messageId: string; attempts: number; nextAttemptAt: number; error: string };
 }
 
 /** Auth + asserted-identity headers for an outbound request to a peer.
@@ -376,6 +425,12 @@ async function sendTask(opts: {
    *  ("pi/session") so the receiving peer can join this dispatch to its own
    *  ledger rows and records (fleet task #238). */
   sessionId?: string;
+  /** Stable A2A Message.messageId. Set by the outbound queue so every retry
+   *  of one message carries the SAME id (receiver dedupe key). Unset = a
+   *  fresh id per call, exactly as before. */
+  messageId?: string;
+  /** 1-based attempt number (queue retries); metrics count only the first. */
+  attempt?: number;
 }): Promise<SendResult> {
   const { cfg, piDir, peer, agentLabel, message } = opts;
   const headers = peerRequestHeaders(cfg, peer);
@@ -421,6 +476,7 @@ async function sendTask(opts: {
   const ctx = opts.contextId || newContextId();
   const safe = redactOutbound(message);
   const outbound = textMessage(ROLE_USER, safe, ctx);
+  if (opts.messageId) outbound.messageId = opts.messageId;
   // Sender attribution (A2A v1.0 permits metadata on Message). "pi/session"
   // is the pi session id; "pi/self" the configured identity. Both are
   // advisory display/join data — receiving peers must not authenticate on
@@ -440,7 +496,7 @@ async function sendTask(opts: {
   };
 
   audit({ piDir, direction: "outbound", identity: agentLabel, taskId: String(rpcBody.id), text: safe });
-  metrics.outboundTotal += 1;
+  if (!opts.attempt || opts.attempt <= 1) metrics.outboundTotal += 1;
 
   const started = Date.now();
   // SSRF pin: prefer the peer's own publishing gateway origin (overlay-first
@@ -461,11 +517,16 @@ async function sendTask(opts: {
       gwOrigins = origins.size > 0 ? origins : undefined;
     }
   }
-  const resp = await postJsonRpc(rpcUrl(peer.url, card), rpcBody, headers, timeout, gwOrigins);
+  const reply0 = await postJsonRpcRaw(rpcUrl(peer.url, card), rpcBody, headers, timeout, gwOrigins);
+  const resp = reply0.json;
   metrics.recordLatency(Date.now() - started);
   if (resp.error) {
     const msg = resp.error.message || JSON.stringify(resp.error);
-    throw new Error(`peer '${agentLabel}' returned an error: ${msg}`);
+    throw new A2ASendError(`peer '${agentLabel}' returned an error: ${msg}`, {
+      retryable: isRetryableStatus(reply0.status),
+      status: reply0.status,
+      retryAfterMs: reply0.retryAfterMs,
+    });
   }
   const result = resp.result ?? {};
   const payload = unwrapSendMessageResponse(result);
@@ -487,6 +548,121 @@ async function sendTask(opts: {
   if (state === "TASK_STATE_COMPLETED") metrics.tasksCompleted += 1;
   if (state === "TASK_STATE_FAILED") metrics.tasksFailed += 1;
   return { reply, contextId: replyCtx, state, taskId };
+}
+
+// ---------------------------------------------------------------------------
+// Outbound queue (opt-in) — persist → attempt → background retry
+// ---------------------------------------------------------------------------
+
+type SendTaskOpts = Parameters<typeof sendTask>[0];
+
+/**
+ * sendTask with the persistent queue. The redacted message is written to disk
+ * BEFORE the first POST; the first attempt runs inline (same latency/errors as
+ * an unqueued call). Outcomes:
+ *  - delivered → entry removed, normal SendResult.
+ *  - permanent failure (4xx, JSON-RPC error, SSRF refusal, …) → entry removed,
+ *    the original error is thrown (identical to the unqueued path).
+ *  - transient failure → entry stays queued; resolves with `queued` set and
+ *    the background drain retries (backoff + jitter) until delivered, expired,
+ *    or out of attempts.
+ *  - queue full / disk unwritable → sent once WITHOUT queueing (never evicts
+ *    an already-accepted message); a transient failure then carries a note.
+ */
+async function sendQueued(opts: SendTaskOpts, q: QueueConfig): Promise<SendResult> {
+  const messageId = newMessageId();
+  const contextId = opts.contextId || newContextId();
+  const now = Date.now();
+  const entry: QueueEntry = {
+    v: 1,
+    messageId,
+    agent: opts.agentLabel,
+    message: redactOutbound(opts.message),
+    contextId,
+    asyncDispatch: opts.asyncDispatch === true,
+    sessionId: opts.sessionId,
+    createdAt: now,
+    attempts: 0,
+    nextAttemptAt: now,
+  };
+  const enq = enqueue(opts.piDir, entry, q, now);
+  if (!enq.ok) {
+    try {
+      return await sendTask({ ...opts, contextId, messageId, attempt: 1 });
+    } catch (e: any) {
+      if (e instanceof A2ASendError && e.retryable) {
+        e.message += enq.reason === "full" ? ` (outbound queue full — not queued for retry)` : ` (queue unwritable — not queued for retry)`;
+      }
+      throw e;
+    }
+  }
+  const out = await attemptEntry({
+    piDir: opts.piDir,
+    entry,
+    q,
+    deliver: (e) => sendTask({ ...opts, contextId, messageId, attempt: e.attempts }),
+  });
+  if (out.kind === "delivered") return out.value;
+  if (out.kind === "failed") throw out.error;
+  return {
+    reply: "",
+    contextId,
+    state: "",
+    queued: {
+      messageId,
+      attempts: entry.attempts,
+      nextAttemptAt: out.nextAttemptAt,
+      error: String((out.error as any)?.message ?? out.error),
+    },
+  };
+}
+
+/**
+ * One background drain pass (called periodically by index.ts, first call at
+ * session start = resume after restart). No-op unless `queue.enabled`.
+ * Peers are re-resolved by label from the CURRENT config on every attempt, so
+ * no credential is ever persisted and token rotation is picked up.
+ */
+export async function drainQueue(opts: {
+  cfg: A2AConfig;
+  piDir: string;
+  discoveredPeers?: DiscoveredPeer[];
+  onEvent?: (ev: DrainEvent<SendResult>) => void;
+  /** Test seams (clock / jitter source). */
+  now?: () => number;
+  random?: () => number;
+}): Promise<{ delivered: number; retried: number; dropped: number }> {
+  if (!opts.cfg.queue.enabled) return { delivered: 0, retried: 0, dropped: 0 };
+  return drainDue<SendResult>({
+    piDir: opts.piDir,
+    q: opts.cfg.queue,
+    onEvent: opts.onEvent,
+    now: opts.now,
+    random: opts.random,
+    deliver: async (entry) => {
+      const resolved = resolveCallPeer({
+        cfg: opts.cfg,
+        piDir: opts.piDir,
+        agent: entry.agent,
+        discoveredPeers: opts.discoveredPeers,
+      });
+      // A peer that cannot be resolved right now (e.g. a discovered session
+      // not re-registered yet after restart) may come back — retry until TTL.
+      if ("error" in resolved) throw new A2ASendError(resolved.error, { retryable: true });
+      return sendTask({
+        cfg: opts.cfg,
+        piDir: opts.piDir,
+        peer: resolved.peer,
+        agentLabel: entry.agent,
+        message: entry.message,
+        contextId: entry.contextId,
+        asyncDispatch: entry.asyncDispatch,
+        sessionId: entry.sessionId,
+        messageId: entry.messageId,
+        attempt: entry.attempts,
+      });
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -612,7 +788,7 @@ export async function a2aCall(opts: {
   const peer = resolved.peer;
   let result: SendResult;
   try {
-    result = await sendTask({
+    const sendOpts: SendTaskOpts = {
       cfg: opts.cfg,
       piDir: opts.piDir,
       peer,
@@ -621,12 +797,25 @@ export async function a2aCall(opts: {
       contextId: opts.contextId,
       asyncDispatch: opts.asyncDispatch,
       sessionId: opts.sessionId,
-    });
+    };
+    result = opts.cfg.queue?.enabled ? await sendQueued(sendOpts, opts.cfg.queue) : await sendTask(sendOpts);
   } catch (e: any) {
     const msg = e?.message || String(e);
     if (/HTTP 401|HTTP 403/.test(msg)) return `Error: peer '${agent}' rejected auth. Check the configured token.`;
     if (/HTTP 429/.test(msg)) return `Error: peer '${agent}' rate limited us (HTTP 429). Retry later.`;
     return `Error: call to '${agent}' failed — ${msg}`;
+  }
+  if (result.queued) {
+    const qd = result.queued;
+    const inSec = Math.max(0, Math.ceil((qd.nextAttemptAt - Date.now()) / 1000));
+    return (
+      `[A2A → ${agent} · context ${result.contextId} · queued]\n` +
+      `Delivery to '${agent}' failed (${qd.error}). The message is saved in the outbound queue ` +
+      `(id ${qd.messageId}) and will be retried in the background — next attempt in ~${inSec}s; ` +
+      `it is dropped after ${opts.cfg.queue.ttlSec}s${opts.cfg.queue.maxAttempts > 0 ? ` or ${opts.cfg.queue.maxAttempts} attempts` : ""}. ` +
+      `The peer's reply (when delivered) is NOT returned to this call: recall it with ` +
+      `a2a_history(context_id: "${result.contextId}"); queue state is shown by a2a_list.`
+    );
   }
   // Non-blocking ack: the peer accepted the task and is running it detached
   // from this call. (A peer that does not support returnImmediately simply
@@ -886,6 +1075,11 @@ export function a2aList(opts: {
     lines.push("");
     lines.push(`Persisted conversations (${convos.length}) — recall with a2a_history:`);
     for (const c of convos.slice(0, 25)) lines.push(`  - ${c}`);
+  }
+  const qlines = cfg.queue ? queueStatus(piDir, cfg.queue) : [];
+  if (qlines.length > 0) {
+    lines.push("");
+    lines.push(...qlines);
   }
   const m = metrics.snapshot();
   lines.push("");

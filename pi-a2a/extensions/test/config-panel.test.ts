@@ -5,14 +5,14 @@ import { DEFAULTS } from "./helpers";
 import { buildRows, ConfigPanelModel, kindValue, makeOnAction, type PanelAction } from "../lib/config-panel";
 
 describe("config-panel", () => {
-  it("buildRows covers server, discovery, gateway, gateways, identity, peers, ui groups", () => {
+  it("buildRows covers server, discovery, gateway, gateways, identity, peers, ui, queue groups", () => {
     const cfg = DEFAULTS();
     cfg.peers = { hermes: { url: "http://localhost:9900", auth: { type: "none" }, timeout: 120000, capabilities: [] } };
     // Legacy gateway block must be LIVE to render (0.7.6: inert placeholder hidden).
     cfg.discovery.gateway = { enabled: true, url: "http://legacy:9920", token: "t" };
     const groups = buildRows(cfg);
     const keys = groups.map((g) => g.key);
-    assert.deepEqual(keys, ["server", "discovery", "gateway", "gateways", "identity", "peers", "ui"]);
+    assert.deepEqual(keys, ["server", "discovery", "gateway", "gateways", "identity", "peers", "ui", "queue"]);
     const serverRows = groups[0]!.rows.map((r) => r.key);
     assert.include(serverRows, "server.enabled");
     assert.include(serverRows, "server.port");

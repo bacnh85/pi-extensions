@@ -248,6 +248,13 @@ export class A2AServer {
   // detached dispatches 503 ALL blocking senders (self-inflicted outage).
   private running = 0;
   private detachedRunning = 0;
+  /** Receiver-side idempotency cache for SendMessage: `<identity>\0<messageId>`
+   *  → the in-flight/settled result promise of the FIRST delivery. In memory
+   *  only (the task store it points into is in-memory too, so persisting it
+   *  would only dedupe to tasks that no longer exist). Insertion-ordered, so
+   *  expiry sweeps stop at the first live entry. Off when dedupeTtlSec is 0. */
+  private dedupe = new Map<string, { at: number; result: Promise<any> }>();
+  private static readonly DEDUPE_MAX_KEYS = 10_000;
   // Discovery state (0.2.0)
   private descriptor: SessionDescriptor | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -897,6 +904,16 @@ export class A2AServer {
     const isV1 = (v1Norm: string): boolean => norm === v1Norm;
 
     if (norm === "messagesend" || norm === "sendmessage") {
+      // Idempotency (queue retries): a repeated messageId from the SAME
+      // identity inside the TTL gets the original task back — awaited if it is
+      // still running — and never starts a second run. Checked before the
+      // concurrency cap so a retry of an accepted message is not 503'd.
+      const dedupeKey = this.dedupeKeyFor(params, identity);
+      const dup = dedupeKey ? this.dedupeGet(dedupeKey) : undefined;
+      if (dup) {
+        const r = await dup;
+        return this.send(res, 200, jsonrpcResult(id, isV1("sendmessage") ? sendTaskResponse(r) : r));
+      }
       // Concurrency cap (blocking pool): reject when too many blocking tasks
       // are already running. Detached tasks do not compete for this pool.
       if (this.running >= this.cfg.server.maxConcurrent) {
@@ -906,7 +923,9 @@ export class A2AServer {
           jsonrpcError(id, -32053, `server busy: max ${this.cfg.server.maxConcurrent} concurrent tasks`),
         );
       }
-      const r = await this.messageSend(params, identity, undefined, framing);
+      const pending = this.messageSend(params, identity, undefined, framing);
+      if (dedupeKey) this.dedupePut(dedupeKey, pending);
+      const r = await pending;
       // A2A v1.0: the SendMessage result is the oneof {"task": …} | {"message": …},
       // never a bare Task; the pre-1.0 alias keeps returning the bare Task.
       return this.send(res, 200, jsonrpcResult(id, isV1("sendmessage") ? sendTaskResponse(r) : r));
@@ -950,6 +969,40 @@ export class A2AServer {
       return this.taskSubscribe(params, identity, res, id, isV1("subscribetotask"));
     }
     return this.send(res, 200, jsonrpcError(id, -32601, `method not found: ${method}`));
+  }
+
+  /** Dedupe key for a SendMessage, or null when dedupe is off / no usable
+   *  messageId. Scoped per authenticated identity so one caller can never
+   *  collide with (or read) another caller's task by guessing an id. */
+  private dedupeKeyFor(params: any, identity: string): string | null {
+    if (!(this.cfg.server.dedupeTtlSec > 0)) return null;
+    const mid = (params?.message ?? params)?.messageId;
+    if (typeof mid !== "string" || mid.length === 0 || mid.length > 256) return null;
+    return `${identity}\u0000${mid}`;
+  }
+
+  private dedupeGet(key: string): Promise<any> | undefined {
+    const hit = this.dedupe.get(key);
+    if (!hit) return undefined;
+    if (Date.now() - hit.at > this.cfg.server.dedupeTtlSec * 1000) {
+      this.dedupe.delete(key);
+      return undefined;
+    }
+    return hit.result;
+  }
+
+  private dedupePut(key: string, result: Promise<any>): void {
+    const now = Date.now();
+    const ttlMs = this.cfg.server.dedupeTtlSec * 1000;
+    for (const [k, v] of this.dedupe) {
+      if (now - v.at <= ttlMs && this.dedupe.size < A2AServer.DEDUPE_MAX_KEYS) break;
+      this.dedupe.delete(k);
+    }
+    this.dedupe.set(key, { at: now, result });
+    // A run that threw never produced a task — let a retry start fresh.
+    result.catch(() => {
+      if (this.dedupe.get(key)?.result === result) this.dedupe.delete(key);
+    });
   }
 
   private async messageSend(

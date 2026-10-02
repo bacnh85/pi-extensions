@@ -85,11 +85,18 @@ Edit `~/.pi/agent/settings.json` under the `a2a` key. Key reference:
 | `server.asyncTimeoutSec` | `86400` | Supervision window (seconds) for **detached** tasks sent with `returnImmediately` — the caller's request already returned an ack, so this bound replaces the reply window. `0` = unbounded (caller-supervised via `tasks/get` / `tasks/cancel`) |
 | `server.maxPingpongTurns` | `5` | Anti-loop turn cap per context (max 20) |
 | `server.rateLimitPerMin` | `60` | Requests/minute per identity |
+| `server.dedupeTtlSec` | `300` | Receiver-side idempotency: remember each caller's `messageId` this long (in memory) and answer a repeated `SendMessage` with the **original** task instead of starting another. `0` = off (every send runs). See [Outbound queue & retry](#outbound-queue--retry-opt-in) |
 | `server.skills` | `[]` | Skills advertised on the Agent Card. When empty (default), skills are **self-discovered** from the live session — no config needed |
 | `timeouts.send` | `360000` | Outbound send timeout (ms); kept above the default 300s server reply deadline |
 | `timeouts.async` | `30000` | Async task poll interval (ms) |
 | `timeouts.stream` | `120000` | Streaming timeout (ms) |
-| `retryAttempts` | `2` | Outbound retry count |
+| `retryAttempts` | `2` | **Legacy alias.** Before the outbound queue this key was documented but **not read by any code**. It now only matters when `queue.enabled` is `true` **and** it is set explicitly in `settings.json`: then `queue.maxAttempts = retryAttempts + 1` (unless `queue.maxAttempts` is set). The `2` shown is the historical default and is **not** applied implicitly |
+| `queue.enabled` | `false` | Opt-in persistent outbound queue + retry for `a2a_call` (see [Outbound queue & retry](#outbound-queue--retry-opt-in)). `false` = exactly the pre-queue behavior |
+| `queue.maxSize` | `100` | Max pending queued messages on disk. When full, a **new** message is sent once without queueing (accepted entries are never evicted) |
+| `queue.ttlSec` | `3600` | Max age of a queued message; older entries are dropped (logged + shown in status). `0` = never expire |
+| `queue.baseDelayMs` | `2000` | First retry delay; doubles per failed attempt (±20% jitter, downward) |
+| `queue.maxDelayMs` | `300000` | Cap on the backoff delay |
+| `queue.maxAttempts` | `0` | Max total attempts (first try included). `0` = limited only by `queue.ttlSec` |
 | `verifySsl` | `true` | Verify TLS on outbound calls |
 | `discovery.local` | `{enabled:true, heartbeatSec:15, ttlSec:60}` | Local file registry |
 | `discovery.mdns` | `{enabled:false, serviceType:"a2a"}` | mDNS broadcast + discovery |
@@ -176,6 +183,9 @@ on an inbound agent server on whoever opens it. (`portFallback: 0` means
 | `A2A_ASYNC_TIMEOUT` | `86400` | Detached-task supervision window in seconds (`0` = unbounded) — see [Non-blocking dispatch](#non-blocking-dispatch-returnimmediately) |
 | `A2A_CHILD_TRANSCRIPTS` | `true` | Persist dispatched child-session transcripts to disk (`false` = in-memory only) |
 | `A2A_CHILD_TRANSCRIPT_RETENTION_DAYS` | `30` | Days to keep child-session transcripts before cleanup |
+| `A2A_QUEUE_ENABLED` | `false` | Turn the outbound queue on/off (`queue.enabled`) |
+| `A2A_QUEUE_MAX_SIZE` / `A2A_QUEUE_TTL_SEC` / `A2A_QUEUE_BASE_DELAY_MS` / `A2A_QUEUE_MAX_DELAY_MS` / `A2A_QUEUE_MAX_ATTEMPTS` | _(see config)_ | Env forms of `queue.maxSize` / `ttlSec` / `baseDelayMs` / `maxDelayMs` / `maxAttempts`. Like the other security-relevant keys they are honored from process env and the global Pi `.env.local`, never from a repo `.env.local` / repo `.pi/settings.json` |
+| `A2A_DEDUPE_TTL_SEC` | `300` | Env form of `server.dedupeTtlSec` (`0` = off) |
 | `A2A_SERVER_ENABLED` | `false` | Auto-start the inbound server on session start |
 | `A2A_SELF_IDENTITY` | _(unset)_ | Outbound caller identity: a key in `server.peerTokens`. When set, this session presents its OWN per-peer token (not the shared token) so receivers attribute calls to it uniquely. Empty = use the shared token (anonymous caller). |
 | `A2A_DISCOVERY_LOCAL` | `true` | Enable the local file registry |
@@ -509,6 +519,79 @@ what remains (down to 1), the model's final turn ends on a length stop with
 no text, and the task would otherwise complete with the *previous* turn's
 stale reply. Such a turn now fails the task (`FAILED`, status message
 "no usable reply was produced") instead of masquerading as success.
+
+## Outbound queue & retry (opt-in)
+
+By default `a2a_call` makes one HTTP attempt and returns the error if the peer
+is down. With `queue.enabled: true` the outbound path becomes
+**persist → attempt → retry**:
+
+1. The (already redacted) message is written to `<piDir>/a2a_queue/<messageId>.json`
+   (atomic tmp+rename, mode `0600`) **before** the first POST. Credentials are
+   never stored — the peer is re-resolved by name/URL from the live config on
+   every attempt.
+2. The first attempt runs inline, exactly like an unqueued call (same timeout,
+   same latency). Success removes the entry; the model sees the normal reply.
+3. On a failure that means *receiver down / transient* the entry stays queued
+   and the call returns a `queued` notice (with the message id and the context
+   id). A background drain (started at session start, so it also **resumes
+   after a restart**) retries with exponential backoff
+   (`baseDelayMs · 2^(n−1)`, capped at `maxDelayMs`, −20…0% jitter).
+4. Retried: `ECONNREFUSED`, `EHOSTUNREACH`, `ENETUNREACH`, `ETIMEDOUT`,
+   `ECONNRESET`, `EAI_AGAIN`, reply timeout, HTTP `5xx`, HTTP `429` (a larger
+   `Retry-After` wins, bounded by the TTL). **Not** retried: any other `4xx`
+   (400/401/403/404 …), JSON-RPC errors on a 2xx, URL/SSRF refusals, unknown
+   connection errors (e.g. TLS failures), `ENOTFOUND`. Those fail immediately
+   with the same error text as before and leave nothing queued.
+5. When a background retry finally succeeds, the exchange is appended to the
+   conversation history (`a2a_history(context_id)`) and a TUI notification is
+   shown. The reply is **not** injected into the model's context — the
+   original tool call already returned the `queued` notice.
+
+**Idempotency.** Every queued message has one stable `messageId`, reused on all
+retries. A pi-a2a receiver dedupes `SendMessage` on *(authenticated identity,
+messageId)* for `server.dedupeTtlSec` (default 300 s, in memory): a retry after
+an ambiguous timeout gets the **original** task back (waiting for it if it is
+still running) instead of starting a second one. Senders that never repeat a
+`messageId` (every existing client) are unaffected. Limits: the cache is lost
+if the receiver restarts (so is its in-memory task store), and receivers that
+are not pi-a2a may not dedupe — delivery is **at-least-once**.
+
+**Bounds.** At most `queue.maxSize` pending entries. When the queue is full a
+*new* message is sent once, un-queued (a transient failure is reported with an
+"(outbound queue full — not queued for retry)" note) — accepted messages are
+never evicted, and a dead peer cannot block calls to healthy ones. Entries
+older than `queue.ttlSec` are deleted, logged (`[a2a-queue] dropped …`),
+appended to `<piDir>/a2a_queue/dropped.jsonl` (metadata only, no message text,
+rotated at 256 KB) and listed under "Recently dropped" by `a2a_list` and
+`/a2a-status`, as are entries that exhaust `queue.maxAttempts` or are
+rejected by the peer during a background retry.
+
+**Enable / disable.** `settings.json`: `"a2a": { "queue": { "enabled": true } }`
+(also the `/a2a-config` panel's *Outbound queue* group, applied live), or
+`A2A_QUEUE_ENABLED=true`. Disabled (the default) means the queue code never
+runs and the send path behaves exactly as before (same requests, same error text); entries already on disk
+are kept (not retried) until it is re-enabled.
+
+**Scope and limitations.**
+- Applies to `a2a_call`, `/a2a-send`, and `/a2a-broadcast` (blocking **and**
+  `async_dispatch`). `a2a_orchestrate` fan-out is never queued (it needs each
+  peer's reply in the same call). `a2a_status` / `a2a_discover` are reads and
+  are not retried. The client has no outbound streaming call, so there is
+  nothing to queue there; server-side `message/stream` is untouched.
+- Blocking sends: the model gets a `queued` notice, **not** the peer's reply
+  (see 5). Use `async_dispatch` or `a2a_history` for the delayed result. For a
+  queued `async_dispatch`, the peer's task id is only known after delivery
+  (recorded in history); poll it with `a2a_status` then.
+- Ordering: background retries are FIFO per peer, but a new inline send does not
+  wait behind older queued messages for the same peer.
+- A queued message is only retried while a host Pi session (TUI/json mode) is
+  running; there is no separate daemon. Sub-agent/child sessions never drain.
+- One drain per process; two Pi processes sharing one `piDir` could attempt the
+  same entry — the stable `messageId` + receiver dedupe makes that safe but not
+  free. There is no cross-process lock.
+- A crash between the send and the removal of the entry re-sends the message
+  once on restart (same `messageId`).
 
 ## Non-blocking dispatch (returnImmediately)
 
