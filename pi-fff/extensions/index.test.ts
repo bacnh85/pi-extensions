@@ -94,7 +94,9 @@ function harness(
   fffExtension(pi as any);
   flagsReady = true;
   const ctx = { cwd: options.cwd ?? process.cwd(), ui: { notify: () => {}, addAutocompleteProvider: () => {} } };
-  const started = events.get("session_start")?.[0]({}, ctx);
+  // pi fires ALL registered handlers per event; the extension now registers
+  // two session_start handlers (tool_search activation + real init).
+  const started = Promise.all((events.get("session_start") ?? []).map((h) => h({}, ctx)));
   return { tools, commands, events, flags, started, setActiveTools: (names: string[]) => { activeTools = [...names]; }, get activeTools() { return activeTools; } };
 }
 
@@ -189,10 +191,10 @@ describe("pi-fff tools", () => {
     await runtime.started;
     const grepToken = text(await run(runtime.tools.get("ffgrep"), { pattern: "a", limit: 1 })).match(/cursor="([^"]+)"/)?.[1];
     const findToken = text(await run(runtime.tools.get("fffind"), { pattern: "a", limit: 1 })).match(/cursor="([^"]+)"/)?.[1];
-    await runtime.events.get("session_start")?.[0]({}, {
+    await Promise.all((runtime.events.get("session_start") ?? []).map((h) => h({}, {
       cwd: join(process.cwd(), "other-workspace"),
       ui: { notify: () => {}, addAutocompleteProvider: () => {} },
-    });
+    })));
     const before = { grepCalls, findCalls };
     expect(text(await run(runtime.tools.get("ffgrep"), { pattern: "a", cursor: grepToken }))).to.include("Invalid or expired grep cursor");
     expect(text(await run(runtime.tools.get("fffind"), { pattern: "a", cursor: findToken }))).to.include("Invalid or expired find cursor");

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.0 (2026-10-10)
+
+- **Deferred tool tier** (ceulen pattern): `fff_multi_grep` now register `exposure: "deferred"` — not declared to the model until `tool_search` loads them (they stay callable via `ctx.executeTool`/codemode). `ffgrep`/`fffind` (the primary search pair) stay direct. The package now force-activates `tool_search` in `session_start` when it defers tools (pi only auto-activates discovery for MCP servers). Unit tests pin the exposure flags and the activation branches.
+
 All notable changes to `pi-fff` will be documented in this file.
 
 ## 0.8.4 (2026-09-28)

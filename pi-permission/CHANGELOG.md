@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.10 (2026-09-30)
+
+- A parsed-but-wrong-shape settings file now warns and continues to the next settings location (pattern ported from pi-references 0.1.8) instead of being silently skipped.
+
 ## 0.2.9 (2026-09-28)
 
 ### Fixed

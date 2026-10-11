@@ -17,6 +17,10 @@ function stubPi() {
   const commands = new Map<string, CommandDef>();
   const handlers = new Map<string, ((...a: unknown[]) => unknown)[]>();
   const pi = {
+    // Deferred-tier activation hook needs the tool-discovery surface.
+    getAllTools: () => [],
+    getActiveTools: () => [],
+    setActiveTools: () => {},
     registerMessageRenderer: () => {},
     registerTool: () => {},
     registerCommand: (name: string, def: CommandDef) => {

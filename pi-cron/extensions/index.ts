@@ -502,6 +502,16 @@ export function runCronAction(args: CronActionArgs): { content: { type: "text"; 
 let timer: NodeJS.Timeout | undefined;
 
 export default function cronExtension(pi: ExtensionAPI) {
+  // Deferred tier: the cron tool register `exposure: "deferred"`
+  // — discovered via tool_search. Pi only auto-activates tool_search for MCP
+  // servers, so this package owns its activation (ceulen's pattern).
+  pi.on("session_start", async () => {
+    if (!pi.getAllTools().some((t) => t.name === "tool_search")) return;
+    const active = pi.getActiveTools();
+    if (!active.includes("tool_search")) pi.setActiveTools([...active, "tool_search"]);
+  });
+
+
   const dir = jobsDir(getAgentDir());
   // Load-time read is global-only (no ctx yet — an untrusted cwd must not arm
   // the scheduler); session_start re-reads with the trust gate below.
@@ -559,6 +569,7 @@ export default function cronExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "cron",
+    exposure: "deferred" as const,
     label: "Cron",
     description:
       "Schedule recurring jobs (cron) that fire a prompt into this session while pi is running. Actions: add, remove, list, run (manual fire), enable/disable (toggle a job), test (preview fire times), logs (tail a job's newest log), export (crontab lines for 24/7).",

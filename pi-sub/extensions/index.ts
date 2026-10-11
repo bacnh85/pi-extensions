@@ -108,7 +108,11 @@ const ROUTER_PROVIDER = "router";
 const LEGACY_9ROUTER_PROVIDER = "9router";
 // pi-router (formerly pi-9router): URL lives in settings.json `router.baseUrl`
 // (env override ROUTER_BASE_URL), key in auth.json `router` credential.
-const ROUTER_SETTINGS_PATH = path.join(os.homedir(), ".pi", "agent", "settings.json");
+// PI_CODING_AGENT_DIR overrides the agent dir (same as readCompactionSettings).
+function routerSettingsPath(): string {
+  const dir = process.env.PI_CODING_AGENT_DIR?.trim() || path.join(os.homedir(), ".pi", "agent");
+  return path.join(dir, "settings.json");
+}
 const COMMAND_CODE_PROVIDER = "commandcode";
 const COMMAND_CODE_USAGE_URL = "https://api.commandcode.ai/alpha/billing/credits";
 
@@ -449,8 +453,8 @@ async function readZaiAuth(providerId: string, label: string): Promise<{ key: st
 function readRouterConfig(): { baseUrl: string } | null {
   try {
     let baseUrl = process.env.ROUTER_BASE_URL || process.env.NINE_ROUTER_BASE_URL;
-    if (!baseUrl && fs.statSync(ROUTER_SETTINGS_PATH).isFile()) {
-      const settings = JSON.parse(fs.readFileSync(ROUTER_SETTINGS_PATH, "utf8")) as Record<string, unknown>;
+    if (!baseUrl && fs.statSync(routerSettingsPath()).isFile()) {
+      const settings = JSON.parse(fs.readFileSync(routerSettingsPath(), "utf8")) as Record<string, unknown>;
       const router = settings.router as { baseUrl?: unknown } | undefined;
       if (typeof router?.baseUrl === "string" && router.baseUrl) baseUrl = router.baseUrl;
     }

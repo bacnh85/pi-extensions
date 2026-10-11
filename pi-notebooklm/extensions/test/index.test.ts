@@ -733,6 +733,10 @@ describe("tool registration", () => {
   let registered: any = null;
 
   const mockPi: any = {
+    on: () => {},
+    getAllTools: () => [],
+    getActiveTools: () => [],
+    setActiveTools: () => {},
     registerTool(def: any) {
       registered = def;
     },
@@ -796,6 +800,10 @@ describe("tool execution", () => {
     capturedArgs = undefined;
 
     const mockPi: any = {
+      on: () => {},
+      getAllTools: () => [],
+      getActiveTools: () => [],
+      setActiveTools: () => {},
       registerTool(def: any) {
         registered = def;
       },
@@ -1047,6 +1055,10 @@ describe("tool execution", () => {
 
   it("handles pi.exec throwing ENOENT", async () => {
     const mockPi2: any = {
+      on: () => {},
+      getAllTools: () => [],
+      getActiveTools: () => [],
+      setActiveTools: () => {},
       registerTool(def: any) {
         registered = def;
       },
@@ -1349,6 +1361,10 @@ describe("output-path serialization", () => {
     });
 
     const mockPi: any = {
+      on: () => {},
+      getAllTools: () => [],
+      getActiveTools: () => [],
+      setActiveTools: () => {},
       registerTool(def: any) {
         registered = def;
       },

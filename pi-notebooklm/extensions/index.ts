@@ -466,8 +466,19 @@ export function extractOutputPaths(args: string[], cwd: string): string[] {
 // ---------------------------------------------------------------------------
 
 export default function piNotebooklmExtension(pi: ExtensionAPI) {
+  // Deferred tier: the notebooklm tool register `exposure: "deferred"`
+  // — discovered via tool_search. Pi only auto-activates tool_search for MCP
+  // servers, so this package owns its activation (ceulen's pattern).
+  pi.on("session_start", async () => {
+    if (!pi.getAllTools().some((t) => t.name === "tool_search")) return;
+    const active = pi.getActiveTools();
+    if (!active.includes("tool_search")) pi.setActiveTools([...active, "tool_search"]);
+  });
+
+
   pi.registerTool({
     name: "notebooklm",
+    exposure: "deferred" as const,
     label: "NotebookLM CLI",
     description:
       "Run a Google NotebookLM CLI command via notebooklm-py. Covers notebooks, sources, grounded chat, research, Studio artifacts (audio/video/slides), downloads, notes, sharing, and organization.",

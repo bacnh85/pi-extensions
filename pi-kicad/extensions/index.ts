@@ -21,9 +21,20 @@ const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 // ---------------------------------------------------------------------------
 
 export default function piKicadExtension(pi: ExtensionAPI) {
+  // Deferred tier: kicad_call/batch/status register `exposure: "deferred"`
+  // — discovered via tool_search. Pi only auto-activates tool_search for MCP
+  // servers, so this package owns its activation (ceulen's pattern).
+  pi.on("session_start", async () => {
+    if (!pi.getAllTools().some((t) => t.name === "tool_search")) return;
+    const active = pi.getActiveTools();
+    if (!active.includes("tool_search")) pi.setActiveTools([...active, "tool_search"]);
+  });
+
+
   // ── kicad_call ──────────────────────────────────────────────────────────
   pi.registerTool({
     name: "kicad_call",
+    exposure: "deferred" as const,
     label: "KiCad (Konnect)",
     description:
       "Drive KiCad schematic/PCB design via the Konnect binary. Call any Konnect " +
@@ -95,6 +106,7 @@ export default function piKicadExtension(pi: ExtensionAPI) {
   // capture works in one shot instead of many serial kicad_call messages.
   pi.registerTool({
     name: "kicad_batch",
+    exposure: "deferred" as const,
     label: "KiCad Batch",
     description:
       "Run multiple Konnect tool calls SEQUENTIALLY in one shot (each awaits before the next, " +
@@ -155,6 +167,7 @@ export default function piKicadExtension(pi: ExtensionAPI) {
   // ── kicad_status ────────────────────────────────────────────────────────
   pi.registerTool({
     name: "kicad_status",
+    exposure: "deferred" as const,
     label: "KiCad Status",
     description:
       "Check and wire up the KiCad/Konnect bridge: resolve the Konnect binary, kicad-cli, " +

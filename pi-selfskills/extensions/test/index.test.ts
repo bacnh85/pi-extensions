@@ -939,7 +939,9 @@ describe("pi-selfskills extension", () => {
     writeSkill(defaultSkillsDir(), "alpha");
     const { tools, handlers, ctx } = harness(cwd);
     await tools.skill_manage.execute("id", { action: "read", skill: "alpha" }, undefined, undefined, ctx);
-    handlers.session_start[0]({ reason: "new" }, ctx);
+    // pi fires ALL session_start handlers; index 0 is the deferred-tier
+    // tool_search activation, the last is the real init under test.
+    for (const h of handlers.session_start ?? []) h({ reason: "new" }, ctx);
     const res = await tools.skill_manage.execute(
       "id",
       { action: "patch", skill: "alpha", old_string: "Rule one.", new_string: "x" },

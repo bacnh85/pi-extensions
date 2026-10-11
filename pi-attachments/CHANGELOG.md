@@ -1,3 +1,7 @@
+## 0.3.11 (2026-10-10)
+
+- Widened `@earendil-works/pi-coding-agent` peerDependency cap from `<1.0.0` to `<1.2.0` (floor unchanged); bumped devDependencies to `^1.1.0`. Verified against Pi SDK 1.1.0.
+
 ## 0.3.10 (2026-09-30)
 
 - Widened `@earendil-works/pi-coding-agent` peerDependency cap from `<0.88.0` to `<1.0.0` (floor unchanged); bumped devDependencies to `^0.99.1`. Verified against Pi SDK 0.99.1.

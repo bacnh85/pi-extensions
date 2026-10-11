@@ -49,6 +49,7 @@ const MAX_REVIEW_PASSES = 3;
 const SUBAGENT_REQUEST_EVENT = "pi-subagent:run";
 const REVIEW_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
 const REVIEW_HARD_TIMEOUT_MS = 20 * 60 * 1000;
+const ISOLATED_HARD_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_DIRTY_PATCH_BYTES = 50 * 1024;
 const MAX_UNTRACKED_REVIEW_BYTES = 12 * 1024;
 /** Canonical config location: the `pi-plan` key in Pi's global settings.json
@@ -1233,7 +1234,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
     const response = await new Promise<{ ok: boolean; result?: any; error?: string }>((resolve) => {
       let settled = false;
       let accepted = false;
-      const done = (value: { ok: boolean; result?: any; error?: string }) => { if (!settled) { settled = true; resolve(value); } };
+      let hardTimer: ReturnType<typeof setTimeout> | undefined;
+      const done = (value: { ok: boolean; result?: any; error?: string }) => { if (!settled) { settled = true; if (hardTimer) clearTimeout(hardTimer); resolve(value); } };
+      // Hard timeout so a hung pi-subagent child cannot block the flow forever.
+      hardTimer = setTimeout(() => done({ ok: false, error: "Isolated phase timed out after 30 min" }), ISOLATED_HARD_TIMEOUT_MS);
       controller.signal.addEventListener("abort", () => done({ ok: false, error: "Isolated phase cancelled" }), { once: true });
       pi.events.emit(SUBAGENT_REQUEST_EVENT, {
         id,
@@ -2783,39 +2787,43 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
    * command handler runs without a human keypress.
    */
   pi.on("agent_settled", async (_event, ctx) => {
-    if (flow && !planModeEnabled && ["implement", "fix"].includes(flow.phase)) {
-      await advanceFlow(ctx);
-      return;
-    }
-    if (goal?.active && !planModeEnabled && !isFlowActive()) {
-      await advanceGoal(ctx, goalAccessors);
-      return;
-    }
-    if (
-      !planModeEnabled ||
-      !planReadyForReview ||
-      !lastPlanPath
-    )
-      return;
+    try {
+      if (flow && !planModeEnabled && ["implement", "fix"].includes(flow.phase)) {
+        await advanceFlow(ctx);
+        return;
+      }
+      if (goal?.active && !planModeEnabled && !isFlowActive()) {
+        await advanceGoal(ctx, goalAccessors);
+        return;
+      }
+      if (
+        !planModeEnabled ||
+        !planReadyForReview ||
+        !lastPlanPath
+      )
+        return;
 
-    planReadyForReview = false;
-    persistState();
-    if (preferences?.autoFlow && ctx.mode !== "print") {
-      if (!(await workspaceGuardAllows(ctx))) return;
-      // Clear any stale approval prefill so a later typed command cannot be
-      // concatenated onto it (auto-start needs no editor interaction).
-      clearApprovalPrefill(ctx);
-      pi.sendUserMessage("/plan-approve flow", { expandPromptTemplates: true });
-      ctx.ui.notify("Automatic flow: plan approved, executing (pi-plan.autoFlow).", "info");
-      return;
+      planReadyForReview = false;
+      persistState();
+      if (preferences?.autoFlow && ctx.mode !== "print") {
+        if (!(await workspaceGuardAllows(ctx))) return;
+        // Clear any stale approval prefill so a later typed command cannot be
+        // concatenated onto it (auto-start needs no editor interaction).
+        clearApprovalPrefill(ctx);
+        pi.sendUserMessage("/plan-approve flow", { expandPromptTemplates: true });
+        ctx.ui.notify("Automatic flow: plan approved, executing (pi-plan.autoFlow).", "info");
+        return;
+      }
+      if (!ctx.hasUI) return;
+      // ponytail: prefill command — command handler (ExtensionCommandContext)
+      // owns the picker and newSession() call.
+      ctx.ui.setEditorText("/plan-approve");
+      ctx.ui.notify(
+        "Plan ready for approval. Press Enter to run /plan-approve.",
+        "info",
+      );
+    } catch (error) {
+      ctx.ui.notify(`pi-plan agent_settled handler failed: ${error instanceof Error ? error.message : String(error)}`, "error");
     }
-    if (!ctx.hasUI) return;
-    // ponytail: prefill command — command handler (ExtensionCommandContext)
-    // owns the picker and newSession() call.
-    ctx.ui.setEditorText("/plan-approve");
-    ctx.ui.notify(
-      "Plan ready for approval. Press Enter to run /plan-approve.",
-      "info",
-    );
   });
 }

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3 - 2026-09-30
+
+- Fix: the `classify` tool now registers with real TypeBox schemas. The old `require("@earendil-works/pi-ai").Type` fallback ran inside an ESM file, so it always threw and the degraded plain-object schema was silently used. `Type` is now statically imported from `typebox` (added as a peerDependency, matching every other package here). Verified against Pi SDK 0.99.2.
+
 ## 0.2.2 - 2026-09-30
 
 - Fix: `classify()` leaked its abort listener — `{once:true}` bounds firing, not registration — so every tool call with a signal left one `abort` handler on the harness signal. Now mirrors the pi-commandcode pattern: pre-aborted signals abort the internal controller directly (no listener registered), and the `finally` block removes the listener on every exit. Covered by a spy-based unit test (added/removed handler identity + zero registrations when pre-aborted).

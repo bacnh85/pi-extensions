@@ -1,5 +1,9 @@
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
+/** The chat member of the ProviderModelConfig union (SDK ≥0.99 adds image/classifier
+ *  variants, so the bare union no longer carries reasoning/thinkingLevelMap). */
+export type ChatModelConfig = Extract<ProviderModelConfig, { reasoning: boolean }>;
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 /** Raw entry from GET /provider/v1/models (OpenAI shape). */
@@ -196,7 +200,7 @@ export async function fetchModels(
 /** Map a raw /v1/models entry into a Pi ProviderModelConfig.
  *  Command Code is OpenAI-compatible; cost comes from the response usage field
  *  at runtime, so static cost is 0 (matches pi-9router). */
-export function mapModel(raw: CommandCodeModelRaw): ProviderModelConfig {
+export function mapModel(raw: CommandCodeModelRaw): ChatModelConfig {
   const override = lookupContextOverride(raw.id);
   // The API's context_length is authoritative (it now reports vendor-official
   // windows for every model); the override table only fills a missing/zero

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0 (2026-10-10)
+
+- **Deferred tool tier** (ceulen pattern): the `agy_execute` tool now register `exposure: "deferred"` — not declared to the model until `tool_search` loads them (they stay callable via `ctx.executeTool`/codemode). The package now force-activates `tool_search` in `session_start` when it defers tools (pi only auto-activates discovery for MCP servers). Unit tests pin the exposure flags and the activation branches.
+
 ## [0.3.9] - 2026-09-26
 
 - Fixed: whitespace-only stdout no longer swallows the stderr fallback in

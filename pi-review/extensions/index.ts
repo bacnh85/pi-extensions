@@ -526,7 +526,7 @@ export default function piReviewExtension(pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (event, ctx) => {
     if (!reviewModeEnabled) return;
     const guidance = await readReviewGuidance(ctx.cwd);
-    return { systemPrompt: `${event.systemPrompt}\n\n## Read-only review mode\n${currentPrompt}\nDo not modify files or Git state. Report findings instead of fixing them.${guidance ? `\n\nREVIEW.md guidance:\n${guidance}` : ""}` };
+    return { systemPrompt: `${event.systemPrompt}\n\n## Read-only review mode\n${currentPrompt}\nDo not modify files or Git state. Report findings instead of fixing them.${guidance ? `\n\nREVIEW.md guidance:\n${guidance.slice(0, 16 * 1024)}` : ""}` };
   });
 
   pi.on("agent_settled", async (_event, ctx) => leaveLocalReview(ctx));

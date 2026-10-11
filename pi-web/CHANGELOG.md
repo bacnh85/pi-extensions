@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.18.0 (2026-10-10)
+
+- **Deferred tool tier** (ceulen pattern): `web_map`, `web_crawl`, `web_pdf`, `web_research`, `web_image`, `web_chat`, `web_status` now register `exposure: "deferred"` — not declared to the model until `tool_search` loads them (they stay callable via `ctx.executeTool`/codemode). `web_search`, `web_extract`, `web_screenshot`, `web_interact` stay direct. The package now force-activates `tool_search` in `session_start` when it defers tools (pi only auto-activates discovery for MCP servers). Unit tests pin the exposure flags and the activation branches. The routing-guidance injection appends a deferred-tier pointer listing the deferred names + the `tool_search` discovery path.
+
 All notable changes to `pi-web` will be documented in this file.
 
 ## 0.17.8 (2026-09-27)

@@ -9,3 +9,5 @@ node_modules/
 .serena/project.yml
 # Local image-generation validation output (web_image testing)
 images/
+
+**/.DS_Store

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0 (2026-10-10)
+
+- **Deferred tool tier** (ceulen pattern): `kicad_call`, `kicad_batch`, `kicad_status` now register `exposure: "deferred"` — not declared to the model until `tool_search` loads them (they stay callable via `ctx.executeTool`/codemode). The package now force-activates `tool_search` in `session_start` when it defers tools (pi only auto-activates discovery for MCP servers). Unit tests pin the exposure flags and the activation branches.
+
 ## 0.1.11 - 2026-09-28
 
 - Docs (in-code): the `mapContent` comment falsely claimed image base64 is

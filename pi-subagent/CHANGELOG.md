@@ -1,3 +1,7 @@
+## 0.23.3 (2026-10-10)
+
+- Widened `pi-agent-core`/`pi-ai`/`pi-coding-agent`/`pi-tui` peerDependency caps to `<1.2.0` (floors unchanged; `pi-agent-core` was stale at `<0.88.0`); bumped devDependencies to `^1.1.0`. Verified against Pi SDK 1.1.0: faux-provider test imports moved from a nested SDK path to the public `@earendil-works/pi-ai/providers/faux` export (npm no longer nests pi-ai under the SDK).
+
 ## 0.23.2 (2026-09-29)
 
 - Widened `@earendil-works/pi-coding-agent` peerDependency cap from `<0.88.0` to `<1.0.0` (floor unchanged) and `@earendil-works/pi-tui`/`@earendil-works/pi-ai` caps likewise; bumped devDependencies to `^0.99.1`. Verified against Pi SDK 0.99.1.

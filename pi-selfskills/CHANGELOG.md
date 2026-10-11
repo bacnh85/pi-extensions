@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 (2026-10-10)
+
+- **Deferred tool tier** (ceulen pattern): the `skill_manage` tool now register `exposure: "deferred"` — not declared to the model until `tool_search` loads them (they stay callable via `ctx.executeTool`/codemode). The package now force-activates `tool_search` in `session_start` when it defers tools (pi only auto-activates discovery for MCP servers). Unit tests pin the exposure flags and the activation branches.
+
+## 0.3.7 (2026-09-30)
+
+- Removed the unused `SelfSkillsSettings` type import. Verified against Pi SDK 0.99.2.
+
 ## 0.3.6 (2026-09-28)
 
 - **Fix: `file` paths are normalized (path.posix.normalize) before the

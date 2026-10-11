@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7 (2026-09-30)
+
+- Fix: a rejected `pi.sendUserMessage` promise from `/init` is now caught and reported through the same notify/error path as sync failures (previously an unhandled rejection). Verified against Pi SDK 0.99.2.
+
 ## 0.1.6 (2026-09-28)
 
 ### Fixed

@@ -129,12 +129,21 @@ function withMuninClient<T extends Record<string, unknown>>(
 
 /** Fresh Error carrying the sanitized `err.message + remediation` text, with
  *  the original preserved as `cause` — never mutates the caught error (keeps
- *  its identity/stack intact for upstream consumers). */
+ *  its identity/stack intact for upstream consumers). Structured fields (`code`,
+ *  `details.remediation`) are copied onto the new Error so programmatic
+ *  consumers keep them; the message behavior is unchanged. */
 function remediatedError(err: Error, remediation?: Remediation): Error {
-  return new Error(
+  const error = new Error(
     sanitizeErrorMessage(new Error(err.message + formatRemediation(remediation))),
     { cause: err },
   );
+  const withFields = error as Error & { code?: unknown; details?: Record<string, unknown> };
+  const code = (err as Error & { code?: unknown }).code;
+  if (code !== undefined) withFields.code = code;
+  const details = (err as Error & { details?: Record<string, unknown> }).details;
+  withFields.details = { ...(details && typeof details === "object" ? details : {}) };
+  if (remediation) withFields.details.remediation = remediation;
+  return error;
 }
 
 /**
@@ -232,6 +241,16 @@ function invokeMuninAction(
 // ---------------------------------------------------------------------------
 
 export default function muninExtension(pi: ExtensionAPI) {
+  // Deferred tier: munin_store/list/recent/delete/capabilities/share register
+  // `exposure: "deferred"` — not declared to the model until `tool_search`
+  // loads them. Pi only auto-activates tool_search for MCP servers, so this
+  // package owns its activation (ceulen's pattern).
+  pi.on("session_start", async () => {
+    if (!pi.getAllTools().some((t) => t.name === "tool_search")) return;
+    const active = pi.getActiveTools();
+    if (!active.includes("tool_search")) pi.setActiveTools([...active, "tool_search"]);
+  });
+
   // ====================================================================
   // Individual tools
   // ====================================================================
@@ -314,6 +333,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "munin_store",
+    exposure: "deferred" as const,
     label: "Munin Store Memory",
     description:
       "AT SESSION END (or after fix): STORE verified durable knowledge.",
@@ -371,6 +391,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "munin_list",
+    exposure: "deferred" as const,
     label: "Munin List Memories",
     description: "LIST all stored memories.",
     promptSnippet: "List available memories",
@@ -400,6 +421,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "munin_recent",
+    exposure: "deferred" as const,
     label: "Munin Recent Memories",
     description: "CHECK recently updated memories.",
     promptSnippet: "Show recent updates",
@@ -426,6 +448,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "munin_delete",
+    exposure: "deferred" as const,
     label: "Munin Delete Memory",
     description:
       "DELETE memory — only when user explicitly asks.",
@@ -464,6 +487,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "munin_capabilities",
+    exposure: "deferred" as const,
     label: "Munin Capabilities",
     description: "CHECK available Munin server features.",
     promptSnippet: "Show Munin capabilities",
@@ -486,6 +510,7 @@ export default function muninExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "munin_share",
+    exposure: "deferred" as const,
     label: "Munin Share Memory",
     description: "SHARE memories between projects.",
     promptSnippet: "Share memories between projects",

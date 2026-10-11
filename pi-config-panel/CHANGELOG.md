@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.11 - 2026-09-30
+
+- Docs: README API table now lists the exported `ConfigPanelOpts<T>`, `PanelRowKind`, and `PanelCompletionItem`.
+
 ## [0.1.10] - 2026-09-28
 
 ### Fixed

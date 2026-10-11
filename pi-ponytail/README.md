@@ -33,6 +33,11 @@ pi install npm:@bacnh85/pi-ponytail
 | `/skill:ponytail-debt` | Harvest `ponytail:` shortcut markers into a ledger |
 | `/skill:ponytail-gain` | Show measured-impact scoreboard (benchmark medians) |
 | `/skill:ponytail-help` | Quick reference |
+| `/ponytail-review` | Alias for `/skill:ponytail-review` |
+| `/ponytail-audit` | Alias for `/skill:ponytail-audit` |
+| `/ponytail-gain` | Alias for `/skill:ponytail-gain` |
+| `/ponytail-debt` | Alias for `/skill:ponytail-debt` |
+| `/ponytail-help` | Alias for `/skill:ponytail-help` |
 
 Deactivate: `stop ponytail` or `normal mode`. Resume with `/ponytail <mode>` (e.g. `/ponytail full`).
 
@@ -55,10 +60,12 @@ Deactivate: `stop ponytail` or `normal mode`. Resume with `/ponytail <mode>` (e.
 Resolution order (first wins):
 
 1. **Env var** — `PONYTAIL_DEFAULT_MODE=lite|full|ultra|off`
+   Other env vars: `PONYTAIL_QUIET_STARTUP` and `PONYTAIL_HIDE_STATUS` (truthy = on, each overrides its config key); `PONYTAIL_SUBAGENT_SCOPE=off` disables subagent injection.
 2. **Config file** — `$XDG_CONFIG_HOME/ponytail/config.json` or `~/.config/ponytail/config.json`
    ```json
-   { "defaultMode": "full" }
+   { "defaultMode": "full", "quietStartup": true, "hideStatus": true }
    ```
+   `quietStartup` suppresses the "Ponytail loaded: <mode>" startup message; `hideStatus` hides the ponytail status-bar item.
 3. **Built-in** — `full`
 
 ---

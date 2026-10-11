@@ -202,6 +202,15 @@ export function shouldRetryAfterTimeout(
 }
 
 export default function serenaToolsExtension(pi: ExtensionAPI) {
+  // All serena tools register `exposure: "deferred"` — the model discovers
+  // them via tool_search. Pi only auto-activates tool_search for MCP servers,
+  // so this package owns its activation (ceulen's pattern).
+  pi.on("session_start", async () => {
+    if (!pi.getAllTools().some((t) => t.name === "tool_search")) return;
+    const active = pi.getActiveTools();
+    if (!active.includes("tool_search")) pi.setActiveTools([...active, "tool_search"]);
+  });
+
   const getWorker = (ctx?: { ui?: { setStatus?: (key: string, value: string | undefined) => void } }) => {
     if (ctx) currentCtx = ctx;
     if (!worker) {
@@ -255,6 +264,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_status",
+    exposure: "deferred" as const,
     label: "Serena Status",
     description: "Show Serena worker and project status.",
     parameters: statusSchema,
@@ -268,6 +278,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_list_tools",
+    exposure: "deferred" as const,
     label: "Serena List Tools",
     description: "List active Serena tools for project/context.",
     parameters: listToolsSchema,
@@ -283,6 +294,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_get_symbols_overview",
+    exposure: "deferred" as const,
     label: "Serena Symbols Overview",
     description: "Get top-level symbols via the language server.",
     parameters: overviewSchema,
@@ -293,6 +305,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_find_symbol",
+    exposure: "deferred" as const,
     label: "Serena Find Symbol",
     description: "Find symbols by name path pattern.",
     parameters: findSymbolSchema,
@@ -304,6 +317,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_find_referencing_symbols",
+    exposure: "deferred" as const,
     label: "Serena Find References",
     description: "Find symbols referencing a given symbol.",
     parameters: referencingSchema,
@@ -315,6 +329,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_replace_symbol_body",
+    exposure: "deferred" as const,
     label: "Serena Replace Symbol Body",
     description: "Replace a function/class/method body via symbolic editing.",
     parameters: replaceBodySchema,
@@ -326,6 +341,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_insert_before_symbol",
+    exposure: "deferred" as const,
     label: "Serena Insert Before Symbol",
     description: "Insert content before a known symbol definition.",
     parameters: insertSchema,
@@ -337,6 +353,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_insert_after_symbol",
+    exposure: "deferred" as const,
     label: "Serena Insert After Symbol",
     description: "Insert content after a known symbol definition.",
     parameters: insertSchema,
@@ -348,6 +365,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_rename_symbol",
+    exposure: "deferred" as const,
     label: "Serena Rename Symbol",
     description: "Rename a symbol across the codebase.",
     parameters: renameSchema,
@@ -359,6 +377,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_safe_delete_symbol",
+    exposure: "deferred" as const,
     label: "Serena Safe Delete Symbol",
     description: "Delete a symbol with no remaining references.",
     parameters: safeDeleteSchema,
@@ -370,6 +389,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_search_for_pattern",
+    exposure: "deferred" as const,
     label: "Serena Search Pattern",
     description: "Search project files with path filtering.",
     parameters: searchPatternSchema,
@@ -421,6 +441,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_replace_content",
+    exposure: "deferred" as const,
     label: "Serena Replace Content",
     description: "Replace file content when symbolic editing isn't the right boundary.",
     parameters: replaceContentSchema,
@@ -437,6 +458,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_restart_language_server",
+    exposure: "deferred" as const,
     label: "Serena Restart Language Server",
     description: "Restart the language server when diagnostics are stale.",
     promptGuidelines: ["For a full worker restart (Python bridge), use serena_restart_worker instead."],
@@ -448,6 +470,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_restart_worker",
+    exposure: "deferred" as const,
     label: "Serena Restart Worker",
     description: "Restart the persistent Serena Python worker process. Use when diagnostics seem stale or after configuration changes.",
     promptGuidelines: ["Use when the worker is unresponsive; kills and re-spawns the Python bridge."],
@@ -474,6 +497,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_get_current_config",
+    exposure: "deferred" as const,
     label: "Serena Current Config",
     description: "Show current project/config details.",
     parameters: emptyToolSchema,
@@ -494,6 +518,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_check_onboarding_performed",
+    exposure: "deferred" as const,
     label: "Serena Check Onboarding",
     description: "Check whether onboarding memories exist.",
     parameters: emptyToolSchema,
@@ -504,6 +529,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_onboarding",
+    exposure: "deferred" as const,
     label: "Serena Onboarding",
     description: "Run onboarding prompt for project memories.",
     parameters: emptyToolSchema,
@@ -517,6 +543,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_find_declaration",
+    exposure: "deferred" as const,
     label: "Serena Find Declaration",
     description: "Find the declaration of a symbol via the language server.",
     parameters: symbolRefSchema,
@@ -528,6 +555,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_find_implementations",
+    exposure: "deferred" as const,
     label: "Serena Find Implementations",
     description: "Find implementations of a symbol via the language server.",
     parameters: symbolRefSchema,
@@ -539,6 +567,7 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "serena_get_diagnostics_for_file",
+    exposure: "deferred" as const,
     label: "Serena File Diagnostics",
     description: "Get LSP diagnostics (errors, warnings, hints) for a file.",
     parameters: diagnosticsSchema,
@@ -551,12 +580,17 @@ export default function serenaToolsExtension(pi: ExtensionAPI) {
     description: "Open the Serena dashboard for the current project",
     handler: async (args, ctx) => {
       const project = args?.trim() || process.cwd();
-      const response = await getWorker(ctx).request({ action: "dashboard", project, context: DEFAULT_CONTEXT, open: true });
-      if (response.ok) {
-        const opened = response.opened ? "opened" : "available";
-        ctx.ui.notify(`Serena dashboard ${opened}: ${response.dashboardUrl ?? "dashboard URL unavailable"}`, "info");
-      } else {
-        ctx.ui.notify(resultText(response), "error");
+      try {
+        const response = await getWorker(ctx).request({ action: "dashboard", project, context: DEFAULT_CONTEXT, open: true });
+        if (response.ok) {
+          const opened = response.opened ? "opened" : "available";
+          ctx.ui.notify(`Serena dashboard ${opened}: ${response.dashboardUrl ?? "dashboard URL unavailable"}`, "info");
+        } else {
+          ctx.ui.notify(resultText(response), "error");
+        }
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`Failed to open Serena dashboard: ${msg}`, "error");
       }
     },
   });

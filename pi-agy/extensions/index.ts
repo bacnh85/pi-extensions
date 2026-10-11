@@ -45,8 +45,19 @@ const MAX_TIMEOUT_MS = 600_000;
 // ---------------------------------------------------------------------------
 
 export default function piAgyExtension(pi: ExtensionAPI) {
+  // Deferred tier: the agy_execute tool register `exposure: "deferred"`
+  // — discovered via tool_search. Pi only auto-activates tool_search for MCP
+  // servers, so this package owns its activation (ceulen's pattern).
+  pi.on("session_start", async () => {
+    if (!pi.getAllTools().some((t) => t.name === "tool_search")) return;
+    const active = pi.getActiveTools();
+    if (!active.includes("tool_search")) pi.setActiveTools([...active, "tool_search"]);
+  });
+
+
   pi.registerTool({
     name: "agy_execute",
+    exposure: "deferred" as const,
     label: "Antigravity CLI",
     description:
       "Run a task through the Antigravity CLI (agy) for bulk implementation, scaffolding, or test generation.",

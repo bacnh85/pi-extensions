@@ -496,6 +496,16 @@ export function parseBroadcastArgs(raw: string): { message: string; agents: stri
 // ---------------------------------------------------------------------------
 
 export default function a2aExtension(pi: ExtensionAPI): void {
+  // Deferred tier: a2a_call/status/discover/list/history/orchestrate/peers register `exposure: "deferred"`
+  // — discovered via tool_search. Pi only auto-activates tool_search for MCP
+  // servers, so this package owns its activation (ceulen's pattern).
+  pi.on("session_start", async () => {
+    if (!pi.getAllTools().some((t) => t.name === "tool_search")) return;
+    const active = pi.getActiveTools();
+    if (!active.includes("tool_search")) pi.setActiveTools([...active, "tool_search"]);
+  });
+
+
   // Compact transcript renderer for inbound activity messages (0.3.0 → 0.6.2 UX).
   // Class-colored so the three phases of an A2A exchange read at a glance:
   //   ⚑ warning  — received from a peer (like a user turn, different color)
@@ -532,6 +542,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
 
   pi.registerTool({
     name: "a2a_call",
+    exposure: "deferred" as const,
     label: "A2A Call",
     description:
       "Call a remote A2A (Agent2Agent) agent with a task message and return its reply. " +
@@ -585,6 +596,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
 
   pi.registerTool({
     name: "a2a_status",
+    exposure: "deferred" as const,
     label: "A2A Status",
     description:
       "Check the status of a task previously dispatched to a remote A2A agent (by task id — " +
@@ -633,6 +645,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
 
   pi.registerTool({
     name: "a2a_discover",
+    exposure: "deferred" as const,
     label: "A2A Discover",
     description:
       "Discover an A2A agent at a URL — fetches and summarizes its Agent Card (name, skills, capabilities, auth).",
@@ -653,6 +666,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
 
   pi.registerTool({
     name: "a2a_list",
+    exposure: "deferred" as const,
     label: "A2A List",
     description: "List configured A2A peers, persisted conversations, and call metrics.",
     promptSnippet: "show configured A2A peers and recent conversations",
@@ -677,6 +691,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
 
   pi.registerTool({
     name: "a2a_history",
+    exposure: "deferred" as const,
     label: "A2A History",
     description: "Recall a persisted A2A conversation by context_id (survives compaction/restart).",
     promptSnippet: "reload a prior A2A conversation by context_id",
@@ -703,6 +718,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
 
   pi.registerTool({
     name: "a2a_orchestrate",
+    exposure: "deferred" as const,
     label: "A2A Orchestrate",
     description:
       "Fan a task out to every configured A2A peer advertising a capability, in parallel. " +
@@ -748,6 +764,7 @@ export default function a2aExtension(pi: ExtensionAPI): void {
 
   pi.registerTool({
     name: "a2a_peers",
+    exposure: "deferred" as const,
     label: "A2A Peers",
     description:
       "List discoverable A2A peers (local file registry, mDNS, and configured) with their " +

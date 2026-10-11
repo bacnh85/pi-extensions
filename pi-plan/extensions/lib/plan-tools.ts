@@ -6,6 +6,9 @@
 export const READ_ONLY_TOOLS = new Set([
   // Built-in reads
   "read", "grep", "find", "ls",
+  // Tool discovery — loads deferred tool declarations (metadata only, no side
+  // effects); the loaded tools are still gated individually below.
+  "tool_search",
   // FFF tools
   "ffgrep", "fffind", "resolve_file", "fff_multi_grep", "related_files",
   // Windows tools (read-only: detect, audit, path-convert, classify, doctor)

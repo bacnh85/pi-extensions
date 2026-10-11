@@ -257,7 +257,14 @@ export default function initExtension(pi) {
 
       const prompt = buildInitPrompt(scan, mode);
       try {
-        pi.sendUserMessage(prompt);
+        const dispatched = pi.sendUserMessage(prompt);
+        // Sync try/catch can't see a rejected promise — route it through the
+        // same error path.
+        Promise.resolve(dispatched).catch((err) => {
+          const msg = `/init failed to dispatch the prompt: ${err?.message || err}`;
+          if (ctx?.ui?.notify) ctx.ui.notify(msg, "error");
+          else console.error(msg);
+        });
       } catch (err) {
         const msg = `/init failed to dispatch the prompt: ${err?.message || err}`;
         if (ctx?.ui?.notify) ctx.ui.notify(msg, "error");

@@ -24,6 +24,10 @@ describe("agy_execute tool integration", function () {
 
   it("registers the tool with correct metadata", () => {
     const mockPi: any = {
+      on: () => {},
+      getAllTools: () => [],
+      getActiveTools: () => [],
+      setActiveTools: () => {},
       registerTool(def: any) {
         registeredTool = def;
       },
@@ -55,6 +59,10 @@ describe("agy_execute tool integration", function () {
 
     beforeEach(() => {
       const mockPi: any = {
+        on: () => {},
+        getAllTools: () => [],
+        getActiveTools: () => [],
+        setActiveTools: () => {},
         registerTool(def: any) {
           registeredTool = def;
         },

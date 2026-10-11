@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 (2026-10-10)
+
+- **Deferred tool tier** (ceulen pattern): `munin_store`, `munin_list`, `munin_recent`, `munin_delete`, `munin_capabilities`, `munin_share` now register `exposure: "deferred"` — not declared to the model until `tool_search` loads them (they stay callable via `ctx.executeTool`/codemode). `munin_search`/`munin_get` (the always-injected Memory Protocol depends on them being first-callable) stay direct. The package now force-activates `tool_search` in `session_start` when it defers tools (pi only auto-activates discovery for MCP servers). Unit tests pin the exposure flags and the activation branches.
+
+## 0.5.12 (2026-09-30)
+
+- `remediatedError` now copies the original error's `code` and attaches `details.remediation` to the rebuilt Error, so structured consumers keep them; message text (and the stale-protocol handshake flow) is unchanged. Verified against Pi SDK 0.99.2.
+
 All notable changes to `pi-munin` will be documented in this file.
 
 ## 0.5.11 (2026-09-30)

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.5 - 2026-09-30
+
+- Docs: README no longer counts `str_replace_editor` among Pi's built-in wrapped tools — it (and `apply_patch`) are this package's own additions; the wrapped built-ins are the seven read/write/edit/grep/find/ls/bash.
+
 ## [0.9.4] - 2026-09-28
 
 - Fix: the `onRepair` callback signature drift — `wrapToolDefinition`

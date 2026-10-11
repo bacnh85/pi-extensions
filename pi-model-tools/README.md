@@ -5,9 +5,10 @@ reasoning management, defensive leak-cleaning, DeepSeek V4 selection guidance,
 and Super Power Mode, all in one extension. Currently supports **DeepSeek V4**
 and **GLM** (GLM-4.5 through GLM-5.3) from any provider.
 
-This is the **single source of tool-wrapping** for these families. It registers
-the 8 built-in Pi tools (read, write, edit, grep, find, ls, bash,
-str_replace_editor) exactly once and routes behavior by detected model family.
+This is the **single source of tool-wrapping** for these families. It wraps the
+7 built-in Pi tools (read, write, edit, grep, find, ls, bash) exactly once and
+routes behavior by detected model family; it also adds its own tools
+(`str_replace_editor`, `apply_patch`), which are not Pi built-ins.
 
 > **Merged package (v0.2.0).** This package now absorbs the former
 > `pi-deepseek-tools` and `pi-glm` extensions. Those packages are deprecated;

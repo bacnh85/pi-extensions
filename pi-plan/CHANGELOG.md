@@ -1,3 +1,14 @@
+## 0.16.7 (2026-10-10)
+
+- Widened `@earendil-works/pi-ai`/`pi-coding-agent`/`pi-tui` peerDependency caps from `<1.0.0` to `<1.2.0` (floors unchanged); bumped devDependencies to `^1.1.0`. Verified against Pi SDK 1.1.0.
+- `tool_search` joined `READ_ONLY_TOOLS`: it loads deferred tool declarations (metadata only, no side effects), so plan-mode discovery no longer trips a confirm prompt; the loaded tools are still gated individually.
+
+## 0.16.6 (2026-09-30)
+
+- Fix: the `agent_settled` handler now catches `advanceFlow`/`advanceGoal` rejections and reports them instead of leaking an unhandled event-handler rejection.
+- Fix: `runIsolatedPhase` gets a 30-minute hard timeout (`ISOLATED_HARD_TIMEOUT_MS`), mirroring `requestFlowReview` — a pi-subagent child that accepts but never responds can no longer hang the flow forever.
+- Dependencies: devDependencies bumped to `^0.99.2`; verified against Pi SDK 0.99.2 (tests + typecheck green).
+
 ## 0.16.5 (2026-09-30)
 
 - Widened `@earendil-works/pi-coding-agent` peerDependency cap from `<0.88.0` to `<1.0.0` (floor unchanged) and `@earendil-works/pi-tui`/`@earendil-works/pi-ai` caps likewise; bumped devDependencies to `^0.99.1`. Verified against Pi SDK 0.99.1.

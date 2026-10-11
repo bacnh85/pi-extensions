@@ -134,6 +134,10 @@ const WEB_ROUTING_GUIDANCE = `## Web Tool Routing (pi-web)
 
 Rules: Firecrawl Search is weak on domain-specific queries — prefer SearXNG/Brave; Firecrawl Scrape fails on bot-protected sites — use Crawl4AI (\`mode: "full"\`) then agy (\`mode: "agy"\`); cite source URLs.`;
 
+/** Deferred-tier pointer: web_map/crawl/pdf/research/image/chat/status are
+ *  registered `exposure: "deferred"` and only reach the model via tool_search. */
+const WEB_DEFERRED_NOTE = `Deferred web tools: \`web_map\`, \`web_crawl\`, \`web_pdf\`, \`web_research\`, \`web_image\`, \`web_chat\`, \`web_status\` are not declared up-front — load them with one \`tool_search\` call (e.g. query "web research") when needed.`;
+
 
 // ---------------------------------------------------------------------------
 // Extension entry point
@@ -148,6 +152,16 @@ export function parseSizeParam(value: unknown): string | undefined {
 }
 
 export default function piWebExtension(pi: ExtensionAPI) {
+  // Deferred tier: web_map/crawl/pdf/research/image/chat/status register
+  // `exposure: "deferred"` — discovered via tool_search. Pi only auto-activates
+  // tool_search for MCP servers, so this package owns its activation
+  // (ceulen's pattern).
+  pi.on("session_start", async () => {
+    if (!pi.getAllTools().some((t) => t.name === "tool_search")) return;
+    const active = pi.getActiveTools();
+    if (!active.includes("tool_search")) pi.setActiveTools([...active, "tool_search"]);
+  });
+
   // ── web_search ────────────────────────────────────────────────────────
   pi.registerTool({
     name: "web_search",
@@ -237,6 +251,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
   // ── web_map ──────────────────────────────────────────────────────────
   pi.registerTool({
     name: "web_map",
+    exposure: "deferred" as const,
     label: "Site URL Discovery",
     description:
       "Discover site URLs via Firecrawl Map.",
@@ -276,6 +291,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
   // ── web_crawl ────────────────────────────────────────────────────────
   pi.registerTool({
     name: "web_crawl",
+    exposure: "deferred" as const,
     label: "Site Crawl",
     description:
       "Crawl pages. Firecrawl 'light' or Crawl4AI 'full' headless mode.",
@@ -494,6 +510,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
   // ── web_pdf ──────────────────────────────────────────────────────────
   pi.registerTool({
     name: "web_pdf",
+    exposure: "deferred" as const,
     label: "Web Page PDF",
     description:
       "PDF document via the Crawl4AI daemon, or via local headless Chrome for localhost/private/file URLs (auto-detected, engine overridable).",
@@ -655,6 +672,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
   // ── web_research ─────────────────────────────────────────────────────
   pi.registerTool({
     name: "web_research",
+    exposure: "deferred" as const,
     label: "Web Research (Gemini)",
     description:
       "AI-synthesized web research via Gemini (gemini.google.com web tier, cookie auth). Mode 'ask' returns a quick grounded answer with source links (works guest-mode, Flash only). Mode 'research' runs Gemini Deep Research — plan turn, 'Start research' confirm, then polls until the cited report lands. Requires GEMINI_WEB_SECURE_1PSID (+ fresh __Secure-1PSIDTS); the plan turn runs over plain Node, but confirm (execution start) and report polling are gated server-side and may refuse from this transport (verified 2026-09-14: confirm needs a browser-grade TLS fingerprint) — refusals return an honest partial result (plan + transcript + note) instead of the report. Takes minutes when available.",
@@ -707,6 +725,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
   // ── web_image ────────────────────────────────────────────────────────
   pi.registerTool({
     name: "web_image",
+    exposure: "deferred" as const,
     label: "Web Image Generation",
     description:
       "Generate images from text via free upstream providers, with fallback: Gemini web (gemini.google.com, guest or cookie auth), ChatGPT web (subscription via CHATGPT_WEB_AUTH_KEY / codex login, image_generation tool), Z.ai official API (GLM-Image via ZAI_API_KEY), or any custom OpenAI-compatible images endpoint (WEB_IMAGE_API_BASE_URL). Optional size=WxH for zai/custom (glm-image enums incl. 960x1728 portrait; omit = server default, usually square). Returns saved file paths plus the images inline.",
@@ -777,6 +796,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
   // ── web_chat ─────────────────────────────────────────────────────────
   pi.registerTool({
     name: "web_chat",
+    exposure: "deferred" as const,
     label: "Web Chat (ChatGPT web / gateway)",
     description:
       "One-off chat completion — ChatGPT web tier (subscription, via CHATGPT_WEB_AUTH_KEY / codex login; default when configured) or any OpenAI-compatible gateway (WEB_CHAT_API_BASE_URL). Non-streaming Q&A; not a provider — use /model to switch your main model.",
@@ -853,6 +873,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
   // ── web_status ───────────────────────────────────────────────────────
   pi.registerTool({
     name: "web_status",
+    exposure: "deferred" as const,
     label: "Web Provider Status",
     description:
       "Show web provider config status without printing secrets.",
@@ -946,7 +967,7 @@ export default function piWebExtension(pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event) => {
     const active = event.systemPromptOptions?.selectedTools ?? pi.getActiveTools();
     if (!active.some((t) => t.startsWith("web_"))) return;
-    return { systemPrompt: `${event.systemPrompt}\n\n${WEB_ROUTING_GUIDANCE}` };
+    return { systemPrompt: `${event.systemPrompt}\n\n${WEB_ROUTING_GUIDANCE}\n\n${WEB_DEFERRED_NOTE}` };
   });
 
 }

@@ -26,6 +26,12 @@ function harness(cwd: string, evolveSettings?: Record<string, unknown>, flags: R
   return { tools, handlers, commands, notifications, ctx };
 }
 
+/** Fire ALL session_start handlers (pi semantics). Index 0 is the deferred-tier
+ *  tool_search activation; the last is the real init under test. */
+function fireSessionStart(handlers: Record<string, Function[]>, event: unknown, ctx: unknown): void {
+  for (const h of handlers.session_start ?? []) h(event, ctx);
+}
+
 function writeSettings(cwd: string, evolve: Record<string, unknown>): void {
   const dir = join(cwd, ".pi");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -204,7 +210,7 @@ describe("pi-evolve extension", () => {
       // Munin is only resolvable with the cwd env walk → a trusted=false (or
       // wrong-cwd) pre-seed would silently fall back to local JSONL and make
       // zero recent calls.
-      handlers.session_start[0]({ reason: "new" }, { cwd, isProjectTrusted: () => true });
+      fireSessionStart(handlers, { reason: "new" }, { cwd, isProjectTrusted: () => true });
       await awaitSeed();
       expect(recentCalls).to.equal(1);
       // First turn then TTL-hits: digest present immediately, no second fetch.
@@ -229,7 +235,7 @@ describe("pi-evolve extension", () => {
     };
     try {
       const { handlers } = harness(cwd, { injectMode: "both" });
-      handlers.session_start[0]({ reason: "new" }, { cwd, isProjectTrusted: () => true });
+      fireSessionStart(handlers, { reason: "new" }, { cwd, isProjectTrusted: () => true });
       await awaitSeed();
       expect(searchCalls).to.equal(0);
       expect(_seedInFlightForTest()).to.equal(null);
@@ -339,7 +345,7 @@ describe("pi-evolve extension", () => {
     const { handlers, commands, notifications } = harness(cwd);
     handlers.tool_call[0]({ toolName: "grep", input: { pattern: "x" } }, { cwd });
     expect(handlers.session_start).to.exist;
-    handlers.session_start[0]({ reason: "new" }, { cwd });
+    fireSessionStart(handlers, { reason: "new" }, { cwd });
     await commands.evolve.handler("", { cwd, ui: { notify: (m: string) => notifications.push(m) } });
     expect(notifications[0]).to.include("Buffer: 0/");
   });
@@ -798,7 +804,7 @@ describe("pi-evolve extension", () => {
       await awaitSeed();
       expect(searchCalls).to.equal(1);
       // New session → cache cleared → next turn refetches.
-      handlers.session_start[0]({ reason: "new" }, { cwd });
+      fireSessionStart(handlers, { reason: "new" }, { cwd });
       await handlers.before_agent_start[0]({ systemPrompt: "BASE", prompt: "x" }, { cwd });
       await awaitSeed();
       expect(searchCalls).to.equal(2);

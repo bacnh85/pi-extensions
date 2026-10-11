@@ -52,6 +52,13 @@ export function readSettingsKey(cwd, key, trusted = false) {
       const parsed = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
       const v = parsed?.[key];
       if (v && typeof v === "object" && !Array.isArray(v)) return v;
+      if (v !== undefined) {
+        // Parsed but wrong shape: warn and CONTINUE to the next settings location,
+        // so a bad project-level key can't shadow a valid global one.
+        console.warn(
+          `${key}: ${join(dir, "settings.json")} has a non-object "${key}" value — ignoring (trying next settings location)`,
+        );
+      }
     } catch {
       // missing/unreadable settings.json is fine — try next location
     }

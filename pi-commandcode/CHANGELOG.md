@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.9 (2026-09-30)
+
+- Fix: typecheck against Pi SDK ≥0.99 — `ProviderModelConfig` became a chat|image|classifier union; `mapModel` now returns `ChatModelConfig = Extract<ProviderModelConfig, { reasoning: boolean }>` so `thinkingLevelMap`/`reasoning` accesses typecheck. Verified against Pi SDK 0.99.2 (typecheck + 37 tests green).
+
 ## 0.2.8 (2026-09-28)
 
 ### Fixed

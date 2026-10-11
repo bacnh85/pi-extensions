@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.18 (2026-09-30)
+
+- Docs: README now documents the `quietStartup`/`hideStatus` config keys, the `PONYTAIL_QUIET_STARTUP`/`PONYTAIL_HIDE_STATUS`/`PONYTAIL_SUBAGENT_SCOPE` env vars, and the `/ponytail-review|audit|gain|debt|help` forwarder commands.
+
 ## 0.1.17 (2026-09-28)
 
 ### Changed

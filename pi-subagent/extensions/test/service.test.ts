@@ -95,7 +95,7 @@ function fakeCtx(cwd: string, model: any, modelRuntime: unknown) {
 }
 
 async function fauxModel(api: string, responses: any[]) {
-  const { fauxProvider } = await import("../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/faux.js");
+  const { fauxProvider } = await import("@earendil-works/pi-ai/providers/faux");
   const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
   const { InMemoryCredentialStore } = await import("@earendil-works/pi-ai");
   const faux = fauxProvider({ api, provider: api });
@@ -129,7 +129,7 @@ describe("pi-subagent service: request-level sandbox override", () => {
     const { model, modelRuntime } = await fauxModel("pi-subagent-svc-wt", []);
     // The child must actually write a file; drive it through a real faux tool
     // call so the worktree diff is non-empty.
-    const { fauxToolCall, fauxAssistantMessage } = await import("../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/faux.js");
+    const { fauxToolCall, fauxAssistantMessage } = await import("@earendil-works/pi-ai/providers/faux");
     const second = await fauxModel("pi-subagent-svc-wt2", [
       fauxAssistantMessage([fauxToolCall("write", { path: "iso.txt", content: "isolated\n" })], { stopReason: "toolUse" }),
       fauxAssistantMessage("wrote iso.txt [verification: pass]", { stopReason: "stop" }),
@@ -156,7 +156,7 @@ describe("pi-subagent service: request-level sandbox override", () => {
   it("a request without sandbox runs in the shared checkout (no isolation)", async function () {
     this.timeout(60_000);
     writeAgent(cwd, "name: worker\ndescription: test worker\nmodel: test/faux");
-    const { fauxToolCall, fauxAssistantMessage } = await import("../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/faux.js");
+    const { fauxToolCall, fauxAssistantMessage } = await import("@earendil-works/pi-ai/providers/faux");
     const second = await fauxModel("pi-subagent-svc-shared", [
       fauxAssistantMessage([fauxToolCall("write", { path: "shared.txt", content: "shared\n" })], { stopReason: "toolUse" }),
       fauxAssistantMessage("wrote shared.txt", { stopReason: "stop" }),

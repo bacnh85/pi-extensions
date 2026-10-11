@@ -10,7 +10,11 @@ export const SERENA_MISS_GUIDANCE = "Use serena_get_symbols_overview for source-
  * predicate so the hook and its tests share one definition.
  */
 export function isSerenaActive(activeTools: readonly string[] | undefined): boolean {
-  return Array.isArray(activeTools) && activeTools.includes("serena_find_symbol");
+  // `tool_search` counts as active: serena tools are registered `deferred`, so
+  // they only appear in the active list AFTER tool_search loads them — but the
+  // Serena-first guidance must inject as soon as discovery is available.
+  return Array.isArray(activeTools) &&
+    (activeTools.includes("serena_find_symbol") || activeTools.includes("tool_search"));
 }
 
 const BLOCKED_TOOLS = new Set(["read", "bash"]);

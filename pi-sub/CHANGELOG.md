@@ -1,8 +1,16 @@
+# Changelog
+
+## 0.1.55 (2026-10-10)
+
+- Widened `@earendil-works/pi-coding-agent` peerDependency cap from `<1.0.0` to `<1.2.0` (floor unchanged); added SDK devDependency `^1.1.0` so tests run against the current SDK. Verified against Pi SDK 1.1.0.
+
+## 0.1.54 (2026-09-30)
+
+- Fix: the router settings path honors `PI_CODING_AGENT_DIR` (same resolution as `readCompactionSettings`) — router usage was silently missed under a custom agent dir.
+
 ## 0.1.53 (2026-09-29)
 
 - Widened `@earendil-works/pi-coding-agent` peerDependency cap from `<0.88.0` to `<1.0.0` (floor unchanged); bumped devDependencies to `^0.99.1`. Verified against Pi SDK 0.99.1.
-
-# Changelog
 
 All notable changes to `pi-sub` will be documented in this file.
 

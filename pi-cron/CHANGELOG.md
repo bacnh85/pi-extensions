@@ -1,8 +1,17 @@
+# Changelog
+
+## 0.4.0 (2026-10-10)
+
+- **Deferred tool tier** (ceulen pattern): the `cron` tool now register `exposure: "deferred"` — not declared to the model until `tool_search` loads them (they stay callable via `ctx.executeTool`/codemode). The package now force-activates `tool_search` in `session_start` when it defers tools (pi only auto-activates discovery for MCP servers). Unit tests pin the exposure flags and the activation branches.
+- Widened `@earendil-works/pi-coding-agent` peerDependency cap from `<1.0.0` to `<1.2.0` (floor unchanged); bumped devDependencies to `^1.1.0`. Verified against Pi SDK 1.1.0.
+
+## 0.3.11 (2026-10-10)
+
+- Widened `@earendil-works/pi-coding-agent` peerDependency cap from `<1.0.0` to `<1.2.0` (floor unchanged); bumped devDependencies to `^1.1.0`. Verified against Pi SDK 1.1.0.
+
 ## 0.3.10 (2026-09-29)
 
 - Widened `@earendil-works/pi-coding-agent` peerDependency cap from `<0.88.0` to `<1.0.0` (floor unchanged); bumped devDependencies to `^0.99.1`. Verified against Pi SDK 0.99.1.
-
-# Changelog
 
 ## 0.3.9 (2026-09-28)
 

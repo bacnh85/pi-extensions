@@ -3,8 +3,8 @@
 After each Pi minor release, verify extensions against the new SDK:
 
 1. Check the Pi CHANGELOG for "Breaking Changes" that affect extension APIs (TypeBox imports, ExtensionAPI exports, etc.).
-2. Widen peer caps `<0.x.0` → `<0.(x+1).0` in every package with a bounded peer — keep the existing floor, change only the cap. Find them with: `grep -l 'pi-coding-agent": "[^"]*<' pi-*/package.json` (re-run the grep rather than trusting any cached list).
-3. Bump their devDeps from `^0.x.0` to `^0.(x+1).0`.
+2. Widen peer caps to the next minor (0.x era: `<0.x.0` → `<0.(x+1).0`; 1.x era: `<1.1.0` → `<1.2.0`) in every package with a bounded peer — keep the existing floor, change only the cap. Find them with: `grep -l 'pi-coding-agent": "[^"]*<' pi-*/package.json` (re-run the grep rather than trusting any cached list).
+3. Bump their devDeps to `^<new-current-version>` (e.g. `^1.1.0`).
 4. Patch-version-bump + CHANGELOG every package the grep lists (peer ranges ship in the published artifact, so a cap change is a version change).
 5. Refresh lockfiles in all packages so `npm ci` installs the new SDK — then
    backfill nested integrity hashes. npm quirk: `npm install` re-idealization

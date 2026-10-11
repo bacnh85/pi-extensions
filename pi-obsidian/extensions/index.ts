@@ -1021,6 +1021,16 @@ function tool(body: (p: Record<string, unknown>, ctx: { cwd?: string }) => strin
 // ---------------------------------------------------------------------------
 
 export default function piObsidianExtension(pi: ExtensionAPI) {
+  // Deferred tier: the obsidian tool register `exposure: "deferred"`
+  // — discovered via tool_search. Pi only auto-activates tool_search for MCP
+  // servers, so this package owns its activation (ceulen's pattern).
+  pi.on("session_start", async () => {
+    if (!pi.getAllTools().some((t) => t.name === "tool_search")) return;
+    const active = pi.getActiveTools();
+    if (!active.includes("tool_search")) pi.setActiveTools([...active, "tool_search"]);
+  });
+
+
 
   pi.on("tool_call", (event, ctx) => {
     const cwdVault = obsidianVaultRoot(ctx.cwd);
@@ -1095,6 +1105,7 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "obsidian",
+    exposure: "deferred" as const,
     label: "Run Obsidian CLI Command",
     description: "Run an Obsidian CLI command on the vault. Commands: read, write, create, append, prepend, delete, move, rename, search, files, tasks, task-create, tags, tag-rename, properties, property:set, property:rename, backlinks, outline, links, history, diff, vault, templates, create-from-template, frontmatter:wrap, bookmarks, plugins, daily:read/append/prepend, eval.",
     promptSnippet: "Run an Obsidian CLI command on the vault",

@@ -44,6 +44,9 @@ pi.registerCommand("my-config", {
 | `filterSuggestions(options, raw, cursor?, emptyQuery?)` | Filter completion options against the cursor's segment (last segment when no cursor); empty segment → full list; case-insensitive substring. |
 | `joinCompletion(raw, itemValue, cursor?)` | Value produced by accepting a suggestion: replaces the cursor's segment (`head + ", " + value`), preserving tail segments; no trailing comma. |
 | `makeOnAction(model, cfg, build, actions, onError)` | Action-row handler factory (rebuilds rows after add/remove actions). |
+| `ConfigPanelOpts<T>` | Options for `openConfigPanel`: `ctx`, `cfg`, row builder `build`, optional `actions`, `title`, and `onSave`. |
+| `PanelRowKind` | Row input kinds: `"toggle" \| "string" \| "number" \| "action"`. |
+| `PanelCompletionItem` | Suggestion option for rows with inline completion support (`value`, optional `label`/`description`). |
 | `PanelRow` / `PanelGroup` / `PanelAction` / `BuildRows<T>` | Row-model types. |
 
 ## Rules the kernel enforces (learned the hard way)

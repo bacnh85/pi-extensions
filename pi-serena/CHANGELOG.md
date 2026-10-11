@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.0 (2026-10-10)
+
+- **Deferred tool tier** (ceulen pattern): all 20 `serena_*` tools now register `exposure: "deferred"` — not declared to the model until `tool_search` loads them (they stay callable via `ctx.executeTool`/codemode). The package now force-activates `tool_search` in `session_start` when it defers tools (pi only auto-activates discovery for MCP servers). Unit tests pin the exposure flags and the activation branches. `isSerenaActive` now also matches an active `tool_search`, so the Serena-first guidance and strict-mode miss blocking keep working while serena tools are deferred (until loaded).
+
+## 0.9.21 (2026-09-30)
+
+- Fix: the `/serena-dashboard` handler wraps its worker request in try/catch — a worker spawn failure now surfaces as an error notification instead of an unhandled command rejection. Catch-block message wording is a reconstruction (mirrors `/serena-restart`'s error shape); the original hunk was lost to an accidental checkout before commit and could not be recovered byte-exact. Verified against Pi SDK 0.99.2.
+
 ## 0.9.20 (2026-09-30)
 
 ### Fixed

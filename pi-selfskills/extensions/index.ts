@@ -3,7 +3,7 @@ import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
-import { readSelfSkillsSettings, agentDir, type SelfSkillsSettings } from "./lib/config";
+import { readSelfSkillsSettings, agentDir } from "./lib/config";
 import {
   backupRoot,
   countBackups,
@@ -112,8 +112,19 @@ function err(text: string): ToolErr {
 // ---------------------------------------------------------------------------
 
 export default function selfskillsExtension(pi: ExtensionAPI) {
+  // Deferred tier: the skill_manage tool register `exposure: "deferred"`
+  // — discovered via tool_search. Pi only auto-activates tool_search for MCP
+  // servers, so this package owns its activation (ceulen's pattern).
+  pi.on("session_start", async () => {
+    if (!pi.getAllTools().some((t) => t.name === "tool_search")) return;
+    const active = pi.getActiveTools();
+    if (!active.includes("tool_search")) pi.setActiveTools([...active, "tool_search"]);
+  });
+
+
   pi.registerTool({
     name: "skill_manage",
+    exposure: "deferred" as const,
     label: "Skill Manage",
     description:
       "Self-improve pi skills. Actions: list (discovered skills + patchable flag + writable roots), read (SKILL.md + bundled files), patch (targeted old_string→new_string edit with backup), create (new skill from name/description/body), write (create/overwrite a bundled file like references/*.md), delete (remove a bundled file or a whole skill — backed up), restore (revert file or skill from backup). Package/node_modules skills are read-only. Batch: pass operations[] for all-or-nothing multi-file changes. create lands in ~/.pi/agent/skills by default; pass root (a writable root shown by list) to create project-local skills.",

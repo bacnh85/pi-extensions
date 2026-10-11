@@ -405,6 +405,16 @@ function createFffMentionProvider(
 // ---------------------------------------------------------------------------
 
 export default function fffExtension(pi: ExtensionAPI) {
+  // Deferred tier: fff_multi_grep register `exposure: "deferred"`
+  // — discovered via tool_search. Pi only auto-activates tool_search for MCP
+  // servers, so this package owns its activation (ceulen's pattern).
+  pi.on("session_start", async () => {
+    if (!pi.getAllTools().some((t) => t.name === "tool_search")) return;
+    const active = pi.getActiveTools();
+    if (!active.includes("tool_search")) pi.setActiveTools([...active, "tool_search"]);
+  });
+
+
   let finder: FileFinder | null = null;
   let finderCwd: string | null = null;
   // Scoped hidden-dir finders, keyed by resolved scope — created once, reused
@@ -1694,6 +1704,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 
   registerBoundedTool({
     name: "fff_multi_grep",
+    exposure: "deferred" as const,
     label: "FFF Multi Grep",
     description:
       "Search for any of multiple literal patterns in one pass. For renamed symbols, aliases, or spelling variants.",

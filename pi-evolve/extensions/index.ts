@@ -91,6 +91,16 @@ matches the current work.`;
 // ---------------------------------------------------------------------------
 
 export default function evolveExtension(pi: ExtensionAPI) {
+  // Deferred tier: the evolve_save tool register `exposure: "deferred"`
+  // — discovered via tool_search. Pi only auto-activates tool_search for MCP
+  // servers, so this package owns its activation (ceulen's pattern).
+  pi.on("session_start", async () => {
+    if (!pi.getAllTools().some((t) => t.name === "tool_search")) return;
+    const active = pi.getActiveTools();
+    if (!active.includes("tool_search")) pi.setActiveTools([...active, "tool_search"]);
+  });
+
+
   // ====================================================================
   // Tools
   // ====================================================================
@@ -138,6 +148,7 @@ export default function evolveExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "evolve_save",
+    exposure: "deferred" as const,
     label: "Evolve Save Learning",
     description:
       "Persist a structured learning extracted via evolve_reflect. Stored to Munin (if configured) or local .pi/evolve/learnings.jsonl with tag type:learning.",

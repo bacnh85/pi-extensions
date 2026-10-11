@@ -697,7 +697,7 @@ describe("worktree merge 3way + patch delivery (OMP-informed, 0.18.0)", () => {
     // with timeoutMs=300 — the run survives only if message_update deltas
     // reset the idle timer (per-gap idle 25ms << 300ms, but total span
     // 900ms >> 300ms). Fails if armIdle() is removed from the subscriber.
-    const { fauxProvider, fauxAssistantMessage } = await import("../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/faux.js");
+    const { fauxProvider, fauxAssistantMessage } = await import("@earendil-works/pi-ai/providers/faux");
     const faux = fauxProvider({ api: "pi-subagent-keepalive-test", provider: "pi-subagent-keepalive-test", tokensPerSecond: 60, tokenSize: { min: 1, max: 2 } });
     const model = faux.getModel();
     const modelRuntime = await ModelRuntime.create({ modelsPath: null, credentials: new InMemoryCredentialStore() });
@@ -726,7 +726,7 @@ describe("worktree merge 3way + patch delivery (OMP-informed, 0.18.0)", () => {
       // worktree, then the run ends abnormally (stopReason toolUse with no
       // follow-up call -> classified "error"). The gate must NOT auto-apply
       // that child's changes; the patch is still delivered for review.
-      const { fauxProvider, fauxToolCall, fauxAssistantMessage } = await import("../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/faux.js");
+      const { fauxProvider, fauxToolCall, fauxAssistantMessage } = await import("@earendil-works/pi-ai/providers/faux");
       const faux = fauxProvider({ api: "pi-subagent-merge-abort-test", provider: "pi-subagent-merge-abort-test" });
       const model = faux.getModel();
       const modelRuntime = await ModelRuntime.create({ modelsPath: null, credentials: new InMemoryCredentialStore() });
@@ -766,7 +766,7 @@ describe("runSubAgent retry lifecycle", () => {
     this.timeout(10_000);
     // Register a faux provider on the pi-ai instance bundled inside pi-coding-agent,
     // then attach it to a ModelRuntime that owns AgentSession's provider registry.
-    const { fauxProvider, fauxAssistantMessage } = await import("../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/faux.js");
+    const { fauxProvider, fauxAssistantMessage } = await import("@earendil-works/pi-ai/providers/faux");
     const faux = fauxProvider({ api: "pi-subagent-retry-test", provider: "pi-subagent-retry-test" });
     const model = faux.getModel();
     const modelRuntime = await ModelRuntime.create({ modelsPath: null, credentials: new InMemoryCredentialStore() });
@@ -801,7 +801,7 @@ describe("runSubAgent retry lifecycle", () => {
       assert.equal(exhausted.exitCode, 1);
       assert.equal(exhausted.errorMessage, "WebSocket error");
 
-      faux.setResponses([async (_context, options) => {
+      faux.setResponses([async (_context: unknown, options: import("@earendil-works/pi-ai").SimpleStreamOptions | undefined) => {
         await new Promise<void>((resolve, reject) => {
           const timer = setTimeout(resolve, 1_000);
           options?.signal?.addEventListener("abort", () => {

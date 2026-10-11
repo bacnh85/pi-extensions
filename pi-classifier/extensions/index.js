@@ -47,6 +47,7 @@ import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "
 import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
+import { Type } from "typebox";
 // Static import, like every pi-config-panel consumer (pi-router/pi-commandcode/
 // pi-a2a): Pi's jiti loader transforms the TS entrypoint, but a DYNAMIC import()
 // escapes to native Node ESM — which refuses type-stripping under node_modules
@@ -362,25 +363,16 @@ export async function planGateVerdict({ signal } = {}, command, cwd, task) {
 
 export default function (pi) {
   // ── 1. classify tool ────────────────────────────────────────────────────
-  // TypeBox without the import: JSON-schema-compatible plain object works for
-  // tools registered at runtime (pi validates against the schema shape).
-  let Type;
-  try { Type = require("@earendil-works/pi-ai").Type; } catch { Type = null; }
-
-  const stateSchema = Type
-    ? Type.Any({ description: "Everything Jev should judge: transcript, records, policy — as JSON." })
-    : { description: "Everything Jev should judge: transcript, records, policy — as JSON." };
-  const questionsSchema = Type
-    ? Type.Array(
-        Type.Object({
-          id: Type.String({ description: "Answer key, e.g. 'is_urgent'" }),
-          type: Type.Union([Type.Literal("noul"), Type.Literal("choice"), Type.Literal("score")]),
-          instructions: Type.String({ description: "The question about the state." }),
-          criteria: Type.Optional(Type.Any({ description: "choice: {option: description} · score: [levels] · noul: {yes,no}" })),
-        }),
-        { description: "One entry per independent judgment. They run in parallel and cannot see each other's answers." },
-      )
-    : { type: "array" };
+  const stateSchema = Type.Any({ description: "Everything Jev should judge: transcript, records, policy — as JSON." });
+  const questionsSchema = Type.Array(
+    Type.Object({
+      id: Type.String({ description: "Answer key, e.g. 'is_urgent'" }),
+      type: Type.Union([Type.Literal("noul"), Type.Literal("choice"), Type.Literal("score")]),
+      instructions: Type.String({ description: "The question about the state." }),
+      criteria: Type.Optional(Type.Any({ description: "choice: {option: description} · score: [levels] · noul: {yes,no}" })),
+    }),
+    { description: "One entry per independent judgment. They run in parallel and cannot see each other's answers." },
+  );
 
   pi.registerTool({
     name: "classify",
@@ -390,9 +382,7 @@ export default function (pi) {
       "noul (probability of yes), choice (option + per-option probabilities + confidence), score (weighted position + confidence). " +
       "Use for routing, verification, and gating decisions where a predictable typed answer beats generated prose. " +
       "Not for open-ended questions — decisions only, no explanations.",
-    parameters: Type
-      ? Type.Object({ state: stateSchema, questions: questionsSchema })
-      : { type: "object", properties: { state: stateSchema, questions: questionsSchema } },
+    parameters: Type.Object({ state: stateSchema, questions: questionsSchema }),
     async execute(_id, params, signal) {
       const s = getClassifierSettings();
       const qs = {};
