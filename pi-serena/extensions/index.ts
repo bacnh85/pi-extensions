@@ -204,11 +204,26 @@ export function shouldRetryAfterTimeout(
 export default function serenaToolsExtension(pi: ExtensionAPI) {
   // All serena tools register `exposure: "deferred"` — the model discovers
   // them via tool_search. Pi only auto-activates tool_search for MCP servers,
-  // so this package owns its activation (ceulen's pattern).
+  // so this package owns discovery (ceulen's pattern). When tool_search itself
+  // is absent from the registry (default sessions: no MCP, no defaultTools
+  // override), deferred tools could never surface — activate them directly so
+  // the model sees them and the activation-keyed guidance/strict gates engage
+  // (issue #49). PI_SERENA_DIRECT_ACTIVATE=0 opts out: the fallback cannot tell
+  // a default session from a --tools/defaultTools-restricted one (both look
+  // identical via getActiveTools), so restricted profiles must disable it or it
+  // re-adds serena tools the selection excluded.
   pi.on("session_start", async () => {
-    if (!pi.getAllTools().some((t) => t.name === "tool_search")) return;
     const active = pi.getActiveTools();
-    if (!active.includes("tool_search")) pi.setActiveTools([...active, "tool_search"]);
+    const registered = pi.getAllTools().map((t) => t.name);
+    if (registered.includes("tool_search")) {
+      if (!active.includes("tool_search")) pi.setActiveTools([...active, "tool_search"]);
+      return;
+    }
+    if (process.env.PI_SERENA_DIRECT_ACTIVATE === "0") return;
+    // ponytail: prefix match could catch a foreign serena_* tool; activating it is
+    // visible-but-harmless. Upgrade path: track names at registration time if it ever bites.
+    const serena = registered.filter((n) => n.startsWith("serena_") && !active.includes(n));
+    if (serena.length > 0) pi.setActiveTools([...active, ...serena]);
   });
 
   const getWorker = (ctx?: { ui?: { setStatus?: (key: string, value: string | undefined) => void } }) => {

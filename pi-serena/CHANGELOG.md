@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1 (2026-11-01)
+
+- `PI_SERENA_DIRECT_ACTIVATE=0` opts out of the direct-activation fallback (restricted `--tools`/`defaultTools` sessions where re-adding serena tools is unwanted).
+
+- Fix (issue #49): Serena unreachable in sessions without tool_search. All serena tools register deferred, but tool_search is off by default in pi (no MCP, no defaultTools override) — so in default sessions the tools were never discoverable, the Serena-first guidance never injected (measured 2/87 sessions), and strict-mode miss blocking never engaged. session_start now detects the missing-discovery case and activates the registered serena_* tools directly (pre-deferred-tier behavior). Sessions with tool_search keep the token-light deferred tier unchanged. The guidance and strict-miss gates remain activation-keyed (isSerenaActive), so plan mode stays exempt; restricted `--tools`/`defaultTools` sessions are NOT exempt by default — the fallback cannot distinguish them from default sessions, so set `PI_SERENA_DIRECT_ACTIVATE=0` there.
+
 ## 0.10.0 (2026-10-10)
 
 - **Deferred tool tier** (ceulen pattern): all 20 `serena_*` tools now register `exposure: "deferred"` — not declared to the model until `tool_search` loads them (they stay callable via `ctx.executeTool`/codemode). The package now force-activates `tool_search` in `session_start` when it defers tools (pi only auto-activates discovery for MCP servers). Unit tests pin the exposure flags and the activation branches. `isSerenaActive` now also matches an active `tool_search`, so the Serena-first guidance and strict-mode miss blocking keep working while serena tools are deferred (until loaded).
