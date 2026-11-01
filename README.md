@@ -36,7 +36,7 @@ Each package lives in its own directory and can be installed independently — e
 | [`@bacnh85/pi-references`](./pi-references) | 0.1.8 | External context roots — alias sibling dirs or git repos as `@docs`/`@sdk`; auto-clones repos and injects descriptions into agent context. |
 | [`@bacnh85/pi-review`](./pi-review) | 0.2.19 | Isolated read-only code review with corrected same-session fallback. |
 | [`@bacnh85/pi-rtk`](./pi-rtk) | 0.2.8 | Bash command token rewriting through RTK. |
-| [`@bacnh85/pi-serena`](./pi-serena) | 0.10.0 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
+| [`@bacnh85/pi-serena`](./pi-serena) | 0.10.1 | Serena semantic code tools (find/replace/rename symbols, LSP diagnostics) through a persistent TypeScript worker with Python bridge. |
 | [`@bacnh85/pi-sub`](./pi-sub) | 0.1.55 | Subscription usage footer for OpenAI Codex, OpenCode Go, and Z.ai. |
 | [`@bacnh85/pi-subagent`](./pi-subagent) | 0.23.3 | Isolated in-process subagents with parallel/chain modes, inspectable threads, git worktree isolation (`sandbox: worktree`), opt-in auto-review, and herdr pane delegation (`runner: "herdr"` + `herdr` control tool) when pi runs inside herdr. |
 | [`@bacnh85/pi-themes`](./pi-themes) | 0.2.2 | Pi TUI theme collection — Ayu variants (dark, mirage, light) + Catppuccin Mocha; pure-themes package (no extension code). |
