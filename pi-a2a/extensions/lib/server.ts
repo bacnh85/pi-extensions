@@ -14,6 +14,7 @@
  * Enabled only when `a2a.server.enabled` is true (default false).
  */
 
+import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { hostname } from "node:os";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -27,6 +28,9 @@ import {
   STATE_REJECTED,
   STATE_WORKING,
   buildAgentCard,
+  a2aError,
+  A2AError,
+  taskNotFound,
   buildTask,
   extractText,
   artifactUpdateEvent,
@@ -146,6 +150,18 @@ function wantsImmediateReturn(params: any): boolean {
   return cfg.returnImmediately === true || cfg.return_immediately === true;
 }
 
+/** A2A v1.0 historyLength: unset = full history, 0 = none, N = the last N. */
+function withHistory(task: Task, historyLength: unknown): Task {
+  if (historyLength === undefined || historyLength === null || !task.history) return task;
+  const n = Math.max(0, Number(historyLength) || 0);
+  return { ...task, history: n === 0 ? [] : task.history.slice(-n) };
+}
+
+/** Earlier turns of a task, rendered for a fresh session that continues it. */
+function transcript(history: Message[]): string {
+  return history.map((m) => `[${m.role === "ROLE_AGENT" ? "You" : "Peer"}]\n${extractText(m)}`).join("\n\n");
+}
+
 // ---------------------------------------------------------------------------
 // Rate limiter (sliding window per identity; prunes stale entries)
 // ---------------------------------------------------------------------------
@@ -204,6 +220,9 @@ export interface SessionRunner {
     /** A2A task id of this dispatch — the runner keys the persisted child
      *  session transcript by it (fleet task #252). Absent in tests. */
     taskId?: string;
+    /** The inbound message's original parts, unfiltered (binary/file parts
+     *  arrive in `message` only as a placeholder). Absent for continuations. */
+    parts?: Message["parts"];
     signal: AbortSignal;
     onProgress?: (assistantTextDelta: string) => void;
   }): Promise<{
@@ -834,7 +853,10 @@ export class A2AServer {
   private handleGet(url: string, req: IncomingMessage, res: ServerResponse): void {
     if (url === "/.well-known/agent-card.json" || url === "/.well-known/agent.json") {
       const identity = this.getIdentity(req);
-      return this.send(res, 200, this.buildCard(identity === null));
+      const card = this.buildCard(identity === null);
+      res.setHeader("Cache-Control", "max-age=60");
+      res.setHeader("ETag", `"${createHash("sha256").update(JSON.stringify(card)).digest("base64url").slice(0, 22)}"`);
+      return this.send(res, 200, card);
     }
     if (url === "/health" || url === "/") {
       return this.send(res, 200, { status: "ok", agent: this.sessionName() });
@@ -888,6 +910,13 @@ export class A2AServer {
     const method = String(rpc.method || "");
     const params = rpc.params || {};
     const id = rpc.id ?? null;
+    if (!rpc.method) return this.send(res, 200, jsonrpcError(id, -32600, "invalid request: missing method"));
+    // A2A v1.0 §3.6: refuse a major version this server does not speak. 1.x
+    // is the v1.0 methods; 0.x (or no header) is served by the pre-1.0 aliases.
+    const ver = String(req.headers["a2a-version"] ?? "");
+    if (ver && !["0", "1"].includes(ver.split(".")[0]!)) {
+      return this.send(res, 200, a2aError(id, -32009, "VERSION_NOT_SUPPORTED", `A2A-Version ${ver} not supported`));
+    }
 
     // Normalize method aliases (v1.0 PascalCase ↔ pre-1.0 path).
     const norm = method.toLowerCase().replace(/[/_.-]/g, "");
@@ -895,6 +924,31 @@ export class A2AServer {
     // the pre-1.0 aliases ("message/send", "tasks/list", …) keep the legacy
     // shapes old peers were built against.
     const isV1 = (v1Norm: string): boolean => norm === v1Norm;
+    try {
+      return await this.dispatch(norm, isV1, method, params, id, identity, res, framing);
+    } catch (e) {
+      if (e instanceof A2AError) return this.send(res, 200, e.toResponse(id));
+      throw e;
+    }
+  }
+
+  private async dispatch(
+    norm: string,
+    isV1: (v1Norm: string) => boolean,
+    method: string,
+    params: any,
+    id: any,
+    identity: string,
+    res: ServerResponse,
+    framing: InboundFraming,
+  ): Promise<void> {
+    // Per-identity ownership (#10): a peer only ever sees its own tasks, and
+    // a foreign task is indistinguishable from a missing one.
+    const own = (taskId: unknown): StoredTask => {
+      const st = this.store.get(String(taskId ?? ""));
+      if (!st || st.identity !== identity) throw taskNotFound();
+      return st;
+    };
 
     if (norm === "messagesend" || norm === "sendmessage") {
       // Concurrency cap (blocking pool): reject when too many blocking tasks
@@ -909,32 +963,43 @@ export class A2AServer {
       const r = await this.messageSend(params, identity, undefined, framing);
       // A2A v1.0: the SendMessage result is the oneof {"task": …} | {"message": …},
       // never a bare Task; the pre-1.0 alias keeps returning the bare Task.
-      return this.send(res, 200, jsonrpcResult(id, isV1("sendmessage") ? sendTaskResponse(r) : r));
+      if (!isV1("sendmessage")) return this.send(res, 200, jsonrpcResult(id, r));
+      return this.send(res, 200, jsonrpcResult(id, sendTaskResponse(withHistory(r, params.configuration?.historyLength))));
+    }
+    // Optional v1.0 operations this server does not offer get their typed
+    // error (§3.5), not "method not found": the card says they are absent.
+    if (/^(create|get|list|delete)taskpushnotificationconfigs?$/.test(norm)) {
+      throw new A2AError(-32003, "PUSH_NOTIFICATION_NOT_SUPPORTED", "push notifications are not supported");
+    }
+    if (norm === "getextendedagentcard") {
+      throw new A2AError(-32004, "UNSUPPORTED_OPERATION", "no extended agent card");
     }
     if (norm === "messagestream" || norm === "sendstreamingmessage") {
       return this.messageStream(params, identity, res, id, isV1("sendstreamingmessage"), framing);
     }
     if (norm === "tasksget" || norm === "gettask") {
-      const st = this.store.get(String(params.id ?? ""));
-      if (!st) return this.send(res, 200, jsonrpcError(id, -32001, "task not found"));
-      // Per-identity ownership (#10): a peer may only fetch its own tasks.
-      if (st.identity !== identity) return this.send(res, 200, jsonrpcError(id, -32001, "task not found"));
-      return this.send(res, 200, jsonrpcResult(id, st.task));
+      const st = own(params.id);
+      return this.send(res, 200, jsonrpcResult(id, withHistory(st.task, params.historyLength)));
     }
     if (norm === "taskslist" || norm === "listtasks") {
-      // Per-identity ownership (#10): only the caller's own tasks are listed.
-      const mine = this.store.list().filter((t) => this.store.get(t.id)?.identity === identity);
-      // A2A v1.0: ListTasksResponse carries full Task objects; the pre-1.0
-      // alias keeps the {id, state} stubs it always returned.
-      const tasks = isV1("listtasks") ? mine : mine.map((t) => ({ id: t.id, state: t.status.state }));
-      return this.send(res, 200, jsonrpcResult(id, { tasks }));
+      let mine = this.store.list().filter((t) => this.store.get(t.id)?.identity === identity);
+      if (!isV1("listtasks")) {
+        // Pre-1.0 alias keeps the {id, state} stubs it always returned.
+        return this.send(res, 200, jsonrpcResult(id, { tasks: mine.map((t) => ({ id: t.id, state: t.status.state })) }));
+      }
+      // A2A v1.0 ListTasks: filter by contextId/status, newest first, and
+      // honour includeArtifacts. The store is bounded, so one page holds all.
+      if (params.contextId) mine = mine.filter((t) => t.contextId === params.contextId);
+      if (params.status) mine = mine.filter((t) => t.status.state === params.status);
+      const tasks = mine.reverse().map((t) => {
+        const out = withHistory(t, params.historyLength);
+        return params.includeArtifacts === false ? { ...out, artifacts: undefined } : out;
+      });
+      return this.send(res, 200, jsonrpcResult(id, { tasks, nextPageToken: "", pageSize: tasks.length, totalSize: tasks.length }));
     }
     if (norm === "taskscancel" || norm === "canceltask") {
-      const st = this.store.get(String(params.id ?? ""));
-      if (!st) return this.send(res, 200, jsonrpcError(id, -32001, "task not found"));
-      // Per-identity ownership (#10): a peer may only cancel its own tasks.
-      if (st.identity !== identity) return this.send(res, 200, jsonrpcError(id, -32001, "task not found"));
-      if (st.done) return this.send(res, 200, jsonrpcError(id, -32002, "task not cancelable"));
+      const st = own(params.id);
+      if (st.done) throw new A2AError(-32002, "TASK_NOT_CANCELABLE", "task not cancelable");
       st.userCanceled = true; // so messageSend's catch classifies as CANCELED, not timeout-FAILED
       st.controller?.abort();
       // Set the state ourselves — the catch in messageSend will run async and
@@ -946,10 +1011,30 @@ export class A2AServer {
       return this.send(res, 200, jsonrpcResult(id, st.task));
     }
     if (norm === "taskssubscribe" || norm === "subscribetotask") {
+      // A2A v1.0 §3.1.6: a terminal task has no further events to stream.
+      if (isV1("subscribetotask") && TERMINAL_STATES.has(own(params.id).task.status.state)) {
+        throw new A2AError(-32004, "UNSUPPORTED_OPERATION", "task is in a terminal state");
+      }
       // Resubscribe via SSE — same shape as message/stream.
       return this.taskSubscribe(params, identity, res, id, isV1("subscribetotask"));
     }
     return this.send(res, 200, jsonrpcError(id, -32601, `method not found: ${method}`));
+  }
+
+  /** The stored task a v1.0 follow-up message continues, or an A2A error:
+   *  unknown/foreign id, a context that contradicts the task, or a task that
+   *  already reached a terminal state (§3.4.3: terminal tasks are immutable). */
+  private continuable(msg: Message, identity: string): StoredTask {
+    const st = this.store.get(String(msg.taskId));
+    if (!st || st.identity !== identity) throw taskNotFound();
+    if (msg.contextId && msg.contextId !== st.task.contextId) {
+      throw new A2AError(-32602, "INVALID_PARAMS", "contextId does not match the task's context");
+    }
+    if (!st.done) throw new A2AError(-32004, "UNSUPPORTED_OPERATION", "task is still running");
+    if (TERMINAL_STATES.has(st.task.status.state)) {
+      throw new A2AError(-32004, "UNSUPPORTED_OPERATION", `task is ${st.task.status.state}; terminal tasks accept no messages`);
+    }
+    return st;
   }
 
   private async messageSend(
@@ -959,9 +1044,17 @@ export class A2AServer {
     framing?: InboundFraming,
   ): Promise<any> {
     const msg: Message = params.message ?? params;
+    // Data parts reach the agent rendered as JSON, so only JSON media types
+    // are accepted (A2A v1.0 §3.3.2 ContentTypeNotSupportedError).
+    const badPart = (msg.parts ?? []).find(
+      (p: any) => p && "data" in p && p.mediaType && !/^application\/([\w.+-]+\+)?json$/.test(p.mediaType),
+    ) as { mediaType?: string } | undefined;
+    if (badPart) throw new A2AError(-32005, "CONTENT_TYPE_NOT_SUPPORTED", `unsupported data part media type ${badPart.mediaType}`);
     const inboundText = extractText(params);
-    const contextId = String(params.contextId || msg.contextId || newContextId());
-    const taskId = newTaskId();
+    // A2A v1.0 §3.4.3: a message carrying a taskId continues that task.
+    const prior = msg.taskId ? this.continuable(msg, identity) : undefined;
+    const contextId = prior?.task.contextId ?? String(params.contextId || msg.contextId || newContextId());
+    const taskId = prior?.task.id ?? newTaskId();
     // A2A v1.0 §3.2.2 SendMessageConfiguration.returnImmediately — the caller
     // asks for an immediate in-progress Task instead of waiting for the
     // terminal state (submit-and-poll).
@@ -970,17 +1063,35 @@ export class A2AServer {
     // Anti-loop: cap per-context turns.
     if (!this.antiLoop.record(contextId)) {
       metrics.antiLoopTriggers += 1;
+      audit({ piDir: this.piDir, direction: "inbound", identity, taskId, text: "[anti-loop rejected]" });
+      if (prior) {
+        prior.done = true;
+        return this.store.update(taskId, (t) => (t.status.state = STATE_REJECTED))!.task;
+      }
       const t = buildTask({ id: taskId, contextId, state: STATE_REJECTED });
       this.store.add(taskId, { task: t, done: true, identity, subscribeWatchers: [] });
-      audit({ piDir: this.piDir, direction: "inbound", identity, taskId, text: "[anti-loop rejected]" });
       return t;
     }
 
-    // Create the task (SUBMITTED → WORKING).
-    const task = buildTask({ id: taskId, contextId, state: STATE_WORKING });
+    // Create the task (SUBMITTED → WORKING), or resume the input-required one.
+    // A fresh session per turn has no memory, so a continuation hands the
+    // runner the task's earlier turns along with the new message.
+    const userMsg: Message = { ...msg, role: "ROLE_USER", taskId, contextId };
+    const runText = prior ? `${transcript(prior.task.history ?? [])}\n[New message]\n${inboundText}` : inboundText;
     const controller = new AbortController();
-    const st: StoredTask = { task, controller, done: false, identity, subscribeWatchers: [] };
-    this.store.add(taskId, st);
+    let st: StoredTask;
+    if (prior) {
+      st = Object.assign(prior, { controller, done: false, userCanceled: false });
+      this.store.update(taskId, (t) => {
+        t.status = { state: STATE_WORKING };
+        (t.history ??= []).push(userMsg);
+      });
+    } else {
+      const task = buildTask({ id: taskId, contextId, state: STATE_WORKING });
+      task.history = [userMsg];
+      st = { task, controller, done: false, identity, subscribeWatchers: [] };
+      this.store.add(taskId, st);
+    }
     audit({ piDir: this.piDir, direction: "inbound", identity, taskId, text: inboundText });
     this.onActivity?.({ type: "arrived", taskId, identity, text: inboundText, contextId });
 
@@ -1007,7 +1118,7 @@ export class A2AServer {
     // — the caller polls GetTask / subscribes / cancels by task id, and the
     // session is no longer bounded by the caller's reply window (detached
     // runs are supervised by server.asyncTimeoutSec instead).
-    const execution = this.executeTask(st, identity, inboundText, detached, framing);
+    const execution = this.executeTask(st, identity, runText, detached, framing, prior ? undefined : msg.parts);
     if (detached) {
       // The detached run continues after this reply returns; nothing else
       // will ever await `execution`. executeTask never rejects by contract
@@ -1054,6 +1165,7 @@ export class A2AServer {
     inboundText: string,
     detached: boolean,
     framing?: InboundFraming,
+    parts?: Message["parts"],
   ): Promise<any> {
     const taskId = st.task.id;
     const controller = st.controller!;
@@ -1101,6 +1213,7 @@ export class A2AServer {
       const out = await runner({
         message: wrapped,
         taskId,
+        parts,
         signal: controller.signal,
         onProgress: (line) => this.onActivity?.({ type: "progress", taskId, line }),
       });
@@ -1126,6 +1239,18 @@ export class A2AServer {
       const reply = redactOutbound(out.reply ?? "");
       this.store.update(taskId, (t) => {
         t.status.state = finalState;
+        const agentMsg: Message = {
+          role: "ROLE_AGENT",
+          parts: [{ text: reply, mediaType: "text/plain" }],
+          messageId: newContextId(),
+          taskId,
+          contextId: t.contextId,
+        };
+        (t.history ??= []).push(agentMsg);
+        // The reply also rides on the final status (A2A v1.0 §4.1.3) — the
+        // question for INPUT_REQUIRED, the answer otherwise — since many
+        // clients read the status message rather than artifacts.
+        t.status.message = agentMsg;
         t.artifacts = [
           {
             artifactId: "reply",
@@ -1277,7 +1402,7 @@ export class A2AServer {
           // frame carries taskId/contextId/state, so a client reading only the
           // final event still learns the identifiers.
           for (const a of task.artifacts ?? []) writeSse(artifactUpdateEvent(task, a));
-          writeSse(statusUpdateEvent(task, true));
+          writeSse(statusUpdateEvent(task));
         } else {
           // Pre-1.0 alias keeps the legacy shapes (whole Task as statusUpdate,
           // bare artifact as artifactUpdate).
@@ -1335,16 +1460,16 @@ export class A2AServer {
       res.end();
       return;
     }
-    // v1.0: a TaskStatusUpdateEvent {taskId, contextId, status, final}; the
-    // pre-1.0 alias keeps the legacy whole-Task shape. A snapshot of an
-    // already-finished task is the final event of this stream.
-    writeSse(v1 ? statusUpdateEvent(st.task, st.done) : { statusUpdate: st.task });
+    // v1.0: a TaskStatusUpdateEvent {taskId, contextId, status}; the pre-1.0
+    // alias keeps the legacy whole-Task shape. A snapshot of an already-
+    // finished task ends the stream.
+    writeSse(v1 ? statusUpdateEvent(st.task) : { statusUpdate: st.task });
     if (st.done) {
       res.end();
       return;
     }
     const watcher = (t: Task): void =>
-      writeSse(v1 ? statusUpdateEvent(t, TERMINAL_STATES.has(t.status.state)) : { statusUpdate: t });
+      writeSse(v1 ? statusUpdateEvent(t) : { statusUpdate: t });
     st.subscribeWatchers.push(watcher);
     const interval = setInterval(() => {
       if (st.done) {

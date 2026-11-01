@@ -54,6 +54,11 @@ describe("security", () => {
       assert.equal(id, "ip:127.0.0.1");
     });
 
+    it("ignores an unrecognised bearer in localhost-only mode (no stricter than none)", () => {
+      const id = authenticate({ authHeader: "Bearer anything", clientIp: "127.0.0.1", peerTokens: {}, sharedToken: "" });
+      assert.equal(id, "ip:127.0.0.1");
+    });
+
     it("returns the peer name for a matching per-peer token", () => {
       const id = authenticate({
         authHeader: "Bearer tok1",

@@ -1,6 +1,6 @@
 {
   "name": "@bacnh85/pi-a2a",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "A2A Protocol v1.0 bidirectional extension for the Pi coding agent — distribute tasks to remote agents, be called by them, and self-declare for local session discovery.",
   "type": "module",
   "license": "MIT",
@@ -28,7 +28,8 @@
   "scripts": {
     "test": "cd extensions && mocha",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "itk-agent": "tsx itk/agent.ts"
   },
   "files": [
     "README.md",

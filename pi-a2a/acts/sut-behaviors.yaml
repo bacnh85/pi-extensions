@@ -1,0 +1,14 @@
+acts_version: "1.0"
+
+# Behaviours the pi-a2a ITK agent (itk/agent.ts) implements. The agent swaps
+# the model session for a deterministic runner; everything else is the real
+# pi-a2a server.
+behaviors:
+  - prefix: "tck-complete-task"
+  - prefix: "tck-artifact-text"
+  - prefix: "tck-stream-basic"
+  - prefix: "tck-long-running"
+  - prefix: "tck-cancel"
+  - prefix: "tck-input-required"
+  - prefix: "tck-multi-turn"
+  - prefix: "tck-task-failure"

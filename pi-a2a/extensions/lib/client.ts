@@ -16,10 +16,12 @@ import {
   newTaskId,
   normalizeState,
   ROLE_USER,
+  messageWithParts,
   textMessage,
   unwrapSendMessageResponse,
   type AgentCard,
   type JsonRpcRequest,
+  type Part,
   type Task,
 } from "./protocol";
 import {
@@ -361,7 +363,7 @@ function peerRequestHeaders(cfg: A2AConfig, peer: Peer): Record<string, string> 
   return headers;
 }
 
-async function sendTask(opts: {
+export async function sendTask(opts: {
   cfg: A2AConfig;
   piDir: string;
   peer: Peer;
@@ -376,6 +378,10 @@ async function sendTask(opts: {
    *  ("pi/session") so the receiving peer can join this dispatch to its own
    *  ledger rows and records (fleet task #238). */
   sessionId?: string;
+  /** Send these parts verbatim instead of `message` as text (programmatic
+   *  callers forwarding structured/binary payloads; `message` is then only
+   *  the audit label). */
+  parts?: Part[];
 }): Promise<SendResult> {
   const { cfg, piDir, peer, agentLabel, message } = opts;
   const headers = peerRequestHeaders(cfg, peer);
@@ -420,7 +426,7 @@ async function sendTask(opts: {
 
   const ctx = opts.contextId || newContextId();
   const safe = redactOutbound(message);
-  const outbound = textMessage(ROLE_USER, safe, ctx);
+  const outbound = opts.parts ? messageWithParts(ROLE_USER, opts.parts, ctx) : textMessage(ROLE_USER, safe, ctx);
   // Sender attribution (A2A v1.0 permits metadata on Message). "pi/session"
   // is the pi session id; "pi/self" the configured identity. Both are
   // advisory display/join data — receiving peers must not authenticate on

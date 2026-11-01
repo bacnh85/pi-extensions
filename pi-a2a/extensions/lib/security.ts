@@ -133,7 +133,11 @@ export function authenticateInfo(opts: {
   // Minted per-session tokens (extraTokens) never require auth by themselves:
   // they exist so the GATEWAY can call us, not to lock down loopback peers.
   // No operator tokens + no bearer → anonymous loopback identity as before.
-  if (!hasTokens && presented === null) {
+  // A token-less deployment admits anonymous loopback callers, so an
+  // unrecognised bearer (a client that always sends one) must not be
+  // stricter than none: ignore it unless it matches a minted token.
+  const minted = presented !== null && Object.values(extraTokens ?? {}).some((t) => constantTimeEqual(presented, t));
+  if (!hasTokens && !minted) {
     if (asserted && !borrowed(asserted)) return { identity: asserted, provenance: "asserted" };
     return { identity: `ip:${clientIp || "local"}`, provenance: "address" };
   }

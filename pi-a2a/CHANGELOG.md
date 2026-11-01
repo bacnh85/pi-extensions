@@ -1,5 +1,64 @@
 # Changelog
 
+## [0.9.0] - 2026-10-19
+
+Validated against the A2A Integration Test Kit ([a2a-itk](https://github.com/a2aproject/a2a-itk)):
+traversal `pi-a2a ⇄ a2a-python v1.0` passes (JSON-RPC, streaming and
+non-streaming); ACTS JSON-RPC conformance goes from 12/59 MUST passing to
+45/53 MUST, with every remaining failure an unimplemented optional behaviour
+or the client-parse probe (see README → Protocol compliance).
+
+### Added
+
+- **`itk/` ITK agent** (`npm run itk-agent`): the real `A2AServer` with a
+  deterministic runner in place of a model session, executing a2a-itk's
+  protobuf `Instruction` with pi-a2a's own outbound client. `acts/sut-behaviors.yaml`
+  declares the ACTS behaviours it implements.
+- `SessionRunner` receives the inbound message's original `parts`.
+- `sendTask` accepts explicit `parts` (programmatic callers forwarding
+  structured or binary payloads).
+
+### Fixed
+
+The pre-1.0 aliases keep their legacy wire shapes (bare `Task` results,
+`{id, state}` list stubs, whole-Task stream frames); fixes that change a shape
+apply to the v1.0 methods only.
+
+- **An unrecognised bearer token was rejected by a token-less server** (401),
+  although the same request with no token is admitted. Clients that always send
+  a credential — including a2a-itk's — could not call a default pi-a2a server.
+  The token is now ignored when no tokens are configured (minted gateway tokens
+  still resolve to their identity). A token-less server binds loopback only
+  (`resolveBindHost`), so this admits nothing new from off-host.
+- **A follow-up message with `taskId` started a new task** instead of continuing
+  the `INPUT_REQUIRED` one (§3.4.3). It now resumes the same task and context,
+  hands the runner the earlier turns, and rejects a terminal task
+  (`UnsupportedOperationError`), a foreign/unknown task (`TaskNotFoundError`)
+  or a contradicting `contextId` (`-32602`).
+- **Tasks carried no `history`**; user and agent messages are now recorded and
+  `historyLength` is honoured on `GetTask`, `ListTasks` and `SendMessage`.
+- **The reply was only in `artifacts`**; the final status now carries it as
+  `status.message` too, which is where most SDK clients (a2a-python, a2a-js)
+  read it.
+- **Streamed `TaskStatusUpdateEvent`s carried `final`**, a field v1.0 removed;
+  strict ProtoJSON clients (a2a-python) rejected every pi-a2a stream.
+- **A2A errors had no `google.rpc.ErrorInfo` detail** (§11.6), so clients could
+  not map them; `TaskNotFound`, `TaskNotCancelable`, `UnsupportedOperation`,
+  `VersionNotSupported`, `ContentTypeNotSupported` and
+  `PushNotificationNotSupported` now carry it.
+- **Unsupported `A2A-Version` majors were served as 1.0**; they now get
+  `VersionNotSupportedError` (`-32009`). `0.x` and `1.x` are still served.
+- **Optional operations pi-a2a does not offer answered "method not found"**:
+  push-config methods now return `PushNotificationNotSupportedError` and
+  `GetExtendedAgentCard` returns `UnsupportedOperationError`, as the card
+  advertises.
+- `SubscribeToTask` on a terminal task returns `UnsupportedOperationError`
+  instead of a one-frame stream; `ListTasks` filters by `contextId`/`status`,
+  honours `includeArtifacts=false` and returns `nextPageToken`; a request with
+  no `method` is `InvalidRequest` (`-32600`); data parts with a non-JSON media
+  type get `ContentTypeNotSupportedError`; the agent card is served with
+  `Cache-Control` and `ETag`.
+
 ## 0.8.0 (2026-10-10)
 
 - **Deferred tool tier** (ceulen pattern): all 7 `a2a_*` tools now register `exposure: "deferred"` — not declared to the model until `tool_search` loads them (they stay callable via `ctx.executeTool`/codemode). The package now force-activates `tool_search` in `session_start` when it defers tools (pi only auto-activates discovery for MCP servers). Unit tests pin the exposure flags and the activation branches.

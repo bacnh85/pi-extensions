@@ -1049,10 +1049,10 @@ describe("server", () => {
         assert.match(ae.contextId, /^ctx-/);
         assert.equal(ae.artifact?.parts?.[0]?.text, "stream body");
         assert.equal(ae.lastChunk, true);
-        // TaskStatusUpdateEvent: {taskId, contextId, status, final}.
+        // TaskStatusUpdateEvent: {taskId, contextId, status} — no `final` in v1.0.
         const se = statuses[0]!.result.statusUpdate;
         assert.equal(se.status?.state, STATE_COMPLETED);
-        assert.equal(se.final, true);
+        assert.deepEqual(Object.keys(se).sort(), ["contextId", "status", "taskId"]);
         // The artifact event precedes the terminal status event (the final
         // frame carries the terminal state).
         assert.isBelow(frames.indexOf(artifacts[0]!), frames.indexOf(statuses[0]!));
@@ -1088,22 +1088,123 @@ describe("server", () => {
       }
     });
 
-    it("SubscribeToTask emits a v1.0 TaskStatusUpdateEvent snapshot", async () => {
+    it("SubscribeToTask on a terminal task is UnsupportedOperationError (v1.0 §3.1.6)", async () => {
       const { url, stop } = await startServer({ cfg: DEFAULTS(), runner: stubRunner("subscribed") });
       try {
         const send = await jsonRpc(url, "SendMessage", {
           message: { role: "ROLE_USER", parts: [{ text: "hi" }] },
         });
         const tid = sendTask(send).id;
-        const frames = await sseFrames(url, "SubscribeToTask", { id: tid }, "sub-v1");
-        assert.isAtLeast(frames.length, 1);
-        const se = frames[0]!.result?.statusUpdate;
-        assert.exists(se, "snapshot statusUpdate event");
-        assert.equal(se.taskId, tid);
-        assert.match(se.contextId, /^ctx-/);
-        assert.equal(se.status?.state, STATE_COMPLETED);
-        assert.equal(se.final, true, "snapshot of a finished task is the final event");
-        assert.notExists(se.artifacts, "statusUpdate must be an event, not a Task");
+        const r = await jsonRpc(url, "SubscribeToTask", { id: tid });
+        assert.equal(r.error?.code, -32004);
+        assert.equal(r.error?.data?.[0]?.reason, "UNSUPPORTED_OPERATION");
+        // The pre-1.0 alias keeps streaming the final snapshot.
+        const frames = await sseFrames(url, "tasks/subscribe", { id: tid }, "sub-legacy");
+        assert.equal(frames[0]!.result?.statusUpdate?.status?.state, STATE_COMPLETED);
+      } finally {
+        await stop();
+      }
+    });
+  });
+
+  describe("A2A v1.0 conformance (a2a-itk ACTS)", () => {
+    const user = (text: string, extra: any = {}) => ({ message: { role: "ROLE_USER", parts: [{ text }], ...extra } });
+    const raw = async (url: string, body: any, headers: Record<string, string> = {}) =>
+      (await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) })).json();
+
+    it("continues an INPUT_REQUIRED task in place, handing the runner the earlier turns", async () => {
+      const seen: string[] = [];
+      const runner: SessionRunner = async ({ message }) => {
+        seen.push(message);
+        return { reply: seen.length < 2 ? "which file?" : "done", inputRequired: seen.length < 2 };
+      };
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner });
+      try {
+        const t1 = sendTask(await jsonRpc(url, "SendMessage", user("fix the bug")));
+        assert.equal(t1.status.state, STATE_INPUT_REQUIRED);
+        assert.equal(t1.status.message?.parts?.[0]?.text, "which file?");
+        const t2 = sendTask(await jsonRpc(url, "SendMessage", user("main.ts", { taskId: t1.id })));
+        assert.equal(t2.id, t1.id, "same task, not a new one");
+        assert.equal(t2.contextId, t1.contextId, "context inferred from the task");
+        assert.equal(t2.status.state, STATE_COMPLETED);
+        assert.match(seen[1]!, /fix the bug[\s\S]*which file\?[\s\S]*main\.ts/);
+        const got = (await jsonRpc(url, "GetTask", { id: t1.id, historyLength: 2 })).result;
+        assert.deepEqual(got.history.map((m: any) => m.parts[0].text), ["main.ts", "done"]);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("refuses follow-ups to terminal tasks and to a mismatched context", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS() });
+      try {
+        const t = sendTask(await jsonRpc(url, "SendMessage", user("hi")));
+        const terminal = await jsonRpc(url, "SendMessage", user("again", { taskId: t.id }));
+        assert.equal(terminal.error?.code, -32004);
+        const wrongCtx = await jsonRpc(url, "SendMessage", user("x", { taskId: t.id, contextId: "ctx-other" }));
+        assert.equal(wrongCtx.error?.code, -32602);
+        const missing = await jsonRpc(url, "GetTask", { id: "nope" });
+        assert.equal(missing.error?.code, -32001);
+        assert.equal(missing.error?.data?.[0]?.["@type"], "type.googleapis.com/google.rpc.ErrorInfo");
+        assert.equal(missing.error?.data?.[0]?.reason, "TASK_NOT_FOUND");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("ListTasks filters by contextId and honours includeArtifacts=false", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS() });
+      try {
+        const a = sendTask(await jsonRpc(url, "SendMessage", user("a")));
+        await jsonRpc(url, "SendMessage", user("b"));
+        const r = (await jsonRpc(url, "ListTasks", { contextId: a.contextId, includeArtifacts: false })).result;
+        assert.deepEqual(r.tasks.map((t: any) => t.id), [a.id]);
+        assert.notExists(r.tasks[0].artifacts);
+        assert.equal(r.nextPageToken, "");
+      } finally {
+        await stop();
+      }
+    });
+
+    it("answers bad versions, missing methods, absent push and unsupported data parts with typed errors", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS() });
+      try {
+        const env = (method: string, params: any = {}) => ({ jsonrpc: "2.0", id: 1, method, params });
+        assert.equal((await raw(url, env("SendMessage", user("x")), { "A2A-Version": "99.0" })).error?.code, -32009);
+        // 0.3 peers that send their version still reach the pre-1.0 aliases.
+        assert.equal((await raw(url, env("message/send", user("x")), { "A2A-Version": "0.3" })).result?.status?.state, STATE_COMPLETED);
+        assert.equal((await raw(url, { jsonrpc: "2.0", id: 1, params: {} })).error?.code, -32600);
+        assert.equal((await jsonRpc(url, "CreateTaskPushNotificationConfig", { taskId: "t" })).error?.code, -32003);
+        assert.equal((await jsonRpc(url, "GetExtendedAgentCard", {})).error?.code, -32004);
+        const data = { message: { role: "ROLE_USER", parts: [{ data: { v: 1 }, mediaType: "application/x-foo" }] } };
+        assert.equal((await jsonRpc(url, "SendMessage", data)).error?.code, -32005);
+        const json = { message: { role: "ROLE_USER", parts: [{ data: { v: 1 }, mediaType: "application/json" }] } };
+        assert.equal(sendTask(await jsonRpc(url, "SendMessage", json)).status.state, STATE_COMPLETED);
+      } finally {
+        await stop();
+      }
+    });
+
+    it("serves the card with Cache-Control and a stable ETag", async () => {
+      const { url, stop } = await startServer({ cfg: DEFAULTS() });
+      try {
+        const [r1, r2] = [await fetch(url + ".well-known/agent-card.json"), await fetch(url + ".well-known/agent-card.json")];
+        assert.match(r1.headers.get("cache-control") ?? "", /max-age=\d+/);
+        assert.match(r1.headers.get("etag") ?? "", /^".+"$/);
+        assert.equal(r1.headers.get("etag"), r2.headers.get("etag"));
+      } finally {
+        await stop();
+      }
+    });
+
+    it("passes the original message parts to the runner", async () => {
+      let got: any;
+      const runner: SessionRunner = async ({ parts }) => ((got = parts), { reply: "ok", inputRequired: false });
+      const { url, stop } = await startServer({ cfg: DEFAULTS(), runner });
+      try {
+        const part = { raw: "AAEC", mediaType: "application/x-protobuf", filename: "instruction.bin" };
+        await jsonRpc(url, "SendMessage", { message: { role: "ROLE_USER", parts: [part] } });
+        assert.deepEqual(got, [part]);
       } finally {
         await stop();
       }

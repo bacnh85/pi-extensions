@@ -1,0 +1,14 @@
+# pi-a2a ITK run: the mounted pi-a2a agent (current) against reference peers.
+# pi-a2a serves and calls JSON-RPC only, so the run is limited to that binding.
+tests:
+  - schema: traversal/v1
+    name: pi-a2a - star - send message
+    tier: pr
+    roles:
+      sut: current
+      peers:
+        - {sdk: python, line: v10}
+    topology: star
+    transports: [jsonrpc]
+    behavior: send_message
+    streaming_variants: [false, true]

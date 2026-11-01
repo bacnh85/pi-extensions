@@ -614,6 +614,25 @@ results, `{id, state}` list stubs) so existing peers see no change.
 | Push notifications | 🔜 (HMAC signing scaffolded) |
 | gRPC / HTTP-REST bindings | Not implemented (JSON-RPC only) |
 
+### A2A Integration Test Kit
+
+`itk/` is the agent [a2a-itk](https://github.com/a2aproject/a2a-itk) runs: the
+real `A2AServer`, with a deterministic runner in place of a model session.
+
+```bash
+git clone https://github.com/a2aproject/a2a-itk && cd a2a-itk
+# interop: pi-a2a ⇄ a2a-python over JSON-RPC (streaming + non-streaming)
+uv run run_tests.py --mount ../pi-extensions/pi-a2a/itk --scenarios ../pi-extensions/pi-a2a/itk/scenarios.yaml
+# conformance (ACTS), JSON-RPC binding
+uv run run_acts.py --mount ../pi-extensions/pi-a2a/itk --sdk pi-a2a --no-codegen
+```
+
+ACTS results (0.9.0): MUST 45/53, SHOULD 19/28, MAY 2/3 passed. The failures
+are behaviours pi-a2a does not implement — message-only replies, chunked
+artifacts, data/file artifacts, `AUTH_REQUIRED`, the client-parse probe — and
+`VER-NEG-002` (a missing `A2A-Version` is served as 1.0 rather than refused,
+to keep header-less pre-1.0 peers working).
+
 ## Development
 
 ```bash

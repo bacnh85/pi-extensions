@@ -1,5 +1,5 @@
 {
-  "include": ["extensions/**/*.ts"],
+  "include": ["extensions/**/*.ts", "itk/**/*.ts"],
   "exclude": ["node_modules"],
   "compilerOptions": {
     "target": "ES2022",

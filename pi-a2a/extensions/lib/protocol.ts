@@ -274,6 +274,25 @@ export function jsonrpcError(
   return { jsonrpc: "2.0", id, error: err };
 }
 
+/** A2A-defined error (§11.6): JSON-RPC code plus a google.rpc.ErrorInfo detail
+ *  carrying the UPPER_SNAKE reason, so clients map it without parsing text. */
+export function a2aError(id: JsonRpcRequest["id"], code: number, reason: string, message: string): JsonRpcResponse {
+  return jsonrpcError(id, code, message, [
+    { "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason, domain: "a2a-protocol.org" },
+  ]);
+}
+
+/** Thrown inside request handling; the dispatcher turns it into a2aError. */
+export class A2AError extends Error {
+  constructor(readonly code: number, readonly reason: string, message: string) {
+    super(message);
+  }
+  toResponse(id: JsonRpcRequest["id"]): JsonRpcResponse {
+    return a2aError(id, this.code, this.reason, this.message);
+  }
+}
+export const taskNotFound = () => new A2AError(ERR_TASK_NOT_FOUND, "TASK_NOT_FOUND", "task not found");
+
 /**
  * Wrap a SendMessage result. v1.0 wraps as {task} or {message}; legacy methods
  * may return a bare Task/Message. This wraps a bare payload correctly.
@@ -300,13 +319,14 @@ export const sendTaskResponse = (task: any): any => ({ task });
 // StreamResponse builders (v1.0).
 export const streamMessage = (message: any): any => ({ message });
 
-/** v1.0 TaskStatusUpdateEvent — {taskId, contextId, status, final}. */
-export const statusUpdateEvent = (task: any, final: boolean): any => ({
+/** v1.0 TaskStatusUpdateEvent — {taskId, contextId, status}. v1.0 has no
+ *  `final` field (the stream's end marks the end); strict ProtoJSON parsers
+ *  such as a2a-python reject unknown fields, so none is sent. */
+export const statusUpdateEvent = (task: any): any => ({
   statusUpdate: {
     taskId: task?.id,
     contextId: task?.contextId,
     status: task?.status,
-    final,
   },
 });
 
