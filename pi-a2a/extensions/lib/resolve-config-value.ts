@@ -122,7 +122,7 @@ export function resolveConfigValue(config: string): string | undefined {
  * not interpolate an operator env var (e.g. `"$GITHUB_TOKEN"`) into a token
  * sent to a peer URL the same repo chose.
  */
-export function resolveSettingsValue(raw: unknown, fromRepo: boolean): unknown {
+export function resolveSettingsValue<T>(raw: T, fromRepo: boolean): T | string | undefined {
   if (typeof raw !== "string" || fromRepo) return raw;
   return resolveConfigValue(raw);
 }

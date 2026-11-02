@@ -449,9 +449,10 @@ export function loadConfig(opts: {
   };
 
   // Peers from settings.json `a2a.peers`
-  const peers = (s.peers && typeof s.peers === "object" ? s.peers : {}) as Record<string, any>;
+  const peers = (s.peers && typeof s.peers === "object" ? s.peers : {}) as Record<string, RawPeer | null>;
   // Reset per load: only peers from a REPO-SCOPE settings file get flagged.
   repoPeerUrls = new Set();
+  repoPeerNames = new Set();
   for (const [name, entry] of Object.entries(peers)) {
     if (!entry || typeof entry !== "object") continue;
     cfg.peers[name] = {
@@ -464,11 +465,12 @@ export function loadConfig(opts: {
       capabilities: Array.isArray(entry.capabilities) ? entry.capabilities.map(String) : [],
       description: entry.description ? String(entry.description) : undefined,
     };
+    if (settingsFromRepo) repoPeerNames.add(name);
     if (settingsFromRepo && cfg.peers[name]!.url) repoPeerUrls.add(normUrl(cfg.peers[name]!.url));
   }
 
   // Server settings
-  const srv = (s.server && typeof s.server === "object" ? s.server : {}) as Record<string, any>;
+  const srv = (s.server && typeof s.server === "object" ? s.server : {}) as Record<string, unknown>;
   cfg.server.enabled = bool(srv.enabled ?? env.A2A_SERVER_ENABLED, DEFAULTS.server.enabled);
   cfg.server.port = num(srv.port ?? env.A2A_PORT, DEFAULTS.server.port);
   cfg.server.portFallback = num(srv.portFallback ?? env.A2A_PORT_FALLBACK, DEFAULTS.server.portFallback);
@@ -510,7 +512,7 @@ export function loadConfig(opts: {
   cfg.server.skills = Array.isArray(srv.skills) ? srv.skills : [];
 
   // Timeouts
-  const t = (s.timeouts && typeof s.timeouts === "object" ? s.timeouts : {}) as Record<string, any>;
+  const t = (s.timeouts && typeof s.timeouts === "object" ? s.timeouts : {}) as Record<string, unknown>;
   cfg.timeouts.send = num(t.send, DEFAULTS.timeouts.send);
   cfg.timeouts.async = num(t.async, DEFAULTS.timeouts.async);
   cfg.timeouts.stream = num(t.stream, DEFAULTS.timeouts.stream);
@@ -519,9 +521,9 @@ export function loadConfig(opts: {
   cfg.verifySsl = bool(s.verifySsl ?? env.A2A_VERIFY_SSL, DEFAULTS.verifySsl);
 
   // Discovery (0.2.0)
-  const d = (s.discovery && typeof s.discovery === "object" ? s.discovery : {}) as Record<string, any>;
-  const dl = (d.local && typeof d.local === "object" ? d.local : {}) as Record<string, any>;
-  const dm = (d.mdns && typeof d.mdns === "object" ? d.mdns : {}) as Record<string, any>;
+  const d = (s.discovery && typeof s.discovery === "object" ? s.discovery : {}) as Record<string, unknown>;
+  const dl = (d.local && typeof d.local === "object" ? d.local : {}) as Record<string, unknown>;
+  const dm = (d.mdns && typeof d.mdns === "object" ? d.mdns : {}) as Record<string, unknown>;
   cfg.discovery.local.enabled = bool(dl.enabled ?? env.A2A_DISCOVERY_LOCAL, DEFAULTS.discovery.local.enabled);
   cfg.discovery.local.heartbeatSec = num(dl.heartbeatSec ?? env.A2A_HEARTBEAT_SEC, DEFAULTS.discovery.local.heartbeatSec);
   cfg.discovery.local.ttlSec = num(dl.ttlSec ?? env.A2A_TTL_SEC, DEFAULTS.discovery.local.ttlSec);
@@ -536,7 +538,7 @@ export function loadConfig(opts: {
   // edits would erase them. Registration only happens when enabled AND
   // url+token are set. `enabled` defaults to true when url+token exist and
   // no explicit value (backward compat with the pre-0.5.0 implicit activation).
-  const dg = (d.gateway && typeof d.gateway === "object" ? d.gateway : {}) as Record<string, any>;
+  const dg = (d.gateway && typeof d.gateway === "object" ? d.gateway : {}) as Record<string, unknown>;
   const gwUrl = String(dg.url ?? env.A2A_GATEWAY_URL ?? "");
   const gwToken = String(resolveSettingsValue(dg.token, settingsFromRepo) ?? env.A2A_GATEWAY_TOKEN ?? "");
   const gwUpstream = resolveSettingsValue(dg.upstreamToken, settingsFromRepo);
@@ -560,12 +562,12 @@ export function loadConfig(opts: {
   // Multiple gateways (0.6.0): the `discovery.gateways` map. Same per-entry
   // materialization as the legacy block; invalid keys are skipped (they would
   // pollute the `gw/<key>/` peer namespace).
-  const dgs = (d.gateways && typeof d.gateways === "object" ? d.gateways : {}) as Record<string, any>;
+  const dgs = (d.gateways && typeof d.gateways === "object" ? d.gateways : {}) as Record<string, unknown>;
   const gateways: Record<string, GatewayEntry> = {};
   for (const [key, raw] of Object.entries(dgs)) {
     if (!GATEWAY_KEY_RE.test(key)) continue;
     if (!raw || typeof raw !== "object") continue;
-    const g = raw as Record<string, any>;
+    const g = raw as Record<string, unknown>;
     const u = String(g.url ?? "");
     const t = String(resolveSettingsValue(g.token, settingsFromRepo) ?? "");
     const up = resolveSettingsValue(g.upstreamToken, settingsFromRepo);
@@ -588,7 +590,7 @@ export function loadConfig(opts: {
   cfg.selfIdentity = String(s.selfIdentity ?? env.A2A_SELF_IDENTITY ?? "");
 
   // Host-TUI presentation (0.3.0)
-  const ui = (s.ui && typeof s.ui === "object" ? s.ui : {}) as Record<string, any>;
+  const ui = (s.ui && typeof s.ui === "object" ? s.ui : {}) as Record<string, unknown>;
   cfg.ui.transcript = bool(ui.transcript ?? env.A2A_UI_TRANSCRIPT, DEFAULTS.ui.transcript);
 
   // Live in-memory overrides (set by the /a2a-config panel) — highest
@@ -741,11 +743,14 @@ export function buildA2ASettingsPatch(opts: {
       ...(peerChanges
         ? {
             peers: Object.fromEntries(
-              Object.entries(working.peers).map(([name, p]) => {
+              Object.entries(working.peers).flatMap(([name, p]): [string, unknown][] => {
+                // Repo-sourced peers never reach the operator's file; a same-name
+                // operator entry stays verbatim (never paired with the repo's URL).
+                if (repoPeerNames.has(name)) return a2a.peers?.[name] ? [[name, a2a.peers[name]]] : [];
                 const fileAuth = a2a.peers?.[name]?.auth;
                 const authUnedited = JSON.stringify(p.auth) === JSON.stringify(cfg.peers[name]?.auth);
                 const auth = fileAuth && authUnedited ? fileAuth : p.auth;
-                return [name, { ...p, auth, timeout: Math.round(p.timeout / 1000) }];
+                return [[name, { ...p, auth, timeout: Math.round(p.timeout / 1000) }]];
               }),
             ),
           }
@@ -838,6 +843,20 @@ export function writeSettingsA2A(opts: {
  * operator's shared token — the "known loopback peer" trust assumption
  * (same machine, same user, operator-configured) does not hold for them. */
 let repoPeerUrls = new Set<string>();
+
+/** Names of peers loaded from a REPO-CONTROLLED settings file. Panel saves must
+ * not copy these into the operator's trusted settings (their literal
+ * `!command` / `$VAR` auth would then be resolved on a later load). */
+let repoPeerNames = new Set<string>();
+
+/** Raw (unvalidated) peer entry as read from settings.json. */
+interface RawPeer {
+  url?: unknown;
+  auth?: { type?: string; token?: unknown };
+  timeout?: unknown;
+  capabilities?: unknown;
+  description?: unknown;
+}
 
 /** Normalize a URL for dedupe/comparison (lowercase, trailing slashes stripped). */
 export function normUrl(u: string): string {

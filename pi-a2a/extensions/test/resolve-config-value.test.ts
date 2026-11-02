@@ -161,5 +161,62 @@ describe("resolve-config-value (#50)", () => {
         assert.deepEqual(a2a.peers.q.auth, { type: "none" }, "new peer keeps its own auth");
       });
     });
+    it("does not launder repo-sourced peers into operator settings on panel save", () => {
+      withIsolatedPiDir((dir) => {
+        const sentinel = path.join(dir, "pwned");
+        writeRepoSettings(dir, {
+          peers: { evil: { url: "http://127.0.0.1:9902", auth: { type: "bearer", token: `!touch ${sentinel}` } } },
+        });
+        const operatorA2a = { peers: {} };
+        writeOperatorSettings(dir, operatorA2a);
+        const cfg = loadConfig({ cwd: dir, env: {} });
+        const working = structuredClone(cfg);
+        working.peers.q = { url: "http://127.0.0.1:9903", auth: { type: "none" }, timeout: 120000, capabilities: [] };
+        const a2a = buildA2ASettingsPatch({ cfg, working, peerChanges: true, gatewayChanged: false })(operatorA2a);
+        assert.notProperty(a2a.peers, "evil", "repo peer not copied");
+        assert.property(a2a.peers, "q");
+        assert.notInclude(JSON.stringify(a2a), "!touch");
+        // Reload with the "saved" operator file and no repo file: nothing executes.
+        fs.rmSync(path.join(dir, ".pi"), { recursive: true });
+        writeOperatorSettings(dir, a2a);
+        loadConfig({ cwd: dir, env: {} });
+        assert.isFalse(fs.existsSync(sentinel), "sentinel never created");
+      });
+    });
+    it("keeps the operator's same-name peer verbatim when a repo peer collides", () => {
+      withIsolatedPiDir((dir) => {
+        const opPeer = { url: "http://127.0.0.1:9901", auth: { type: "bearer", token: "!printf op-secret" }, timeout: 300 };
+        writeOperatorSettings(dir, { peers: { work: opPeer } });
+        writeRepoSettings(dir, {
+          peers: { work: { url: "http://127.0.0.1:9902", auth: { type: "bearer", token: "x" } } },
+        });
+        const cfg = loadConfig({ cwd: dir, env: {} });
+        const working = structuredClone(cfg);
+        working.peers.q = { url: "http://127.0.0.1:9903", auth: { type: "none" }, timeout: 120000, capabilities: [] };
+        const a2a = buildA2ASettingsPatch({ cfg, working, peerChanges: true, gatewayChanged: false })({ peers: { work: opPeer } });
+        assert.deepEqual(a2a.peers.work, opPeer);
+      });
+    });
+  });
+
+  describe("loadConfig unresolvable references", () => {
+    it("pins per-field outcomes and never yields the string 'undefined'", () => {
+      withIsolatedPiDir((dir) => {
+        delete process.env.A2A_TEST_MISSING;
+        writeOperatorSettings(dir, {
+          peers: { p: { url: "http://127.0.0.1:9901", auth: { type: "bearer", token: "$A2A_TEST_MISSING" } } },
+          server: { sharedToken: "$A2A_TEST_MISSING", peerTokens: { alice: "$A2A_TEST_MISSING" } },
+          discovery: { gateway: { url: "http://127.0.0.1:9000", token: "$A2A_TEST_MISSING" } },
+        });
+        const cfg = loadConfig({ cwd: dir, env: { A2A_BEARER_TOKEN: "env-tok" } });
+        assert.isUndefined(cfg.peers.p!.auth.token);
+        assert.notProperty(cfg.server.peerTokens, "alice");
+        assert.equal(cfg.server.sharedToken, "env-tok");
+        assert.isDefined(cfg.discovery.gateway);
+        assert.equal(cfg.discovery.gateway!.token, "");
+        assert.isFalse(cfg.discovery.gateway!.enabled);
+        assert.notInclude(JSON.stringify(cfg), '"undefined"');
+      });
+    });
   });
 });

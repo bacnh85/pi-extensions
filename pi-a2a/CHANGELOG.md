@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Token fields accept `!command` and `$VAR` references (#50).** Same syntax as pi core's `apiKey` / `auth.json` `key`, so tokens can come from the macOS Keychain, a password manager CLI, or the environment instead of plaintext in `settings.json`. Covers `peers.*.auth.token` (previously settings-only, with no env fallback), `server.sharedToken`, `server.peerTokens` values, and gateway `token` / `upstreamToken`. Values from a repo-controlled `.pi/settings.json` are never resolved. `/a2a-config` saves keep the reference instead of writing the resolved secret.
+- **Token fields accept `!command` and `$VAR` references (#50).** Same syntax as pi core's `apiKey` / `auth.json` `key`, so tokens can come from the macOS Keychain, a password manager CLI, or the environment instead of plaintext in `settings.json`. Covers `peers.*.auth.token` (previously settings-only, with no env fallback), `server.sharedToken`, `server.peerTokens` values, and gateway `token` / `upstreamToken`. Values from a repo-controlled `.pi/settings.json` are never resolved. `/a2a-config` saves keep the reference instead of writing the resolved secret. Peers from a repo `.pi/settings.json` are never persisted to operator settings on `/a2a-config` save.
 - **Compatibility:** a literal token that starts with `!` or contains `$` followed by a letter, `_`, `{`, `$`, or `!` is now interpreted. Escape with `$$` / `$!`. Typical hex/base64 tokens are unaffected.
 
 ## [0.9.0] - 2026-10-19
