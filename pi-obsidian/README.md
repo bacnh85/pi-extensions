@@ -28,7 +28,7 @@ pi install npm:@bacnh85/pi-obsidian
 
 ## Configuration
 
-**Zero env vars.** Just make sure `obsidian` is in your PATH. Vault targeting uses `vault=<name>` as a parameter when needed; the CLI defaults to the most recently focused vault.
+**One optional env var:** `PI_OBSIDIAN_GUARD=off` disables the vault guard entirely (see below). Otherwise just make sure `obsidian` is in your PATH. Vault targeting uses `vault=<name>` as a parameter when needed; the CLI defaults to the most recently focused vault.
 
 ## Vault protection
 
@@ -39,6 +39,14 @@ Note that while the CWD is inside a vault, bash commands containing shell operat
 Within a vault, the bash guard works as an allowlist, not a blocklist: a small set of recognized-safe commands (`npm test`/`build`/`lint` (npm/pnpm/yarn/bun), `git status`/`diff`/`log`/`branch`, `node --version`/`python3 --version`, `pwd`, `which`) always run; commands that explicitly target a vault path (e.g. `cat`, `rm`, `grep -r`) are redirected to the `obsidian` tool; and everything unrecognized (`npm install`, `node script.js`, `pytest`) is blocked by default. If a legitimate command gets blocked, run it from outside the vault or ask for it to be allow-listed upstream.
 
 The focused-vault lookup is cached for the process lifetime (successful lookups are memoized and never invalidated) — switching the focused vault mid-session requires reloading the Pi session.
+
+### Cross-vault guard outside a vault
+
+From a directory that is not inside a vault, the guard also watches for tool calls that target a *known* vault, which requires knowing the focused vault — a `obsidian vault` CLI call. That call is treated strictly as a read: the guard never runs it while the Obsidian app is closed, because the CLI would launch the app (blocking the session) instead of answering. A cheap process check decides, so `git status`, `npm test`, and other path-free commands never probe or spawn anything. While the app is down the guard passes such calls through unblocked; start Obsidian (or pass `vault=<name>` to the `obsidian` tool) to restore cross-vault blocking.
+
+Lookup failures are retried at most once per minute rather than on every tool call, so a session started before Obsidian launches recovers on its own without a spawn storm. Protection for a CWD that is *inside* a vault needs no CLI call and is always active.
+
+Set `PI_OBSIDIAN_GUARD=off` to disable the guard completely (no CWD checks, no vault lookup).
 
 ## Usage
 

@@ -28,7 +28,7 @@ Each package lives in its own directory and can be installed independently — e
 | [`@bacnh85/pi-munin`](./pi-munin) | 0.6.0 | Munin long-term memory as eight native Pi tools for search, retrieval, storage, listing, deletion, capabilities, and cross-project sharing. |
 | [`@bacnh85/pi-notebooklm`](./pi-notebooklm) | 0.2.0 | Google NotebookLM — notebooks, sources, chat, research, and Studio artifacts via CLI bridge. |
 | [`@bacnh85/pi-notify`](./pi-notify) | 0.1.9 | Desktop notifications and sounds — fires on task completion, errors, and questions; cross-platform (macOS/Linux/Windows + terminal OSC). |
-| [`@bacnh85/pi-obsidian`](./pi-obsidian) | 0.9.0 | Obsidian vault integration for Pi. |
+| [`@bacnh85/pi-obsidian`](./pi-obsidian) | 0.9.1 | Obsidian vault integration for Pi. |
 | [`@bacnh85/pi-permission`](./pi-permission) | 0.2.10 | Granular permission system — config-driven allow/ask/deny rules per tool with wildcard patterns, external-directory boundary, and a doom-loop guard. |
 | [`@bacnh85/pi-plan`](./pi-plan) | 0.16.7 | Plan mode with read-only gating and plan → implement → verify → review workflow; global plan-mode model/thinking (`/plan-model`, `/plan-thinking` — normal mode stays stock Pi); fallback model chain on overload. |
 | [`@bacnh85/pi-advisor`](./pi-advisor) | 0.3.9 | OMP-style automatic advisor — second model reviews each settled turn, injects severity-routed notes (nit card / concern steer with immune cooldown + emission guard); ordered multi-model fallback chain (`pi-advisor.models`, per-entry `:level` thinking pins, `/advisor models` panel editor); on-demand advisor consult. |

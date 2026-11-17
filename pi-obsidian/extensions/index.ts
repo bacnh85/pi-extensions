@@ -3,7 +3,7 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Type } from "typebox";
 
-import { execObsidian } from "./lib/cli";
+import { execObsidian, isObsidianAppRunning } from "./lib/cli";
 import {
   formatSearchResults,
   formatTasks,
@@ -69,34 +69,77 @@ export function vaultNameForCwd(cwd: string | undefined, active: { name: string;
 }
 
 // ---------------------------------------------------------------------------
-// Focused-vault lookup — one memoized `obsidian vault` spawn per process
+// Focused-vault lookup — `obsidian vault` spawned at most once per retry window
 // ---------------------------------------------------------------------------
 
 let _vaultLookup: { info?: { name: string; path: string }; error?: unknown } | null = null;
+let _guardRetryAfter = 0;
 
-function vaultLookup(): { info?: { name: string; path: string }; error?: unknown } {
-  if (_vaultLookup === null) {
-    let info: { name: string; path: string } | undefined;
-    try {
-      info = parseVaultInfo(execObsidian(["vault"]).stdout);
-    } catch (e) {
-      // Success is memoized; failure is NOT — a session started before the
-      // Obsidian app launches must recover once it does (pre-0.8.16 behavior
-      // retried per call; caching the error would make the failure permanent).
-      return { error: e };
+/**
+ * Guard retry window (issue #47). From the tool_call hook, failures used to
+ * re-spawn the CLI on every call; with the app closed that spawned the CLI,
+ * which launches the GUI app and (via spawnSync) freezes pi's event loop —
+ * repeatedly. Success stays memoized for the process; guard-path failures
+ * retry once per window, so a session started before the app launches still
+ * recovers. Explicit `obsidian` tool calls are unaffected — they mean "wake
+ * the app", so they always try.
+ */
+const LOOKUP_RETRY_MS = 60_000;
+
+const lookupError = (msg: string) => new Error(msg);
+
+// ponytail: test seam — the suite drives both probe branches without a real
+// Obsidian install.
+let appRunningProbe: () => boolean = isObsidianAppRunning;
+export function _setAppRunningProbeForTests(probe: (() => boolean) | undefined): void {
+  appRunningProbe = probe ?? isObsidianAppRunning;
+}
+export function _resetVaultLookupForTests(): void {
+  _vaultLookup = null;
+  _guardRetryAfter = 0;
+}
+
+/**
+ * `allowSpawn` is false for the tool_call guard, which must never launch the
+ * Obsidian app; true for explicit `obsidian` tool calls, which may.
+ */
+function vaultLookup(allowSpawn = false): { info?: { name: string; path: string }; error?: unknown } {
+  if (_vaultLookup !== null) return _vaultLookup;
+  if (!allowSpawn) {
+    // One process probe + one CLI spawn per window, for both the app-down and
+    // the CLI-failed cases: a path-like tool call must not pay a `ps` spawn
+    // every time either (#47).
+    const now = Date.now();
+    if (now < _guardRetryAfter) {
+      return { error: lookupError("Obsidian vault lookup failed recently — the guard retries within 60s. Pass vault=\"<name>\" to bypass the lookup.") };
     }
-    if (!info) {
-      // Exit 0 but unparseable output (e.g. app mid-startup) — same rule:
-      // treat as "unknown this call", retry later, never cache.
-      return {};
+    _guardRetryAfter = now + LOOKUP_RETRY_MS;
+    // Never spawn the CLI while the app is down: the CLI *launches* the app,
+    // and that launch blocks the whole event loop (#47). The probe is a cheap
+    // process-table read, so it costs no Obsidian spawn in any case.
+    if (!appRunningProbe()) {
+      return { error: lookupError("Obsidian app is not running — skipped the vault lookup. Start Obsidian, or pass vault=\"<name>\".") };
     }
-    _vaultLookup = { info };
   }
+  let info: { name: string; path: string } | undefined;
+  try {
+    info = parseVaultInfo(execObsidian(["vault"]).stdout);
+  } catch (e) {
+    // Not memoized (the TTL above suppresses the retry storm) — a session
+    // started before the Obsidian app launches must recover once it does.
+    return { error: e };
+  }
+  if (!info) {
+    // Exit 0 but unparseable output (e.g. app mid-startup) — same rule.
+    return {};
+  }
+  _vaultLookup = { info };
   return _vaultLookup;
 }
 
 function focusedVaultNameForCwd(cwd: string | undefined): string | undefined {
-  const { info, error } = vaultLookup();
+  // Explicit tool call → may spawn (and so launch) the app.
+  const { info, error } = vaultLookup(true);
   if (error) throw error; // unchanged: name lookup surfaces CLI failure
   return vaultNameForCwd(cwd, info);
 }
@@ -107,6 +150,7 @@ function focusedVaultNameForCwd(cwd: string | undefined): string | undefined {
  * CLI failure (e.g. app not running) → no roots, same as before.
  */
 function allVaultRoots(): string[] {
+  // Guard path: never launch the app, never spawn per tool call.
   const { info } = vaultLookup();
   return info ? [info.path] : [];
 }
@@ -196,6 +240,23 @@ export function commandMentionsVaultPath(command: string, cwd: string, vaultRoot
   // Redirection targets aren't plain tokens (`echo x > ../V/n.md`).
   const dest = redirectionDestination(command);
   return dest !== undefined && matchesRoot(dest);
+}
+
+/**
+ * Cheap pre-check for the cross-vault guard (issue #47): could this bash
+ * command reference a filesystem target at all? No path-like token and no
+ * redirection means it cannot touch a vault, so the guard can skip the
+ * process probe and the CLI lookup entirely — `git status`, `npm test`, and
+ * friends complete without ever spawning Obsidian.
+ */
+export function looksLikeVaultTargetCandidate(command: string): boolean {
+  if (/[<>]/.test(command)) return true; // redirection / heredoc target
+  return parseCliString(command).some(
+    (token) =>
+      token === "." || token === ".." || token === "~" ||
+      token.startsWith("./") || token.startsWith("../") || token.startsWith("~/") ||
+      isAbsolute(token) || token.includes("/"),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1033,6 +1094,10 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
 
 
   pi.on("tool_call", (event, ctx) => {
+    // Opt-out (#47): some users run pi alongside Obsidian and want the guard
+    // fully off — no cwd checks, no vault lookup.
+    if (process.env.PI_OBSIDIAN_GUARD === "off") return;
+
     const cwdVault = obsidianVaultRoot(ctx.cwd);
     const input = event.input as Record<string, unknown>;
 
@@ -1050,8 +1115,23 @@ export default function piObsidianExtension(pi: ExtensionAPI) {
       return;
     }
 
-    // CWD is NOT in a vault — check if targets hit a known vault
+    // CWD is NOT in a vault — check if targets hit a known vault.
+    // Cheap pre-check first (issue #47): a call that carries no plausible
+    // vault reference can't touch one, so skip the app probe and CLI lookup
+    // entirely. Nothing below this point may spawn Obsidian for such calls.
+    if (event.toolName === "bash") {
+      if (typeof input.command !== "string" || !looksLikeVaultTargetCandidate(input.command)) return;
+    } else if (["read", "write", "edit", "ls", "find", "grep"].includes(event.toolName)) {
+      // No explicit path: only the broad scan tools can still recurse into a vault.
+      if (typeof input.path !== "string" && !["ls", "find", "grep"].includes(event.toolName)) return;
+    } else {
+      return; // other tools never trigger the cross-vault guard
+    }
+
     const roots = allVaultRoots();
+    // Unknown roots (app down / lookup failed / not yet retried) → pass the
+    // call through unblocked rather than spawn the CLI, which launches the GUI
+    // app and freezes the event loop (#47).
     if (roots.length === 0) return;
 
     if (event.toolName === "bash" && typeof input.command === "string") {

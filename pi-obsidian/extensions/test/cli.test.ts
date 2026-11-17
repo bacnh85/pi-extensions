@@ -10,6 +10,7 @@ import {
   buildFirstScript,
   djb2Utf8,
   commandMentionsVaultPath,
+  looksLikeVaultTargetCandidate,
   filesMissingProperty,
   listFilesRecursive,
   readQuotedContent,
@@ -23,7 +24,7 @@ import {
   vaultNameForCwd,
   vaultWrite,
 } from "../index.js";
-import { execObsidian } from "../lib/cli.js";
+import { execObsidian, isObsidianAppRunning } from "../lib/cli.js";
 
 // ---------------------------------------------------------------------------
 // Replicate execObsidian's stdout filter for testing
@@ -1624,4 +1625,177 @@ for a in "$@"; do printf '%s\n' "$a" >> "$OBS_STUB_LOG"; done
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #47 — the vault guard must never launch Obsidian nor block tool calls
+// ---------------------------------------------------------------------------
+
+describe("issue #47: guard never spawns Obsidian", () => {
+  // Stub `obsidian` on PATH that counts invocations before failing: any spawn
+  // from the guard is detected instead of silently launching a GUI app.
+  // The counter must be a file side effect, NOT the exit code — the guard
+  // swallows lookup errors (→ no roots → pass-through), so an exit-only stub
+  // would let a spawn go unnoticed. Mutation check: disabling the pre-check /
+  // app probe / retry window each turns the relevant assertion red (0 vs 1/3).
+  function withStubCli(fn: (spawnCount: () => number) => void | Promise<void>) {
+    const dir = mkdtempSync(join(tmpdir(), "pi-obsidian-47-"));
+    const counter = join(dir, "spawns");
+    const oldPath = process.env.PATH;
+    writeFileSync(counter, "");
+    writeFileSync(join(dir, "obsidian"), `#!/bin/sh\necho x >> "${counter}"\nexit 42\n`);
+    chmodSync(join(dir, "obsidian"), 0o755);
+    process.env.PATH = `${dir}:${oldPath ?? ""}`;
+    const count = () => readFileSync(counter, "utf8").split("\n").filter(Boolean).length;
+    const finish = () => {
+      process.env.PATH = oldPath;
+      rmSync(dir, { recursive: true, force: true });
+    };
+    try {
+      return Promise.resolve(fn(count)).finally(finish);
+    } catch (e) {
+      finish();
+      throw e;
+    }
+  }
+
+  function captureGuard() {
+    const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
+    const mockPi: any = {
+      registerTool() {},
+      on(event: string, handler: (event: any, ctx: any) => any) { (handlers[event] ??= []).push(handler); },
+    };
+    return { mockPi, handlers };
+  }
+
+  it("looksLikeVaultTargetCandidate: no path-like token → not a candidate", () => {
+    for (const command of ["git status", "npm test", "pwd", "echo hello", "node --version", "which node"]) {
+      expect(looksLikeVaultTargetCandidate(command), command).to.equal(false);
+    }
+    for (const command of [
+      "cat ../MyVault/x.md",
+      "ls /abs/path",
+      "rm ./x.md",
+      "echo hi > ../V/n.md",
+      "cd ~/Vault",
+      "cd ..",
+      "ls .",
+    ]) {
+      expect(looksLikeVaultTargetCandidate(command), command).to.equal(true);
+    }
+  });
+
+  it("guard passes `git status` from a non-vault cwd without spawning the CLI", () =>
+    withStubCli(async (spawnCount) => {
+      // Module state (probe/lookup memo) must come from the SAME instance as
+      // the extension: tsx gives static and dynamic imports separate copies.
+      const idx = await import("../index.js");
+      const piObsidianExtension = idx.default;
+      idx._resetVaultLookupForTests();
+      idx._setAppRunningProbeForTests(() => true); // worst case: app looks up
+      const { mockPi, handlers } = captureGuard();
+      piObsidianExtension(mockPi);
+      const guard = handlers.tool_call[0];
+      const outside = mkdtempSync(join(tmpdir(), "pi-obsidian-47-cwd-"));
+      try {
+        expect(guard({ toolName: "bash", input: { command: "git status" } }, { cwd: outside })).to.equal(undefined);
+        expect(spawnCount(), "path-free tool calls must not spawn obsidian").to.equal(0);
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+        idx._setAppRunningProbeForTests(undefined);
+        idx._resetVaultLookupForTests();
+      }
+    }));
+
+  it("guard with the app down never spawns the CLI (issue repro)", () =>
+    withStubCli(async (spawnCount) => {
+      const idx = await import("../index.js");
+      const piObsidianExtension = idx.default;
+      idx._resetVaultLookupForTests();
+      let probeCalls = 0;
+      idx._setAppRunningProbeForTests(() => { probeCalls++; return false; }); // app closed
+      const { mockPi, handlers } = captureGuard();
+      piObsidianExtension(mockPi);
+      const guard = handlers.tool_call[0];
+      const outside = mkdtempSync(join(tmpdir(), "pi-obsidian-47-down-"));
+      try {
+        // Path-like command → passes the cheap pre-check, then must be stopped
+        // by the app-down probe rather than by a 42-exit CLI spawn storm.
+        for (let i = 0; i < 3; i++) {
+          expect(guard({ toolName: "bash", input: { command: `cat ${join(outside, "x.md")}` } }, { cwd: outside }))
+            .to.equal(undefined);
+        }
+        expect(spawnCount(), "app-down lookup must not spawn obsidian").to.equal(0);
+        // The probe itself is a sync child process (`ps`) — it must also be
+        // window-limited, or every path-like call pays for it (#47).
+        expect(probeCalls, "probe runs once per retry window").to.equal(1);
+        // ^ pins the window, not a permanent "down" verdict: recovery after the
+        // window is covered by the TTL test below.
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+        idx._setAppRunningProbeForTests(undefined);
+        idx._resetVaultLookupForTests();
+      }
+    }));
+
+  it("guard lookup failures retry at most once per TTL window", () =>
+    withStubCli(async (spawnCount) => {
+      const idx = await import("../index.js");
+      const piObsidianExtension = idx.default;
+      idx._resetVaultLookupForTests();
+      idx._setAppRunningProbeForTests(() => true); // app up, CLI fails (exit 42)
+      const { mockPi, handlers } = captureGuard();
+      piObsidianExtension(mockPi);
+      const guard = handlers.tool_call[0];
+      const outside = mkdtempSync(join(tmpdir(), "pi-obsidian-47-ttl-"));
+      try {
+        // Every call carries a path-like target, so each would have run the
+        // failing `obsidian vault` lookup pre-fix.
+        for (let i = 0; i < 3; i++) {
+          expect(guard({ toolName: "bash", input: { command: `cat ${join(outside, "x.md")}` } }, { cwd: outside }))
+            .to.equal(undefined);
+        }
+        // Pre-fix: one spawn per call (3). Now: the first call spawns, the rest
+        // are suppressed by the 60s retry window.
+        expect(spawnCount(), "spawn storm suppressed by TTL").to.equal(1);
+        // Recovery: once the window elapses the guard retries, so an app that
+        // comes up (or a CLI that starts working) is picked up without a reload.
+        idx._resetVaultLookupForTests();
+        guard({ toolName: "bash", input: { command: `cat ${join(outside, "x.md")}` } }, { cwd: outside });
+        expect(spawnCount(), "lookup retried after the window").to.equal(2);
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+        idx._setAppRunningProbeForTests(undefined);
+        idx._resetVaultLookupForTests();
+      }
+    }));
+
+  it("PI_OBSIDIAN_GUARD=off disables the guard entirely", () =>
+    withStubCli(async () => {
+      const { default: piObsidianExtension } = await import("../index.js");
+      const { mockPi, handlers } = captureGuard();
+      piObsidianExtension(mockPi);
+      const guard = handlers.tool_call[0];
+      const vault = mkdtempSync(join(tmpdir(), "pi-obsidian-47-guardoff-"));
+      mkdirSync(join(vault, ".obsidian"));
+      const old = process.env.PI_OBSIDIAN_GUARD;
+      try {
+        writeFileSync(join(vault, "Note.md"), "# hi\n");
+        // Default: a vault-cwd read is blocked.
+        expect(guard({ toolName: "read", input: { path: "Note.md" } }, { cwd: vault })?.block).to.equal(true);
+        process.env.PI_OBSIDIAN_GUARD = "off";
+        expect(guard({ toolName: "read", input: { path: "Note.md" } }, { cwd: vault })).to.equal(undefined);
+        expect(guard({ toolName: "bash", input: { command: "rm Note.md" } }, { cwd: vault })).to.equal(undefined);
+      } finally {
+        if (old === undefined) delete process.env.PI_OBSIDIAN_GUARD;
+        else process.env.PI_OBSIDIAN_GUARD = old;
+        rmSync(vault, { recursive: true, force: true });
+      }
+    }));
+
+  it("isObsidianAppRunning never invokes the obsidian CLI", () =>
+    withStubCli((spawnCount) => {
+      expect(typeof isObsidianAppRunning()).to.equal("boolean");
+      expect(spawnCount(), "probe must not run the obsidian binary").to.equal(0);
+    }));
 });

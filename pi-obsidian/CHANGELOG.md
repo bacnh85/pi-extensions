@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.9.1 (2026-11-17)
+
+### Fixed
+
+- **The vault guard no longer launches Obsidian or freezes the session (#47).**
+  From a non-vault CWD, every tool call used to run `obsidian vault` to build
+  the cross-vault block list. When the app was closed the CLI *launched* the
+  GUI app, and `spawnSync` blocked pi's whole event loop until it returned;
+  because lookup failures were not memoized, each further tool call repeated
+  the launch and stole window focus.
+
+  Four layered fixes:
+  - **Never spawn with the app down.** `isObsidianAppRunning()` reads the
+    process table (`ps`, `/proc`, or `tasklist`) — it never runs the `obsidian`
+    binary, so it cannot start the app. While Obsidian is closed the guard
+    skips the lookup and passes tool calls through unblocked. Explicit
+    `obsidian` tool calls still spawn (and may launch the app) — they mean
+    "wake it".
+  - **Cheap pre-check first.** `looksLikeVaultTargetCandidate()` skips the
+    whole lookup when a bash command has no path-like token and no redirection,
+    so `git status` / `npm test` / `pwd` complete with no probe and no spawn.
+  - **Failure retry window.** Guard-path lookup failures now retry at most once
+    per 60s instead of on every tool call — no spawn storm — while a session
+    started before the app launches still recovers on its own.
+  - **`PI_OBSIDIAN_GUARD=off`** disables the vault guard entirely.
+
+  Protection for a CWD *inside* a vault is unchanged: it needs no CLI call.
+
 ## 0.9.0 (2026-10-10)
 
 - **Deferred tool tier** (ceulen pattern): the `obsidian` tool now register `exposure: "deferred"` — not declared to the model until `tool_search` loads them (they stay callable via `ctx.executeTool`/codemode). The package now force-activates `tool_search` in `session_start` when it defers tools (pi only auto-activates discovery for MCP servers). Unit tests pin the exposure flags and the activation branches.
