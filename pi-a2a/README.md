@@ -138,6 +138,32 @@ shared token is auto-attached so discovered local Pi sessions are callable
 without manual per-peer config. Arbitrary loopback URLs never receive the
 token (prompt-injection guard).
 
+### Keeping tokens out of settings.json
+
+Token fields accept the same value syntax as pi core's `apiKey` / `auth.json`
+`key`, so a secret manager or the environment can supply them instead of a
+plaintext literal:
+
+```jsonc
+"auth": { "type": "bearer", "token": "!security find-generic-password -s a2a-hermes -w" }  // macOS Keychain
+"auth": { "type": "bearer", "token": "!op read op://dev/a2a-hermes/token" }               // 1Password CLI
+"auth": { "type": "bearer", "token": "$A2A_HERMES_TOKEN" }                                // env var
+```
+
+- `!command` runs the command and uses its trimmed stdout. The result is
+  cached for the process lifetime. Empty output, a nonzero exit, or a 10s
+  timeout leave the token unset.
+- `$NAME` / `${NAME}` interpolate environment variables. If any referenced
+  variable is unset, the whole token is unset.
+- `$$` is a literal `$`, `$!` a literal `!`.
+
+Applies to `peers.*.auth.token`, `server.sharedToken`, object-form
+`server.peerTokens` values, and `token` / `upstreamToken` in
+`discovery.gateway` and `discovery.gateways.*`. Values in a repo-controlled
+`.pi/settings.json` are never resolved (no command runs, no env var is read);
+they stay literal. Saving from `/a2a-config` keeps the reference, not the
+resolved secret.
+
 ### Multiple Pi sessions (port fallback)
 
 `a2a.server.enabled: true` is **per-session** — every Pi session with it enabled

@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { resolveSettingsValue } from "./resolve-config-value";
 import { parsePeerTokens } from "./security";
 
 // ---------------------------------------------------------------------------
@@ -448,26 +449,28 @@ export function loadConfig(opts: {
   };
 
   // Peers from settings.json `a2a.peers`
-  const peers = (s.peers && typeof s.peers === "object" ? s.peers : {}) as Record<string, any>;
+  const peers = (s.peers && typeof s.peers === "object" ? s.peers : {}) as Record<string, RawPeer | null>;
   // Reset per load: only peers from a REPO-SCOPE settings file get flagged.
   repoPeerUrls = new Set();
+  repoPeerNames = new Set();
   for (const [name, entry] of Object.entries(peers)) {
     if (!entry || typeof entry !== "object") continue;
     cfg.peers[name] = {
       url: String(entry.url || ""),
       auth: {
         type: (entry.auth?.type as PeerAuth["type"]) || "none",
-        token: entry.auth?.token,
+        token: resolveSettingsValue(entry.auth?.token, settingsFromRepo) as string | undefined,
       },
       timeout: num(entry.timeout, DEFAULTS.timeouts.send / 1000) * 1000,
       capabilities: Array.isArray(entry.capabilities) ? entry.capabilities.map(String) : [],
       description: entry.description ? String(entry.description) : undefined,
     };
+    if (settingsFromRepo) repoPeerNames.add(name);
     if (settingsFromRepo && cfg.peers[name]!.url) repoPeerUrls.add(normUrl(cfg.peers[name]!.url));
   }
 
   // Server settings
-  const srv = (s.server && typeof s.server === "object" ? s.server : {}) as Record<string, any>;
+  const srv = (s.server && typeof s.server === "object" ? s.server : {}) as Record<string, unknown>;
   cfg.server.enabled = bool(srv.enabled ?? env.A2A_SERVER_ENABLED, DEFAULTS.server.enabled);
   cfg.server.port = num(srv.port ?? env.A2A_PORT, DEFAULTS.server.port);
   cfg.server.portFallback = num(srv.portFallback ?? env.A2A_PORT_FALLBACK, DEFAULTS.server.portFallback);
@@ -478,12 +481,13 @@ export function loadConfig(opts: {
   cfg.server.asyncTimeoutSec = num(srv.asyncTimeoutSec ?? env.A2A_ASYNC_TIMEOUT, DEFAULTS.server.asyncTimeoutSec);
   cfg.server.agentName = String(srv.agentName ?? env.A2A_AGENT_NAME ?? "");
   cfg.server.publicUrl = String(srv.publicUrl ?? env.A2A_PUBLIC_URL ?? "");
-  cfg.server.sharedToken = String(srv.sharedToken ?? env.A2A_BEARER_TOKEN ?? "");
+  cfg.server.sharedToken = String(resolveSettingsValue(srv.sharedToken, settingsFromRepo) ?? env.A2A_BEARER_TOKEN ?? "");
   // Object form (README-documented: `"peerTokens": { "alice": "tok-a" }`) —
   // keep only string-valued entries. String + env paths unchanged.
   cfg.server.peerTokens =
     srv.peerTokens && typeof srv.peerTokens === "object"
       ? Object.entries(srv.peerTokens)
+          .map(([k, v]) => [k, resolveSettingsValue(v, settingsFromRepo)] as const)
           .filter(([, v]) => typeof v === "string" && v)
           .reduce<Record<string, string>>((m, [k, v]) => ((m[k] = v as string), m), {})
       : parsePeerTokens(
@@ -508,7 +512,7 @@ export function loadConfig(opts: {
   cfg.server.skills = Array.isArray(srv.skills) ? srv.skills : [];
 
   // Timeouts
-  const t = (s.timeouts && typeof s.timeouts === "object" ? s.timeouts : {}) as Record<string, any>;
+  const t = (s.timeouts && typeof s.timeouts === "object" ? s.timeouts : {}) as Record<string, unknown>;
   cfg.timeouts.send = num(t.send, DEFAULTS.timeouts.send);
   cfg.timeouts.async = num(t.async, DEFAULTS.timeouts.async);
   cfg.timeouts.stream = num(t.stream, DEFAULTS.timeouts.stream);
@@ -517,9 +521,9 @@ export function loadConfig(opts: {
   cfg.verifySsl = bool(s.verifySsl ?? env.A2A_VERIFY_SSL, DEFAULTS.verifySsl);
 
   // Discovery (0.2.0)
-  const d = (s.discovery && typeof s.discovery === "object" ? s.discovery : {}) as Record<string, any>;
-  const dl = (d.local && typeof d.local === "object" ? d.local : {}) as Record<string, any>;
-  const dm = (d.mdns && typeof d.mdns === "object" ? d.mdns : {}) as Record<string, any>;
+  const d = (s.discovery && typeof s.discovery === "object" ? s.discovery : {}) as Record<string, unknown>;
+  const dl = (d.local && typeof d.local === "object" ? d.local : {}) as Record<string, unknown>;
+  const dm = (d.mdns && typeof d.mdns === "object" ? d.mdns : {}) as Record<string, unknown>;
   cfg.discovery.local.enabled = bool(dl.enabled ?? env.A2A_DISCOVERY_LOCAL, DEFAULTS.discovery.local.enabled);
   cfg.discovery.local.heartbeatSec = num(dl.heartbeatSec ?? env.A2A_HEARTBEAT_SEC, DEFAULTS.discovery.local.heartbeatSec);
   cfg.discovery.local.ttlSec = num(dl.ttlSec ?? env.A2A_TTL_SEC, DEFAULTS.discovery.local.ttlSec);
@@ -534,9 +538,10 @@ export function loadConfig(opts: {
   // edits would erase them. Registration only happens when enabled AND
   // url+token are set. `enabled` defaults to true when url+token exist and
   // no explicit value (backward compat with the pre-0.5.0 implicit activation).
-  const dg = (d.gateway && typeof d.gateway === "object" ? d.gateway : {}) as Record<string, any>;
+  const dg = (d.gateway && typeof d.gateway === "object" ? d.gateway : {}) as Record<string, unknown>;
   const gwUrl = String(dg.url ?? env.A2A_GATEWAY_URL ?? "");
-  const gwToken = String(dg.token ?? env.A2A_GATEWAY_TOKEN ?? "");
+  const gwToken = String(resolveSettingsValue(dg.token, settingsFromRepo) ?? env.A2A_GATEWAY_TOKEN ?? "");
+  const gwUpstream = resolveSettingsValue(dg.upstreamToken, settingsFromRepo);
   const hasSettingsGateway = Object.keys(dg).length > 0;
   const gwEnabled =
     dg.enabled !== undefined
@@ -548,7 +553,7 @@ export function loadConfig(opts: {
       url: gwUrl,
       token: gwToken,
       name: dg.name ? String(dg.name) : undefined,
-      upstreamToken: dg.upstreamToken ? String(dg.upstreamToken) : undefined,
+      upstreamToken: gwUpstream ? String(gwUpstream) : undefined,
       heartbeatSec: num(dg.heartbeatSec, 60),
       channel: dg.channel === undefined ? undefined : bool(dg.channel, true),
     };
@@ -557,21 +562,22 @@ export function loadConfig(opts: {
   // Multiple gateways (0.6.0): the `discovery.gateways` map. Same per-entry
   // materialization as the legacy block; invalid keys are skipped (they would
   // pollute the `gw/<key>/` peer namespace).
-  const dgs = (d.gateways && typeof d.gateways === "object" ? d.gateways : {}) as Record<string, any>;
+  const dgs = (d.gateways && typeof d.gateways === "object" ? d.gateways : {}) as Record<string, unknown>;
   const gateways: Record<string, GatewayEntry> = {};
   for (const [key, raw] of Object.entries(dgs)) {
     if (!GATEWAY_KEY_RE.test(key)) continue;
     if (!raw || typeof raw !== "object") continue;
-    const g = raw as Record<string, any>;
+    const g = raw as Record<string, unknown>;
     const u = String(g.url ?? "");
-    const t = String(g.token ?? "");
+    const t = String(resolveSettingsValue(g.token, settingsFromRepo) ?? "");
+    const up = resolveSettingsValue(g.upstreamToken, settingsFromRepo);
     const enabled = g.enabled !== undefined ? bool(g.enabled, true) : Boolean(u && t);
     gateways[key] = {
       enabled,
       url: u,
       token: t,
       name: g.name ? String(g.name) : undefined,
-      upstreamToken: g.upstreamToken ? String(g.upstreamToken) : undefined,
+      upstreamToken: up ? String(up) : undefined,
       heartbeatSec: num(g.heartbeatSec, 60),
       channel: g.channel === undefined ? undefined : bool(g.channel, true),
     };
@@ -584,7 +590,7 @@ export function loadConfig(opts: {
   cfg.selfIdentity = String(s.selfIdentity ?? env.A2A_SELF_IDENTITY ?? "");
 
   // Host-TUI presentation (0.3.0)
-  const ui = (s.ui && typeof s.ui === "object" ? s.ui : {}) as Record<string, any>;
+  const ui = (s.ui && typeof s.ui === "object" ? s.ui : {}) as Record<string, unknown>;
   cfg.ui.transcript = bool(ui.transcript ?? env.A2A_UI_TRANSCRIPT, DEFAULTS.ui.transcript);
 
   // Live in-memory overrides (set by the /a2a-config panel) — highest
@@ -732,10 +738,20 @@ export function buildA2ASettingsPatch(opts: {
       // multiplies by 1000 on read). working.peers holds runtime ms —
       // this is the single writer-side conversion, so panel saves and
       // panel-added peers are idempotent (no 1000× drift per save).
+      // An unedited peer keeps the file's raw `auth` block, so a `!command` /
+      // `$VAR` token reference (#50) is never replaced by its resolved value.
       ...(peerChanges
         ? {
             peers: Object.fromEntries(
-              Object.entries(working.peers).map(([name, p]) => [name, { ...p, timeout: Math.round(p.timeout / 1000) }]),
+              Object.entries(working.peers).flatMap(([name, p]): [string, unknown][] => {
+                // Repo-sourced peers never reach the operator's file; a same-name
+                // operator entry stays verbatim (never paired with the repo's URL).
+                if (repoPeerNames.has(name)) return a2a.peers?.[name] ? [[name, a2a.peers[name]]] : [];
+                const fileAuth = a2a.peers?.[name]?.auth;
+                const authUnedited = JSON.stringify(p.auth) === JSON.stringify(cfg.peers[name]?.auth);
+                const auth = fileAuth && authUnedited ? fileAuth : p.auth;
+                return [[name, { ...p, auth, timeout: Math.round(p.timeout / 1000) }]];
+              }),
             ),
           }
         : {}),
@@ -827,6 +843,20 @@ export function writeSettingsA2A(opts: {
  * operator's shared token — the "known loopback peer" trust assumption
  * (same machine, same user, operator-configured) does not hold for them. */
 let repoPeerUrls = new Set<string>();
+
+/** Names of peers loaded from a REPO-CONTROLLED settings file. Panel saves must
+ * not copy these into the operator's trusted settings (their literal
+ * `!command` / `$VAR` auth would then be resolved on a later load). */
+let repoPeerNames = new Set<string>();
+
+/** Raw (unvalidated) peer entry as read from settings.json. */
+interface RawPeer {
+  url?: unknown;
+  auth?: { type?: string; token?: unknown };
+  timeout?: unknown;
+  capabilities?: unknown;
+  description?: unknown;
+}
 
 /** Normalize a URL for dedupe/comparison (lowercase, trailing slashes stripped). */
 export function normUrl(u: string): string {

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Token fields accept `!command` and `$VAR` references (#50).** Same syntax as pi core's `apiKey` / `auth.json` `key`, so tokens can come from the macOS Keychain, a password manager CLI, or the environment instead of plaintext in `settings.json`. Covers `peers.*.auth.token` (previously settings-only, with no env fallback), `server.sharedToken`, `server.peerTokens` values, and gateway `token` / `upstreamToken`. Values from a repo-controlled `.pi/settings.json` are never resolved. `/a2a-config` saves keep the reference instead of writing the resolved secret. Peers from a repo `.pi/settings.json` are never persisted to operator settings on `/a2a-config` save.
+- **Compatibility:** a literal token that starts with `!` or contains `$` followed by a letter, `_`, `{`, `$`, or `!` is now interpreted. Escape with `$$` / `$!`. Typical hex/base64 tokens are unaffected.
+
 ## [0.9.0] - 2026-10-19
 
 Validated against the A2A Integration Test Kit ([a2a-itk](https://github.com/a2aproject/a2a-itk)):
@@ -59,6 +64,7 @@ apply to the v1.0 methods only.
   type get `ContentTypeNotSupportedError`; the agent card is served with
   `Cache-Control` and `ETag`.
 
+||||||| parent of e94222a (feat(pi-a2a): resolve config-value syntax in tokens)
 ## 0.8.0 (2026-10-10)
 
 - **Deferred tool tier** (ceulen pattern): all 7 `a2a_*` tools now register `exposure: "deferred"` — not declared to the model until `tool_search` loads them (they stay callable via `ctx.executeTool`/codemode). The package now force-activates `tool_search` in `session_start` when it defers tools (pi only auto-activates discovery for MCP servers). Unit tests pin the exposure flags and the activation branches.
