@@ -5,7 +5,6 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import os from "node:os";
 import path from "node:path";
 import { MuninClient } from "@kalera/munin-sdk";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 
 export interface Learning {
   kind: "strategy" | "recovery" | "optimization";
@@ -188,15 +187,12 @@ export async function writeLearning(
     // in the evolve_save Munin-outage fallback it would land there silently.
     // Redirect to the agent dir (never into cwd) instead of throwing.
     const file = trusted === true ? localPath(cwd) : agentSettingsPath();
-    // Serialize append+cap per file (SDK mutation queue, as pi-selfskills uses
-    // it): a cap rewrite running between another save's append and its own cap
-    // could drop that entry. ponytail: keyed on the path string, not realpath —
-    // ctx.cwd is stable within a session; aliasing would only skip serialization.
-    await withFileMutationQueue(file, async () => {
-      mkdirSync(path.dirname(file), { recursive: true });
-      appendFileSync(file, JSON.stringify({ key, title, content, tags, storedAt }) + "\n", "utf8");
-      capLocal(file, cfg.localCap);
-    });
+    // append + cap are both synchronous, so concurrent saves cannot interleave
+    // here and no mutation queue is needed (pi's withFileMutationQueue is also
+    // unavailable on omp — its legacy-pi shim omits the export, #44).
+    mkdirSync(path.dirname(file), { recursive: true });
+    appendFileSync(file, JSON.stringify({ key, title, content, tags, storedAt }) + "\n", "utf8");
+    capLocal(file, cfg.localCap);
   }
   return { ...learning, key, title, storedAt };
 }

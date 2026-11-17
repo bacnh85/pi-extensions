@@ -1,3 +1,14 @@
+## 0.4.1 (2026-11-17)
+
+- omp (Oh My Pi) install fix: dropped the `withFileMutationQueue` import from
+  `@earendil-works/pi-coding-agent` (missing from omp's legacy-pi shim,
+  can1357/oh-my-pi#14025) — it was the package's only runtime use of the agent
+  SDK, so `@bacnh85/pi-evolve` now loads on both harnesses. The helper is not
+  needed here at all: `writeLearning`'s local branch is `mkdirSync` +
+  `appendFileSync` + synchronous `capLocal`, which cannot interleave. The
+  parallel-save test now drives a real cap rewrite (`localCap` below the write
+  count) instead of a no-op one. Fixes #44.
+
 ## 0.4.0 (2026-10-10)
 
 - **Deferred tool tier** (ceulen pattern): `evolve_save` (mutation, post-evidence) now register `exposure: "deferred"` — not declared to the model until `tool_search` loads them (they stay callable via `ctx.executeTool`/codemode). `evolve_reflect` (the guidance-prompted entry point) stay direct. The package now force-activates `tool_search` in `session_start` when it defers tools (pi only auto-activates discovery for MCP servers). Unit tests pin the exposure flags and the activation branches.

@@ -173,10 +173,10 @@ describe("local JSONL store", () => {
     expect(remaining[0]).to.include('"k5"'); // kept the last 5
   });
 
-  it("parallel local saves are serialized (mutation queue): no lost entries", async () => {
-    const cfg = resolveStoreConfig({ store: "local", localCap: 500 });
-    // Race 20 saves: without per-file serialization, a cap rewrite can run
-    // between another save's append and its own cap check and drop its entry.
+  it("parallel local saves all land, and the cap keeps the newest", async () => {
+    // localCap below the write count so capLocal actually rewrites (at the
+    // default 500 it would early-return and prove nothing).
+    const cfg = resolveStoreConfig({ store: "local", localCap: 5 });
     await Promise.all(
       Array.from({ length: 20 }, (_, i) =>
         writeLearning(
@@ -188,9 +188,13 @@ describe("local JSONL store", () => {
       ),
     );
     const lines = readFileSync(localPath(cwd), "utf8").trim().split("\n").filter(Boolean);
-    expect(lines).to.have.length(20);
-    const keys = new Set(lines.map((l) => JSON.parse(l).key));
-    expect(keys.size).to.equal(20); // every distinct learning survived
+    expect(lines).to.have.length(5);
+    // Sync writes complete in call order, so the tail is the newest five.
+    expect(lines.map((l) => JSON.parse(l).content)).to.deep.equal(
+      Array.from({ length: 5 }, (_, i) => formatLearningContent({
+        kind: "strategy", trigger: `parallel save ${i + 15}`, lesson: `entry ${i + 15}`,
+      })),
+    );
   });
 
   it("readLocalTail tolerates malformed lines", () => {
